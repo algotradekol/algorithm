@@ -5,8 +5,9 @@ import { supabase } from '../../lib/supabaseClient';
 import AlgoTab from '../../components/AlgoTab';
 import CompareTab from '../../components/CompareTab';
 import ChargesPanel from '../../components/ChargesPanel';
+import HistoryTab from '../../components/HistoryTab';
 
-const TABS = ['Algo 1', 'Algo 2', 'Compare', 'Charges'] as const;
+const TABS = ['Algo 1', 'Algo 2', 'Compare', 'History', 'Charges'] as const;
 
 export default function Dashboard() {
   const [tab, setTab] = useState<(typeof TABS)[number]>('Algo 1');
@@ -49,9 +50,10 @@ export default function Dashboard() {
         ))}
       </div>
 
-      {tab === 'Algo 1' && <AlgoTab algoId="algo1" displayName="Algo 1 — Opening Range Gap" />}
-      {tab === 'Algo 2' && <AlgoTab algoId="algo2" displayName="Algo 2 — VWAP/EMA/Volume Momentum" />}
+      {tab === 'Algo 1' && <AlgoTab algoId="algo1" displayName="Algo 1 - Opening Range Gap" />}
+      {tab === 'Algo 2' && <AlgoTab algoId="algo2" displayName="Algo 2 - VWAP/EMA/Volume Momentum" />}
       {tab === 'Compare' && <CompareTab />}
+      {tab === 'History' && <HistoryTab />}
       {tab === 'Charges' && <ChargesPanel />}
     </div>
   );

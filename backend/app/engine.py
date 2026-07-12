@@ -13,13 +13,13 @@ import datetime
 import threading
 import time
 
-from app.symbols import get_nse500_watchlist
-from app.candle_aggregator import CandleAggregator
-from app.fyers_client import connect_live_feed
-from app.fyers_auth import refresh_access_token, get_stored_access_token
-from app.strategies.algo1_opening_range import Algo1OpeningRange
-from app.strategies.algo2_momentum import Algo2Momentum
-from app.config import ENTRY_CHECK_TIME, SQUARE_OFF_TIME
+from .symbols import get_nse500_watchlist
+from .candle_aggregator import CandleAggregator
+from .fyers_client import connect_live_feed
+from .fyers_auth import refresh_access_token, get_stored_access_token
+from .strategies.algo1_opening_range import Algo1OpeningRange
+from .strategies.algo2_momentum import Algo2Momentum
+from .config import ENTRY_CHECK_TIME, SQUARE_OFF_TIME
 
 aggregator = CandleAggregator()
 last_ltp: dict[str, float] = {}
@@ -84,17 +84,21 @@ def _scheduler_loop():
 
 def start_engine():
     """Called once from main.py's FastAPI startup event."""
-    if not get_stored_access_token():
+    watchlist = get_nse500_watchlist()
+
+    token_ready = get_stored_access_token() is not None
+    if not token_ready:
         try:
             refresh_access_token()
+            token_ready = True
         except Exception as e:
-            print(f"[engine] initial token refresh failed, engine will retry at 08:45 tomorrow: {e}")
-            return
+            print(f"[engine] initial token refresh failed, continuing without live feed: {e}")
 
-    watchlist = get_nse500_watchlist()
+    STRATEGIES.clear()
     STRATEGIES["algo1"] = Algo1OpeningRange(watchlist)
     STRATEGIES["algo2"] = Algo2Momentum(watchlist)
 
     threading.Thread(target=_scheduler_loop, daemon=True).start()
-    threading.Thread(target=lambda: connect_live_feed(watchlist, _on_tick), daemon=True).start()
+    if token_ready:
+        threading.Thread(target=lambda: connect_live_feed(watchlist, _on_tick), daemon=True).start()
     print(f"[engine] started with {len(watchlist)} symbols, {len(STRATEGIES)} strategies")

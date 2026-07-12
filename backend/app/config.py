@@ -3,10 +3,13 @@ config.py — all environment-driven settings in one place.
 On Railway, set these as environment variables in the service settings
 (never commit real values to git).
 """
-from dotenv import load_dotenv
 import os
+from pathlib import Path
 
-load_dotenv()
+from dotenv import load_dotenv
+
+ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
+load_dotenv(ENV_PATH)
 
 # Fyers
 FYERS_CLIENT_ID = os.environ.get("FYERS_CLIENT_ID", "")

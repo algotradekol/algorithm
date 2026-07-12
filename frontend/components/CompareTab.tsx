@@ -2,19 +2,30 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 
+const POLL_MS = 5000;
+
 export default function CompareTab() {
   const [data, setData] = useState<Record<string, any> | null>(null);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     async function poll() {
       try {
         const result = await api.compare();
-        if (!cancelled) setData(result);
-      } catch (e) { console.error(e); }
+        if (!cancelled) {
+          setData(result);
+          setError('');
+        }
+      } catch (e: any) {
+        if (!cancelled) setError(e?.message || 'Failed to load comparison');
+        console.error(e);
+      }
     }
     poll();
-    const interval = setInterval(poll, 3000);
+    const interval = setInterval(() => {
+      if (!document.hidden) poll();
+    }, POLL_MS);
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
@@ -33,7 +44,8 @@ export default function CompareTab() {
 
   return (
     <div>
-      <h3>Compare — same inputs, same day</h3>
+      <h3>Compare - same inputs, same day</h3>
+      {error && <p style={{ color: '#ff6b6b', marginBottom: 12 }}>{error}</p>}
       <table style={{ width: '100%', borderCollapse: 'collapse', fontSize: 14 }}>
         <thead>
           <tr>
@@ -54,7 +66,7 @@ export default function CompareTab() {
                   fontWeight: key === 'realized_net_pnl' ? 600 : 400,
                 }}>
                   {typeof data[id][key] === 'number' && key.includes('pnl') || key === 'cash' || key === 'realized_charges'
-                    ? `₹${data[id][key].toLocaleString()}`
+                    ? `Rs ${data[id][key].toLocaleString()}`
                     : data[id][key]}
                 </td>
               ))}
@@ -63,7 +75,7 @@ export default function CompareTab() {
         </tbody>
       </table>
       <p style={{ color: '#8a94a3', fontSize: 12, marginTop: 16 }}>
-        When you add a 3rd algo, it appears here automatically — this table just reads
+        When you add a 3rd algo, it appears here automatically - this table just reads
         whatever algos the backend reports.
       </p>
     </div>

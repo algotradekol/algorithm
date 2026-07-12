@@ -10,7 +10,7 @@ import jwt
 from fastapi import Header, HTTPException
 from jwt import PyJWKClient
 
-from app.config import SUPABASE_JWT_SECRET, SUPABASE_URL
+from .config import SUPABASE_JWT_SECRET, SUPABASE_URL
 
 
 @lru_cache(maxsize=1)

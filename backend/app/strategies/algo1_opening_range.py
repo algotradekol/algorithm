@@ -17,9 +17,10 @@ model margin/leverage explicitly (see paper_broker.py notes), it just
 tracks the ₹50,000-per-trade capital allocation and P&L against it.
 """
 import datetime
-from app.strategies.base import Strategy
-from app.paper_broker import PaperBroker
-from app.fyers_client import get_previous_close
+from .base import Strategy
+from ..paper_broker import PaperBroker
+from ..fyers_client import get_previous_close
+from ..fyers_auth import get_stored_access_token
 
 CAPITAL_PER_TRADE = 50_000
 TARGET_PCT = 2.0
@@ -43,6 +44,9 @@ class Algo1OpeningRange(Strategy):
         self._load_previous_closes()
 
     def _load_previous_closes(self):
+        if not get_stored_access_token():
+            print("[algo1] no Fyers access token yet, skipping previous-close preload")
+            return
         for symbol in self.watchlist:
             try:
                 self.prev_close[symbol] = get_previous_close(symbol)

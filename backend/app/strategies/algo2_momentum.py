@@ -20,8 +20,8 @@ candle_aggregator.py if you want a different definition (e.g. a
 20-day historical average at the same time-of-day).
 """
 import datetime
-from app.strategies.base import Strategy
-from app.paper_broker import PaperBroker
+from .base import Strategy
+from ..paper_broker import PaperBroker
 
 CAPITAL_PER_TRADE = 50_000       # configurable -- change here or wire to a frontend setting later
 TARGET_PCT = 2.0
@@ -84,8 +84,10 @@ class Algo2Momentum(Strategy):
                 if move_pct >= TRAIL_TRIGGER_PCT:
                     new_sl = entry * (1 + TRAIL_STEP_PCT / 100)
                     if new_sl > sl:
-                        from app.supabase_client import supabase
-                        supabase.table("positions").update({"sl_price": new_sl}).eq("id", position["id"]).execute()
+                        from ..supabase_client import run_with_supabase
+                        run_with_supabase(
+                            lambda supabase: supabase.table("positions").update({"sl_price": new_sl}).eq("id", position["id"]).execute()
+                        )
                         sl = new_sl
 
             if ltp <= sl:

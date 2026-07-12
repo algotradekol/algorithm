@@ -3,26 +3,41 @@ import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 
 const FIELDS: [string, string][] = [
-  ['brokerage_flat', 'Brokerage — flat ₹ per order'],
-  ['brokerage_pct', 'Brokerage — % of turnover (whichever lower applies)'],
-  ['stt_pct', 'STT — % on sell turnover'],
-  ['exchange_pct', 'Exchange Charges — % on turnover'],
-  ['sebi_pct', 'SEBI Charges — % on turnover'],
-  ['gst_pct', 'GST — % on (brokerage + exchange + SEBI)'],
-  ['stamp_duty_pct', 'Stamp Duty — % on buy turnover'],
+  ['brokerage_flat', 'Brokerage - flat Rs per order'],
+  ['brokerage_pct', 'Brokerage - % of turnover (whichever lower applies)'],
+  ['stt_pct', 'STT - % on sell turnover'],
+  ['exchange_pct', 'Exchange Charges - % on turnover'],
+  ['sebi_pct', 'SEBI Charges - % on turnover'],
+  ['gst_pct', 'GST - % on (brokerage + exchange + SEBI)'],
+  ['stamp_duty_pct', 'Stamp Duty - % on buy turnover'],
 ];
 
 export default function ChargesPanel() {
   const [config, setConfig] = useState<Record<string, number> | null>(null);
   const [saved, setSaved] = useState(false);
+  const [error, setError] = useState('');
 
-  useEffect(() => { api.getCharges().then(setConfig); }, []);
+  useEffect(() => {
+    api.getCharges().then((result) => {
+      setConfig(result);
+      setError('');
+    }).catch((e: any) => {
+      setError(e?.message || 'Failed to load charges config');
+      console.error(e);
+    });
+  }, []);
 
   async function save() {
     if (!config) return;
-    await api.updateCharges(config);
-    setSaved(true);
-    setTimeout(() => setSaved(false), 2000);
+    try {
+      await api.updateCharges(config);
+      setSaved(true);
+      setError('');
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to save charges config');
+      console.error(e);
+    }
   }
 
   if (!config) return <p>Loading charges config...</p>;
@@ -30,9 +45,10 @@ export default function ChargesPanel() {
   return (
     <div style={{ maxWidth: 480 }}>
       <h3>Charges Settings</h3>
+      {error && <p style={{ color: '#ff6b6b', marginBottom: 12 }}>{error}</p>}
       <p style={{ color: '#8a94a3', fontSize: 13 }}>
-        These rates feed the Net P&L calculation on every closed trade, for both algos.
-        Cross-check against a current Fyers contract note periodically -- exchange/regulatory
+        These rates feed the Net P&amp;L calculation on every closed trade, for both algos.
+        Cross-check against a current Fyers contract note periodically - exchange/regulatory
         rates do get revised.
       </p>
       {FIELDS.map(([key, label]) => (
@@ -46,7 +62,7 @@ export default function ChargesPanel() {
         </div>
       ))}
       <button onClick={save} style={{ padding: '10px 20px', borderRadius: 6, background: '#2a78d6', color: '#fff', border: 'none' }}>
-        {saved ? 'Saved ✓' : 'Save changes'}
+        {saved ? 'Saved' : 'Save changes'}
       </button>
     </div>
   );

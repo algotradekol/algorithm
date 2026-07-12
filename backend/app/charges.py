@@ -59,8 +59,10 @@ def calculate_charges(buy_value: float, sell_value: float, config: dict) -> dict
 
 
 def get_charges_config() -> dict:
-    from app.supabase_client import supabase
-    result = supabase.table("charges_config").select("*").eq("id", 1).execute()
+    from .supabase_client import run_with_supabase
+    result = run_with_supabase(
+        lambda supabase: supabase.table("charges_config").select("*").eq("id", 1).execute()
+    )
     if result.data:
         row = result.data[0]
         return {k: row[k] for k in DEFAULT_CHARGES_CONFIG}
@@ -68,5 +70,7 @@ def get_charges_config() -> dict:
 
 
 def set_charges_config(config: dict):
-    from app.supabase_client import supabase
-    supabase.table("charges_config").upsert({"id": 1, **config}).execute()
+    from .supabase_client import run_with_supabase
+    run_with_supabase(
+        lambda supabase: supabase.table("charges_config").upsert({"id": 1, **config}).execute()
+    )

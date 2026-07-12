@@ -28,6 +28,11 @@ cp .env.example .env   # fill in real values
 uvicorn app.main:app --reload
 ```
 
+Windows shortcut from the repo root:
+```powershell
+.\start-backend.ps1 -Reload
+```
+
 Frontend:
 ```bash
 cd frontend

@@ -2,23 +2,37 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 
+const POLL_MS = 5000;
+
 export default function AlgoTab({ algoId, displayName }: { algoId: string; displayName: string }) {
   const [summary, setSummary] = useState<any>(null);
   const [positions, setPositions] = useState<any[]>([]);
   const [trades, setTrades] = useState<any[]>([]);
+  const [error, setError] = useState('');
 
   useEffect(() => {
     let cancelled = false;
     async function poll() {
-      try {
-        const [s, p, t] = await Promise.all([
-          api.summary(algoId), api.positions(algoId), api.trades(algoId),
-        ]);
-        if (!cancelled) { setSummary(s); setPositions(p); setTrades(t); }
-      } catch (e) { console.error(e); }
+      const [summaryResult, positionsResult, tradesResult] = await Promise.allSettled([
+        api.summary(algoId), api.positions(algoId), api.trades(algoId),
+      ]);
+      if (cancelled) return;
+
+      if (summaryResult.status === 'fulfilled') setSummary(summaryResult.value);
+      if (positionsResult.status === 'fulfilled') setPositions(positionsResult.value);
+      if (tradesResult.status === 'fulfilled') setTrades(tradesResult.value);
+
+      const failures = [summaryResult, positionsResult, tradesResult]
+        .filter((result) => result.status === 'rejected')
+        .map((result) => (result as PromiseRejectedResult).reason?.message || 'Request failed');
+
+      setError(failures[0] || '');
+      failures.forEach((message) => console.error(message));
     }
     poll();
-    const interval = setInterval(poll, 3000);
+    const interval = setInterval(() => {
+      if (!document.hidden) poll();
+    }, POLL_MS);
     return () => { cancelled = true; clearInterval(interval); };
   }, [algoId]);
 
@@ -27,11 +41,12 @@ export default function AlgoTab({ algoId, displayName }: { algoId: string; displ
   return (
     <div>
       <h3>{displayName}</h3>
+      {error && <p style={{ color: '#ff6b6b', marginBottom: 12 }}>{error}</p>}
       <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, 1fr)', gap: 10, marginBottom: 20 }}>
-        <Card label="Cash" value={`₹${summary.cash.toLocaleString()}`} />
+        <Card label="Cash" value={`Rs ${summary.cash.toLocaleString()}`} />
         <Card label="Trades Today" value={`${summary.trade_count_today} (B:${summary.buy_count_today} S:${summary.sell_count_today})`} />
-        <Card label="Gross P&L Today" value={`₹${summary.realized_gross_pnl.toLocaleString()}`} />
-        <Card label="Net P&L Today" value={`₹${summary.realized_net_pnl.toLocaleString()}`} highlight />
+        <Card label="Gross P&L Today" value={`Rs ${summary.realized_gross_pnl.toLocaleString()}`} />
+        <Card label="Net P&L Today" value={`Rs ${summary.realized_net_pnl.toLocaleString()}`} highlight />
       </div>
 
       <h4>Open Positions</h4>
@@ -40,7 +55,7 @@ export default function AlgoTab({ algoId, displayName }: { algoId: string; displ
         columns={['symbol', 'side', 'qty', 'entry_price', 'sl_price', 'target_price']}
       />
 
-      <h4>Trade Log (charges + net P&L per trade)</h4>
+      <h4>Trade Log (charges + net P&amp;L per trade)</h4>
       <Table
         rows={trades}
         columns={['symbol', 'side', 'qty', 'entry_price', 'exit_price', 'exit_reason',

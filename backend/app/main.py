@@ -5,14 +5,14 @@ polls for live state. All routes except /health require a valid
 Supabase auth token.
 """
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.config import ALLOWED_ORIGINS
-from app.auth import require_auth
-from app.engine import start_engine, STRATEGIES
-from app.charges import get_charges_config, set_charges_config
-from app.supabase_client import supabase
+from .config import ALLOWED_ORIGINS
+from .auth import require_auth
+from .engine import start_engine, STRATEGIES
+from .charges import get_charges_config, set_charges_config
+from .fyers_client import get_price_history
 
 
 @asynccontextmanager
@@ -55,9 +55,18 @@ def algo_positions(algo_id: str, _user=Depends(require_auth)):
 
 @app.get("/api/algo/{algo_id}/trades")
 def algo_trades(algo_id: str, _user=Depends(require_auth)):
-    result = supabase.table("trades").select("*").eq("algo_id", algo_id) \
-        .order("exit_time", desc=True).limit(200).execute()
-    return result.data
+    strategy = STRATEGIES.get(algo_id)
+    if not strategy:
+        raise HTTPException(404, f"No such algo: {algo_id}")
+    return strategy.broker.recent_trades()
+
+
+@app.get("/api/algo/{algo_id}/history")
+def algo_history(algo_id: str, days: int = Query(default=30, ge=1, le=180), _user=Depends(require_auth)):
+    strategy = STRATEGIES.get(algo_id)
+    if not strategy:
+        raise HTTPException(404, f"No such algo: {algo_id}")
+    return strategy.broker.daily_history(days)
 
 
 @app.get("/api/compare")
@@ -79,4 +88,24 @@ def update_charges(config: dict, _user=Depends(require_auth)):
 @app.get("/api/watchlist")
 def watchlist(_user=Depends(require_auth)):
     strategy = next(iter(STRATEGIES.values()), None)
-    return {"symbols": strategy.watchlist if strategy else []}
+    symbols = strategy.watchlist if strategy else []
+    return {"symbols": symbols, "count": len(symbols)}
+
+
+@app.get("/api/market/history")
+def market_history(
+    symbol: str = Query(...),
+    days: int = Query(default=5, ge=1, le=60),
+    resolution: str = Query(default="15"),
+    _user=Depends(require_auth),
+):
+    try:
+        candles = get_price_history(symbol, resolution=resolution, days=days)
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=str(exc))
+    return {
+        "symbol": symbol,
+        "resolution": resolution,
+        "days": days,
+        "candles": candles,
+    }

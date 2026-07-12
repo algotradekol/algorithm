@@ -6,14 +6,14 @@ import datetime
 from fyers_apiv3 import fyersModel
 from fyers_apiv3.FyersWebsocket import data_ws
 
-from app.config import FYERS_CLIENT_ID
-from app.fyers_auth import get_stored_access_token
+from .config import FYERS_CLIENT_ID
+from .fyers_auth import get_stored_access_token, refresh_access_token
 
 
 def get_fyers_model():
     token = get_stored_access_token()
     if not token:
-        raise RuntimeError("No Fyers access token in Supabase yet -- run fyers_auth.refresh_access_token() first")
+        token = refresh_access_token()
     return fyersModel.FyersModel(token=token, is_async=False, client_id=FYERS_CLIENT_ID, log_path="")
 
 
@@ -32,6 +32,34 @@ def get_previous_close(symbol: str) -> float | None:
     if not candles:
         return None
     return candles[-1][4]  # [timestamp, open, high, low, close, volume] -> close
+
+
+def get_price_history(symbol: str, resolution: str = "15", days: int = 5) -> list[dict]:
+    """Recent historical candles normalized for the frontend history tab."""
+    fyers = get_fyers_model()
+    today = datetime.date.today()
+    start_date = today - datetime.timedelta(days=max(days, 1))
+    data = {
+        "symbol": symbol,
+        "resolution": resolution,
+        "date_format": "1",
+        "range_from": start_date.isoformat(),
+        "range_to": today.isoformat(),
+        "cont_flag": "1",
+    }
+    response = fyers.history(data)
+    candles = response.get("candles", [])
+    return [
+        {
+            "time": datetime.datetime.fromtimestamp(candle[0]).isoformat(),
+            "open": candle[1],
+            "high": candle[2],
+            "low": candle[3],
+            "close": candle[4],
+            "volume": candle[5],
+        }
+        for candle in candles
+    ]
 
 
 def connect_live_feed(symbols: list[str], on_tick_callback):
