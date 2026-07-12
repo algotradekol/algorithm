@@ -17,6 +17,7 @@ model margin/leverage explicitly (see paper_broker.py notes), it just
 tracks the ₹50,000-per-trade capital allocation and P&L against it.
 """
 import datetime
+import threading
 from .base import Strategy
 from ..paper_broker import PaperBroker
 from ..fyers_client import get_previous_close
@@ -41,17 +42,22 @@ class Algo1OpeningRange(Strategy):
         self.buy_candidates: list[str] = []
         self.sell_candidates: list[str] = []
         self.entries_evaluated_today = None
-        self._load_previous_closes()
+        # Load previous closes in background to avoid blocking startup
+        threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
 
-    def _load_previous_closes(self):
-        if not get_stored_access_token():
-            print("[algo1] no Fyers access token yet, skipping previous-close preload")
-            return
-        for symbol in self.watchlist:
-            try:
-                self.prev_close[symbol] = get_previous_close(symbol)
-            except Exception as e:
-                print(f"[algo1] couldn't get prev close for {symbol}: {e}")
+    def _load_previous_closes_background(self):
+        """Load previous closes in a background thread to avoid blocking initialization."""
+        try:
+            if not get_stored_access_token():
+                print("[algo1] no Fyers access token yet, skipping previous-close preload")
+                return
+            for symbol in self.watchlist:
+                try:
+                    self.prev_close[symbol] = get_previous_close(symbol)
+                except Exception as e:
+                    print(f"[algo1] couldn't get prev close for {symbol}: {e}")
+        except Exception as e:
+            print(f"[algo1] error in background preload: {e}")
 
     def on_tick(self, symbol: str, ltp: float, timestamp):
         pass  # algo1 only acts on the 9:15 candle close and the 9:16 entry check
@@ -136,3 +142,4 @@ class Algo1OpeningRange(Strategy):
         for position in self.broker.open_positions():
             ltp = position.get("_last_ltp", position["entry_price"])
             self.broker.close_trade(position, ltp, "EOD_SQUAREOFF")
+
