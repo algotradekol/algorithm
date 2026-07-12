@@ -26,6 +26,11 @@ def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 
+# Compatibility client for low-frequency flows like OAuth callbacks.
+# Polling paths should continue to use run_with_supabase().
+supabase = get_supabase()
+
+
 def run_with_supabase(operation, *, attempts: int = 3, delay_seconds: float = 0.25):
     last_error = None
     for attempt in range(1, attempts + 1):

@@ -7,12 +7,16 @@ Supabase auth token.
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import RedirectResponse
+from fyers_apiv3 import fyersModel
 
 from .config import ALLOWED_ORIGINS
 from .auth import require_auth
 from .engine import start_engine, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_price_history
+from app.config import FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI
+from app.supabase_client import supabase
 
 
 @asynccontextmanager
@@ -22,6 +26,7 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Algo Paper Trading API", lifespan=lifespan)
+FRONTEND_URL = "https://your-app.vercel.app"  # replace with the real Vercel URL
 
 app.add_middleware(
     CORSMiddleware,
@@ -35,6 +40,42 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok", "strategies_running": list(STRATEGIES.keys())}
+
+
+@app.get("/api/fyers/login-url")
+def fyers_login_url(_user=Depends(require_auth)):
+    session = fyersModel.SessionModel(
+        client_id=FYERS_CLIENT_ID,
+        secret_key=FYERS_SECRET_KEY,
+        redirect_uri=FYERS_REDIRECT_URI,
+        response_type="code",
+        grant_type="authorization_code",
+    )
+    return {"url": session.generate_authcode()}
+
+
+@app.get("/api/fyers/callback")
+def fyers_callback(auth_code: str = None, code: str = None):
+    received_code = auth_code or code
+    if not received_code:
+        return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
+    session = fyersModel.SessionModel(
+        client_id=FYERS_CLIENT_ID,
+        secret_key=FYERS_SECRET_KEY,
+        redirect_uri=FYERS_REDIRECT_URI,
+        response_type="code",
+        grant_type="authorization_code",
+    )
+    session.set_token(received_code)
+    response = session.generate_token()
+    if "access_token" not in response:
+        return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
+    supabase.table("broker_tokens").upsert({
+        "broker": "fyers",
+        "access_token": response["access_token"],
+        "updated_at": "now()",
+    }).execute()
+    return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=success")
 
 
 @app.get("/api/algo/{algo_id}/summary")
