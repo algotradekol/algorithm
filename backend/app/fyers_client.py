@@ -1,0 +1,63 @@
+"""
+fyers_client.py — thin wrapper around Fyers' live WebSocket and
+historical candle REST API, used by engine.py.
+"""
+import datetime
+from fyers_apiv3 import fyersModel
+from fyers_apiv3.FyersWebsocket import data_ws
+
+from app.config import FYERS_CLIENT_ID
+from app.fyers_auth import get_stored_access_token
+
+
+def get_fyers_model():
+    token = get_stored_access_token()
+    if not token:
+        raise RuntimeError("No Fyers access token in Supabase yet -- run fyers_auth.refresh_access_token() first")
+    return fyersModel.FyersModel(token=token, is_async=False, client_id=FYERS_CLIENT_ID, log_path="")
+
+
+def get_previous_close(symbol: str) -> float | None:
+    """Previous trading day's closing price, needed by Algo 1's gap check."""
+    fyers = get_fyers_model()
+    today = datetime.date.today()
+    lookback = today - datetime.timedelta(days=10)  # covers weekends/holidays
+    data = {
+        "symbol": symbol, "resolution": "D", "date_format": "1",
+        "range_from": lookback.isoformat(), "range_to": (today - datetime.timedelta(days=1)).isoformat(),
+        "cont_flag": "1",
+    }
+    response = fyers.history(data)
+    candles = response.get("candles", [])
+    if not candles:
+        return None
+    return candles[-1][4]  # [timestamp, open, high, low, close, volume] -> close
+
+
+def connect_live_feed(symbols: list[str], on_tick_callback):
+    token = get_stored_access_token()
+    if not token:
+        raise RuntimeError("No Fyers access token in Supabase yet")
+
+    def on_message(message):
+        on_tick_callback(message)
+
+    def on_open():
+        socket.subscribe(symbols=symbols, data_type="SymbolUpdate")
+
+    def on_error(message):
+        print("Fyers WS error:", message)
+
+    def on_close(message):
+        print("Fyers WS closed:", message)
+
+    socket = data_ws.FyersDataSocket(
+        access_token=f"{FYERS_CLIENT_ID}:{token}",
+        log_path="",
+        on_connect=on_open,
+        on_message=on_message,
+        on_error=on_error,
+        on_close=on_close,
+    )
+    socket.connect()
+    return socket

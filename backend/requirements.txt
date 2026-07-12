@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+fyers-apiv3
+pyotp
+requests
+pyjwt
+supabase

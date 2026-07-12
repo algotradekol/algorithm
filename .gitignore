@@ -1,0 +1,31 @@
+# Environment files
+backend/.env
+frontend/.env.local
+.env
+.env.local
+.env.*
+!.env.example
+!backend/.env.example
+!frontend/.env.local.example
+
+# Python
+__pycache__/
+*.py[cod]
+*.pyd
+.venv/
+venv/
+backend/venv/
+
+# Node / Next.js
+node_modules/
+frontend/node_modules/
+.next/
+frontend/.next/
+dist/
+build/
+
+# IDE and OS files
+.vscode/
+.idea/
+Thumbs.db
+Desktop.ini
