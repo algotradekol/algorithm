@@ -46,11 +46,10 @@ export default function HistoryTab() {
       }
       if (marketResult.status === 'fulfilled') {
         setMarketHistory(marketResult.value.candles || []);
-        setMarketError('');
+        setMarketError(marketResult.value.warning || '');
       } else {
         setMarketHistory([]);
         setMarketError(marketResult.reason?.message || 'Historical price data is temporarily unavailable');
-        console.error(marketResult.reason);
       }
 
       const primaryFailures = [historyResult, tradesResult]

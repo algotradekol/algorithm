@@ -101,11 +101,14 @@ def market_history(
 ):
     try:
         candles = get_price_history(symbol, resolution=resolution, days=days)
+        warning = None
     except Exception as exc:
-        raise HTTPException(status_code=503, detail=str(exc))
+        candles = []
+        warning = str(exc)
     return {
         "symbol": symbol,
         "resolution": resolution,
         "days": days,
         "candles": candles,
+        "warning": warning,
     }
