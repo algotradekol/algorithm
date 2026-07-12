@@ -4,6 +4,7 @@ thread on startup, and exposes REST endpoints the Next.js frontend
 polls for live state. All routes except /health require a valid
 Supabase auth token.
 """
+import threading
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
@@ -17,7 +18,9 @@ from .fyers_client import get_price_history
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    start_engine()
+    # Start engine in a background thread so it doesn't block FastAPI startup
+    engine_thread = threading.Thread(target=start_engine, daemon=True)
+    engine_thread.start()
     yield
 
 
@@ -112,3 +115,4 @@ def market_history(
         "candles": candles,
         "warning": warning,
     }
+
