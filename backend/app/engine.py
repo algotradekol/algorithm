@@ -25,6 +25,10 @@ aggregator = CandleAggregator()
 last_ltp: dict[str, float] = {}
 
 STRATEGIES = {}   # populated in start_engine() once the watchlist is known
+WATCHLIST: list[str] = []
+_scheduler_started = False
+_live_feed_started = False
+_live_feed_lock = threading.Lock()
 
 
 def _on_tick(message: dict):
@@ -82,23 +86,39 @@ def _scheduler_loop():
         time.sleep(15)
 
 
+def start_live_feed_if_ready() -> bool:
+    global _live_feed_started
+
+    if not WATCHLIST:
+        print("[engine] watchlist not initialized yet, cannot start live feed")
+        return False
+
+    if get_stored_access_token() is None:
+        print("[engine] no Fyers access token in Supabase yet, waiting for manual login")
+        return False
+
+    with _live_feed_lock:
+        if _live_feed_started:
+            return True
+        threading.Thread(target=lambda: connect_live_feed(WATCHLIST, _on_tick), daemon=True).start()
+        _live_feed_started = True
+        print(f"[engine] live feed start requested for {len(WATCHLIST)} symbols")
+        return True
+
+
 def start_engine():
     """Called once from main.py's FastAPI startup event."""
-    watchlist = get_nse500_watchlist()
-
-    token_ready = get_stored_access_token() is not None
-    if not token_ready:
-        try:
-            refresh_access_token()
-            token_ready = True
-        except Exception as e:
-            print(f"[engine] initial token refresh failed, continuing without live feed: {e}")
+    global WATCHLIST, _scheduler_started
+    WATCHLIST = get_nse500_watchlist()
 
     STRATEGIES.clear()
-    STRATEGIES["algo1"] = Algo1OpeningRange(watchlist)
-    STRATEGIES["algo2"] = Algo2Momentum(watchlist)
+    STRATEGIES["algo1"] = Algo1OpeningRange(WATCHLIST)
+    STRATEGIES["algo2"] = Algo2Momentum(WATCHLIST)
 
-    threading.Thread(target=_scheduler_loop, daemon=True).start()
-    if token_ready:
-        threading.Thread(target=lambda: connect_live_feed(watchlist, _on_tick), daemon=True).start()
-    print(f"[engine] started with {len(watchlist)} symbols, {len(STRATEGIES)} strategies")
+    if not _scheduler_started:
+        threading.Thread(target=_scheduler_loop, daemon=True).start()
+        _scheduler_started = True
+
+    if not start_live_feed_if_ready():
+        print("[engine] started without live feed; complete manual Fyers login to enable it")
+    print(f"[engine] started with {len(WATCHLIST)} symbols, {len(STRATEGIES)} strategies")

@@ -13,7 +13,7 @@ from fyers_apiv3 import fyersModel
 
 from .config import ALLOWED_ORIGINS
 from .auth import require_auth
-from .engine import start_engine, STRATEGIES
+from .engine import start_engine, start_live_feed_if_ready, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_price_history
 from app.config import FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI
@@ -78,6 +78,7 @@ def fyers_callback(auth_code: str = None, code: str = None):
         "access_token": response["access_token"],
         "updated_at": "now()",
     }).execute()
+    start_live_feed_if_ready()
     return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=success")
 
 
