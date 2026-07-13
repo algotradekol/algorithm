@@ -7,7 +7,8 @@ import CompareTab from '../../components/CompareTab';
 import ChargesPanel from '../../components/ChargesPanel';
 import HistoryTab from '../../components/HistoryTab';
 import FyersLoginButton from '../../components/FyersLoginButton';
-import PinGate, { clearPinUnlock } from '../../components/PinGate';
+import { getAuthToken } from '../../lib/authToken';
+import { clearPinToken } from '../../lib/pinAuth';
 
 const TABS = ['Algo 1', 'Algo 2', 'Compare', 'History', 'Charges'] as const;
 
@@ -20,8 +21,8 @@ function DashboardContent() {
   const fyersLogin = searchParams.get('fyers_login');
 
   useEffect(() => {
-    supabase.auth.getSession().then(({ data: { session } }) => {
-      if (!session) router.replace('/login');
+    getAuthToken().then((token) => {
+      if (!token) router.replace('/login');
       else setReady(true);
     });
   }, [router]);
@@ -29,7 +30,6 @@ function DashboardContent() {
   if (!ready) return null;
 
   return (
-    <PinGate>
     <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
       {fyersLogin && showFyersBanner && (
         <div
@@ -57,7 +57,7 @@ function DashboardContent() {
         <div className="flex items-start gap-2">
           <FyersLoginButton />
           <button
-            onClick={async () => { clearPinUnlock(); await supabase.auth.signOut(); router.replace('/login'); }}
+            onClick={async () => { clearPinToken(); await supabase.auth.signOut(); router.replace('/login'); }}
             className="rounded-md border border-line px-3 py-2 text-sm text-textSoft transition hover:border-white/30 hover:text-white"
           >
             Log out
@@ -84,7 +84,6 @@ function DashboardContent() {
       {tab === 'History' && <HistoryTab />}
       {tab === 'Charges' && <ChargesPanel />}
     </main>
-    </PinGate>
   );
 }
 

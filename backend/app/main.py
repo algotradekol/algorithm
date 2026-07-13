@@ -4,19 +4,21 @@ thread on startup, and exposes REST endpoints the Next.js frontend
 polls for live state. All routes except /health require a valid
 Supabase auth token.
 """
+import datetime
 import threading
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fyers_apiv3 import fyersModel
+import jwt
 
 from .config import ALLOWED_ORIGINS
 from .auth import require_auth
 from .engine import start_engine, start_live_feed_if_ready, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_price_history
-from app.config import FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI, FRONTEND_URL
+from app.config import APP_PIN, FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI, FRONTEND_URL, SUPABASE_JWT_SECRET
 from app.supabase_client import supabase
 
 
@@ -42,6 +44,30 @@ app.add_middleware(
 @app.get("/health")
 def health():
     return {"status": "ok", "strategies_running": list(STRATEGIES.keys())}
+
+
+@app.post("/api/pin-login")
+def pin_login(payload: dict):
+    if payload.get("pin") != APP_PIN:
+        raise HTTPException(status_code=401, detail="Invalid PIN")
+    if not SUPABASE_JWT_SECRET:
+        raise HTTPException(status_code=500, detail="SUPABASE_JWT_SECRET is not configured")
+
+    now = datetime.datetime.now(datetime.timezone.utc)
+    expires_at = now + datetime.timedelta(hours=12)
+    token = jwt.encode(
+        {
+            "sub": "pin-login",
+            "role": "authenticated",
+            "aud": "authenticated",
+            "iat": int(now.timestamp()),
+            "exp": int(expires_at.timestamp()),
+            "login_method": "pin",
+        },
+        SUPABASE_JWT_SECRET,
+        algorithm="HS256",
+    )
+    return {"access_token": token, "token_type": "bearer", "expires_in": 12 * 60 * 60}
 
 
 @app.get("/api/fyers/login-url")

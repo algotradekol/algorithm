@@ -1,7 +1,7 @@
 'use client';
 
 import { useState } from 'react';
-import { supabase } from '../lib/supabaseClient';
+import { getAuthToken } from '../lib/authToken';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -19,12 +19,12 @@ export default function FyersLoginButton() {
     setError('');
 
     try {
-      const { data: { session } } = await supabase.auth.getSession();
-      if (!session) throw new Error('Not logged in');
+      const token = await getAuthToken();
+      if (!token) throw new Error('Not logged in');
 
       const res = await fetch(`${API_URL}/api/fyers/login-url`, {
         headers: {
-          Authorization: `Bearer ${session.access_token}`,
+          Authorization: `Bearer ${token}`,
         },
       });
 

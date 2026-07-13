@@ -1,17 +1,17 @@
-import { supabase } from './supabaseClient';
+import { getAuthToken } from './authToken';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
 async function authedFetch(path: string, options: RequestInit = {}) {
   if (!API_URL) throw new Error('NEXT_PUBLIC_API_URL is not configured');
-  const { data: { session } } = await supabase.auth.getSession();
-  if (!session) throw new Error('Not logged in');
+  const token = await getAuthToken();
+  if (!token) throw new Error('Not logged in');
 
   const res = await fetch(`${API_URL}${path}`, {
     ...options,
     headers: {
       ...options.headers,
-      Authorization: `Bearer ${session.access_token}`,
+      Authorization: `Bearer ${token}`,
       'Content-Type': 'application/json',
     },
   });
