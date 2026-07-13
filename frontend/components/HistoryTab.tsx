@@ -1,5 +1,5 @@
 'use client';
-import { CSSProperties, useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import { Table } from './AlgoTab';
 
@@ -62,55 +62,55 @@ export default function HistoryTab() {
   }, [algoId, days, resolution, symbol]);
 
   return (
-    <div>
-      <h3>History and Logs</h3>
-      <p style={{ color: '#8a94a3', fontSize: 13, marginBottom: 16 }}>
+    <section>
+      <h2 className="text-xl font-semibold text-white">History and Logs</h2>
+      <p className="mt-2 text-sm text-textSoft">
         Daily P&amp;L, recent trade logs, and historical price candles in one place.
       </p>
-      {error && <p style={{ color: '#ff6b6b', marginBottom: 12 }}>{error}</p>}
+      {error && <p className="mt-3 text-sm text-danger">{error}</p>}
 
-      <div style={{ display: 'grid', gridTemplateColumns: 'repeat(4, minmax(0, 1fr))', gap: 12, marginBottom: 20 }}>
+      <div className="my-5 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <label>
-          <div style={{ fontSize: 12, color: '#8a94a3', marginBottom: 4 }}>Algo</div>
-          <select value={algoId} onChange={(e) => setAlgoId(e.target.value)} style={inputStyle}>
+          <div className="mb-1 text-xs uppercase tracking-[0.1em] text-textSoft">Algo</div>
+          <select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control">
             <option value="algo1">Algo 1</option>
             <option value="algo2">Algo 2</option>
           </select>
         </label>
         <label>
-          <div style={{ fontSize: 12, color: '#8a94a3', marginBottom: 4 }}>Days</div>
-          <input type="number" min={1} max={180} value={days} onChange={(e) => setDays(Number(e.target.value) || 30)} style={inputStyle} />
+          <div className="mb-1 text-xs uppercase tracking-[0.1em] text-textSoft">Days</div>
+          <input type="number" min={1} max={180} value={days} onChange={(e) => setDays(Number(e.target.value) || 30)} className="control" />
         </label>
         <label>
-          <div style={{ fontSize: 12, color: '#8a94a3', marginBottom: 4 }}>Symbol</div>
-          <select value={symbol} onChange={(e) => setSymbol(e.target.value)} style={inputStyle}>
+          <div className="mb-1 text-xs uppercase tracking-[0.1em] text-textSoft">Symbol</div>
+          <select value={symbol} onChange={(e) => setSymbol(e.target.value)} className="control">
             {watchlist.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </label>
         <label>
-          <div style={{ fontSize: 12, color: '#8a94a3', marginBottom: 4 }}>Resolution</div>
-          <select value={resolution} onChange={(e) => setResolution(e.target.value)} style={inputStyle}>
+          <div className="mb-1 text-xs uppercase tracking-[0.1em] text-textSoft">Resolution</div>
+          <select value={resolution} onChange={(e) => setResolution(e.target.value)} className="control">
             {RESOLUTIONS.map((item) => <option key={item} value={item}>{item}</option>)}
           </select>
         </label>
       </div>
 
-      <h4>Daily Performance</h4>
+      <h3 className="mb-3 mt-6 text-sm font-semibold uppercase tracking-[0.14em] text-textSoft">Daily Performance</h3>
       <Table rows={dailyHistory} columns={['date', 'trade_count', 'gross_pnl', 'charges', 'net_pnl']} />
 
-      <h4>Recent Trade Logs</h4>
+      <h3 className="mb-3 mt-6 text-sm font-semibold uppercase tracking-[0.14em] text-textSoft">Recent Trade Logs</h3>
       <Table rows={recentTrades} columns={['exit_time', 'symbol', 'side', 'qty', 'entry_price', 'exit_price', 'exit_reason', 'net_pnl']} />
 
-      <h4>Historical Price Candles</h4>
-      {marketError && <p style={{ color: '#ffb366', marginBottom: 12 }}>{marketError}</p>}
+      <h3 className="mb-3 mt-6 text-sm font-semibold uppercase tracking-[0.14em] text-textSoft">Historical Price Candles</h3>
+      {marketError && <p className="mb-3 text-sm text-warning">{marketError}</p>}
       <MiniChart candles={marketHistory} />
       <Table rows={marketHistory.slice(-20).reverse()} columns={['time', 'open', 'high', 'low', 'close', 'volume']} />
-    </div>
+    </section>
   );
 }
 
 function MiniChart({ candles }: { candles: any[] }) {
-  if (!candles.length) return <p style={{ color: '#8a94a3', fontSize: 13 }}>No candle history available yet.</p>;
+  if (!candles.length) return <p className="text-sm text-textSoft">No candle history available yet.</p>;
 
   const closes = candles.map((candle) => Number(candle.close));
   const min = Math.min(...closes);
@@ -123,22 +123,13 @@ function MiniChart({ candles }: { candles: any[] }) {
   }).join(' ');
 
   return (
-    <div style={{ background: '#151b23', borderRadius: 10, padding: 12, marginBottom: 16 }}>
-      <div style={{ color: '#8a94a3', fontSize: 12, marginBottom: 8 }}>
+    <div className="panel mb-4 p-3">
+      <div className="mb-2 text-xs text-textSoft">
         Close range: Rs {min.toFixed(2)} to Rs {max.toFixed(2)}
       </div>
-      <svg viewBox="0 0 100 100" preserveAspectRatio="none" style={{ width: '100%', height: 180 }}>
-        <polyline fill="none" stroke="#4ade80" strokeWidth="2" points={points} />
+      <svg viewBox="0 0 100 100" preserveAspectRatio="none" className="h-44 w-full">
+        <polyline fill="none" stroke="#43d17d" strokeWidth="2" points={points} />
       </svg>
     </div>
   );
 }
-
-const inputStyle: CSSProperties = {
-  width: '100%',
-  padding: 8,
-  borderRadius: 6,
-  border: '1px solid #333',
-  background: '#0b0f14',
-  color: '#fff',
-};

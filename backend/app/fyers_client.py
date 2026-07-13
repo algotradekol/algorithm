@@ -7,13 +7,13 @@ from fyers_apiv3 import fyersModel
 from fyers_apiv3.FyersWebsocket import data_ws
 
 from .config import FYERS_CLIENT_ID
-from .fyers_auth import get_stored_access_token, refresh_access_token
+from .fyers_auth import get_stored_access_token
 
 
 def get_fyers_model():
     token = get_stored_access_token()
     if not token:
-        token = refresh_access_token()
+        raise RuntimeError("No Fyers access token in Supabase yet. Use the Login to Fyers button first.")
     return fyersModel.FyersModel(token=token, is_async=False, client_id=FYERS_CLIENT_ID, log_path="")
 
 

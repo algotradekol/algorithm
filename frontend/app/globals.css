@@ -1,0 +1,37 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html {
+    background: #07110c;
+  }
+
+  body {
+    margin: 0;
+    background:
+      radial-gradient(circle at 20% -10%, rgba(67, 209, 125, 0.14), transparent 32rem),
+      linear-gradient(135deg, #07110c 0%, #0d1611 45%, #09100c 100%);
+    color: #edf7f0;
+  }
+
+  button,
+  input,
+  select {
+    font: inherit;
+  }
+}
+
+@layer components {
+  .control {
+    @apply w-full rounded-md border border-line bg-ink px-3 py-2 text-sm text-white outline-none transition focus:border-success focus:ring-2 focus:ring-success/20;
+  }
+
+  .panel {
+    @apply rounded-lg border border-line bg-panel/95 shadow-2xl shadow-black/20;
+  }
+
+  .table-cell {
+    @apply border-b border-line px-2 py-2 text-left;
+  }
+}

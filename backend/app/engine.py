@@ -16,7 +16,7 @@ import time
 from .symbols import get_nse500_watchlist
 from .candle_aggregator import CandleAggregator
 from .fyers_client import connect_live_feed
-from .fyers_auth import refresh_access_token, get_stored_access_token
+from .fyers_auth import get_stored_access_token
 from .strategies.algo1_opening_range import Algo1OpeningRange
 from .strategies.algo2_momentum import Algo2Momentum
 from .config import ENTRY_CHECK_TIME, SQUARE_OFF_TIME
@@ -76,12 +76,6 @@ def _scheduler_loop():
             for strategy in STRATEGIES.values():
                 strategy.square_off_all()
             squareoff_fired_date = today
-
-        if current_time == "08:45":
-            try:
-                refresh_access_token()
-            except Exception as e:
-                print(f"[scheduler] token refresh failed: {e}")
 
         time.sleep(15)
 

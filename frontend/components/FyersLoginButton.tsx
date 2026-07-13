@@ -42,23 +42,15 @@ export default function FyersLoginButton() {
   }
 
   return (
-    <div style={{ display: 'flex', flexDirection: 'column', alignItems: 'flex-end', gap: 8 }}>
+    <div className="flex flex-col items-end gap-2">
       <button
         onClick={handleClick}
         disabled={loading}
-        style={{
-          background: '#0f6f44',
-          border: '1px solid #198754',
-          color: '#fff',
-          padding: '6px 12px',
-          borderRadius: 6,
-          cursor: loading ? 'wait' : 'pointer',
-          opacity: loading ? 0.8 : 1,
-        }}
+        className="rounded-md border border-success/70 bg-action px-3 py-2 text-sm font-semibold text-white transition hover:bg-success hover:text-ink disabled:cursor-wait disabled:opacity-80"
       >
         {loading ? 'Opening Fyers...' : 'Login to Fyers'}
       </button>
-      {error && <p style={{ margin: 0, color: '#ff6b6b', fontSize: 12 }}>{error}</p>}
+      {error && <p className="m-0 max-w-xs text-right text-xs text-danger">{error}</p>}
     </div>
   );
 }

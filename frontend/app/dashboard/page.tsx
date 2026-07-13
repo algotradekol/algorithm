@@ -7,6 +7,7 @@ import CompareTab from '../../components/CompareTab';
 import ChargesPanel from '../../components/ChargesPanel';
 import HistoryTab from '../../components/HistoryTab';
 import FyersLoginButton from '../../components/FyersLoginButton';
+import PinGate, { clearPinUnlock } from '../../components/PinGate';
 
 const TABS = ['Algo 1', 'Algo 2', 'Compare', 'History', 'Charges'] as const;
 
@@ -28,55 +29,49 @@ function DashboardContent() {
   if (!ready) return null;
 
   return (
-    <div style={{ maxWidth: 1000, margin: '0 auto', padding: 24 }}>
+    <PinGate>
+    <main className="mx-auto max-w-6xl px-4 py-6 sm:px-6 lg:px-8">
       {fyersLogin && showFyersBanner && (
         <div
-          style={{
-            display: 'flex',
-            alignItems: 'center',
-            justifyContent: 'space-between',
-            gap: 12,
-            marginBottom: 16,
-            padding: '10px 12px',
-            borderRadius: 8,
-            background: fyersLogin === 'success' ? '#10351f' : '#3b1515',
-            border: `1px solid ${fyersLogin === 'success' ? '#198754' : '#b33a3a'}`,
-          }}
+          className={`mb-4 flex items-center justify-between gap-3 rounded-lg border px-3 py-2 ${
+            fyersLogin === 'success' ? 'border-success bg-success/15' : 'border-danger bg-danger/15'
+          }`}
         >
-          <span style={{ color: '#fff', fontSize: 14 }}>
+          <span className="text-sm text-white">
             {fyersLogin === 'success' ? 'Fyers login successful' : 'Fyers login failed, try again'}
           </span>
           <button
             onClick={() => setShowFyersBanner(false)}
-            style={{ background: 'none', border: 'none', color: '#8a94a3', cursor: 'pointer', padding: 0 }}
+            className="text-sm text-textSoft transition hover:text-white"
           >
             Dismiss
           </button>
         </div>
       )}
 
-      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: 20 }}>
-        <h2>Algo Paper Trading</h2>
-        <div style={{ display: 'flex', alignItems: 'flex-start', gap: 10 }}>
+      <div className="mb-6 flex flex-col gap-4 border-b border-line pb-5 sm:flex-row sm:items-center sm:justify-between">
+        <div>
+          <p className="text-xs uppercase tracking-[0.2em] text-textSoft">Paper trading console</p>
+          <h1 className="mt-1 text-3xl font-semibold text-white">Algo Paper Trading</h1>
+        </div>
+        <div className="flex items-start gap-2">
           <FyersLoginButton />
           <button
-            onClick={async () => { await supabase.auth.signOut(); router.replace('/login'); }}
-            style={{ background: 'none', border: '1px solid #333', color: '#8a94a3', padding: '6px 12px', borderRadius: 6 }}
+            onClick={async () => { clearPinUnlock(); await supabase.auth.signOut(); router.replace('/login'); }}
+            className="rounded-md border border-line px-3 py-2 text-sm text-textSoft transition hover:border-white/30 hover:text-white"
           >
             Log out
           </button>
         </div>
       </div>
 
-      <div style={{ display: 'flex', gap: 8, marginBottom: 24 }}>
+      <div className="mb-6 flex flex-wrap gap-2">
         {TABS.map((t) => (
           <button
             key={t} onClick={() => setTab(t)}
-            style={{
-              padding: '8px 16px', borderRadius: 8, border: 'none', cursor: 'pointer',
-              background: tab === t ? '#2a78d6' : '#151b23',
-              color: tab === t ? '#fff' : '#8a94a3',
-            }}
+            className={`rounded-md px-4 py-2 text-sm font-medium transition ${
+              tab === t ? 'bg-success text-ink' : 'bg-panelSoft text-textSoft hover:text-white'
+            }`}
           >
             {t}
           </button>
@@ -88,7 +83,8 @@ function DashboardContent() {
       {tab === 'Compare' && <CompareTab />}
       {tab === 'History' && <HistoryTab />}
       {tab === 'Charges' && <ChargesPanel />}
-    </div>
+    </main>
+    </PinGate>
   );
 }
 

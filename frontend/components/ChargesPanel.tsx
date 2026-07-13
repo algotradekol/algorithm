@@ -43,27 +43,27 @@ export default function ChargesPanel() {
   if (!config) return <p>Loading charges config...</p>;
 
   return (
-    <div style={{ maxWidth: 480 }}>
-      <h3>Charges Settings</h3>
-      {error && <p style={{ color: '#ff6b6b', marginBottom: 12 }}>{error}</p>}
-      <p style={{ color: '#8a94a3', fontSize: 13 }}>
+    <section className="max-w-xl">
+      <h2 className="text-xl font-semibold text-white">Charges Settings</h2>
+      {error && <p className="mt-3 text-sm text-danger">{error}</p>}
+      <p className="mt-3 text-sm text-textSoft">
         These rates feed the Net P&amp;L calculation on every closed trade, for both algos.
         Cross-check against a current Fyers contract note periodically - exchange/regulatory
         rates do get revised.
       </p>
       {FIELDS.map(([key, label]) => (
-        <div key={key} style={{ marginBottom: 12 }}>
-          <label style={{ display: 'block', fontSize: 13, color: '#8a94a3', marginBottom: 4 }}>{label}</label>
+        <div key={key} className="mt-4">
+          <label className="mb-1 block text-sm text-textSoft">{label}</label>
           <input
             type="number" step="0.0001" value={config[key]}
             onChange={(e) => setConfig({ ...config, [key]: parseFloat(e.target.value) })}
-            style={{ width: '100%', padding: 8, borderRadius: 6, border: '1px solid #333', background: '#0b0f14', color: '#fff' }}
+            className="control"
           />
         </div>
       ))}
-      <button onClick={save} style={{ padding: '10px 20px', borderRadius: 6, background: '#2a78d6', color: '#fff', border: 'none' }}>
+      <button onClick={save} className="mt-5 rounded-md bg-action px-5 py-2.5 text-sm font-semibold text-white transition hover:bg-success hover:text-ink">
         {saved ? 'Saved' : 'Save changes'}
       </button>
-    </div>
+    </section>
   );
 }

@@ -26,6 +26,7 @@ SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")  # for verifying
 
 # App
 ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "*").split(",")  # set to your Vercel URL in production
+FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://your-app.vercel.app")
 SQUARE_OFF_TIME = "15:15"  # 3:15 PM, both algos exit everything by this time
 MARKET_OPEN_TIME = "09:15"
 ENTRY_CHECK_TIME = "09:16"  # algo 1 fires its entries at this time

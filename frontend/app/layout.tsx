@@ -1,3 +1,5 @@
+import './globals.css';
+
 export const metadata = {
   title: "Algo Paper Trading",
   icons: {
@@ -12,16 +14,7 @@ export default function RootLayout({
 }) {
   return (
     <html lang="en">
-      <body
-        style={{
-          fontFamily: "system-ui, sans-serif",
-          background: "#0b0f14",
-          color: "#e6e6e6",
-          margin: 0,
-        }}
-      >
-        {children}
-      </body>
+      <body className="min-h-screen font-sans antialiased">{children}</body>
     </html>
   );
 }

@@ -16,7 +16,7 @@ from .auth import require_auth
 from .engine import start_engine, start_live_feed_if_ready, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_price_history
-from app.config import FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI
+from app.config import FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI, FRONTEND_URL
 from app.supabase_client import supabase
 
 
@@ -29,7 +29,6 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Algo Paper Trading API", lifespan=lifespan)
-FRONTEND_URL = "https://your-app.vercel.app"  # replace with the real Vercel URL
 
 app.add_middleware(
     CORSMiddleware,
