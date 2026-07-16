@@ -15,7 +15,19 @@ async function authedFetch(path: string, options: RequestInit = {}) {
       'Content-Type': 'application/json',
     },
   });
-  if (!res.ok) throw new Error(`API error ${res.status}: ${await res.text()}`);
+  if (!res.ok) {
+    const body = await res.text();
+    let message = body;
+    try {
+      const parsed = JSON.parse(body);
+      message = typeof parsed.detail === 'string'
+        ? parsed.detail
+        : parsed.detail?.message || body;
+    } catch {
+      // Keep the raw response body if it is not JSON.
+    }
+    throw new Error(`API error ${res.status}: ${message}`);
+  }
   return res.json();
 }
 
@@ -25,6 +37,7 @@ export const api = {
   trades: (algoId: string) => authedFetch(`/api/algo/${algoId}/trades`),
   history: (algoId: string, days = 30) => authedFetch(`/api/algo/${algoId}/history?days=${days}`),
   compare: () => authedFetch('/api/compare'),
+  engineStatus: () => authedFetch('/api/engine/status'),
   fyersStatus: () => authedFetch('/api/fyers/status'),
   getCharges: () => authedFetch('/api/charges'),
   updateCharges: (config: object) =>

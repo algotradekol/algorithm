@@ -15,7 +15,7 @@ import jwt
 
 from .config import ALLOWED_ORIGINS
 from .auth import require_auth
-from .engine import start_engine, start_live_feed_if_ready, STRATEGIES
+from .engine import get_engine_status, start_engine, start_live_feed_if_ready, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_connection_status, get_price_history
 from app.config import APP_PIN, FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI, FRONTEND_URL, SUPABASE_JWT_SECRET
@@ -43,7 +43,29 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    return {"status": "ok", "strategies_running": list(STRATEGIES.keys())}
+    return {"status": "ok", **get_engine_status()}
+
+
+@app.get("/api/engine/status")
+def engine_status(_user=Depends(require_auth)):
+    return get_engine_status()
+
+
+def get_strategy_or_raise(algo_id: str):
+    strategy = STRATEGIES.get(algo_id)
+    if strategy:
+        return strategy
+
+    status = get_engine_status()
+    if status["state"] != "running":
+        raise HTTPException(
+            status_code=503,
+            detail={
+                "message": "Trading engine is not ready yet.",
+                **status,
+            },
+        )
+    raise HTTPException(404, f"No such algo: {algo_id}")
 
 
 @app.post("/api/pin-login")
@@ -114,33 +136,25 @@ def fyers_callback(auth_code: str = None, code: str = None):
 
 @app.get("/api/algo/{algo_id}/summary")
 def algo_summary(algo_id: str, _user=Depends(require_auth)):
-    strategy = STRATEGIES.get(algo_id)
-    if not strategy:
-        raise HTTPException(404, f"No such algo: {algo_id}")
+    strategy = get_strategy_or_raise(algo_id)
     return strategy.broker.summary()
 
 
 @app.get("/api/algo/{algo_id}/positions")
 def algo_positions(algo_id: str, _user=Depends(require_auth)):
-    strategy = STRATEGIES.get(algo_id)
-    if not strategy:
-        raise HTTPException(404, f"No such algo: {algo_id}")
+    strategy = get_strategy_or_raise(algo_id)
     return strategy.broker.open_positions()
 
 
 @app.get("/api/algo/{algo_id}/trades")
 def algo_trades(algo_id: str, _user=Depends(require_auth)):
-    strategy = STRATEGIES.get(algo_id)
-    if not strategy:
-        raise HTTPException(404, f"No such algo: {algo_id}")
+    strategy = get_strategy_or_raise(algo_id)
     return strategy.broker.recent_trades()
 
 
 @app.get("/api/algo/{algo_id}/history")
 def algo_history(algo_id: str, days: int = Query(default=30, ge=1, le=180), _user=Depends(require_auth)):
-    strategy = STRATEGIES.get(algo_id)
-    if not strategy:
-        raise HTTPException(404, f"No such algo: {algo_id}")
+    strategy = get_strategy_or_raise(algo_id)
     return strategy.broker.daily_history(days)
 
 

@@ -29,6 +29,11 @@ WATCHLIST: list[str] = []
 _scheduler_started = False
 _live_feed_started = False
 _live_feed_lock = threading.Lock()
+_engine_lock = threading.Lock()
+_engine_status = {
+    "state": "new",
+    "error": None,
+}
 
 
 def _on_tick(message: dict):
@@ -100,19 +105,45 @@ def start_live_feed_if_ready() -> bool:
         return True
 
 
+def get_engine_status() -> dict:
+    return {
+        "state": _engine_status["state"],
+        "error": _engine_status["error"],
+        "watchlist_count": len(WATCHLIST),
+        "strategies_running": list(STRATEGIES.keys()),
+    }
+
+
 def start_engine():
     """Called once from main.py's FastAPI startup event."""
     global WATCHLIST, _scheduler_started
-    WATCHLIST = get_nse500_watchlist()
 
-    STRATEGIES.clear()
-    STRATEGIES["algo1"] = Algo1OpeningRange(WATCHLIST)
-    STRATEGIES["algo2"] = Algo2Momentum(WATCHLIST)
+    with _engine_lock:
+        if _engine_status["state"] in {"starting", "running"}:
+            return
+        _engine_status.update({"state": "starting", "error": None})
 
-    if not _scheduler_started:
-        threading.Thread(target=_scheduler_loop, daemon=True).start()
-        _scheduler_started = True
+    try:
+        watchlist = get_nse500_watchlist()
+        strategies = {
+            "algo1": Algo1OpeningRange(watchlist),
+            "algo2": Algo2Momentum(watchlist),
+        }
 
-    if not start_live_feed_if_ready():
-        print("[engine] started without live feed; complete manual Fyers login to enable it")
-    print(f"[engine] started with {len(WATCHLIST)} symbols, {len(STRATEGIES)} strategies")
+        with _engine_lock:
+            WATCHLIST = watchlist
+            STRATEGIES.clear()
+            STRATEGIES.update(strategies)
+            _engine_status.update({"state": "running", "error": None})
+
+        if not _scheduler_started:
+            threading.Thread(target=_scheduler_loop, daemon=True).start()
+            _scheduler_started = True
+
+        if not start_live_feed_if_ready():
+            print("[engine] started without live feed; complete manual Fyers login to enable it")
+        print(f"[engine] started with {len(WATCHLIST)} symbols, {len(STRATEGIES)} strategies")
+    except Exception as exc:
+        with _engine_lock:
+            _engine_status.update({"state": "failed", "error": str(exc)})
+        print(f"[engine] startup failed: {exc}")

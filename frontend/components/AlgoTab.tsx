@@ -27,7 +27,6 @@ export default function AlgoTab({ algoId, displayName }: { algoId: string; displ
         .map((result) => (result as PromiseRejectedResult).reason?.message || 'Request failed');
 
       setError(failures[0] || '');
-      failures.forEach((message) => console.error(message));
     }
     poll();
     const interval = setInterval(() => {
@@ -36,7 +35,16 @@ export default function AlgoTab({ algoId, displayName }: { algoId: string; displ
     return () => { cancelled = true; clearInterval(interval); };
   }, [algoId]);
 
-  if (!summary) return <p>Loading {displayName}...</p>;
+  if (!summary) {
+    return (
+      <section className="panel p-5">
+        <h2 className="text-xl font-semibold text-white">{displayName}</h2>
+        <p className="mt-3 text-sm text-textSoft">
+          {error || 'Loading strategy data...'}
+        </p>
+      </section>
+    );
+  }
 
   return (
     <section>
