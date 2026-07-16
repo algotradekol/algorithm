@@ -35,21 +35,32 @@ def get_nse500_watchlist(force_refresh: bool = False) -> list[str]:
     reader = csv.DictReader(io.StringIO(nifty500.text))
     nifty500_tradingsymbols = {row["Symbol"].strip() for row in reader}
 
-    fyers_master = requests.get(FYERS_SYMBOL_MASTER_URL, timeout=30, proxies=FYERS_PROXIES)
-    fyers_master.raise_for_status()
-    # Fyers symbol master has no header row; columns per their docs, symbol ticker is index 9,
-    # trading symbol without exchange prefix is index 13 (verify against current file if this
-    # ever breaks -- Fyers has changed this file's shape before)
     fyers_symbols = {}
-    for line in fyers_master.text.splitlines():
-        parts = line.split(",")
-        if len(parts) > 13 and parts[13].strip():
-            fyers_symbols[parts[13].strip()] = parts[9].strip()  # tradingsymbol -> full Fyers symbol
+    try:
+        try:
+            fyers_master = requests.get(FYERS_SYMBOL_MASTER_URL, timeout=10, proxies=FYERS_PROXIES)
+            fyers_master.raise_for_status()
+        except requests.RequestException as proxy_error:
+            if not FYERS_PROXIES:
+                raise
+            print(f"[symbols] Fyers symbol master proxy fetch failed, retrying direct: {proxy_error}")
+            fyers_master = requests.get(FYERS_SYMBOL_MASTER_URL, timeout=10)
+            fyers_master.raise_for_status()
+
+        # Fyers symbol master has no header row; columns per their docs, symbol ticker is index 9,
+        # trading symbol without exchange prefix is index 13 (verify against current file if this
+        # ever breaks -- Fyers has changed this file's shape before)
+        for line in fyers_master.text.splitlines():
+            parts = line.split(",")
+            if len(parts) > 13 and parts[13].strip():
+                fyers_symbols[parts[13].strip()] = parts[9].strip()  # tradingsymbol -> full Fyers symbol
+    except requests.RequestException as exc:
+        print(f"[symbols] Fyers symbol master unavailable, using NSE symbols directly: {exc}")
 
     watchlist = []
     skipped = []
     for sym in nifty500_tradingsymbols:
-        fyers_symbol = fyers_symbols.get(f"{sym}-EQ") or fyers_symbols.get(sym)
+        fyers_symbol = fyers_symbols.get(f"{sym}-EQ") or fyers_symbols.get(sym) or f"NSE:{sym}-EQ"
         if fyers_symbol:
             watchlist.append(fyers_symbol)
         else:
