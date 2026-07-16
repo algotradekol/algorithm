@@ -18,6 +18,7 @@ FYERS_REDIRECT_URI = os.environ.get("FYERS_REDIRECT_URI", "https://www.google.co
 FYERS_FY_ID = os.environ.get("FYERS_FY_ID", "")
 FYERS_PIN = os.environ.get("FYERS_PIN", "")
 FYERS_TOTP_KEY = os.environ.get("FYERS_TOTP_KEY", "")
+FYERS_PROXY_URL = os.environ.get("FYERS_PROXY_URL", "")
 
 # Supabase
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")

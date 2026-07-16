@@ -25,6 +25,7 @@ export const api = {
   trades: (algoId: string) => authedFetch(`/api/algo/${algoId}/trades`),
   history: (algoId: string, days = 30) => authedFetch(`/api/algo/${algoId}/history?days=${days}`),
   compare: () => authedFetch('/api/compare'),
+  fyersStatus: () => authedFetch('/api/fyers/status'),
   getCharges: () => authedFetch('/api/charges'),
   updateCharges: (config: object) =>
     authedFetch('/api/charges', { method: 'PUT', body: JSON.stringify(config) }),

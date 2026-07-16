@@ -12,8 +12,11 @@ import csv
 import io
 import requests
 
+from .config import FYERS_PROXY_URL
+
 NIFTY500_CSV_URL = "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
 FYERS_SYMBOL_MASTER_URL = "https://public.fyers.in/sym_details/NSE_CM.csv"
+FYERS_PROXIES = {"http": FYERS_PROXY_URL, "https": FYERS_PROXY_URL} if FYERS_PROXY_URL else None
 
 _cache = {"watchlist": None, "date": None}
 
@@ -32,7 +35,7 @@ def get_nse500_watchlist(force_refresh: bool = False) -> list[str]:
     reader = csv.DictReader(io.StringIO(nifty500.text))
     nifty500_tradingsymbols = {row["Symbol"].strip() for row in reader}
 
-    fyers_master = requests.get(FYERS_SYMBOL_MASTER_URL, timeout=30)
+    fyers_master = requests.get(FYERS_SYMBOL_MASTER_URL, timeout=30, proxies=FYERS_PROXIES)
     fyers_master.raise_for_status()
     # Fyers symbol master has no header row; columns per their docs, symbol ticker is index 9,
     # trading symbol without exchange prefix is index 13 (verify against current file if this

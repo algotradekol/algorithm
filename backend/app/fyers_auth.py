@@ -17,11 +17,12 @@ import pyotp
 import requests
 from fyers_apiv3 import fyersModel
 
-from .config import FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI, FYERS_FY_ID, FYERS_PIN, FYERS_TOTP_KEY
+from .config import FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI, FYERS_FY_ID, FYERS_PIN, FYERS_TOTP_KEY, FYERS_PROXY_URL
 from .supabase_client import run_with_supabase
 
 BASE = "https://api-t2.fyers.in/vagator/v2"
 TOKEN_URL = "https://api.fyers.in/api/v2/token"
+FYERS_PROXIES = {"http": FYERS_PROXY_URL, "https": FYERS_PROXY_URL} if FYERS_PROXY_URL else None
 
 
 def _b64(value: str) -> str:
@@ -48,6 +49,8 @@ def _raise_for_fyers_step(response: requests.Response, step: str):
 
 def refresh_access_token() -> str:
     session = requests.Session()
+    if FYERS_PROXIES:
+        session.proxies.update(FYERS_PROXIES)
 
     r1 = session.post(f"{BASE}/send_login_otp_v2", json={"fy_id": _b64(FYERS_FY_ID), "app_id": "2"})
     _raise_for_fyers_step(r1, "send_login_otp_v2")

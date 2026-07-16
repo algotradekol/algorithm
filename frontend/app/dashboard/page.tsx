@@ -9,6 +9,7 @@ import HistoryTab from '../../components/HistoryTab';
 import FyersLoginButton from '../../components/FyersLoginButton';
 import { getAuthToken } from '../../lib/authToken';
 import { clearPinToken } from '../../lib/pinAuth';
+import { api } from '../../lib/api';
 
 const TABS = ['Algo 1', 'Algo 2', 'Compare', 'History', 'Charges'] as const;
 
@@ -16,6 +17,11 @@ function DashboardContent() {
   const [tab, setTab] = useState<(typeof TABS)[number]>('Algo 1');
   const [ready, setReady] = useState(false);
   const [showFyersBanner, setShowFyersBanner] = useState(true);
+  const [fyersStatus, setFyersStatus] = useState<{
+    connected: boolean;
+    status: string;
+    message: string;
+  } | null>(null);
   const router = useRouter();
   const searchParams = useSearchParams();
   const fyersLogin = searchParams.get('fyers_login');
@@ -26,6 +32,33 @@ function DashboardContent() {
       else setReady(true);
     });
   }, [router]);
+
+  useEffect(() => {
+    if (!ready) return;
+
+    let cancelled = false;
+    async function loadFyersStatus() {
+      try {
+        const status = await api.fyersStatus();
+        if (!cancelled) setFyersStatus(status);
+      } catch (error) {
+        if (!cancelled) {
+          setFyersStatus({
+            connected: false,
+            status: 'error',
+            message: error instanceof Error ? error.message : 'Unable to check Fyers status',
+          });
+        }
+      }
+    }
+
+    loadFyersStatus();
+    const interval = window.setInterval(loadFyersStatus, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, [ready, fyersLogin]);
 
   if (!ready) return null;
 
@@ -54,7 +87,17 @@ function DashboardContent() {
           <p className="text-xs uppercase tracking-[0.2em] text-textSoft">Paper trading console</p>
           <h1 className="mt-1 text-3xl font-semibold text-white">Algo Paper Trading</h1>
         </div>
-        <div className="flex items-start gap-2">
+        <div className="flex flex-wrap items-start justify-end gap-2">
+          <div
+            title={fyersStatus?.message || 'Checking Fyers connection'}
+            className={`rounded-md border px-3 py-2 text-sm font-semibold ${
+              fyersStatus?.connected
+                ? 'border-success/70 bg-success/15 text-success'
+                : 'border-danger/70 bg-danger/15 text-danger'
+            }`}
+          >
+            Fyers: {fyersStatus ? (fyersStatus.connected ? 'Connected' : 'Disconnected') : 'Checking...'}
+          </div>
           <FyersLoginButton />
           <button
             onClick={async () => { clearPinToken(); await supabase.auth.signOut(); router.replace('/login'); }}

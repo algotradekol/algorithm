@@ -75,7 +75,7 @@ export default function Login() {
             inputMode="numeric"
             maxLength={4}
             type="password"
-            placeholder="1402"
+            placeholder="****"
             value={pin}
             onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
           />

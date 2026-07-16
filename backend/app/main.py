@@ -17,7 +17,7 @@ from .config import ALLOWED_ORIGINS
 from .auth import require_auth
 from .engine import start_engine, start_live_feed_if_ready, STRATEGIES
 from .charges import get_charges_config, set_charges_config
-from .fyers_client import get_price_history
+from .fyers_client import get_connection_status, get_price_history
 from app.config import APP_PIN, FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI, FRONTEND_URL, SUPABASE_JWT_SECRET
 from app.supabase_client import supabase
 
@@ -80,6 +80,11 @@ def fyers_login_url(_user=Depends(require_auth)):
         grant_type="authorization_code",
     )
     return {"url": session.generate_authcode()}
+
+
+@app.get("/api/fyers/status")
+def fyers_status(_user=Depends(require_auth)):
+    return get_connection_status()
 
 
 @app.get("/api/fyers/callback")

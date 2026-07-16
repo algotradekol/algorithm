@@ -17,6 +17,38 @@ def get_fyers_model():
     return fyersModel.FyersModel(token=token, is_async=False, client_id=FYERS_CLIENT_ID, log_path="")
 
 
+def get_connection_status() -> dict:
+    token = get_stored_access_token()
+    if not token:
+        return {
+            "connected": False,
+            "status": "disconnected",
+            "message": "No Fyers access token found. Login to Fyers before trading.",
+        }
+
+    try:
+        response = get_fyers_model().get_profile()
+    except Exception as exc:
+        return {
+            "connected": False,
+            "status": "error",
+            "message": f"Fyers token check failed: {exc}",
+        }
+
+    if response.get("s") == "ok":
+        return {
+            "connected": True,
+            "status": "connected",
+            "message": "Fyers token is valid.",
+        }
+
+    return {
+        "connected": False,
+        "status": "expired",
+        "message": response.get("message") or "Fyers token is missing, expired, or rejected.",
+    }
+
+
 def get_previous_close(symbol: str) -> float | None:
     """Previous trading day's closing price, needed by Algo 1's gap check."""
     fyers = get_fyers_model()
