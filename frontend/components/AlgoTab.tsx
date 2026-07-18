@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import StrategySettingsPanel from './StrategySettingsPanel';
 
 const POLL_MS = 5000;
 
@@ -17,6 +18,7 @@ export default function AlgoTab({
   const [positions, setPositions] = useState<any[]>([]);
   const [trades, setTrades] = useState<any[]>([]);
   const [error, setError] = useState('');
+  const [settingsOpen, setSettingsOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -46,7 +48,19 @@ export default function AlgoTab({
   if (!summary) {
     return (
       <section className="panel p-4">
-        <h2 className="text-base font-semibold text-gray-100">{displayName}</h2>
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h2 className="text-base font-semibold text-gray-100">{displayName}</h2>
+            {description && <p className="mt-1 text-xs text-gray-500">{description}</p>}
+          </div>
+          <button
+            onClick={() => setSettingsOpen((open) => !open)}
+            className="rounded border border-[#3b82f6] px-3 py-1.5 text-xs font-semibold text-[#3b82f6]"
+          >
+            Settings
+          </button>
+        </div>
+        <SettingsDrawer open={settingsOpen} algoId={algoId} onClose={() => setSettingsOpen(false)} />
         <p className="mt-2 text-sm text-gray-500">{error || 'Loading strategy data...'}</p>
       </section>
     );
@@ -60,6 +74,18 @@ export default function AlgoTab({
 
   return (
     <section className="space-y-4">
+      <div className="flex items-start justify-between gap-4">
+        <div>
+          <h2 className="text-base font-semibold text-gray-100">{displayName}</h2>
+          {description && <p className="mt-1 text-xs text-gray-500">{description}</p>}
+        </div>
+        <button
+          onClick={() => setSettingsOpen((open) => !open)}
+          className="rounded border border-[#3b82f6] px-3 py-1.5 text-xs font-semibold text-[#3b82f6]"
+        >
+          Settings
+        </button>
+      </div>
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
 
       <div className="grid grid-cols-3 gap-2 lg:grid-cols-6">
@@ -70,6 +96,8 @@ export default function AlgoTab({
         <MetricCard label="Gross P&L" value={formatMoney(grossPnl)} pnl={grossPnl} />
         <MetricCard label="Net P&L" value={formatMoney(netPnl)} pnl={netPnl} important />
       </div>
+
+      <SettingsDrawer open={settingsOpen} algoId={algoId} onClose={() => setSettingsOpen(false)} />
 
       <div className="grid gap-4 xl:grid-cols-2">
         <section>
@@ -82,13 +110,22 @@ export default function AlgoTab({
           <TradesTable rows={trades} />
         </section>
       </div>
-
-      {description && (
-        <div className="rounded border border-[#1f2937] bg-[#111827] px-3 py-2 text-xs text-gray-500">
-          {description}
-        </div>
-      )}
+      {description && <div className="rounded border border-[#1f2937] bg-[#111827] px-3 py-2 text-xs text-gray-500">{description}</div>}
     </section>
+  );
+}
+
+function SettingsDrawer({ open, algoId, onClose }: { open: boolean; algoId: string; onClose: () => void }) {
+  return (
+    <div className={`overflow-hidden transition-[max-height,opacity] duration-300 ${open ? 'max-h-[1800px] opacity-100' : 'max-h-0 opacity-0'}`}>
+      <div className="mt-4 rounded border border-[#1f2937] bg-[#0d1117] p-3">
+        <div className="mb-3 flex items-center justify-between gap-3">
+          <div className="label">Strategy Settings</div>
+          <button onClick={onClose} className="text-sm text-gray-500 hover:text-gray-100">X</button>
+        </div>
+        <StrategySettingsPanel algoId={algoId} />
+      </div>
+    </div>
   );
 }
 

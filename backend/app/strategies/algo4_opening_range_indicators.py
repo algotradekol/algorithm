@@ -7,18 +7,9 @@ from ..fyers_auth import get_stored_access_token
 from ..fyers_client import get_previous_close
 from ..paper_broker import PaperBroker
 
-CAPITAL_PER_TRADE = 50_000
-TARGET_PCT = 2.0
-SL_PCT = 1.0
 MIN_GAP_PCT = 0.5
 MAX_GAP_PCT = 2.0
-MAX_TOTAL_TRADES = 10
-MAX_PER_SIDE = 5
 TICK_SIZE = 0.05
-MIN_TOTAL_VALUE = 100_000_000
-MIN_VOLUME = 100_000
-MIN_LTP = 200
-MAX_LTP = 4_000
 
 
 class Algo4OpeningRangeIndicators(Strategy):
@@ -27,13 +18,20 @@ class Algo4OpeningRangeIndicators(Strategy):
 
     def __init__(self, watchlist: list[str]):
         self.watchlist = watchlist
-        self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=CAPITAL_PER_TRADE * MAX_TOTAL_TRADES)
+        from app.strategy_settings import get_settings
+        self.settings = get_settings(self.algo_id)
+        self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
         self.prev_close: dict[str, float] = {}
         self.candles: dict[str, list[dict]] = defaultdict(list)
         self.total_value: dict[str, float] = defaultdict(float)
         self.candidates: dict[str, tuple[str, float]] = {}
         self.entries_evaluated_today = None
         threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
+
+    def reload_settings(self):
+        from app.strategy_settings import get_settings
+        self.settings = get_settings(self.algo_id)
+        self.broker.starting_capital = self.settings["starting_capital"]
 
     def _load_previous_closes_background(self):
         try:
@@ -112,15 +110,15 @@ class Algo4OpeningRangeIndicators(Strategy):
         ema50 = self._ema(candles, 50)
         rsi14 = self._rsi(candles, 14)
         adx14 = self._adx(candles, 14)
-        supertrend = self._supertrend(candles, 10, 3)
+        supertrend = self._supertrend(candles, self.settings["supertrend_period"], self.settings["supertrend_multiplier"])
 
         if None in (vwap, ema20, ema50, rsi14, adx14, supertrend):
             return False
 
         if not (
-            self.total_value[symbol] > MIN_TOTAL_VALUE and
-            ltp > MIN_LTP and ltp < MAX_LTP and
-            float(candle.get("volume") or 0) > MIN_VOLUME and
+            self.total_value[symbol] > self.settings["min_total_value"] and
+            ltp > self.settings["ltp_min"] and ltp < self.settings["ltp_max"] and
+            float(candle.get("volume") or 0) > self.settings["min_volume"] and
             not self._has_open_position(symbol)
         ):
             return False
@@ -129,15 +127,15 @@ class Algo4OpeningRangeIndicators(Strategy):
             return (
                 ltp > float(vwap) and
                 ema20 > ema50 and
-                rsi14 > 55 and
-                adx14 > 25 and
+                rsi14 > self.settings["rsi_buy_threshold"] and
+                adx14 > self.settings["adx_threshold"] and
                 ltp > supertrend
             )
         return (
             ltp < float(vwap) and
             ema20 < ema50 and
-            rsi14 < 45 and
-            adx14 > 25 and
+            rsi14 < self.settings["rsi_sell_threshold"] and
+            adx14 > self.settings["adx_threshold"] and
             ltp < supertrend
         )
 
@@ -148,11 +146,11 @@ class Algo4OpeningRangeIndicators(Strategy):
 
     def _can_open_side(self, side: str) -> bool:
         state = self.broker.summary()
-        if state["trade_count_today"] >= MAX_TOTAL_TRADES:
+        if state["trade_count_today"] >= self.settings["max_trades_per_day"]:
             return False
         if side == "BUY":
-            return state["buy_count_today"] < MAX_PER_SIDE or state["sell_count_today"] == MAX_PER_SIDE
-        return state["sell_count_today"] < MAX_PER_SIDE or state["buy_count_today"] == MAX_PER_SIDE
+            return state["buy_count_today"] < self.settings["max_buy_trades"] or state["sell_count_today"] == self.settings["max_sell_trades"]
+        return state["sell_count_today"] < self.settings["max_sell_trades"] or state["buy_count_today"] == self.settings["max_buy_trades"]
 
     def _has_open_position(self, symbol: str) -> bool:
         return any(position["symbol"] == symbol for position in self.broker.open_positions())
@@ -161,16 +159,16 @@ class Algo4OpeningRangeIndicators(Strategy):
         if not entry_price or self.broker.already_traded_today(symbol) or not self._can_open_side(side):
             return
 
-        qty = int(CAPITAL_PER_TRADE // entry_price)
+        qty = int(self.settings["capital_per_trade"] // entry_price)
         if qty < 1:
             return
 
         if side == "BUY":
-            sl_price = entry_price * (1 - SL_PCT / 100)
-            target_price = entry_price * (1 + TARGET_PCT / 100)
+            sl_price = entry_price * (1 - self.settings["sl_pct"] / 100)
+            target_price = entry_price * (1 + self.settings["target_pct"] / 100)
         else:
-            sl_price = entry_price * (1 + SL_PCT / 100)
-            target_price = entry_price * (1 - TARGET_PCT / 100)
+            sl_price = entry_price * (1 + self.settings["sl_pct"] / 100)
+            target_price = entry_price * (1 - self.settings["target_pct"] / 100)
         self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price)
 
     def check_exits(self):

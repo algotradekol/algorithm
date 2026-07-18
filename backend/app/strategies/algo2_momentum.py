@@ -23,9 +23,6 @@ import datetime
 from .base import Strategy
 from ..paper_broker import PaperBroker
 
-CAPITAL_PER_TRADE = 50_000       # configurable -- change here or wire to a frontend setting later
-TARGET_PCT = 2.0
-INITIAL_SL_PCT = 1.0
 VOLUME_MULTIPLIER = 1.5
 TRAIL_SL_ENABLED = True
 TRAIL_TRIGGER_PCT = 1.0   # once price moves 1% in favor, start trailing
@@ -38,7 +35,14 @@ class Algo2Momentum(Strategy):
 
     def __init__(self, watchlist: list[str]):
         self.watchlist = watchlist
-        self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=CAPITAL_PER_TRADE * 20)
+        from app.strategy_settings import get_settings
+        self.settings = get_settings(self.algo_id)
+        self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
+
+    def reload_settings(self):
+        from app.strategy_settings import get_settings
+        self.settings = get_settings(self.algo_id)
+        self.broker.starting_capital = self.settings["starting_capital"]
 
     def on_tick(self, symbol: str, ltp: float, timestamp):
         pass  # acts on candle close, not raw ticks
@@ -65,11 +69,11 @@ class Algo2Momentum(Strategy):
             self._enter(symbol, price)
 
     def _enter(self, symbol: str, entry_price: float):
-        qty = int(CAPITAL_PER_TRADE // entry_price)
+        qty = int(self.settings["capital_per_trade"] // entry_price)
         if qty < 1:
             return
-        sl_price = entry_price * (1 - INITIAL_SL_PCT / 100)
-        target_price = entry_price * (1 + TARGET_PCT / 100)
+        sl_price = entry_price * (1 - self.settings["sl_pct"] / 100)
+        target_price = entry_price * (1 + self.settings["target_pct"] / 100)
         self.broker.open_trade(symbol, "BUY", qty, entry_price, sl_price, target_price)
 
     def check_exits(self):

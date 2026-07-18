@@ -158,6 +158,22 @@ def algo_history(algo_id: str, days: int = Query(default=30, ge=1, le=180), _use
     return strategy.broker.daily_history(days)
 
 
+@app.get("/api/algo/{algo_id}/settings")
+def get_algo_settings(algo_id: str, _user=Depends(require_auth)):
+    from app.strategy_settings import get_settings
+    return get_settings(algo_id)
+
+
+@app.put("/api/algo/{algo_id}/settings")
+def update_algo_settings(algo_id: str, settings: dict, _user=Depends(require_auth)):
+    from app.strategy_settings import update_settings
+    update_settings(algo_id, settings)
+    strategy = STRATEGIES.get(algo_id)
+    if strategy and hasattr(strategy, "reload_settings"):
+        strategy.reload_settings()
+    return {"status": "updated", "algo_id": algo_id}
+
+
 @app.get("/api/compare")
 def compare_algos(_user=Depends(require_auth)):
     return {algo_id: strategy.broker.summary() for algo_id, strategy in STRATEGIES.items()}

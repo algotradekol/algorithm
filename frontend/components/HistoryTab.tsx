@@ -142,9 +142,27 @@ function ZoomableCandleChart({ candles, symbol, resolution }: { candles: any[]; 
     volume: Number(candle.volume || 0),
   })).filter((candle) => Number.isFinite(candle.close)), [candles]);
 
+  const maxVisible = Math.max(10, normalized.length);
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    function handleWheel(event: WheelEvent) {
+      event.preventDefault();
+      const zoomingIn = event.deltaY < 0;
+      setVisibleCount((current) => {
+        const step = Math.max(4, Math.round(current * 0.12));
+        return Math.min(maxVisible, Math.max(10, zoomingIn ? current - step : current + step));
+      });
+    }
+
+    chart.addEventListener('wheel', handleWheel, { passive: false });
+    return () => chart.removeEventListener('wheel', handleWheel);
+  }, [maxVisible]);
+
   if (!normalized.length) return <p className="rounded border border-[#1f2937] bg-[#111827] p-4 text-sm text-gray-500">No candle history available yet.</p>;
 
-  const maxVisible = Math.max(10, normalized.length);
   const clampedVisible = Math.min(Math.max(visibleCount, 10), maxVisible);
   const maxOffset = Math.max(0, normalized.length - clampedVisible);
   const clampedOffset = Math.min(offsetFromEnd, maxOffset);
@@ -165,23 +183,6 @@ function ZoomableCandleChart({ candles, symbol, resolution }: { candles: any[]; 
   const activeCandle = activeIndex !== null ? visible[activeIndex] : null;
   const activeX = activeIndex !== null ? activeIndex * candleWidth + candleWidth / 2 : 0;
   const activePrice = crosshair ? high - ((crosshair.y - 16) / (priceHeight - 32)) * priceSpan : null;
-
-  useEffect(() => {
-    const chart = chartRef.current;
-    if (!chart) return;
-
-    function handleWheel(event: WheelEvent) {
-      event.preventDefault();
-      const zoomingIn = event.deltaY < 0;
-      setVisibleCount((current) => {
-        const step = Math.max(4, Math.round(current * 0.12));
-        return Math.min(maxVisible, Math.max(10, zoomingIn ? current - step : current + step));
-      });
-    }
-
-    chart.addEventListener('wheel', handleWheel, { passive: false });
-    return () => chart.removeEventListener('wheel', handleWheel);
-  }, [maxVisible]);
 
   function y(price: number) {
     return 16 + ((high - price) / priceSpan) * (priceHeight - 32);

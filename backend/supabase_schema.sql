@@ -64,6 +64,45 @@ create table if not exists trades (
 );
 create index if not exists idx_trades_algo_time on trades (algo_id, exit_time desc);
 
+-- Strategy settings addition: run this manually in Supabase SQL Editor before using strategy settings UI.
+CREATE TABLE IF NOT EXISTS strategy_settings (
+    algo_id text PRIMARY KEY,
+    display_name text,
+
+    -- Capital
+    starting_capital numeric default 500000,
+    capital_per_trade numeric default 50000,
+    margin_multiplier numeric default 5,
+
+    -- Risk
+    target_pct numeric default 2.0,
+    sl_pct numeric default 1.0,
+    max_trades_per_day int default 10,
+    max_buy_trades int default 5,
+    max_sell_trades int default 5,
+
+    -- Algo 4 indicator thresholds (ignored by algo1/2/3)
+    rsi_buy_threshold numeric default 55,
+    rsi_sell_threshold numeric default 45,
+    adx_threshold numeric default 25,
+    min_volume numeric default 100000,
+    min_total_value numeric default 100000000,
+    ltp_min numeric default 200,
+    ltp_max numeric default 4000,
+    supertrend_period int default 10,
+    supertrend_multiplier numeric default 3,
+
+    updated_at timestamptz default now()
+);
+
+-- Seed default rows for all 4 algos
+INSERT INTO strategy_settings (algo_id, display_name) VALUES
+    ('algo1', 'Algo 1 — Opening Range Gap'),
+    ('algo2', 'Algo 2 — VWAP/EMA/Volume Momentum'),
+    ('algo3', 'Algo 3 — Opening Range Gap (Basic)'),
+    ('algo4', 'Algo 4 — Opening Range Gap (With Indicators)')
+ON CONFLICT (algo_id) DO NOTHING;
+
 -- Row Level Security: since only the backend (using the service role
 -- key) writes to these tables, and only your authenticated frontend
 -- session reads via the backend API (never directly from the

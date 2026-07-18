@@ -22,13 +22,7 @@ from .base import Strategy
 from ..paper_broker import PaperBroker
 from ..fyers_client import get_previous_close
 from ..fyers_auth import get_stored_access_token
-
-CAPITAL_PER_TRADE = 50_000
-TARGET_PCT = 2.0
-SL_PCT = 1.0
 GAP_LIMIT_PCT = 2.0
-MAX_TOTAL_TRADES = 10
-MAX_PER_SIDE = 5
 
 
 class Algo1OpeningRange(Strategy):
@@ -37,13 +31,20 @@ class Algo1OpeningRange(Strategy):
 
     def __init__(self, watchlist: list[str]):
         self.watchlist = watchlist
-        self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=CAPITAL_PER_TRADE * MAX_TOTAL_TRADES)
+        from app.strategy_settings import get_settings
+        self.settings = get_settings(self.algo_id)
+        self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
         self.prev_close: dict[str, float] = {}
         self.buy_candidates: list[str] = []
         self.sell_candidates: list[str] = []
         self.entries_evaluated_today = None
         # Load previous closes in background to avoid blocking startup
         threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
+
+    def reload_settings(self):
+        from app.strategy_settings import get_settings
+        self.settings = get_settings(self.algo_id)
+        self.broker.starting_capital = self.settings["starting_capital"]
 
     def _load_previous_closes_background(self):
         """Load previous closes in a background thread to avoid blocking initialization."""
@@ -90,12 +91,14 @@ class Algo1OpeningRange(Strategy):
             return
         self.entries_evaluated_today = today
 
-        buys = self.buy_candidates[:MAX_PER_SIDE]
-        sells = self.sell_candidates[:MAX_PER_SIDE]
+        max_total = self.settings["max_trades_per_day"]
+        max_per_side = self.settings["max_buy_trades"]
+        buys = self.buy_candidates[:max_per_side]
+        sells = self.sell_candidates[:self.settings["max_sell_trades"]]
 
-        # fill remaining slots up to MAX_TOTAL_TRADES from whichever side has leftover candidates
-        remaining_slots = MAX_TOTAL_TRADES - (len(buys) + len(sells))
-        overflow_pool = self.buy_candidates[MAX_PER_SIDE:] + self.sell_candidates[MAX_PER_SIDE:]
+        # Fill remaining slots up to the configured daily max from whichever side has leftover candidates.
+        remaining_slots = max_total - (len(buys) + len(sells))
+        overflow_pool = self.buy_candidates[max_per_side:] + self.sell_candidates[self.settings["max_sell_trades"]:]
         for symbol in overflow_pool[:remaining_slots]:
             if symbol in self.buy_candidates and symbol not in buys:
                 buys.append(symbol)
@@ -110,15 +113,15 @@ class Algo1OpeningRange(Strategy):
     def _enter(self, symbol: str, side: str, entry_price: float):
         if not entry_price or self.broker.already_traded_today(symbol):
             return
-        qty = int(CAPITAL_PER_TRADE // entry_price)
+        qty = int(self.settings["capital_per_trade"] // entry_price)
         if qty < 1:
             return
         if side == "BUY":
-            sl_price = entry_price * (1 - SL_PCT / 100)
-            target_price = entry_price * (1 + TARGET_PCT / 100)
+            sl_price = entry_price * (1 - self.settings["sl_pct"] / 100)
+            target_price = entry_price * (1 + self.settings["target_pct"] / 100)
         else:
-            sl_price = entry_price * (1 + SL_PCT / 100)
-            target_price = entry_price * (1 - TARGET_PCT / 100)
+            sl_price = entry_price * (1 + self.settings["sl_pct"] / 100)
+            target_price = entry_price * (1 - self.settings["target_pct"] / 100)
         self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price)
 
     def check_exits(self):
