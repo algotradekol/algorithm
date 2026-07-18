@@ -5,12 +5,13 @@ import { supabase } from '../../lib/supabaseClient';
 import AlgoTab from '../../components/AlgoTab';
 import CompareTab from '../../components/CompareTab';
 import ChargesPanel from '../../components/ChargesPanel';
+import HistoryTab from '../../components/HistoryTab';
 import FyersLoginButton from '../../components/FyersLoginButton';
 import { getAuthToken } from '../../lib/authToken';
 import { clearPinToken } from '../../lib/pinAuth';
 import { api } from '../../lib/api';
 
-const TABS = ['Algo 1', 'Algo 2', 'Algo 3', 'Algo 4', 'Compare', 'Charges'] as const;
+const TABS = ['Algo 1', 'Algo 2', 'Algo 3', 'Algo 4', 'Compare', 'History', 'Charges'] as const;
 
 function formatIstTime() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -210,6 +211,7 @@ function DashboardContent() {
               />
             )}
             {tab === 'Compare' && <CompareTab />}
+            {tab === 'History' && <HistoryTab />}
             {tab === 'Charges' && <ChargesPanel />}
           </>
         )}
