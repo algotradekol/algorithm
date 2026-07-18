@@ -1,5 +1,5 @@
 'use client';
-import { WheelEvent, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { Table } from './AlgoTab';
 
@@ -125,6 +125,8 @@ export default function HistoryTab() {
 function ZoomableCandleChart({ candles, symbol, resolution }: { candles: any[]; symbol: string; resolution: string }) {
   const [visibleCount, setVisibleCount] = useState(80);
   const [offsetFromEnd, setOffsetFromEnd] = useState(0);
+  const [crosshair, setCrosshair] = useState<{ x: number; y: number } | null>(null);
+  const chartRef = useRef<HTMLDivElement | null>(null);
 
   useEffect(() => {
     setVisibleCount(80);
@@ -159,18 +161,38 @@ function ZoomableCandleChart({ candles, symbol, resolution }: { candles: any[]; 
   const volumeHeight = 70;
   const totalHeight = priceHeight + volumeHeight + 34;
   const candleWidth = width / Math.max(visible.length, 1);
+  const activeIndex = crosshair ? Math.min(visible.length - 1, Math.max(0, Math.floor(crosshair.x / candleWidth))) : null;
+  const activeCandle = activeIndex !== null ? visible[activeIndex] : null;
+  const activeX = activeIndex !== null ? activeIndex * candleWidth + candleWidth / 2 : 0;
+  const activePrice = crosshair ? high - ((crosshair.y - 16) / (priceHeight - 32)) * priceSpan : null;
+
+  useEffect(() => {
+    const chart = chartRef.current;
+    if (!chart) return;
+
+    function handleWheel(event: WheelEvent) {
+      event.preventDefault();
+      const zoomingIn = event.deltaY < 0;
+      setVisibleCount((current) => {
+        const step = Math.max(4, Math.round(current * 0.12));
+        return Math.min(maxVisible, Math.max(10, zoomingIn ? current - step : current + step));
+      });
+    }
+
+    chart.addEventListener('wheel', handleWheel, { passive: false });
+    return () => chart.removeEventListener('wheel', handleWheel);
+  }, [maxVisible]);
 
   function y(price: number) {
     return 16 + ((high - price) / priceSpan) * (priceHeight - 32);
   }
 
-  function handleWheel(event: WheelEvent<HTMLDivElement>) {
-    event.preventDefault();
-    const zoomingIn = event.deltaY < 0;
-    setVisibleCount((current) => {
-      const step = Math.max(4, Math.round(current * 0.12));
-      return Math.min(maxVisible, Math.max(10, zoomingIn ? current - step : current + step));
-    });
+  function handleMouseMove(event: React.MouseEvent<SVGSVGElement>) {
+    const svg = event.currentTarget;
+    const rect = svg.getBoundingClientRect();
+    const x = Math.min(width, Math.max(0, (event.clientX - rect.left) / rect.width * width));
+    const yPos = Math.min(priceHeight + 18, Math.max(0, (event.clientY - rect.top) / rect.height * totalHeight));
+    setCrosshair({ x, y: yPos });
   }
 
   const first = visible[0];
@@ -201,8 +223,13 @@ function ZoomableCandleChart({ candles, symbol, resolution }: { candles: any[]; 
         </div>
       </div>
 
-      <div onWheel={handleWheel} className="overflow-x-auto border border-[#1f2937] bg-[#0a0e14]">
-        <svg viewBox={`0 0 ${width} ${totalHeight}`} className="h-[440px] min-w-[900px] w-full">
+      <div ref={chartRef} className="overscroll-contain overflow-x-auto border border-[#1f2937] bg-[#0a0e14]">
+        <svg
+          viewBox={`0 0 ${width} ${totalHeight}`}
+          className="h-[440px] min-w-[900px] w-full cursor-crosshair"
+          onMouseMove={handleMouseMove}
+          onMouseLeave={() => setCrosshair(null)}
+        >
           {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
             const price = high - priceSpan * ratio;
             const lineY = y(price);
@@ -236,6 +263,29 @@ function ZoomableCandleChart({ candles, symbol, resolution }: { candles: any[]; 
               </g>
             );
           })}
+
+          {crosshair && activeCandle && activePrice !== null && (
+            <g pointerEvents="none">
+              <line x1={activeX} x2={activeX} y1={0} y2={priceHeight + 18} stroke="#9ca3af" strokeDasharray="5 5" strokeWidth="1" opacity="0.75" />
+              <line x1={0} x2={width} y1={crosshair.y} y2={crosshair.y} stroke="#9ca3af" strokeDasharray="5 5" strokeWidth="1" opacity="0.75" />
+              <line x1={0} x2={width} y1={y(activeCandle.close)} y2={y(activeCandle.close)} stroke="#22c55e" strokeDasharray="2 2" strokeWidth="1" opacity="0.85" />
+              <rect x={width - 88} y={Math.max(2, Math.min(priceHeight - 20, crosshair.y - 10))} width={82} height={20} fill="#111827" stroke="#1f2937" />
+              <text x={width - 82} y={Math.max(15, Math.min(priceHeight - 7, crosshair.y + 4))} fill="#e5e7eb" fontSize="11" fontFamily="ui-monospace">
+                {formatNumber(activePrice)}
+              </text>
+              <rect x={Math.min(width - 250, activeX + 10)} y={18} width={240} height={94} fill="#111827" stroke="#1f2937" />
+              <text x={Math.min(width - 240, activeX + 20)} y={38} fill="#e5e7eb" fontSize="11" fontFamily="ui-monospace">{activeCandle.time}</text>
+              <text x={Math.min(width - 240, activeX + 20)} y={56} fill="#9ca3af" fontSize="11" fontFamily="ui-monospace">
+                O {formatNumber(activeCandle.open)}  H {formatNumber(activeCandle.high)}
+              </text>
+              <text x={Math.min(width - 240, activeX + 20)} y={74} fill="#9ca3af" fontSize="11" fontFamily="ui-monospace">
+                L {formatNumber(activeCandle.low)}  C {formatNumber(activeCandle.close)}
+              </text>
+              <text x={Math.min(width - 240, activeX + 20)} y={92} fill="#9ca3af" fontSize="11" fontFamily="ui-monospace">
+                Vol {activeCandle.volume.toLocaleString('en-IN')}
+              </text>
+            </g>
+          )}
 
           <line x1={0} x2={width} y1={priceHeight + 18} y2={priceHeight + 18} stroke="#1f2937" />
           <text x={8} y={totalHeight - 8} fill="#6b7280" fontSize="11" fontFamily="ui-monospace">
