@@ -3,16 +3,16 @@
 @tailwind utilities;
 
 @layer base {
-  html {
-    background: #07110c;
+  html,
+  body {
+    margin: 0;
+    min-height: 100%;
+    background: #0a0e14;
+    color: #e5e7eb;
   }
 
   body {
-    margin: 0;
-    background:
-      radial-gradient(circle at 20% -10%, rgba(67, 209, 125, 0.14), transparent 32rem),
-      linear-gradient(135deg, #07110c 0%, #0d1611 45%, #09100c 100%);
-    color: #edf7f0;
+    font-feature-settings: "tnum";
   }
 
   button,
@@ -24,14 +24,22 @@
 
 @layer components {
   .control {
-    @apply w-full rounded-md border border-line bg-ink px-3 py-2 text-sm text-white outline-none transition focus:border-success focus:ring-2 focus:ring-success/20;
+    @apply w-full rounded border border-[#1f2937] bg-[#0d1117] px-3 py-2 text-sm text-gray-100 outline-none transition focus:border-[#3b82f6];
   }
 
   .panel {
-    @apply rounded-lg border border-line bg-panel/95 shadow-2xl shadow-black/20;
+    @apply rounded border border-[#1f2937] bg-[#111827];
+  }
+
+  .label {
+    @apply text-xs uppercase tracking-wider text-gray-500;
+  }
+
+  .num {
+    @apply font-mono tabular-nums;
   }
 
   .table-cell {
-    @apply border-b border-line px-2 py-2 text-left;
+    @apply border-b border-[#1f2937] px-2 py-1.5 text-left align-middle;
   }
 }

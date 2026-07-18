@@ -125,9 +125,13 @@ def start_engine():
 
     try:
         watchlist = get_nse500_watchlist()
+        from app.strategies.algo3_opening_range_basic import Algo3OpeningRangeBasic
+        from app.strategies.algo4_opening_range_indicators import Algo4OpeningRangeIndicators
         strategies = {
             "algo1": Algo1OpeningRange(watchlist),
             "algo2": Algo2Momentum(watchlist),
+            "algo3": Algo3OpeningRangeBasic(watchlist),
+            "algo4": Algo4OpeningRangeIndicators(watchlist),
         }
 
         with _engine_lock:

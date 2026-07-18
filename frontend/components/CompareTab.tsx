@@ -7,6 +7,7 @@ const POLL_MS = 5000;
 export default function CompareTab() {
   const [data, setData] = useState<Record<string, any> | null>(null);
   const [error, setError] = useState('');
+  const [lastUpdated, setLastUpdated] = useState('');
 
   useEffect(() => {
     let cancelled = false;
@@ -15,6 +16,7 @@ export default function CompareTab() {
         const result = await api.compare();
         if (!cancelled) {
           setData(result);
+          setLastUpdated(new Date().toLocaleTimeString('en-IN', { hour12: false }));
           setError('');
         }
       } catch (e: any) {
@@ -29,7 +31,7 @@ export default function CompareTab() {
     return () => { cancelled = true; clearInterval(interval); };
   }, []);
 
-  if (!data) return <p>Loading comparison...</p>;
+  if (!data) return <p className="text-sm text-gray-500">Loading comparison...</p>;
 
   const algoIds = Object.keys(data);
   const rows: [string, string][] = [
@@ -43,44 +45,67 @@ export default function CompareTab() {
   ];
 
   return (
-    <section>
-      <h2 className="text-xl font-semibold text-white">Compare - same inputs, same day</h2>
-      {error && <p className="mt-3 text-sm text-danger">{error}</p>}
-      <div className="mt-5 overflow-x-auto rounded-lg border border-line">
-        <table className="w-full min-w-max border-collapse text-sm">
-          <thead className="bg-panelSoft">
+    <section className="space-y-4">
+      <div className="flex items-center justify-between gap-4">
+        <h2 className="text-base font-semibold text-gray-100">Compare - same inputs, same day</h2>
+        <div className="text-xs uppercase tracking-wider text-gray-500">
+          Last updated <span className="num text-gray-300">{lastUpdated || '--'}</span>
+        </div>
+      </div>
+      {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
+      <div className="overflow-x-auto rounded border border-[#1f2937]">
+        <table className="w-full min-w-max border-collapse text-xs">
+          <thead className="bg-[#111827]">
             <tr>
-              <th className="table-cell"></th>
+              <th className="table-cell label">Metric</th>
               {algoIds.map((id) => (
-                <th key={id} className="table-cell text-xs font-medium uppercase tracking-[0.1em] text-textSoft">{id}</th>
+                <th key={id} className="table-cell label">{id}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {rows.map(([key, label]) => (
-              <tr key={key} className="odd:bg-panel/60 even:bg-ink/50">
-                <td className="table-cell text-textSoft">{label}</td>
-                {algoIds.map((id) => (
-                  <td
-                    key={id}
-                    className={`table-cell ${key === 'realized_net_pnl' ? 'font-semibold' : ''} ${
-                      key === 'realized_net_pnl' ? (data[id][key] >= 0 ? 'text-success' : 'text-danger') : 'text-white'
-                    }`}
-                  >
-                    {typeof data[id][key] === 'number' && key.includes('pnl') || key === 'cash' || key === 'realized_charges'
-                      ? `Rs ${data[id][key].toLocaleString()}`
-                      : data[id][key]}
-                  </td>
-                ))}
+            {rows.map(([key, label], rowIndex) => (
+              <tr key={key} className={rowIndex % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
+                <td className="table-cell text-gray-500">{label}</td>
+                {algoIds.map((id) => {
+                  const value = data[id][key];
+                  const isMoney = key.includes('pnl') || key === 'cash' || key === 'realized_charges';
+                  const isNet = key === 'realized_net_pnl';
+                  return (
+                    <td
+                      key={id}
+                      className={`table-cell num ${isNet ? 'text-2xl font-semibold' : 'text-sm'} ${
+                        key.includes('pnl') ? pnlColor(Number(value || 0)) : 'text-gray-100'
+                      }`}
+                    >
+                      {isMoney ? formatMoney(value) : value}
+                    </td>
+                  );
+                })}
               </tr>
             ))}
           </tbody>
         </table>
       </div>
-      <p className="mt-4 text-xs text-textSoft">
-        When you add a 3rd algo, it appears here automatically - this table just reads
-        whatever algos the backend reports.
-      </p>
+      <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
+        <div className="space-y-1 text-xs text-gray-500">
+          <p>Algo 1: Opening Range Gap</p>
+          <p>Algo 2: VWAP/EMA/Volume Momentum</p>
+          <p>Algo 3: Opening Range Gap (Basic) - pure price action, no indicators</p>
+          <p>Algo 4: Opening Range Gap (With Indicators) - price action + momentum confirmation filters</p>
+        </div>
+      </div>
     </section>
   );
+}
+
+function formatMoney(value: unknown) {
+  const number = Number(value || 0);
+  return `Rs ${number.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+}
+
+function pnlColor(value: number) {
+  if (value > 0) return 'text-[#22c55e]';
+  if (value < 0) return 'text-[#ef4444]';
+  return 'text-gray-100';
 }

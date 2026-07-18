@@ -1,6 +1,7 @@
 'use client';
 
 import { useState } from 'react';
+import { useSearchParams } from 'next/navigation';
 import { getAuthToken } from '../lib/authToken';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
@@ -8,6 +9,8 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL;
 export default function FyersLoginButton() {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
+  const searchParams = useSearchParams();
+  const connectedFromRedirect = searchParams.get('fyers_login') === 'success';
 
   async function handleClick() {
     if (!API_URL) {
@@ -41,16 +44,27 @@ export default function FyersLoginButton() {
     }
   }
 
+  if (connectedFromRedirect) {
+    return (
+      <div className="flex items-center gap-2 text-sm text-gray-300">
+        <span className="h-2 w-2 rounded-full bg-[#22c55e]" />
+        Fyers Connected
+      </div>
+    );
+  }
+
   return (
-    <div className="flex flex-col items-end gap-2">
+    <div className="flex flex-col items-end gap-1">
       <button
         onClick={handleClick}
         disabled={loading}
-        className="rounded-md border border-success/70 bg-action px-3 py-2 text-sm font-semibold text-white transition hover:bg-success hover:text-ink disabled:cursor-wait disabled:opacity-80"
+        className={`rounded border bg-transparent px-3 py-1.5 text-sm font-medium transition hover:bg-[#3b82f6] hover:text-white disabled:cursor-wait ${
+          loading ? 'border-[#f59e0b] text-[#f59e0b]' : 'border-[#3b82f6] text-[#3b82f6]'
+        }`}
       >
-        {loading ? 'Opening Fyers...' : 'Login to Fyers'}
+        {loading ? 'Connecting...' : 'Login to Fyers'}
       </button>
-      {error && <p className="m-0 max-w-xs text-right text-xs text-danger">{error}</p>}
+      {error && <p className="m-0 max-w-xs text-right text-xs text-[#ef4444]">{error}</p>}
     </div>
   );
 }

@@ -11,13 +11,17 @@ export default function Login() {
   const [password, setPassword] = useState('');
   const [pin, setPin] = useState('');
   const [error, setError] = useState('');
+  const [emailLoading, setEmailLoading] = useState(false);
+  const [pinLoading, setPinLoading] = useState(false);
   const router = useRouter();
 
   async function handleLogin(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+    setEmailLoading(true);
     clearPinToken();
     const { error } = await supabase.auth.signInWithPassword({ email, password });
+    setEmailLoading(false);
     if (error) setError(error.message);
     else router.push('/dashboard');
   }
@@ -25,8 +29,10 @@ export default function Login() {
   async function handlePinLogin(e: React.FormEvent) {
     e.preventDefault();
     setError('');
+    setPinLoading(true);
     if (!API_URL) {
       setError('NEXT_PUBLIC_API_URL is not configured');
+      setPinLoading(false);
       return;
     }
     await supabase.auth.signOut();
@@ -37,6 +43,7 @@ export default function Login() {
       body: JSON.stringify({ pin }),
     });
 
+    setPinLoading(false);
     if (!res.ok) {
       setError('Incorrect PIN');
       setPin('');
@@ -49,42 +56,75 @@ export default function Login() {
   }
 
   return (
-    <main className="flex min-h-screen items-center justify-center px-4">
-      <div className="panel grid w-full max-w-3xl gap-6 p-6 md:grid-cols-2">
-        <form onSubmit={handleLogin}>
-          <p className="text-xs uppercase tracking-[0.2em] text-textSoft">Email access</p>
-          <h1 className="mt-2 text-2xl font-semibold text-white">Algo Paper Trading</h1>
+    <main className="flex min-h-screen items-center justify-center bg-[#0a0e14] px-4 py-8">
+      <section className="w-full max-w-md rounded border border-[#1f2937] bg-[#111827] p-6">
+        <div className="border-b border-[#1f2937] pb-5">
+          <div className="font-mono text-base font-semibold tracking-[0.18em] text-gray-100">ALGO TRADING</div>
+          <p className="mt-1 text-xs uppercase tracking-wider text-gray-500">Paper Trading Dashboard</p>
+        </div>
+
+        <form onSubmit={handleLogin} className="mt-5">
+          <label className="label" htmlFor="email">Email</label>
           <input
-            type="email" placeholder="Email" value={email} autoComplete="username" onChange={(e) => setEmail(e.target.value)}
-            className="control mt-5"
+            id="email"
+            type="email"
+            placeholder="you@example.com"
+            value={email}
+            autoComplete="username"
+            onChange={(e) => setEmail(e.target.value)}
+            className="control mt-1"
           />
+
+          <label className="label mt-4 block" htmlFor="password">Password</label>
           <input
-            type="password" placeholder="Password" value={password} autoComplete="current-password" onChange={(e) => setPassword(e.target.value)}
-            className="control mt-3"
+            id="password"
+            type="password"
+            placeholder="Password"
+            value={password}
+            autoComplete="current-password"
+            onChange={(e) => setPassword(e.target.value)}
+            className="control mt-1"
           />
-          <button type="submit" className="mt-5 w-full rounded-md bg-action px-4 py-2.5 text-sm font-semibold text-white transition hover:bg-success hover:text-ink">
-            Log in with email
+
+          <button
+            type="submit"
+            disabled={emailLoading}
+            className="mt-5 w-full rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-70"
+          >
+            {emailLoading ? 'Logging in...' : 'Login with email'}
           </button>
         </form>
 
-        <form onSubmit={handlePinLogin} className="border-t border-line pt-6 md:border-l md:border-t-0 md:pl-6 md:pt-0">
-          <p className="text-xs uppercase tracking-[0.2em] text-textSoft">Quick access</p>
-          <h2 className="mt-2 text-2xl font-semibold text-white">Use PIN</h2>
+        <div className="my-5 flex items-center gap-3">
+          <div className="h-px flex-1 bg-[#1f2937]" />
+          <span className="text-xs uppercase tracking-wider text-gray-500">or pin</span>
+          <div className="h-px flex-1 bg-[#1f2937]" />
+        </div>
+
+        <form onSubmit={handlePinLogin}>
+          <label className="label" htmlFor="pin">Custom PIN</label>
           <input
-            className="control mt-5 text-center text-2xl tracking-[0.35em]"
+            id="pin"
+            className="control mt-1 text-center font-mono text-2xl tracking-[0.35em]"
             inputMode="numeric"
             maxLength={4}
             type="password"
+            autoComplete="one-time-code"
             placeholder="****"
             value={pin}
             onChange={(e) => setPin(e.target.value.replace(/\D/g, '').slice(0, 4))}
           />
-          <button type="submit" className="mt-5 w-full rounded-md bg-success px-4 py-2.5 text-sm font-semibold text-ink transition hover:bg-white">
-            Log in with PIN
+          <button
+            type="submit"
+            disabled={pinLoading}
+            className="mt-5 w-full rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-70"
+          >
+            {pinLoading ? 'Logging in...' : 'Login with PIN'}
           </button>
         </form>
-        {error && <p className="mt-3 text-sm text-danger">{error}</p>}
-      </div>
+
+        {error && <p className="mt-4 border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
+      </section>
     </main>
   );
 }
