@@ -66,7 +66,7 @@ def get_previous_close(symbol: str) -> float | None:
     return candles[-1][4]  # [timestamp, open, high, low, close, volume] -> close
 
 
-def get_price_history(symbol: str, resolution: str = "15", days: int = 5) -> list[dict]:
+def get_price_history(symbol: str, resolution: str = "15", days: int = 5) -> dict:
     """Recent historical candles normalized for the frontend history tab."""
     fyers = get_fyers_model()
     today = datetime.date.today()
@@ -81,7 +81,11 @@ def get_price_history(symbol: str, resolution: str = "15", days: int = 5) -> lis
     }
     response = fyers.history(data)
     candles = response.get("candles", [])
-    return [
+    warning = None
+    if not candles:
+        warning = response.get("message") or response.get("errmsg") or f"Fyers returned no candles for {symbol} ({resolution}, {days} days)."
+    return {
+        "candles": [
         {
             "time": datetime.datetime.fromtimestamp(candle[0]).isoformat(),
             "open": candle[1],
@@ -91,7 +95,10 @@ def get_price_history(symbol: str, resolution: str = "15", days: int = 5) -> lis
             "volume": candle[5],
         }
         for candle in candles
-    ]
+        ],
+        "warning": warning,
+        "raw_status": response.get("s"),
+    }
 
 
 def connect_live_feed(symbols: list[str], on_tick_callback):

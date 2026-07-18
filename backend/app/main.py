@@ -205,8 +205,9 @@ def market_history(
     _user=Depends(require_auth),
 ):
     try:
-        candles = get_price_history(symbol, resolution=resolution, days=days)
-        warning = None
+        history = get_price_history(symbol, resolution=resolution, days=days)
+        candles = history["candles"]
+        warning = history["warning"]
     except Exception as exc:
         candles = []
         warning = str(exc)

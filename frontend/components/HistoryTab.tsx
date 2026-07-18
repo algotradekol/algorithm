@@ -16,6 +16,7 @@ export default function HistoryTab() {
   const [recentTrades, setRecentTrades] = useState<any[]>([]);
   const [error, setError] = useState('');
   const [marketError, setMarketError] = useState('');
+  const [marketLoading, setMarketLoading] = useState(false);
 
   useEffect(() => {
     api.watchlist().then((result) => {
@@ -31,6 +32,7 @@ export default function HistoryTab() {
   useEffect(() => {
     let cancelled = false;
     async function load() {
+      setMarketLoading(Boolean(symbol));
       const [historyResult, tradesResult, marketResult] = await Promise.allSettled([
           api.history(algoId, days),
           api.trades(algoId),
@@ -51,6 +53,7 @@ export default function HistoryTab() {
         setMarketHistory([]);
         setMarketError(marketResult.reason?.message || 'Historical price data is temporarily unavailable');
       }
+      setMarketLoading(false);
 
       const primaryFailures = [historyResult, tradesResult]
         .filter((result) => result.status === 'rejected')
@@ -99,7 +102,7 @@ export default function HistoryTab() {
           <div className="text-xs text-gray-500">Mouse wheel over chart to zoom in/out</div>
         </div>
         {marketError && <p className="mb-3 text-sm text-[#f59e0b]">{marketError}</p>}
-        <ZoomableCandleChart candles={marketHistory} symbol={symbol} resolution={resolution} />
+        <ZoomableCandleChart candles={marketHistory} symbol={symbol} resolution={resolution} loading={marketLoading} warning={marketError} />
       </section>
 
       <div className="grid gap-4 xl:grid-cols-2">
@@ -122,7 +125,19 @@ export default function HistoryTab() {
   );
 }
 
-function ZoomableCandleChart({ candles, symbol, resolution }: { candles: any[]; symbol: string; resolution: string }) {
+function ZoomableCandleChart({
+  candles,
+  symbol,
+  resolution,
+  loading,
+  warning,
+}: {
+  candles: any[];
+  symbol: string;
+  resolution: string;
+  loading: boolean;
+  warning: string;
+}) {
   const [visibleCount, setVisibleCount] = useState(80);
   const [offsetFromEnd, setOffsetFromEnd] = useState(0);
   const [crosshair, setCrosshair] = useState<{ x: number; y: number } | null>(null);
@@ -161,7 +176,15 @@ function ZoomableCandleChart({ candles, symbol, resolution }: { candles: any[]; 
     return () => chart.removeEventListener('wheel', handleWheel);
   }, [maxVisible]);
 
-  if (!normalized.length) return <p className="rounded border border-[#1f2937] bg-[#111827] p-4 text-sm text-gray-500">No candle history available yet.</p>;
+  if (loading) return <p className="rounded border border-[#1f2937] bg-[#111827] p-4 text-sm text-gray-500">Loading candle history...</p>;
+  if (!normalized.length) {
+    return (
+      <div className="rounded border border-[#1f2937] bg-[#111827] p-4 text-sm text-gray-500">
+        <p>No candle history available for {symbol || 'this symbol'}.</p>
+        {warning && <p className="mt-2 text-[#f59e0b]">{warning}</p>}
+      </div>
+    );
+  }
 
   const clampedVisible = Math.min(Math.max(visibleCount, 10), maxVisible);
   const maxOffset = Math.max(0, normalized.length - clampedVisible);
