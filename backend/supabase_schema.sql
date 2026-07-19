@@ -100,6 +100,7 @@ CREATE TABLE IF NOT EXISTS strategy_settings (
     -- Risk
     target_pct numeric default 2.0,
     sl_pct numeric default 1.0,
+    exit_mode text default 'fixed_target_trailing_sl',
     trailing_sl_enabled boolean default false,
     trailing_sl_trigger_pct numeric default 1.0,
     trailing_sl_distance_pct numeric default 0.5,
@@ -146,6 +147,13 @@ ALTER TABLE strategy_settings
     ADD COLUMN IF NOT EXISTS trailing_sl_enabled boolean default false,
     ADD COLUMN IF NOT EXISTS trailing_sl_trigger_pct numeric default 1.0,
     ADD COLUMN IF NOT EXISTS trailing_sl_distance_pct numeric default 0.5;
+
+ALTER TABLE strategy_settings
+    ADD COLUMN IF NOT EXISTS exit_mode text default 'fixed_target_trailing_sl';
+
+UPDATE strategy_settings
+SET exit_mode = 'fixed_target_trailing_sl'
+WHERE exit_mode IS NULL;
 
 -- Per-position trailing stop state.
 ALTER TABLE positions

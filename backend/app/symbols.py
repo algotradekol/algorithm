@@ -53,7 +53,11 @@ def get_nse500_watchlist(force_refresh: bool = False) -> list[str]:
         for line in fyers_master.text.splitlines():
             parts = line.split(",")
             if len(parts) > 13 and parts[13].strip():
-                fyers_symbols[parts[13].strip()] = parts[9].strip()  # tradingsymbol -> full Fyers symbol
+                trading_symbol = parts[13].strip()
+                fyers_symbol = parts[9].strip()
+                existing = fyers_symbols.get(trading_symbol)
+                if not existing or (fyers_symbol.endswith("-EQ") and not existing.endswith("-EQ")):
+                    fyers_symbols[trading_symbol] = fyers_symbol  # tradingsymbol -> full Fyers symbol
     except requests.RequestException as exc:
         print(f"[symbols] Fyers symbol master unavailable, using NSE symbols directly: {exc}")
 

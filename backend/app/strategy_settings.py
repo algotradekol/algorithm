@@ -4,6 +4,7 @@ DEFAULT_SETTINGS = {
     "margin_multiplier": 5,
     "target_pct": 2.0,
     "sl_pct": 1.0,
+    "exit_mode": "fixed_target_trailing_sl",
     "trailing_sl_enabled": False,
     "trailing_sl_trigger_pct": 1.0,
     "trailing_sl_distance_pct": 0.5,
@@ -50,6 +51,16 @@ BOOL_FIELDS = {
     "trailing_sl_enabled",
 }
 
+TEXT_FIELDS = {
+    "exit_mode",
+}
+
+EXIT_MODES = {
+    "fixed_target_sl",
+    "trailing_sl_only",
+    "fixed_target_trailing_sl",
+}
+
 
 def _normalize(settings: dict) -> dict:
     normalized = {**DEFAULT_SETTINGS, **settings}
@@ -57,6 +68,10 @@ def _normalize(settings: dict) -> dict:
         value = normalized.get(key)
         if key in BOOL_FIELDS:
             normalized[key] = bool(value)
+        elif key in TEXT_FIELDS:
+            normalized[key] = str(value or DEFAULT_SETTINGS[key])
+            if key == "exit_mode" and normalized[key] not in EXIT_MODES:
+                normalized[key] = DEFAULT_SETTINGS[key]
         elif key in INT_FIELDS:
             normalized[key] = int(value)
         else:

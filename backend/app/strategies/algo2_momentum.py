@@ -100,10 +100,11 @@ class Algo2Momentum(Strategy):
                 continue
             position = self.broker.apply_trailing_stop(position, ltp, self.settings)
             sl, target = position["sl_price"], position["target_price"]
+            use_target = self.broker.should_exit_at_target(self.settings)
 
             if ltp <= sl:
                 self.broker.close_trade(position, ltp, "SL")
-            elif ltp >= target:
+            elif use_target and ltp >= target:
                 self.broker.close_trade(position, ltp, "TARGET")
 
     def square_off_all(self):

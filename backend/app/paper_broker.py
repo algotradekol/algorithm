@@ -106,7 +106,7 @@ class PaperBroker:
         })
 
     def apply_trailing_stop(self, position: dict, ltp: float, settings: dict) -> dict:
-        if not settings.get("trailing_sl_enabled"):
+        if not should_use_trailing_stop(settings):
             return position
 
         entry = float(position["entry_price"])
@@ -144,6 +144,9 @@ class PaperBroker:
             lambda supabase: supabase.table("positions").update(updates).eq("id", position["id"]).execute()
         )
         return {**position, **updates, "sl_price": current_sl}
+
+    def should_exit_at_target(self, settings: dict) -> bool:
+        return should_use_fixed_target(settings)
 
     def close_trade(self, position: dict, exit_price: float, exit_reason: str):
         side = position["side"]
@@ -241,3 +244,13 @@ class PaperBroker:
                 "symbols": sorted(bucket["symbols"]),
             })
         return history
+
+
+def should_use_trailing_stop(settings: dict) -> bool:
+    mode = settings.get("exit_mode", "fixed_target_trailing_sl")
+    return bool(settings.get("trailing_sl_enabled")) and mode in {"trailing_sl_only", "fixed_target_trailing_sl"}
+
+
+def should_use_fixed_target(settings: dict) -> bool:
+    mode = settings.get("exit_mode", "fixed_target_trailing_sl")
+    return mode in {"fixed_target_sl", "fixed_target_trailing_sl"}

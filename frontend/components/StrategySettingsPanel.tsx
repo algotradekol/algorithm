@@ -44,6 +44,12 @@ const FILTERS: [string, string, string, string][] = [
   ['filter_price_range', 'Price Range Filter', 'Avoids penny stocks and very expensive stocks', 'Min / Max'],
 ];
 
+const EXIT_MODES = [
+  ['fixed_target_sl', 'Fixed Target + SL', 'Exit at fixed target, normal SL, or EOD. Trailing is ignored.'],
+  ['trailing_sl_only', 'Trailing SL Only', 'No fixed target exit. Winners run until trailing/normal SL or EOD.'],
+  ['fixed_target_trailing_sl', 'Fixed Target + Trailing SL', 'Exit at target, or let trailing SL protect profit if price reverses first.'],
+];
+
 export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
   const [settings, setSettings] = useState<Record<string, number> | null>(null);
   const [saved, setSaved] = useState(false);
@@ -87,6 +93,7 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
         {error && <p className="mb-4 rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
 
         <FieldGroup title="Capital Settings" fields={CAPITAL_FIELDS} settings={settings} setSettings={setSettings} />
+        <ExitModeSelect settings={settings} setSettings={setSettings} />
         <TrailingStopToggle settings={settings} setSettings={setSettings} />
         <FieldGroup title="Risk Settings" fields={RISK_FIELDS} settings={settings} setSettings={setSettings} />
         {algoId === 'algo4' && (
@@ -119,7 +126,7 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
   );
 }
 
-function TrailingStopToggle({
+function ExitModeSelect({
   settings,
   setSettings,
 }: {
@@ -127,10 +134,47 @@ function TrailingStopToggle({
   setSettings: (settings: Record<string, any>) => void;
 }) {
   return (
-    <label className="mt-5 flex gap-3 rounded border border-[#1f2937] bg-[#0d1117] p-3">
+    <div className="mt-5">
+      <div className="label mb-2">Exit Mode</div>
+      <div className="grid gap-2">
+        {EXIT_MODES.map(([value, label, helper]) => (
+          <label key={value} className={`rounded border p-3 ${
+            settings.exit_mode === value ? 'border-[#3b82f6] bg-[#3b82f6]/10' : 'border-[#1f2937] bg-[#0d1117]'
+          }`}>
+            <div className="flex items-start gap-2">
+              <input
+                type="radio"
+                name={`exit_mode_${settings.algo_id || 'algo'}`}
+                checked={settings.exit_mode === value}
+                onChange={() => setSettings({ ...settings, exit_mode: value })}
+                className="mt-1"
+              />
+              <span>
+                <span className="block text-sm font-semibold text-gray-100">{label}</span>
+                <span className="mt-1 block text-xs text-gray-500">{helper}</span>
+              </span>
+            </div>
+          </label>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+function TrailingStopToggle({
+  settings,
+  setSettings,
+}: {
+  settings: Record<string, any>;
+  setSettings: (settings: Record<string, any>) => void;
+}) {
+  const modeUsesTrailing = settings.exit_mode === 'trailing_sl_only' || settings.exit_mode === 'fixed_target_trailing_sl';
+  return (
+    <label className={`mt-5 flex gap-3 rounded border p-3 ${modeUsesTrailing ? 'border-[#1f2937] bg-[#0d1117]' : 'border-[#1f2937] bg-[#0d1117] opacity-60'}`}>
       <input
         type="checkbox"
         checked={Boolean(settings.trailing_sl_enabled)}
+        disabled={!modeUsesTrailing}
         onChange={(e) => setSettings({ ...settings, trailing_sl_enabled: e.target.checked })}
         className="peer sr-only"
       />
@@ -138,7 +182,9 @@ function TrailingStopToggle({
       <span className="flex-1">
         <span className="text-sm font-semibold text-gray-100">Trailing Stop Loss</span>
         <span className="mt-1 block text-xs text-gray-500">
-          Per-algo toggle. Once profit reaches the trigger, SL follows the best favorable price by the configured distance.
+          {modeUsesTrailing
+            ? 'Per-algo toggle. Once profit reaches the trigger, SL follows the best favorable price by the configured distance.'
+            : 'Choose an exit mode that includes trailing SL to enable this.'}
         </span>
       </span>
     </label>
