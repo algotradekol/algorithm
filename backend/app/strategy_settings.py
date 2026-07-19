@@ -16,6 +16,15 @@ DEFAULT_SETTINGS = {
     "ltp_max": 4000,
     "supertrend_period": 10,
     "supertrend_multiplier": 3,
+    "filter_vwap": True,
+    "filter_rsi": True,
+    "filter_adx": True,
+    "filter_supertrend": True,
+    "filter_ema20": False,
+    "filter_ema50": False,
+    "filter_volume": True,
+    "filter_liquidity": True,
+    "filter_price_range": True,
 }
 
 INT_FIELDS = {
@@ -25,12 +34,26 @@ INT_FIELDS = {
     "supertrend_period",
 }
 
+BOOL_FIELDS = {
+    "filter_vwap",
+    "filter_rsi",
+    "filter_adx",
+    "filter_supertrend",
+    "filter_ema20",
+    "filter_ema50",
+    "filter_volume",
+    "filter_liquidity",
+    "filter_price_range",
+}
+
 
 def _normalize(settings: dict) -> dict:
     normalized = {**DEFAULT_SETTINGS, **settings}
     for key in DEFAULT_SETTINGS:
         value = normalized.get(key)
-        if key in INT_FIELDS:
+        if key in BOOL_FIELDS:
+            normalized[key] = bool(value)
+        elif key in INT_FIELDS:
             normalized[key] = int(value)
         else:
             normalized[key] = float(value)

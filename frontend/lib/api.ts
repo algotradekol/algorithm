@@ -36,6 +36,7 @@ export const api = {
   positions: (algoId: string) => authedFetch(`/api/algo/${algoId}/positions`),
   trades: (algoId: string) => authedFetch(`/api/algo/${algoId}/trades`),
   history: (algoId: string, days = 30) => authedFetch(`/api/algo/${algoId}/history?days=${days}`),
+  scanResults: (algoId: string) => authedFetch(`/api/algo/${algoId}/scan-results`),
   getSettings: (algoId: string) => authedFetch(`/api/algo/${algoId}/settings`),
   updateSettings: (algoId: string, settings: object) =>
     authedFetch(`/api/algo/${algoId}/settings`, { method: 'PUT', body: JSON.stringify(settings) }),

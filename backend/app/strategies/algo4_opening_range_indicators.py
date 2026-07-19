@@ -25,6 +25,8 @@ class Algo4OpeningRangeIndicators(Strategy):
         self.candles: dict[str, list[dict]] = defaultdict(list)
         self.total_value: dict[str, float] = defaultdict(float)
         self.candidates: dict[str, tuple[str, float]] = {}
+        self.candidate_details: dict[str, dict] = {}
+        self.selected_symbols: set[str] = set()
         self.entries_evaluated_today = None
         threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
 
@@ -61,8 +63,10 @@ class Algo4OpeningRangeIndicators(Strategy):
         if candle["time"].strftime("%H:%M") != "09:15":
             return
 
-        side = self._signal_side(symbol, candle, indicators)
-        if side:
+        side, details = self._signal_details(symbol, candle, indicators)
+        if details:
+            self.candidate_details[symbol] = details
+        if side and details and details["passed_indicators"]:
             self.candidates[symbol] = (side, candle["close"])
 
         now = datetime.datetime.now()
@@ -78,11 +82,12 @@ class Algo4OpeningRangeIndicators(Strategy):
         for symbol, (side, fallback_price) in list(self.candidates.items()):
             entry_price = get_ltp_fn(symbol) or fallback_price
             self._enter(symbol, side, entry_price)
+        self._record_scan_results()
 
-    def _signal_side(self, symbol: str, candle: dict, indicators: dict) -> str | None:
+    def _signal_details(self, symbol: str, candle: dict, indicators: dict) -> tuple[str | None, dict | None]:
         prev_close = self.prev_close.get(symbol)
         if not prev_close:
-            return None
+            return None, None
 
         open_price = candle["open"]
         buy_gap = open_price - prev_close
@@ -96,13 +101,34 @@ class Algo4OpeningRangeIndicators(Strategy):
             MIN_GAP_PCT / 100 * prev_close <= sell_gap <= MAX_GAP_PCT / 100 * prev_close
         )
 
-        if buy_base and self._passes_indicator_filters(symbol, candle, indicators, "BUY"):
-            return "BUY"
-        if sell_base and self._passes_indicator_filters(symbol, candle, indicators, "SELL"):
-            return "SELL"
-        return None
+        side = "BUY" if buy_base else "SELL" if sell_base else None
+        if not side:
+            return None, None
+
+        indicator_results = self._indicator_results(symbol, candle, indicators, side)
+        passed_indicators = all(
+            result["passed"] for result in indicator_results.values() if result["enabled"]
+        )
+        gap = buy_gap if side == "BUY" else sell_gap
+        return side, {
+            "symbol": symbol,
+            "side": side,
+            "open": open_price,
+            "prev_close": prev_close,
+            "gap_pct": gap / prev_close * 100,
+            "passed_indicators": passed_indicators,
+            "indicator_results": indicator_results,
+            "selected_for_trade": False,
+            "rejection_reason": None if passed_indicators else "failed_indicator_filter",
+        }
 
     def _passes_indicator_filters(self, symbol: str, candle: dict, indicators: dict, side: str) -> bool:
+        return all(
+            result["passed"] for result in self._indicator_results(symbol, candle, indicators, side).values()
+            if result["enabled"]
+        )
+
+    def _indicator_results(self, symbol: str, candle: dict, indicators: dict, side: str) -> dict:
         ltp = float(indicators.get("last_ltp") or candle["close"])
         vwap = indicators.get("vwap")
         candles = self.candles[symbol]
@@ -111,33 +137,25 @@ class Algo4OpeningRangeIndicators(Strategy):
         rsi14 = self._rsi(candles, 14)
         adx14 = self._adx(candles, 14)
         supertrend = self._supertrend(candles, self.settings["supertrend_period"], self.settings["supertrend_multiplier"])
+        is_buy = side == "BUY"
 
-        if None in (vwap, ema20, ema50, rsi14, adx14, supertrend):
-            return False
+        def item(value, passed, enabled):
+            return {"value": value, "passed": bool(passed), "enabled": bool(enabled)}
 
-        if not (
-            self.total_value[symbol] > self.settings["min_total_value"] and
-            ltp > self.settings["ltp_min"] and ltp < self.settings["ltp_max"] and
-            float(candle.get("volume") or 0) > self.settings["min_volume"] and
-            not self._has_open_position(symbol)
-        ):
-            return False
+        return {
+            "vwap": item(vwap, vwap is not None and (ltp > float(vwap) if is_buy else ltp < float(vwap)), self.settings.get("filter_vwap", True)),
+            "rsi": item(rsi14, rsi14 is not None and (rsi14 > self.settings["rsi_buy_threshold"] if is_buy else rsi14 < self.settings["rsi_sell_threshold"]), self.settings.get("filter_rsi", True)),
+            "adx": item(adx14, adx14 is not None and adx14 > self.settings["adx_threshold"], self.settings.get("filter_adx", True)),
+            "supertrend": item(supertrend, supertrend is not None and (ltp > supertrend if is_buy else ltp < supertrend), self.settings.get("filter_supertrend", True)),
+            "ema20": item(ema20, ema20 is not None and (ltp > ema20 if is_buy else ltp < ema20), self.settings.get("filter_ema20", False)),
+            "ema50": item(ema50, ema20 is not None and ema50 is not None and (ema20 > ema50 if is_buy else ema20 < ema50), self.settings.get("filter_ema50", False)),
+            "volume": item(float(candle.get("volume") or 0), float(candle.get("volume") or 0) > self.settings["min_volume"], self.settings.get("filter_volume", True)),
+            "liquidity": item(self.total_value[symbol], self.total_value[symbol] > self.settings["min_total_value"], self.settings.get("filter_liquidity", True)),
+            "price_range": item(ltp, self.settings["ltp_min"] < ltp < self.settings["ltp_max"], self.settings.get("filter_price_range", True)),
+        }
 
-        if side == "BUY":
-            return (
-                ltp > float(vwap) and
-                ema20 > ema50 and
-                rsi14 > self.settings["rsi_buy_threshold"] and
-                adx14 > self.settings["adx_threshold"] and
-                ltp > supertrend
-            )
-        return (
-            ltp < float(vwap) and
-            ema20 < ema50 and
-            rsi14 < self.settings["rsi_sell_threshold"] and
-            adx14 > self.settings["adx_threshold"] and
-            ltp < supertrend
-        )
+    def active_filters(self) -> list[str]:
+        return [k.replace("filter_", "") for k, v in self.settings.items() if k.startswith("filter_") and v]
 
     def _is_entry_window(self, now: datetime.datetime) -> bool:
         start = now.replace(hour=9, minute=16, second=0, microsecond=0)
@@ -170,6 +188,42 @@ class Algo4OpeningRangeIndicators(Strategy):
             sl_price = entry_price * (1 + self.settings["sl_pct"] / 100)
             target_price = entry_price * (1 - self.settings["target_pct"] / 100)
         self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price)
+        self.selected_symbols.add(symbol)
+
+    def _record_scan_results(self):
+        rows = []
+        buy_selected = 0
+        sell_selected = 0
+        for symbol, details in self.candidate_details.items():
+            row = dict(details)
+            if symbol in self.selected_symbols:
+                row["selected_for_trade"] = True
+            else:
+                row["selected_for_trade"] = False
+                row["rejection_reason"] = row["rejection_reason"] or "not_selected"
+            if row["selected_for_trade"] and row["side"] == "BUY":
+                buy_selected += 1
+            if row["selected_for_trade"] and row["side"] == "SELL":
+                sell_selected += 1
+            rows.append(row)
+
+        result = {
+            "algo_id": self.algo_id,
+            "scan_time": datetime.datetime.now().isoformat(),
+            "total_scanned": len(self.watchlist),
+            "passed_opening_range": rows,
+            "buy_candidates": len([r for r in rows if r["side"] == "BUY"]),
+            "sell_candidates": len([r for r in rows if r["side"] == "SELL"]),
+            "buy_selected": buy_selected,
+            "sell_selected": sell_selected,
+            "overflow_buy": 0,
+            "overflow_sell": 0,
+            "total_filtered_out": max(0, len(self.watchlist) - len(rows)),
+        }
+        from app.engine import SCAN_RESULTS
+        from app.broadcaster import broadcast_sync
+        SCAN_RESULTS[self.algo_id] = result
+        broadcast_sync({"event": "scan_complete", "algo_id": self.algo_id, "results": result})
 
     def check_exits(self):
         for position in self.broker.open_positions():

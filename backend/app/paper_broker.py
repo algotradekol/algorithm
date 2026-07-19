@@ -91,6 +91,17 @@ class PaperBroker:
         run_with_supabase(
             lambda supabase: supabase.table("algo_state").update(updates).eq("algo_id", self.algo_id).execute()
         )
+        from .broadcaster import broadcast_sync
+        broadcast_sync({
+            "event": "position_opened",
+            "algo_id": self.algo_id,
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "entry_price": entry_price,
+            "sl_price": sl_price,
+            "target_price": target_price,
+        })
 
     def close_trade(self, position: dict, exit_price: float, exit_reason: str):
         side = position["side"]
@@ -119,6 +130,16 @@ class PaperBroker:
         run_with_supabase(
             lambda supabase: supabase.table("algo_state").update({"cash": state["cash"] + charges["net_pnl"]}).eq("algo_id", self.algo_id).execute()
         )
+        from .broadcaster import broadcast_sync
+        broadcast_sync({
+            "event": "position_closed",
+            "algo_id": self.algo_id,
+            "symbol": position["symbol"],
+            "exit_reason": exit_reason,
+            "net_pnl": charges["net_pnl"],
+            "gross_pnl": charges["gross_pnl"],
+            "total_charges": charges["total_charges"],
+        })
 
     def summary(self) -> dict:
         state = self._get_state()

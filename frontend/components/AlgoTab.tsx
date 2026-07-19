@@ -1,49 +1,77 @@
 'use client';
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { api } from '../lib/api';
 import StrategySettingsPanel from './StrategySettingsPanel';
+import ScanResultsPanel from './ScanResultsPanel';
+import { useWebSocket, WebSocketState } from '../lib/useWebSocket';
 
-const POLL_MS = 5000;
+const FALLBACK_POLL_MS = 30_000;
 
 export default function AlgoTab({
   algoId,
   displayName,
   description,
+  onWebSocketStatus,
 }: {
   algoId: string;
   displayName: string;
   description?: string;
+  onWebSocketStatus?: (status: WebSocketState) => void;
 }) {
   const [summary, setSummary] = useState<any>(null);
   const [positions, setPositions] = useState<any[]>([]);
   const [trades, setTrades] = useState<any[]>([]);
+  const [scanResults, setScanResults] = useState<any>(null);
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
 
+  const loadData = useCallback(async () => {
+    const [summaryResult, positionsResult, tradesResult, scanResult] = await Promise.allSettled([
+      api.summary(algoId), api.positions(algoId), api.trades(algoId), api.scanResults(algoId),
+    ]);
+
+    if (summaryResult.status === 'fulfilled') setSummary(summaryResult.value);
+    if (positionsResult.status === 'fulfilled') setPositions(positionsResult.value);
+    if (tradesResult.status === 'fulfilled') setTrades(tradesResult.value);
+    if (scanResult.status === 'fulfilled') setScanResults(scanResult.value);
+
+    const failures = [summaryResult, positionsResult, tradesResult]
+      .filter((result) => result.status === 'rejected')
+      .map((result) => (result as PromiseRejectedResult).reason?.message || 'Request failed');
+    setError(failures[0] || '');
+  }, [algoId]);
+
   useEffect(() => {
     let cancelled = false;
-    async function poll() {
-      const [summaryResult, positionsResult, tradesResult] = await Promise.allSettled([
-        api.summary(algoId), api.positions(algoId), api.trades(algoId),
-      ]);
-      if (cancelled) return;
-
-      if (summaryResult.status === 'fulfilled') setSummary(summaryResult.value);
-      if (positionsResult.status === 'fulfilled') setPositions(positionsResult.value);
-      if (tradesResult.status === 'fulfilled') setTrades(tradesResult.value);
-
-      const failures = [summaryResult, positionsResult, tradesResult]
-        .filter((result) => result.status === 'rejected')
-        .map((result) => (result as PromiseRejectedResult).reason?.message || 'Request failed');
-
-      setError(failures[0] || '');
-    }
-    poll();
+    loadData();
     const interval = setInterval(() => {
-      if (!document.hidden) poll();
-    }, POLL_MS);
+      if (!document.hidden && !cancelled) loadData();
+    }, FALLBACK_POLL_MS);
     return () => { cancelled = true; clearInterval(interval); };
+  }, [loadData]);
+
+  const handleWsMessage = useCallback((message: any) => {
+    if (message.event === 'price_update') {
+      setPositions((current) => current.map((position) => (
+        position.symbol === message.symbol ? { ...position, ltp: message.ltp } : position
+      )));
+      return;
+    }
+
+    if (message.algo_id !== algoId) return;
+
+    if (message.event === 'position_opened') {
+      setPositions((current) => [{ ...message, status: 'open' }, ...current]);
+    } else if (message.event === 'position_closed') {
+      setPositions((current) => current.filter((position) => position.symbol !== message.symbol));
+      setTrades((current) => [message, ...current]);
+      api.summary(algoId).then(setSummary).catch(() => {});
+    } else if (message.event === 'scan_complete') {
+      setScanResults(message.results);
+    }
   }, [algoId]);
+
+  useWebSocket(handleWsMessage, true, onWebSocketStatus);
 
   if (!summary) {
     return (
@@ -61,6 +89,9 @@ export default function AlgoTab({
           </button>
         </div>
         <SettingsDrawer open={settingsOpen} algoId={algoId} onClose={() => setSettingsOpen(false)} />
+        <div className="mt-4">
+          <ScanResultsPanel results={scanResults} />
+        </div>
         <p className="mt-2 text-sm text-gray-500">{error || 'Loading strategy data...'}</p>
       </section>
     );
@@ -98,6 +129,8 @@ export default function AlgoTab({
       </div>
 
       <SettingsDrawer open={settingsOpen} algoId={algoId} onClose={() => setSettingsOpen(false)} />
+
+      <ScanResultsPanel results={scanResults} />
 
       <div className="grid gap-4 xl:grid-cols-2">
         <section>

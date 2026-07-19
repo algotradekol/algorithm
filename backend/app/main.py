@@ -7,7 +7,7 @@ Supabase auth token.
 import datetime
 import threading
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException, Query
+from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 from fyers_apiv3 import fyersModel
@@ -22,8 +22,37 @@ from app.config import APP_PIN, FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIREC
 from app.supabase_client import supabase
 
 
+class ConnectionManager:
+    def __init__(self):
+        self.active: list[WebSocket] = []
+
+    async def connect(self, ws: WebSocket):
+        await ws.accept()
+        self.active.append(ws)
+
+    def disconnect(self, ws: WebSocket):
+        if ws in self.active:
+            self.active.remove(ws)
+
+    async def broadcast(self, data: dict):
+        import json
+        dead = []
+        for ws in self.active:
+            try:
+                await ws.send_text(json.dumps(data))
+            except Exception:
+                dead.append(ws)
+        for ws in dead:
+            self.disconnect(ws)
+
+
+manager = ConnectionManager()
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from app.broadcaster import set_manager
+    set_manager(manager)
     # Start engine in a background thread so it doesn't block FastAPI startup
     engine_thread = threading.Thread(target=start_engine, daemon=True)
     engine_thread.start()
@@ -66,6 +95,25 @@ def get_strategy_or_raise(algo_id: str):
             },
         )
     raise HTTPException(404, f"No such algo: {algo_id}")
+
+
+@app.websocket("/ws")
+async def websocket_endpoint(ws: WebSocket):
+    token = ws.query_params.get("token")
+    if not token:
+        await ws.close(code=1008)
+        return
+    try:
+        jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"], audience="authenticated")
+    except Exception:
+        await ws.close(code=1008)
+        return
+    await manager.connect(ws)
+    try:
+        while True:
+            await ws.receive_text()
+    except WebSocketDisconnect:
+        manager.disconnect(ws)
 
 
 @app.post("/api/pin-login")
@@ -172,6 +220,15 @@ def update_algo_settings(algo_id: str, settings: dict, _user=Depends(require_aut
     if strategy and hasattr(strategy, "reload_settings"):
         strategy.reload_settings()
     return {"status": "updated", "algo_id": algo_id}
+
+
+@app.get("/api/algo/{algo_id}/scan-results")
+def get_scan_results(algo_id: str, _user=Depends(require_auth)):
+    from app.engine import SCAN_RESULTS
+    return SCAN_RESULTS.get(algo_id, {
+        "algo_id": algo_id,
+        "message": "No scan run yet today. Results appear at 9:16 AM."
+    })
 
 
 @app.get("/api/compare")

@@ -44,6 +44,26 @@ class Algo2Momentum(Strategy):
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
 
+    def evaluate_entries(self, get_ltp_fn):
+        result = {
+            "algo_id": self.algo_id,
+            "scan_time": datetime.datetime.now().isoformat(),
+            "total_scanned": len(self.watchlist),
+            "passed_opening_range": [],
+            "buy_candidates": 0,
+            "sell_candidates": 0,
+            "buy_selected": 0,
+            "sell_selected": 0,
+            "overflow_buy": 0,
+            "overflow_sell": 0,
+            "total_filtered_out": len(self.watchlist),
+            "message": "Algo 2 is momentum-based and does not use the 9:16 opening-range scan.",
+        }
+        from app.engine import SCAN_RESULTS
+        from app.broadcaster import broadcast_sync
+        SCAN_RESULTS[self.algo_id] = result
+        broadcast_sync({"event": "scan_complete", "algo_id": self.algo_id, "results": result})
+
     def on_tick(self, symbol: str, ltp: float, timestamp):
         pass  # acts on candle close, not raw ticks
 

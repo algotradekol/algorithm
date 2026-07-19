@@ -30,6 +30,18 @@ const INDICATOR_FIELDS: Field[] = [
   ['supertrend_multiplier', 'Supertrend Multiplier', 'ATR multiplier used by Supertrend'],
 ];
 
+const FILTERS: [string, string, string, string][] = [
+  ['filter_vwap', 'VWAP Filter', "Price must be above/below the day's running VWAP", ''],
+  ['filter_rsi', 'RSI Filter', 'Momentum confirmation - RSI above/below threshold', 'Threshold: buy / sell'],
+  ['filter_adx', 'ADX Filter', 'Trend strength - filters out sideways/choppy stocks', 'Threshold'],
+  ['filter_supertrend', 'Supertrend Filter', 'Price must be above/below Supertrend line', 'Period / Mult'],
+  ['filter_ema20', 'EMA20 Filter', 'Price above/below 20-period EMA - may not fire at 9:16', 'Needs pre-warm data'],
+  ['filter_ema50', 'EMA50 Filter', 'EMA20 must be above/below EMA50 - needs 50 candles minimum', 'Needs pre-warm data'],
+  ['filter_volume', 'Volume Filter', 'Minimum shares traded in the 9:15 candle', 'Min volume'],
+  ['filter_liquidity', 'Liquidity Filter', 'Minimum total traded value for the day', 'Min value'],
+  ['filter_price_range', 'Price Range Filter', 'Avoids penny stocks and very expensive stocks', 'Min / Max'],
+];
+
 export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
   const [settings, setSettings] = useState<Record<string, number> | null>(null);
   const [saved, setSaved] = useState(false);
@@ -74,7 +86,12 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
 
         <FieldGroup title="Capital Settings" fields={CAPITAL_FIELDS} settings={settings} setSettings={setSettings} />
         <FieldGroup title="Risk Settings" fields={RISK_FIELDS} settings={settings} setSettings={setSettings} />
-        {algoId === 'algo4' && <FieldGroup title="Indicator Thresholds" fields={INDICATOR_FIELDS} settings={settings} setSettings={setSettings} />}
+        {algoId === 'algo4' && (
+          <>
+            <FilterGroup settings={settings} setSettings={setSettings} />
+            <FieldGroup title="Indicator Thresholds" fields={INDICATOR_FIELDS} settings={settings} setSettings={setSettings} />
+          </>
+        )}
 
         <button
           onClick={save}
@@ -95,6 +112,40 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
         </div>
       </aside>
     </section>
+  );
+}
+
+function FilterGroup({
+  settings,
+  setSettings,
+}: {
+  settings: Record<string, any>;
+  setSettings: (settings: Record<string, any>) => void;
+}) {
+  return (
+    <div className="mt-5">
+      <div className="label mb-3">Indicator Filters</div>
+      <div className="space-y-2">
+        {FILTERS.map(([key, label, helper, meta]) => (
+          <label key={key} className="flex gap-3 rounded border border-[#1f2937] bg-[#0d1117] p-3">
+            <input
+              type="checkbox"
+              checked={Boolean(settings[key])}
+              onChange={(e) => setSettings({ ...settings, [key]: e.target.checked })}
+              className="peer sr-only"
+            />
+            <span className="mt-1 h-5 w-9 rounded-full border border-[#1f2937] bg-gray-700 after:block after:h-4 after:w-4 after:translate-x-0.5 after:translate-y-0.5 after:rounded-full after:bg-gray-400 after:transition peer-checked:bg-[#3b82f6] peer-checked:after:translate-x-4 peer-checked:after:bg-white" />
+            <span className="flex-1">
+              <span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-gray-100">
+                {label}
+                {meta && <span className={`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider ${meta.includes('Needs') ? 'border-[#f59e0b]/40 text-[#f59e0b]' : 'border-[#1f2937] text-gray-500'}`}>{meta}</span>}
+              </span>
+              <span className="mt-1 block text-xs text-gray-500">{helper}</span>
+            </span>
+          </label>
+        ))}
+      </div>
+    </div>
   );
 }
 

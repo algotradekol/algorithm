@@ -103,6 +103,18 @@ INSERT INTO strategy_settings (algo_id, display_name) VALUES
     ('algo4', 'Algo 4 — Opening Range Gap (With Indicators)')
 ON CONFLICT (algo_id) DO NOTHING;
 
+-- Algo 4 toggleable filter settings addition.
+ALTER TABLE strategy_settings
+    ADD COLUMN IF NOT EXISTS filter_vwap boolean default true,
+    ADD COLUMN IF NOT EXISTS filter_rsi boolean default true,
+    ADD COLUMN IF NOT EXISTS filter_adx boolean default true,
+    ADD COLUMN IF NOT EXISTS filter_supertrend boolean default true,
+    ADD COLUMN IF NOT EXISTS filter_ema20 boolean default false,
+    ADD COLUMN IF NOT EXISTS filter_ema50 boolean default false,
+    ADD COLUMN IF NOT EXISTS filter_volume boolean default true,
+    ADD COLUMN IF NOT EXISTS filter_liquidity boolean default true,
+    ADD COLUMN IF NOT EXISTS filter_price_range boolean default true;
+
 -- Row Level Security: since only the backend (using the service role
 -- key) writes to these tables, and only your authenticated frontend
 -- session reads via the backend API (never directly from the

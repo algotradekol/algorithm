@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 
-const POLL_MS = 5000;
+const POLL_MS = 30_000;
 
 export default function CompareTab() {
   const [data, setData] = useState<Record<string, any> | null>(null);

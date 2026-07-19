@@ -10,6 +10,7 @@ import FyersLoginButton from '../../components/FyersLoginButton';
 import { getAuthToken } from '../../lib/authToken';
 import { clearPinToken } from '../../lib/pinAuth';
 import { api } from '../../lib/api';
+import { WebSocketState } from '../../lib/useWebSocket';
 
 const TABS = ['Algo 1', 'Algo 2', 'Algo 3', 'Algo 4', 'Compare', 'History', 'Charges'] as const;
 
@@ -39,12 +40,15 @@ function DashboardContent() {
     watchlist_count: number;
     strategies_running: string[];
   } | null>(null);
+  const [wsStatus, setWsStatus] = useState<WebSocketState>('reconnecting');
   const router = useRouter();
   const searchParams = useSearchParams();
   const fyersLogin = searchParams.get('fyers_login');
   const tradingReady = Boolean(fyersStatus?.connected && engineStatus?.state === 'running');
   const statusTone = fyersStatus?.connected ? 'bg-[#22c55e]' : fyersStatus?.status === 'disconnected' ? 'bg-[#f59e0b]' : 'bg-[#ef4444]';
   const statusText = fyersStatus?.connected ? 'LIVE' : fyersStatus?.status === 'disconnected' ? 'TOKEN MISSING' : 'STOPPED';
+  const wsTone = wsStatus === 'connected' ? 'bg-[#22c55e]' : wsStatus === 'reconnecting' ? 'bg-[#f59e0b]' : 'bg-[#ef4444]';
+  const wsText = wsStatus === 'connected' ? 'Live' : wsStatus === 'reconnecting' ? 'Reconnecting' : 'Offline';
 
   useEffect(() => {
     getAuthToken().then((token) => {
@@ -130,6 +134,10 @@ function DashboardContent() {
               <span className={`h-2 w-2 rounded-full ${statusTone}`} />
               <span>{statusText}</span>
             </div>
+            <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-gray-400">
+              <span className={`h-2 w-2 rounded-full ${wsTone}`} />
+              <span>WS {wsText}</span>
+            </div>
             <div className="font-mono text-sm tabular-nums text-gray-300">{istTime} IST</div>
             <div
               title={engineStatus?.error || `${engineStatus?.watchlist_count || 0} symbols loaded`}
@@ -194,13 +202,14 @@ function DashboardContent() {
           </section>
         ) : (
           <>
-            {tab === 'Algo 1' && <AlgoTab algoId="algo1" displayName="Algo 1 - Opening Range Gap" />}
-            {tab === 'Algo 2' && <AlgoTab algoId="algo2" displayName="Algo 2 - VWAP/EMA/Volume Momentum" />}
+            {tab === 'Algo 1' && <AlgoTab algoId="algo1" displayName="Algo 1 - Opening Range Gap" onWebSocketStatus={setWsStatus} />}
+            {tab === 'Algo 2' && <AlgoTab algoId="algo2" displayName="Algo 2 - VWAP/EMA/Volume Momentum" onWebSocketStatus={setWsStatus} />}
             {tab === 'Algo 3' && (
               <AlgoTab
                 algoId="algo3"
                 displayName="Algo 3 - Opening Range Gap (Basic)"
                 description="9:15 candle open=low/high + 0.5-2% gap filter. No indicator filters. Max 10 trades (5B+5S)."
+                onWebSocketStatus={setWsStatus}
               />
             )}
             {tab === 'Algo 4' && (
@@ -208,6 +217,7 @@ function DashboardContent() {
                 algoId="algo4"
                 displayName="Algo 4 - Opening Range Gap (With Indicators)"
                 description="Same as Algo 3 + VWAP, EMA20/EMA50, RSI, ADX, Supertrend, volume and liquidity filters. Fewer but higher-quality signals."
+                onWebSocketStatus={setWsStatus}
               />
             )}
             {tab === 'Compare' && <CompareTab />}

@@ -22,6 +22,8 @@ class Algo3OpeningRangeBasic(Strategy):
         self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
         self.prev_close: dict[str, float] = {}
         self.candidates: dict[str, tuple[str, float]] = {}
+        self.candidate_details: dict[str, dict] = {}
+        self.selected_symbols: set[str] = set()
         self.entries_evaluated_today = None
         threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
 
@@ -55,6 +57,18 @@ class Algo3OpeningRangeBasic(Strategy):
         side = self._signal_side(symbol, candle)
         if side:
             self.candidates[symbol] = (side, candle["close"])
+            prev_close = self.prev_close[symbol]
+            self.candidate_details[symbol] = {
+                "symbol": symbol,
+                "side": side,
+                "open": candle["open"],
+                "prev_close": prev_close,
+                "gap_pct": abs(candle["open"] - prev_close) / prev_close * 100,
+                "passed_indicators": True,
+                "indicator_results": {},
+                "selected_for_trade": False,
+                "rejection_reason": None,
+            }
 
         now = datetime.datetime.now()
         if side and self._is_entry_window(now):
@@ -69,6 +83,7 @@ class Algo3OpeningRangeBasic(Strategy):
         for symbol, (side, fallback_price) in list(self.candidates.items()):
             entry_price = get_ltp_fn(symbol) or fallback_price
             self._enter(symbol, side, entry_price)
+        self._record_scan_results()
 
     def _signal_side(self, symbol: str, candle: dict) -> str | None:
         prev_close = self.prev_close.get(symbol)
@@ -116,6 +131,37 @@ class Algo3OpeningRangeBasic(Strategy):
             sl_price = entry_price * (1 + self.settings["sl_pct"] / 100)
             target_price = entry_price * (1 - self.settings["target_pct"] / 100)
         self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price)
+        self.selected_symbols.add(symbol)
+
+    def _record_scan_results(self):
+        rows = []
+        buy_selected = 0
+        sell_selected = 0
+        for symbol, details in self.candidate_details.items():
+            row = dict(details)
+            row["selected_for_trade"] = symbol in self.selected_symbols
+            if row["selected_for_trade"] and row["side"] == "BUY":
+                buy_selected += 1
+            if row["selected_for_trade"] and row["side"] == "SELL":
+                sell_selected += 1
+            rows.append(row)
+        result = {
+            "algo_id": self.algo_id,
+            "scan_time": datetime.datetime.now().isoformat(),
+            "total_scanned": len(self.watchlist),
+            "passed_opening_range": rows,
+            "buy_candidates": len([r for r in rows if r["side"] == "BUY"]),
+            "sell_candidates": len([r for r in rows if r["side"] == "SELL"]),
+            "buy_selected": buy_selected,
+            "sell_selected": sell_selected,
+            "overflow_buy": 0,
+            "overflow_sell": 0,
+            "total_filtered_out": max(0, len(self.watchlist) - len(rows)),
+        }
+        from app.engine import SCAN_RESULTS
+        from app.broadcaster import broadcast_sync
+        SCAN_RESULTS[self.algo_id] = result
+        broadcast_sync({"event": "scan_complete", "algo_id": self.algo_id, "results": result})
 
     def check_exits(self):
         for position in self.broker.open_positions():

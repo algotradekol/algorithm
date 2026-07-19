@@ -37,6 +37,8 @@ class Algo1OpeningRange(Strategy):
         self.prev_close: dict[str, float] = {}
         self.buy_candidates: list[str] = []
         self.sell_candidates: list[str] = []
+        self.candidate_details: dict[str, dict] = {}
+        self.selected_symbols: set[str] = set()
         self.entries_evaluated_today = None
         # Load previous closes in background to avoid blocking startup
         threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
@@ -78,11 +80,33 @@ class Algo1OpeningRange(Strategy):
             gap_pct = abs(open_price - prev_close) / prev_close * 100
             if gap_pct <= GAP_LIMIT_PCT:
                 self.buy_candidates.append(symbol)
+                self.candidate_details[symbol] = {
+                    "symbol": symbol,
+                    "side": "BUY",
+                    "open": open_price,
+                    "prev_close": prev_close,
+                    "gap_pct": gap_pct,
+                    "passed_indicators": True,
+                    "indicator_results": {},
+                    "selected_for_trade": False,
+                    "rejection_reason": None,
+                }
 
         if open_price == high:
             gap_pct = abs(prev_close - open_price) / prev_close * 100
             if gap_pct <= GAP_LIMIT_PCT:
                 self.sell_candidates.append(symbol)
+                self.candidate_details[symbol] = {
+                    "symbol": symbol,
+                    "side": "SELL",
+                    "open": open_price,
+                    "prev_close": prev_close,
+                    "gap_pct": gap_pct,
+                    "passed_indicators": True,
+                    "indicator_results": {},
+                    "selected_for_trade": False,
+                    "rejection_reason": None,
+                }
 
     def evaluate_entries(self, get_ltp_fn):
         """Called by the engine at 9:16. get_ltp_fn(symbol) -> current price."""
@@ -109,6 +133,7 @@ class Algo1OpeningRange(Strategy):
             self._enter(symbol, "BUY", get_ltp_fn(symbol))
         for symbol in sells:
             self._enter(symbol, "SELL", get_ltp_fn(symbol))
+        self._record_scan_results(buys, sells)
 
     def _enter(self, symbol: str, side: str, entry_price: float):
         if not entry_price or self.broker.already_traded_today(symbol):
@@ -123,6 +148,32 @@ class Algo1OpeningRange(Strategy):
             sl_price = entry_price * (1 + self.settings["sl_pct"] / 100)
             target_price = entry_price * (1 - self.settings["target_pct"] / 100)
         self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price)
+        self.selected_symbols.add(symbol)
+
+    def _record_scan_results(self, buys: list[str], sells: list[str]):
+        rows = []
+        for symbol, details in self.candidate_details.items():
+            row = dict(details)
+            row["selected_for_trade"] = symbol in self.selected_symbols
+            row["rejection_reason"] = None if row["selected_for_trade"] else "slots_full"
+            rows.append(row)
+        result = {
+            "algo_id": self.algo_id,
+            "scan_time": datetime.datetime.now().isoformat(),
+            "total_scanned": len(self.watchlist),
+            "passed_opening_range": rows,
+            "buy_candidates": len(self.buy_candidates),
+            "sell_candidates": len(self.sell_candidates),
+            "buy_selected": len(buys),
+            "sell_selected": len(sells),
+            "overflow_buy": max(0, len(buys) - self.settings["max_buy_trades"]),
+            "overflow_sell": max(0, len(sells) - self.settings["max_sell_trades"]),
+            "total_filtered_out": max(0, len(self.watchlist) - len(rows)),
+        }
+        from app.engine import SCAN_RESULTS
+        from app.broadcaster import broadcast_sync
+        SCAN_RESULTS[self.algo_id] = result
+        broadcast_sync({"event": "scan_complete", "algo_id": self.algo_id, "results": result})
 
     def check_exits(self):
         for position in self.broker.open_positions():

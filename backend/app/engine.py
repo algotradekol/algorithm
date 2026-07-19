@@ -13,6 +13,7 @@ import datetime
 import threading
 import time
 
+from app.broadcaster import broadcast_sync
 from .symbols import get_nse500_watchlist
 from .candle_aggregator import CandleAggregator
 from .fyers_client import connect_live_feed
@@ -23,6 +24,8 @@ from .config import ENTRY_CHECK_TIME, SQUARE_OFF_TIME
 
 aggregator = CandleAggregator()
 last_ltp: dict[str, float] = {}
+last_price_broadcast: dict[str, float] = {}
+SCAN_RESULTS: dict[str, dict] = {}
 
 STRATEGIES = {}   # populated in start_engine() once the watchlist is known
 WATCHLIST: list[str] = []
@@ -45,6 +48,10 @@ def _on_tick(message: dict):
 
     last_ltp[symbol] = ltp
     now = datetime.datetime.now()
+    now_ts = time.time()
+    if now_ts - last_price_broadcast.get(symbol, 0) >= 1:
+        broadcast_sync({"event": "price_update", "symbol": symbol, "ltp": ltp})
+        last_price_broadcast[symbol] = now_ts
 
     def on_candle_close(sym, candle, indicators):
         for strategy in STRATEGIES.values():
@@ -72,9 +79,9 @@ def _scheduler_loop():
         current_time = now.strftime("%H:%M")
 
         if current_time >= ENTRY_CHECK_TIME and entries_fired_date != today:
-            algo1 = STRATEGIES.get("algo1")
-            if algo1:
-                algo1.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
+            for strategy in STRATEGIES.values():
+                if hasattr(strategy, "evaluate_entries"):
+                    strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
             entries_fired_date = today
 
         if current_time >= SQUARE_OFF_TIME and squareoff_fired_date != today:
