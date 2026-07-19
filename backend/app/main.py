@@ -177,7 +177,7 @@ def ai_messages(session_id: str, _user=Depends(require_auth)):
 
 @app.post("/api/ai/chat")
 def ai_chat(payload: dict, _user=Depends(require_auth)):
-    from app.ai_assistant import send_message
+    from app.ai_assistant import AIProviderError, AIProviderRateLimitError, send_message
     try:
         return send_message(
             _user.get("sub", "unknown"),
@@ -185,6 +185,10 @@ def ai_chat(payload: dict, _user=Depends(require_auth)):
             payload.get("message", ""),
             payload.get("page_context") or {},
         )
+    except AIProviderRateLimitError as exc:
+        raise HTTPException(status_code=429, detail=str(exc))
+    except AIProviderError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
     except Exception as exc:
         raise HTTPException(status_code=500, detail=str(exc))
 

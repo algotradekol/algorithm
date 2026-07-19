@@ -71,8 +71,9 @@ export default function ChargesPanel() {
 
         <button
           onClick={save}
-          className="mt-5 w-full rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2.5 text-sm font-semibold text-white"
+          className="mt-5 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2.5 text-sm font-semibold text-white"
         >
+          <i className="ri-save-fill text-sm text-white" />
           {saved ? 'Saved' : 'Save changes'}
         </button>
       </div>
@@ -101,6 +102,8 @@ function PreviewRow({ label, value, strong, pnl }: { label: string; value: numbe
     <div className="flex items-center justify-between gap-4 py-2">
       <span className="text-xs uppercase tracking-wider text-gray-500">{label}</span>
       <span className={`num ${strong ? 'text-base font-semibold' : 'text-sm'} ${pnl ? pnlColor(value) : 'text-gray-100'}`}>
+        {pnl && value > 0 && <i className="ri-arrow-up-circle-fill mr-1 text-sm text-[#22c55e]" />}
+        {pnl && value < 0 && <i className="ri-arrow-down-circle-fill mr-1 text-sm text-[#ef4444]" />}
         {formatMoney(value)}
       </span>
     </div>

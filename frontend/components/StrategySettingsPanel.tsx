@@ -95,9 +95,10 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
 
         <button
           onClick={save}
-          className="mt-5 w-full rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2.5 text-sm font-semibold text-white"
+          className="mt-5 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2.5 text-sm font-semibold text-white"
         >
-          {saved ? 'Saved ✓' : 'Save settings'}
+          <i className="ri-save-fill text-sm text-white" />
+          {saved ? 'Saved' : 'Save settings'}
         </button>
       </div>
 

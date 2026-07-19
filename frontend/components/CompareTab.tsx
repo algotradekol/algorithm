@@ -57,33 +57,39 @@ export default function CompareTab() {
         <table className="w-full min-w-max border-collapse text-xs">
           <thead className="bg-[#111827]">
             <tr>
-              <th className="table-cell label">Metric</th>
+              <th className="table-cell label sticky left-0 z-20 min-w-32 bg-[#111827]">Metric</th>
               {algoIds.map((id) => (
                 <th key={id} className="table-cell label">{id}</th>
               ))}
             </tr>
           </thead>
           <tbody>
-            {rows.map(([key, label], rowIndex) => (
-              <tr key={key} className={rowIndex % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
-                <td className="table-cell text-gray-500">{label}</td>
+            {rows.map(([key, label], rowIndex) => {
+              const rowBg = rowIndex % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]';
+              return (
+              <tr key={key} className={rowBg}>
+                <td className={`table-cell sticky left-0 z-10 min-w-32 text-gray-500 ${rowBg}`}>{label}</td>
                 {algoIds.map((id) => {
                   const value = data[id][key];
                   const isMoney = key.includes('pnl') || key === 'cash' || key === 'realized_charges';
                   const isNet = key === 'realized_net_pnl';
+                  const pnl = Number(value || 0);
                   return (
                     <td
                       key={id}
                       className={`table-cell num ${isNet ? 'text-2xl font-semibold' : 'text-sm'} ${
-                        key.includes('pnl') ? pnlColor(Number(value || 0)) : 'text-gray-100'
+                        key.includes('pnl') ? pnlColor(pnl) : 'text-gray-100'
                       }`}
                     >
+                      {key.includes('pnl') && pnl > 0 && <i className="ri-arrow-up-circle-fill mr-1 text-sm text-[#22c55e]" />}
+                      {key.includes('pnl') && pnl < 0 && <i className="ri-arrow-down-circle-fill mr-1 text-sm text-[#ef4444]" />}
                       {isMoney ? formatMoney(value) : value}
                     </td>
                   );
                 })}
               </tr>
-            ))}
+            );
+            })}
           </tbody>
         </table>
       </div>

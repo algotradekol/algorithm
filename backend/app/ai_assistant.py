@@ -14,6 +14,14 @@ Do not claim real broker execution happened unless the provided app context show
 This is paper trading, not financial advice."""
 
 
+class AIProviderRateLimitError(RuntimeError):
+    pass
+
+
+class AIProviderError(RuntimeError):
+    pass
+
+
 def list_sessions(user_id: str) -> list[dict]:
     result = supabase.table("ai_chat_sessions").select("*").eq("user_id", user_id).order("updated_at", desc=True).limit(30).execute()
     return result.data or []
@@ -110,7 +118,15 @@ USER MESSAGE:
         json={"contents": [{"parts": [{"text": prompt}]}]},
         timeout=60,
     )
-    response.raise_for_status()
+    if response.status_code == 429:
+        raise AIProviderRateLimitError(
+            "Gemini API quota/rate limit hit. Wait a bit, reduce rapid chat retries, or check the Gemini API key billing/quota in Google AI Studio or Google Cloud."
+        )
+    try:
+        response.raise_for_status()
+    except requests.HTTPError as exc:
+        detail = _extract_provider_error(response)
+        raise AIProviderError(f"Gemini API error {response.status_code}: {detail}") from exc
     data = response.json()
     try:
         return data["candidates"][0]["content"]["parts"][0]["text"]
@@ -135,3 +151,11 @@ def _safe(fn):
 
 def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _extract_provider_error(response: requests.Response) -> str:
+    try:
+        data = response.json()
+        return data.get("error", {}).get("message") or response.text[:500]
+    except Exception:
+        return response.text[:500] or response.reason

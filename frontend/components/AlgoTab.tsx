@@ -83,7 +83,7 @@ export default function AlgoTab({
           </div>
           <button
             onClick={() => setSettingsOpen((open) => !open)}
-            className="rounded border border-[#3b82f6] px-3 py-1.5 text-xs font-semibold text-[#3b82f6]"
+            className="min-h-10 rounded border border-[#3b82f6] px-3 py-1.5 text-xs font-semibold text-[#3b82f6]"
           >
             Settings
           </button>
@@ -112,14 +112,14 @@ export default function AlgoTab({
         </div>
         <button
           onClick={() => setSettingsOpen((open) => !open)}
-          className="rounded border border-[#3b82f6] px-3 py-1.5 text-xs font-semibold text-[#3b82f6]"
+          className="min-h-10 rounded border border-[#3b82f6] px-3 py-1.5 text-xs font-semibold text-[#3b82f6]"
         >
           Settings
         </button>
       </div>
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
 
-      <div className="grid grid-cols-3 gap-2 lg:grid-cols-6">
+      <div className="grid grid-cols-3 gap-1.5 sm:gap-2 lg:grid-cols-6">
         <MetricCard label="Cash Remaining" value={formatMoney(cash)} />
         <MetricCard label="Equity" value={formatMoney(cash)} delta={formatSignedMoney(equityDelta)} pnl={equityDelta} />
         <MetricCard label="Trades Today" value={`${summary.trade_count_today} / 10`} />
@@ -176,9 +176,12 @@ function MetricCard({
   important?: boolean;
 }) {
   return (
-    <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
-      <div className="label">{label}</div>
-      <div className={`num mt-2 font-semibold ${important ? 'text-2xl' : 'text-base'} ${pnlColor(pnl)}`}>
+    <div className="rounded border border-[#1f2937] bg-[#111827] p-2 sm:p-3">
+      <div className="label text-[10px] sm:text-xs">{label}</div>
+      <div className={`num mt-1.5 flex items-center gap-1 font-semibold sm:mt-2 ${important ? 'text-lg sm:text-2xl' : 'text-xs sm:text-base'} ${pnlColor(pnl)}`}>
+        {label === 'Trades Today' && <i className="ri-exchange-fill text-xs text-slate-400" />}
+        {pnl !== undefined && pnl > 0 && <i className="ri-arrow-up-circle-fill text-sm text-[#22c55e]" />}
+        {pnl !== undefined && pnl < 0 && <i className="ri-arrow-down-circle-fill text-sm text-[#ef4444]" />}
         {value}
       </div>
       {delta && <div className={`num mt-1 text-xs ${pnlColor(pnl)}`}>{delta} vs start</div>}
@@ -188,8 +191,36 @@ function MetricCard({
 
 function PositionsTable({ rows }: { rows: any[] }) {
   return (
-    <div className="overflow-x-auto rounded border border-[#1f2937]">
-      <table className="w-full min-w-max border-collapse text-xs">
+    <>
+      <div className="space-y-2 sm:hidden">
+        {!rows.length ? <p className="rounded border border-[#1f2937] bg-[#0d1117] p-3 text-sm text-gray-500">No open positions</p> : rows.map((row, index) => {
+          const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
+          const entry = Number(row.entry_price || 0);
+          const qty = Number(row.qty || 0);
+          const unreal = Number.isFinite(ltp) ? (row.side === 'SELL' ? entry - ltp : ltp - entry) * qty : null;
+          return (
+            <div key={row.id || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
+              <div className="flex items-center justify-between gap-3">
+                <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
+                <div className={`num flex items-center gap-1 text-base font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</div>
+              </div>
+              <div className={`mt-1 inline-flex items-center gap-1 text-sm font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
+                <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} text-sm`} />
+                {row.side === 'SELL' ? 'S' : 'B'}
+              </div>
+              <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
+                <MobileField label="Qty" value={row.qty} />
+                <MobileField label="Entry" value={formatNumber(row.entry_price)} />
+                <MobileField label="LTP" value={Number.isFinite(ltp) ? formatNumber(ltp) : '--'} />
+                <MobileField label="SL" value={formatNumber(row.sl_price)} />
+                <MobileField label="Target" value={formatNumber(row.target_price)} />
+              </div>
+            </div>
+          );
+        })}
+      </div>
+      <div className="hidden overflow-x-auto rounded border border-[#1f2937] sm:block">
+        <table className="w-full min-w-max border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
             {['Symbol', 'Side', 'Qty', 'Entry', 'LTP', 'SL', 'Target', 'Unreal P&L'].map((column) => (
@@ -213,6 +244,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
               <tr key={row.id || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
                 <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
                 <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
+                  <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} mr-1 text-sm`} />
                   {row.side === 'SELL' ? 'S' : 'B'}
                 </td>
                 <td className="table-cell num text-gray-100">{row.qty}</td>
@@ -226,14 +258,41 @@ function PositionsTable({ rows }: { rows: any[] }) {
           })}
         </tbody>
       </table>
-    </div>
+      </div>
+    </>
   );
 }
 
 function TradesTable({ rows }: { rows: any[] }) {
   return (
-    <div className="overflow-x-auto rounded border border-[#1f2937]">
-      <table className="w-full min-w-max border-collapse text-xs">
+    <>
+      <div className="space-y-2 sm:hidden">
+        {!rows.length ? <p className="rounded border border-[#1f2937] bg-[#0d1117] p-3 text-sm text-gray-500">No trades today</p> : rows.map((row, index) => (
+          <div key={row.id || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
+              <div className={`num flex items-center gap-1 text-base font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>
+                {Number(row.net_pnl || 0) > 0 && <i className="ri-arrow-up-circle-fill text-sm text-[#22c55e]" />}
+                {Number(row.net_pnl || 0) < 0 && <i className="ri-arrow-down-circle-fill text-sm text-[#ef4444]" />}
+                {formatMoney(row.net_pnl)}
+              </div>
+            </div>
+            <div className={`mt-1 inline-flex items-center gap-1 text-sm font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
+              <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} text-sm`} />
+              {row.side === 'SELL' ? 'S' : 'B'}
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
+              <MobileField label="Entry" value={formatNumber(row.entry_price)} />
+              <MobileField label="Exit" value={formatNumber(row.exit_price)} />
+              <MobileField label="Reason" value={formatReason(row.exit_reason)} />
+              <MobileField label="Gross" value={formatMoney(row.gross_pnl)} />
+              <MobileField label="Charges" value={formatMoney(row.total_charges)} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="hidden overflow-x-auto rounded border border-[#1f2937] sm:block">
+        <table className="w-full min-w-max border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
             {['Symbol', 'Side', 'Entry', 'Exit', 'Reason', 'Gross', 'Charges', 'Net'].map((column) => (
@@ -250,11 +309,15 @@ function TradesTable({ rows }: { rows: any[] }) {
             <tr key={row.id || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
               <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
               <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
+                <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} mr-1 text-sm`} />
                 {row.side === 'SELL' ? 'S' : 'B'}
               </td>
               <td className="table-cell num text-gray-100">{formatNumber(row.entry_price)}</td>
               <td className="table-cell num text-gray-100">{formatNumber(row.exit_price)}</td>
-              <td className={`table-cell font-semibold ${reasonColor(row.exit_reason)}`}>{formatReason(row.exit_reason)}</td>
+              <td className={`table-cell font-semibold ${reasonColor(row.exit_reason)}`}>
+                {reasonIcon(row.exit_reason)}
+                {formatReason(row.exit_reason)}
+              </td>
               <td className={`table-cell num ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
               <td className="table-cell num text-gray-100">{formatMoney(row.total_charges)}</td>
               <td className={`table-cell num font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>{formatMoney(row.net_pnl)}</td>
@@ -262,6 +325,16 @@ function TradesTable({ rows }: { rows: any[] }) {
           ))}
         </tbody>
       </table>
+      </div>
+    </>
+  );
+}
+
+function MobileField({ label, value }: { label: string; value: any }) {
+  return (
+    <div>
+      <div className="label text-[10px]">{label}</div>
+      <div className="num mt-0.5 text-gray-100">{value}</div>
     </div>
   );
 }
@@ -318,6 +391,13 @@ function reasonColor(reason: string) {
   if (reason === 'SL') return 'text-[#ef4444]';
   if (reason === 'EOD_SQUAREOFF' || reason === 'EOD') return 'text-[#f59e0b]';
   return 'text-gray-100';
+}
+
+function reasonIcon(reason: string) {
+  if (reason === 'TARGET') return <i className="ri-checkbox-circle-fill mr-1 text-sm text-[#22c55e]" />;
+  if (reason === 'SL') return <i className="ri-close-circle-fill mr-1 text-sm text-[#ef4444]" />;
+  if (reason === 'EOD_SQUAREOFF' || reason === 'EOD') return <i className="ri-error-warning-fill mr-1 text-sm text-[#f59e0b]" />;
+  return null;
 }
 
 function formatReason(reason: string) {

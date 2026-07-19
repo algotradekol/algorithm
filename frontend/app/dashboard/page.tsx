@@ -45,10 +45,10 @@ function DashboardContent() {
   const searchParams = useSearchParams();
   const fyersLogin = searchParams.get('fyers_login');
   const tradingReady = Boolean(fyersStatus?.connected && engineStatus?.state === 'running');
-  const statusTone = fyersStatus?.connected ? 'bg-[#22c55e]' : fyersStatus?.status === 'disconnected' ? 'bg-[#f59e0b]' : 'bg-[#ef4444]';
   const statusText = fyersStatus?.connected ? 'LIVE' : fyersStatus?.status === 'disconnected' ? 'TOKEN MISSING' : 'STOPPED';
-  const wsTone = wsStatus === 'connected' ? 'bg-[#22c55e]' : wsStatus === 'reconnecting' ? 'bg-[#f59e0b]' : 'bg-[#ef4444]';
   const wsText = wsStatus === 'connected' ? 'Live' : wsStatus === 'reconnecting' ? 'Reconnecting' : 'Offline';
+  const statusIconTone = fyersStatus?.connected ? 'text-[#22c55e]' : fyersStatus?.status === 'disconnected' ? 'text-[#f59e0b]' : 'text-[#ef4444]';
+  const wsIconTone = wsStatus === 'connected' ? 'text-[#22c55e]' : wsStatus === 'reconnecting' ? 'text-[#f59e0b]' : 'text-[#ef4444]';
 
   useEffect(() => {
     getAuthToken().then((token) => {
@@ -105,8 +105,8 @@ function DashboardContent() {
   if (!ready) return null;
 
   return (
-    <main className="min-h-screen bg-[#0a0e14]">
-      <div className="mx-auto max-w-[1400px] px-6 py-4">
+    <main className="min-h-screen overflow-x-hidden bg-[#0a0e14]">
+      <div className="mx-auto max-w-[1400px] px-3 py-3 sm:px-6 sm:py-4">
         {fyersLogin && showFyersBanner && (
           <div
             className={`mb-3 flex items-center justify-between gap-3 rounded border px-3 py-2 ${
@@ -128,43 +128,44 @@ function DashboardContent() {
         )}
 
         <header className="flex flex-col gap-3 border-b border-[#1f2937] pb-3 lg:flex-row lg:items-center lg:justify-between">
-          <div className="flex flex-wrap items-center gap-x-5 gap-y-2">
-            <div className="font-mono text-base font-semibold tracking-[0.18em] text-gray-100">ALGO TRADING</div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-2 sm:gap-x-5">
+            <div className="font-mono text-sm font-semibold tracking-[0.18em] text-gray-100 sm:text-base">ALGO TRADING</div>
             <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-gray-400">
-              <span className={`h-2 w-2 rounded-full ${statusTone}`} />
+              <i className={`ri-checkbox-blank-circle-fill text-[8px] ${statusIconTone}`} />
               <span>{statusText}</span>
             </div>
             <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-gray-400">
-              <span className={`h-2 w-2 rounded-full ${wsTone}`} />
+              <i className={`ri-checkbox-blank-circle-fill text-[8px] ${wsIconTone}`} />
               <span>WS {wsText}</span>
             </div>
-            <div className="font-mono text-sm tabular-nums text-gray-300">{istTime} IST</div>
+            <div className="font-mono text-xs tabular-nums text-gray-300 sm:text-sm">{istTime} IST</div>
             <div
               title={engineStatus?.error || `${engineStatus?.watchlist_count || 0} symbols loaded`}
               className="flex items-center gap-2 text-xs uppercase tracking-wider text-gray-400"
             >
-              <span className={`h-2 w-2 rounded-full ${engineStatus?.state === 'running' ? 'bg-[#22c55e]' : 'bg-[#f59e0b]'}`} />
+              <i className={`ri-checkbox-blank-circle-fill text-[8px] ${engineStatus?.state === 'running' ? 'text-[#22c55e]' : 'text-[#f59e0b]'}`} />
               <span>Engine {engineStatus?.state || 'checking'}</span>
             </div>
           </div>
 
-          <div className="flex items-center gap-4">
+          <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <FyersLoginButton />
             <button
               onClick={async () => { clearPinToken(); await supabase.auth.signOut(); router.replace('/login'); }}
-              className="text-sm text-gray-500 hover:text-gray-100"
+              className="inline-flex min-h-10 items-center gap-1 text-sm text-gray-500 hover:text-gray-100"
             >
+              <i className="ri-logout-box-fill text-sm" />
               Logout
             </button>
           </div>
         </header>
 
-        <nav className="mb-4 flex gap-6 overflow-x-auto border-b border-[#1f2937]">
+        <nav className="mb-4 flex gap-6 overflow-x-auto whitespace-nowrap border-b border-[#1f2937] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {TABS.map((t) => (
             <button
               key={t}
               onClick={() => setTab(t)}
-              className={`whitespace-nowrap border-b-2 px-0 py-3 text-sm font-medium ${
+              className={`min-h-10 whitespace-nowrap border-b-2 px-0 py-3 text-sm font-medium ${
                 tab === t
                   ? 'border-[#3b82f6] text-gray-100'
                   : 'border-transparent text-gray-500 hover:text-gray-300'
@@ -178,7 +179,7 @@ function DashboardContent() {
         {!tradingReady && tab !== 'Charges' ? (
           <section className="panel p-4">
             <div className="flex items-center gap-2 text-sm font-semibold text-gray-100">
-              <span className={`h-2 w-2 rounded-full ${statusTone}`} />
+              <i className={`ri-checkbox-blank-circle-fill text-[8px] ${statusIconTone}`} />
               Connect Fyers to start polling
             </div>
             <p className="mt-2 text-sm text-gray-500">
@@ -188,13 +189,13 @@ function DashboardContent() {
             <div className="mt-4 grid gap-3 md:grid-cols-2">
               <StatusCard
                 label="Fyers"
-                dotClass={statusTone}
+                dotClass={statusIconTone}
                 value={fyersStatus ? (fyersStatus.connected ? 'Connected' : fyersStatus.status) : 'Checking'}
                 detail={fyersStatus?.message || 'Waiting for broker status check.'}
               />
               <StatusCard
                 label="Engine"
-                dotClass={engineStatus?.state === 'running' ? 'bg-[#22c55e]' : 'bg-[#f59e0b]'}
+                dotClass={engineStatus?.state === 'running' ? 'text-[#22c55e]' : 'text-[#f59e0b]'}
                 value={engineStatus?.state || 'Checking'}
                 detail={engineStatus?.error || `${engineStatus?.watchlist_count || 0} symbols loaded.`}
               />
@@ -235,7 +236,7 @@ function StatusCard({ label, dotClass, value, detail }: { label: string; dotClas
     <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
       <div className="label">{label}</div>
       <div className="mt-2 flex items-center gap-2 text-sm font-semibold text-gray-100">
-        <span className={`h-2 w-2 rounded-full ${dotClass}`} />
+        <i className={`ri-checkbox-blank-circle-fill text-[8px] ${dotClass}`} />
         {value}
       </div>
       <p className="mt-2 text-xs text-gray-500">{detail}</p>

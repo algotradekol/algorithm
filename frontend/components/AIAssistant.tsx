@@ -53,22 +53,27 @@ export default function AIAssistant() {
       setMessages(result.messages || [...optimistic, { role: 'assistant', content: result.answer }]);
       api.aiSessions().then(setSessions).catch(() => {});
     } catch (e: any) {
-      setError(e?.message || 'AI request failed');
+      const messageText = e?.message || 'AI request failed';
+      setError(messageText.includes('429') || messageText.toLowerCase().includes('quota')
+        ? 'Gemini quota/rate limit hit. Wait a bit, avoid repeated sends, or check the API key quota/billing in Google AI Studio or Google Cloud.'
+        : messageText);
     } finally {
       setLoading(false);
     }
   }
 
   return (
-    <div className="fixed bottom-4 right-4 z-50">
+    <div className="fixed bottom-3 right-3 z-50 sm:bottom-4 sm:right-4">
       {open && (
-        <section className="mb-3 flex h-[620px] w-[420px] max-w-[calc(100vw-2rem)] flex-col rounded border border-[#1f2937] bg-[#111827]">
+        <section className="mb-3 flex h-[min(620px,calc(100vh-6rem))] w-[calc(100vw-1.5rem)] max-w-[420px] flex-col rounded border border-[#1f2937] bg-[#111827]">
           <header className="flex items-center justify-between border-b border-[#1f2937] p-3">
             <div>
               <div className="font-mono text-sm font-semibold text-gray-100">AI COPILOT</div>
               <div className="text-xs text-gray-500">Gemini-backed trading/system assistant</div>
             </div>
-            <button onClick={() => setOpen(false)} className="text-gray-500 hover:text-gray-100">X</button>
+            <button onClick={() => setOpen(false)} className="min-h-10 px-2 text-gray-500 hover:text-gray-100">
+              <i className="ri-close-circle-fill text-base" />
+            </button>
           </header>
 
           <div className="flex gap-2 border-b border-[#1f2937] p-3">
@@ -76,7 +81,7 @@ export default function AIAssistant() {
               <option value="">Current chat</option>
               {sessions.map((session) => <option key={session.id} value={session.id}>{session.title}</option>)}
             </select>
-            <button onClick={newChat} className="rounded border border-[#3b82f6] px-3 text-xs text-[#3b82f6]">New</button>
+            <button onClick={newChat} className="min-h-10 rounded border border-[#3b82f6] px-3 text-xs text-[#3b82f6]">New</button>
           </div>
 
           <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 text-sm">
@@ -109,7 +114,7 @@ export default function AIAssistant() {
               placeholder="Ask what happened, what to fix, or explain this page..."
               className="control h-20 resize-none"
             />
-            <button onClick={send} disabled={loading} className="mt-2 w-full rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
+            <button onClick={send} disabled={loading} className="mt-2 min-h-10 w-full rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2 text-sm font-semibold text-white disabled:opacity-60">
               {loading ? 'Thinking...' : 'Send'}
             </button>
           </div>
@@ -118,9 +123,11 @@ export default function AIAssistant() {
 
       <button
         onClick={() => setOpen((value) => !value)}
-        className="rounded border border-[#3b82f6] bg-[#111827] px-4 py-3 text-sm font-semibold text-[#3b82f6]"
+        aria-label="Open AI Copilot"
+        title="AI Copilot"
+        className="flex h-12 w-12 items-center justify-center rounded border border-[#3b82f6] bg-[#111827] text-[#3b82f6]"
       >
-        AI Copilot
+        <i className="ri-robot-2-fill text-xl" />
       </button>
     </div>
   );
