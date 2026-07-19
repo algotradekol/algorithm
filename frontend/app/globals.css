@@ -51,4 +51,26 @@
   .scrollbar-hidden::-webkit-scrollbar {
     display: none;
   }
+
+  .chat-scrollbar {
+    scrollbar-width: thin;
+    scrollbar-color: #475569 #0d1117;
+  }
+
+  .chat-scrollbar::-webkit-scrollbar {
+    width: 8px;
+  }
+
+  .chat-scrollbar::-webkit-scrollbar-track {
+    background: #0d1117;
+  }
+
+  .chat-scrollbar::-webkit-scrollbar-thumb {
+    background: #475569;
+    border: 2px solid #0d1117;
+  }
+
+  .chat-scrollbar::-webkit-scrollbar-thumb:hover {
+    background: #64748b;
+  }
 }

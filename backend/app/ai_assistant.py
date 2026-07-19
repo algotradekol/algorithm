@@ -1,9 +1,10 @@
 import datetime
+from zoneinfo import ZoneInfo
 from uuid import uuid4
 
 import requests
 
-from app.config import GEMINI_API_KEY, GEMINI_MODEL
+from app.config import ENTRY_CHECK_TIME, GEMINI_API_KEY, GEMINI_MODEL, MARKET_OPEN_TIME, SQUARE_OFF_TIME
 from app.supabase_client import supabase
 
 
@@ -13,6 +14,13 @@ paper P&L, Fyers connection status, and deployment/system issues. Be precise and
 When the user asks about "this page", "what I am seeing", "this chart", or similar,
 prioritize APP CONTEXT JSON.page_context.active_tab, active_section, history, chart,
 and visible_page_text before giving a generic dashboard explanation.
+Format answers for easy reading in the app: use short Markdown sections, bullet lists,
+and brief conversational paragraphs. Never put multiple bullet points on one line.
+Avoid raw asterisks as separators; use proper Markdown bullets on their own lines.
+Do not infer that empty trades, empty logs, or zero candidates are caused by strict filters
+unless scan_results.scan_time exists for today and the scan result explicitly shows candidates
+were rejected by filters. If the market is not open yet, or the 9:16 scan has not run yet,
+say that first and clearly.
 Do not claim real broker execution happened unless the provided app context shows it.
 This is paper trading, not financial advice."""
 
@@ -88,25 +96,34 @@ def build_app_context(page_context: dict) -> dict:
     from app.charges import get_charges_config
     from app.strategy_settings import get_settings
 
+    market_clock = _market_clock()
     algos = {}
     for algo_id, strategy in STRATEGIES.items():
       broker = strategy.broker
+      scan_result = SCAN_RESULTS.get(algo_id)
       algos[algo_id] = {
           "display_name": getattr(strategy, "display_name", algo_id),
           "summary": _safe(lambda: broker.summary()),
           "positions": _safe(lambda: broker.open_positions()),
           "recent_trades": _safe(lambda: broker.recent_trades(limit=30)),
           "settings": _safe(lambda: get_settings(algo_id)),
-          "scan_results": SCAN_RESULTS.get(algo_id),
+          "scan_results": scan_result,
+          "scan_state": _scan_state(scan_result, market_clock),
       }
 
     return {
         "timestamp": _now(),
+        "market_clock": market_clock,
         "page_context": page_context,
         "engine": get_engine_status(),
         "fyers": get_connection_status(),
         "charges": _safe(get_charges_config),
         "algos": algos,
+        "interpretation_rules": {
+            "empty_trades": "Empty trade logs usually mean no paper trades have happened yet. Before market open or before the 9:16 scan, do not blame filters.",
+            "empty_scan": "If scan_results is missing or says no scan run yet today, explain that results appear after the 9:16 AM scan.",
+            "strict_filters": "Only mention strict filters when scan_results has a scan_time and rejection data showing filters rejected candidates.",
+        },
     }
 
 
@@ -163,6 +180,52 @@ def _safe(fn):
 
 def _now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _market_clock() -> dict:
+    now = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
+    current_time = now.strftime("%H:%M")
+    market_open = current_time >= MARKET_OPEN_TIME
+    entry_scan_due = current_time >= ENTRY_CHECK_TIME
+    after_squareoff = current_time >= SQUARE_OFF_TIME
+    if not market_open:
+        phase = "before_market_open"
+    elif not entry_scan_due:
+        phase = "market_open_before_9_16_scan"
+    elif after_squareoff:
+        phase = "after_square_off"
+    else:
+        phase = "market_open_after_9_16_scan"
+    return {
+        "timezone": "Asia/Kolkata",
+        "date": now.date().isoformat(),
+        "time": current_time,
+        "market_open_time": MARKET_OPEN_TIME,
+        "entry_scan_time": ENTRY_CHECK_TIME,
+        "square_off_time": SQUARE_OFF_TIME,
+        "phase": phase,
+        "market_open": market_open,
+        "entry_scan_due": entry_scan_due,
+        "after_squareoff": after_squareoff,
+    }
+
+
+def _scan_state(scan_result: dict | None, market_clock: dict) -> dict:
+    if not scan_result or not scan_result.get("scan_time"):
+        return {
+            "status": "not_run_today",
+            "plain_english": "The 9:16 AM scan has not produced results yet. Empty candidates/trades should not be blamed on filters.",
+        }
+    scan_date = str(scan_result.get("scan_time", ""))[:10]
+    if scan_date != market_clock["date"]:
+        return {
+            "status": "stale",
+            "plain_english": "The available scan result is from a previous date, not today's live market session.",
+        }
+    return {
+        "status": "ran_today",
+        "plain_english": "Today's scan has run; rejection/candidate counts can be interpreted from scan_results.",
+    }
 
 
 def _extract_provider_error(response: requests.Response) -> str:
