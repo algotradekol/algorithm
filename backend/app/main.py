@@ -175,6 +175,12 @@ def ai_messages(session_id: str, _user=Depends(require_auth)):
     return get_messages(session_id)
 
 
+@app.delete("/api/ai/sessions/{session_id}")
+def ai_delete_session(session_id: str, _user=Depends(require_auth)):
+    from app.ai_assistant import delete_session
+    return delete_session(_user.get("sub", "unknown"), session_id)
+
+
 @app.post("/api/ai/chat")
 def ai_chat(payload: dict, _user=Depends(require_auth)):
     from app.ai_assistant import AIProviderError, AIProviderRateLimitError, send_message

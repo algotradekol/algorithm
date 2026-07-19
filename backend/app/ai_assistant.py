@@ -45,6 +45,15 @@ def get_messages(session_id: str) -> list[dict]:
     return result.data or []
 
 
+def delete_session(user_id: str, session_id: str) -> dict:
+    result = supabase.table("ai_chat_sessions").select("id").eq("id", session_id).eq("user_id", user_id).execute()
+    if not result.data:
+        return {"deleted": False}
+    supabase.table("ai_chat_messages").delete().eq("session_id", session_id).execute()
+    supabase.table("ai_chat_sessions").delete().eq("id", session_id).eq("user_id", user_id).execute()
+    return {"deleted": True}
+
+
 def send_message(user_id: str, session_id: str | None, message: str, page_context: dict | None = None) -> dict:
     if not GEMINI_API_KEY:
         raise RuntimeError("GEMINI_API_KEY is not configured on the backend")

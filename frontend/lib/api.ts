@@ -46,6 +46,7 @@ export const api = {
   aiSessions: () => authedFetch('/api/ai/sessions'),
   aiCreateSession: (title = 'New chat') => authedFetch('/api/ai/sessions', { method: 'POST', body: JSON.stringify({ title }) }),
   aiMessages: (sessionId: string) => authedFetch(`/api/ai/sessions/${sessionId}/messages`),
+  aiDeleteSession: (sessionId: string) => authedFetch(`/api/ai/sessions/${sessionId}`, { method: 'DELETE' }),
   aiChat: (payload: object) => authedFetch('/api/ai/chat', { method: 'POST', body: JSON.stringify(payload) }),
   getCharges: () => authedFetch('/api/charges'),
   updateCharges: (config: object) =>

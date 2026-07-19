@@ -31,6 +31,22 @@ export default function AIAssistant() {
     setMessages([]);
   }
 
+  async function deleteChat() {
+    if (!sessionId) return;
+    const selected = sessions.find((session) => session.id === sessionId);
+    if (!window.confirm(`Delete "${selected?.title || 'this chat'}"?`)) return;
+    try {
+      await api.aiDeleteSession(sessionId);
+      const remaining = sessions.filter((session) => session.id !== sessionId);
+      setSessions(remaining);
+      setSessionId(remaining[0]?.id || '');
+      setMessages([]);
+      setError('');
+    } catch (e: any) {
+      setError(e?.message || 'Failed to delete chat');
+    }
+  }
+
   async function send() {
     const message = input.trim();
     if (!message || loading) return;
@@ -78,6 +94,15 @@ export default function AIAssistant() {
               {sessions.map((session) => <option key={session.id} value={session.id}>{session.title}</option>)}
             </select>
             <button onClick={newChat} className="min-h-10 rounded border border-[#3b82f6] px-3 text-xs text-[#3b82f6]">New</button>
+            <button
+              onClick={deleteChat}
+              disabled={!sessionId}
+              aria-label="Delete selected AI chat"
+              title="Delete selected chat"
+              className="min-h-10 rounded border border-[#ef4444]/50 px-3 text-xs text-[#ef4444] disabled:cursor-not-allowed disabled:border-[#1f2937] disabled:text-gray-600"
+            >
+              <i className="ri-delete-bin-fill text-sm" />
+            </button>
           </div>
 
           <div className="scrollbar-hidden min-h-0 flex-1 space-y-3 overflow-y-auto p-3 text-sm">

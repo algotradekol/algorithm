@@ -150,7 +150,7 @@ export default function AlgoTab({
 
 function SettingsDrawer({ open, algoId, onClose }: { open: boolean; algoId: string; onClose: () => void }) {
   return (
-    <div className={`overflow-hidden transition-[max-height,opacity] duration-300 ${open ? 'max-h-[1800px] opacity-100' : 'max-h-0 opacity-0'}`}>
+    <div className={`overflow-hidden transition-opacity duration-300 ${open ? 'opacity-100' : 'max-h-0 opacity-0'}`}>
       <div className="mt-4 rounded border border-[#1f2937] bg-[#0d1117] p-3">
         <div className="mb-3 flex items-center justify-between gap-3">
           <div className="label">Strategy Settings</div>
