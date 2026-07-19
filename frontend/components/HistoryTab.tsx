@@ -162,19 +162,33 @@ function ZoomableCandleChart({
   useEffect(() => {
     const chart = chartRef.current;
     if (!chart) return;
+    const chartElement = chart;
 
     function handleWheel(event: WheelEvent) {
       event.preventDefault();
       const zoomingIn = event.deltaY < 0;
+      const rect = chartElement.getBoundingClientRect();
+      const pointerRatio = Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width));
+
       setVisibleCount((current) => {
-        const step = Math.max(4, Math.round(current * 0.12));
-        return Math.min(maxVisible, Math.max(10, zoomingIn ? current - step : current + step));
+        const currentVisible = Math.min(Math.max(current, 10), maxVisible);
+        const currentMaxOffset = Math.max(0, normalized.length - currentVisible);
+        const currentOffset = Math.min(offsetFromEnd, currentMaxOffset);
+        const currentEnd = normalized.length - currentOffset;
+        const currentStart = Math.max(0, currentEnd - currentVisible);
+        const anchorIndex = currentStart + pointerRatio * Math.max(0, currentVisible - 1);
+        const step = Math.max(4, Math.round(currentVisible * 0.12));
+        const nextVisible = Math.min(maxVisible, Math.max(10, zoomingIn ? currentVisible - step : currentVisible + step));
+        const nextStart = Math.round(anchorIndex - pointerRatio * Math.max(0, nextVisible - 1));
+        const clampedStart = Math.min(Math.max(0, nextStart), Math.max(0, normalized.length - nextVisible));
+        setOffsetFromEnd(Math.max(0, normalized.length - (clampedStart + nextVisible)));
+        return nextVisible;
       });
     }
 
-    chart.addEventListener('wheel', handleWheel, { passive: false, capture: true });
-    return () => chart.removeEventListener('wheel', handleWheel, { capture: true });
-  }, [maxVisible]);
+    chartElement.addEventListener('wheel', handleWheel, { passive: false, capture: true });
+    return () => chartElement.removeEventListener('wheel', handleWheel, { capture: true });
+  }, [maxVisible, normalized.length, offsetFromEnd]);
 
   if (loading) return <p className="rounded border border-[#1f2937] bg-[#111827] p-4 text-sm text-gray-500">Loading candle history...</p>;
   if (!normalized.length) {
@@ -224,6 +238,17 @@ function ZoomableCandleChart({
   const change = last.close - first.open;
   const changePct = first.open ? change / first.open * 100 : 0;
 
+  function zoomAtRatio(ratio: number, zoomingIn: boolean) {
+    const currentVisible = clampedVisible;
+    const anchorIndex = start + ratio * Math.max(0, currentVisible - 1);
+    const step = Math.max(4, Math.round(currentVisible * (zoomingIn ? 0.25 : 0.35)));
+    const nextVisible = Math.min(maxVisible, Math.max(10, zoomingIn ? currentVisible - step : currentVisible + step));
+    const nextStart = Math.round(anchorIndex - ratio * Math.max(0, nextVisible - 1));
+    const clampedStart = Math.min(Math.max(0, nextStart), Math.max(0, normalized.length - nextVisible));
+    setVisibleCount(nextVisible);
+    setOffsetFromEnd(Math.max(0, normalized.length - (clampedStart + nextVisible)));
+  }
+
   return (
     <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
@@ -241,8 +266,8 @@ function ZoomableCandleChart({
           <Stat label="Change" value={`${change >= 0 ? '+' : ''}${formatNumber(change)} (${changePct.toFixed(2)}%)`} tone={change >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
         </div>
         <div className="flex items-center gap-2">
-          <button onClick={() => setVisibleCount((current) => Math.max(10, Math.round(current * 0.75)))} className="rounded border border-[#3b82f6] px-2 py-1 text-xs text-[#3b82f6]">Zoom In</button>
-          <button onClick={() => setVisibleCount((current) => Math.min(maxVisible, Math.round(current * 1.35)))} className="rounded border border-[#3b82f6] px-2 py-1 text-xs text-[#3b82f6]">Zoom Out</button>
+          <button onClick={() => zoomAtRatio(0.5, true)} className="rounded border border-[#3b82f6] px-2 py-1 text-xs text-[#3b82f6]">Zoom In</button>
+          <button onClick={() => zoomAtRatio(0.5, false)} className="rounded border border-[#3b82f6] px-2 py-1 text-xs text-[#3b82f6]">Zoom Out</button>
           <button onClick={() => { setVisibleCount(80); setOffsetFromEnd(0); }} className="rounded border border-[#1f2937] px-2 py-1 text-xs text-gray-500">Reset</button>
         </div>
       </div>

@@ -42,4 +42,13 @@
   .table-cell {
     @apply border-b border-[#1f2937] px-2 py-1.5 text-left align-middle;
   }
+
+  .scrollbar-hidden {
+    -ms-overflow-style: none;
+    scrollbar-width: none;
+  }
+
+  .scrollbar-hidden::-webkit-scrollbar {
+    display: none;
+  }
 }

@@ -63,7 +63,7 @@ export default function AIAssistant() {
   }
 
   return (
-    <div className="fixed bottom-3 right-3 z-50 sm:bottom-4 sm:right-4">
+    <div className="fixed bottom-3 right-3 z-50 flex flex-col items-end sm:bottom-4 sm:right-4">
       {open && (
         <section className="mb-3 flex h-[min(620px,calc(100vh-6rem))] w-[calc(100vw-1.5rem)] max-w-[420px] flex-col rounded border border-[#1f2937] bg-[#111827]">
           <header className="flex items-center justify-between border-b border-[#1f2937] p-3">
@@ -84,7 +84,7 @@ export default function AIAssistant() {
             <button onClick={newChat} className="min-h-10 rounded border border-[#3b82f6] px-3 text-xs text-[#3b82f6]">New</button>
           </div>
 
-          <div className="min-h-0 flex-1 space-y-3 overflow-y-auto p-3 text-sm">
+          <div className="scrollbar-hidden min-h-0 flex-1 space-y-3 overflow-y-auto p-3 text-sm">
             {!messages.length && <p className="text-gray-500">Ask about charts, scan bottlenecks, strategy settings, Fyers status, deployment, or what each UI section means.</p>}
             {messages.map((message, index) => (
               <div key={message.id || index} className={message.role === 'user' ? 'text-right' : 'text-left'}>
@@ -93,7 +93,7 @@ export default function AIAssistant() {
                     ? 'border-[#3b82f6]/40 bg-[#3b82f6]/10 text-gray-100'
                     : 'border-[#1f2937] bg-[#0d1117] text-gray-200'
                 }`}>
-                  {message.content}
+                  {message.role === 'assistant' ? <FormattedMessage content={message.content} /> : message.content}
                 </div>
               </div>
             ))}
@@ -125,10 +125,66 @@ export default function AIAssistant() {
         onClick={() => setOpen((value) => !value)}
         aria-label="Open AI Copilot"
         title="AI Copilot"
-        className="flex h-12 w-12 items-center justify-center rounded border border-[#3b82f6] bg-[#111827] text-[#3b82f6]"
+        className="flex h-12 w-12 shrink-0 items-center justify-center rounded border border-[#3b82f6] bg-[#111827] text-[#3b82f6]"
       >
         <i className="ri-robot-2-fill text-xl" />
       </button>
     </div>
   );
+}
+
+function FormattedMessage({ content }: { content: string }) {
+  return (
+    <div className="space-y-2 whitespace-normal text-left leading-relaxed">
+      {content.split(/\n{2,}/).map((block, index) => {
+        const trimmed = block.trim();
+        if (!trimmed) return null;
+
+        if (trimmed.startsWith('### ')) {
+          return <h3 key={index} className="mt-3 text-sm font-semibold text-gray-100">{formatInline(trimmed.slice(4))}</h3>;
+        }
+        if (trimmed.startsWith('## ')) {
+          return <h2 key={index} className="mt-3 text-base font-semibold text-gray-100">{formatInline(trimmed.slice(3))}</h2>;
+        }
+        if (trimmed.startsWith('# ')) {
+          return <h1 key={index} className="mt-3 text-base font-semibold text-gray-100">{formatInline(trimmed.slice(2))}</h1>;
+        }
+
+        const lines = trimmed.split('\n');
+        if (lines.every((line) => /^(\*|-)\s+/.test(line.trim()))) {
+          return (
+            <ul key={index} className="space-y-1 pl-4 text-gray-300">
+              {lines.map((line, lineIndex) => (
+                <li key={lineIndex} className="list-disc">{formatInline(line.trim().replace(/^(\*|-)\s+/, ''))}</li>
+              ))}
+            </ul>
+          );
+        }
+
+        return (
+          <p key={index} className="text-gray-300">
+            {lines.map((line, lineIndex) => (
+              <span key={lineIndex}>
+                {formatInline(line)}
+                {lineIndex < lines.length - 1 && <br />}
+              </span>
+            ))}
+          </p>
+        );
+      })}
+    </div>
+  );
+}
+
+function formatInline(text: string) {
+  const parts = text.split(/(\*\*[^*]+\*\*|`[^`]+`)/g).filter(Boolean);
+  return parts.map((part, index) => {
+    if (part.startsWith('**') && part.endsWith('**')) {
+      return <strong key={index} className="font-semibold text-gray-100">{part.slice(2, -2)}</strong>;
+    }
+    if (part.startsWith('`') && part.endsWith('`')) {
+      return <code key={index} className="rounded border border-[#1f2937] bg-[#111827] px-1 py-0.5 font-mono text-xs text-[#93c5fd]">{part.slice(1, -1)}</code>;
+    }
+    return part;
+  });
 }
