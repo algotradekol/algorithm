@@ -17,6 +17,8 @@ export default function HistoryTab() {
   const [error, setError] = useState('');
   const [marketError, setMarketError] = useState('');
   const [marketLoading, setMarketLoading] = useState(false);
+  const [tokenStatus, setTokenStatus] = useState<any>(null);
+  const [tokenStatusError, setTokenStatusError] = useState('');
 
   useEffect(() => {
     api.watchlist().then((result) => {
@@ -64,6 +66,27 @@ export default function HistoryTab() {
     return () => { cancelled = true; };
   }, [algoId, days, resolution, symbol]);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function loadTokenStatus() {
+      try {
+        const result = await api.fyersTokenStatus();
+        if (!cancelled) {
+          setTokenStatus(result);
+          setTokenStatusError('');
+        }
+      } catch (e: any) {
+        if (!cancelled) setTokenStatusError(e?.message || 'Failed to load token refresh status');
+      }
+    }
+    loadTokenStatus();
+    const interval = window.setInterval(loadTokenStatus, 60_000);
+    return () => {
+      cancelled = true;
+      window.clearInterval(interval);
+    };
+  }, []);
+
   return (
     <section
       className="space-y-4"
@@ -75,6 +98,8 @@ export default function HistoryTab() {
       data-ai-history-candle-count={marketHistory.length}
     >
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
+
+      <TokenRefreshPanel status={tokenStatus} error={tokenStatusError} />
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <label>
@@ -130,6 +155,82 @@ export default function HistoryTab() {
         <Table rows={marketHistory.slice(-30).reverse()} columns={['time', 'open', 'high', 'low', 'close', 'volume']} />
       </section>
     </section>
+  );
+}
+
+function TokenRefreshPanel({ status, error }: { status: any; error: string }) {
+  const daysLeft = Number(status?.refresh_token_days_left);
+  const hasRefreshToken = Boolean(status?.refresh_token_present);
+  const lastError = status?.last_refresh_error;
+  return (
+    <section className="rounded border border-[#1f2937] bg-[#111827] p-3">
+      <div className="flex flex-wrap items-start justify-between gap-3">
+        <div>
+          <h3 className="label">Fyers Token Refresh Tracker</h3>
+          <p className="mt-1 text-xs text-gray-500">Auto-refresh runs daily after 08:30 IST while the refresh token is valid.</p>
+        </div>
+        <div className={`inline-flex items-center gap-2 rounded border px-2 py-1 text-xs font-semibold ${
+          hasRefreshToken ? 'border-[#22c55e]/40 text-[#22c55e]' : 'border-[#f59e0b]/40 text-[#f59e0b]'
+        }`}>
+          <i className={hasRefreshToken ? 'ri-shield-check-fill text-sm' : 'ri-error-warning-fill text-sm'} />
+          {hasRefreshToken ? 'Refresh token saved' : 'Manual login needed'}
+        </div>
+      </div>
+
+      {error && <p className="mt-3 text-xs text-[#ef4444]">{error}</p>}
+
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+        <TokenStat label="Days left" value={Number.isFinite(daysLeft) ? `${daysLeft} days` : '--'} tone={daysLeft <= 2 ? 'text-[#f59e0b]' : 'text-gray-100'} />
+        <TokenStat label="Refresh token expires" value={formatDateTime(status?.refresh_token_estimated_expires_at)} />
+        <TokenStat label="Last access token" value={formatDateTime(status?.access_token_updated_at)} />
+        <TokenStat label="Last attempt" value={formatDateTime(status?.last_refresh_attempt_at)} />
+      </div>
+
+      {lastError && (
+        <div className="mt-3 rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-xs text-[#ef4444]">
+          <i className="ri-error-warning-fill mr-1" />
+          {lastError}
+        </div>
+      )}
+
+      <div className="mt-3">
+        <div className="label mb-2">Recent Refresh Attempts</div>
+        <div className="overflow-x-auto rounded border border-[#1f2937]">
+          <table className="w-full min-w-max border-collapse text-xs">
+            <thead className="bg-[#0d1117]">
+              <tr>
+                <th className="table-cell label">Time</th>
+                <th className="table-cell label">Status</th>
+                <th className="table-cell label">Details</th>
+              </tr>
+            </thead>
+            <tbody>
+              {!status?.logs?.length ? (
+                <tr><td colSpan={3} className="table-cell text-gray-500">No refresh attempts logged yet.</td></tr>
+              ) : status.logs.slice(0, 8).map((log: any, index: number) => (
+                <tr key={log.id || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
+                  <td className="table-cell num text-gray-100">{formatDateTime(log.attempted_at)}</td>
+                  <td className={`table-cell font-semibold ${log.status === 'success' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>
+                    <i className={`${log.status === 'success' ? 'ri-checkbox-circle-fill' : 'ri-close-circle-fill'} mr-1 text-sm`} />
+                    {log.status}
+                  </td>
+                  <td className="table-cell max-w-xl truncate text-gray-500">{log.error || 'Access token refreshed successfully'}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function TokenStat({ label, value, tone = 'text-gray-100' }: { label: string; value: string; tone?: string }) {
+  return (
+    <div className="rounded border border-[#1f2937] bg-[#0d1117] p-2">
+      <div className="label text-[10px]">{label}</div>
+      <div className={`num mt-1 text-xs ${tone}`}>{value}</div>
+    </div>
   );
 }
 
@@ -416,6 +517,20 @@ function Stat({ label, value, tone = 'text-gray-100' }: { label: string; value: 
 
 function formatNumber(value: number) {
   return value.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+}
+
+function formatDateTime(value: string | null | undefined) {
+  if (!value) return '--';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '--';
+  return date.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: true,
+  });
 }
 
 function touchDistance(first: React.Touch, second: React.Touch) {

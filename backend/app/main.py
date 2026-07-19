@@ -18,6 +18,7 @@ from .auth import require_auth
 from .engine import get_engine_status, start_engine, start_live_feed_if_ready, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_connection_status, get_price_history
+from .fyers_auth import store_broker_tokens
 from app.config import APP_PIN, FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI, FRONTEND_URL, SUPABASE_JWT_SECRET
 from app.supabase_client import supabase
 
@@ -157,6 +158,20 @@ def fyers_status(_user=Depends(require_auth)):
     return get_connection_status()
 
 
+@app.post("/api/fyers/refresh-token")
+def fyers_refresh_token(_user=Depends(require_auth)):
+    from app.engine import try_refresh_access_token
+    if not try_refresh_access_token(reason="api_manual"):
+        raise HTTPException(status_code=400, detail=get_engine_status().get("last_token_refresh_error") or "Fyers token refresh failed")
+    return {"status": "ok", "message": "Fyers access token refreshed from refresh token."}
+
+
+@app.get("/api/fyers/token-status")
+def fyers_token_status(_user=Depends(require_auth)):
+    from app.fyers_auth import get_token_status
+    return get_token_status()
+
+
 @app.get("/api/ai/sessions")
 def ai_sessions(_user=Depends(require_auth)):
     from app.ai_assistant import list_sessions
@@ -215,11 +230,7 @@ def fyers_callback(auth_code: str = None, code: str = None):
     response = session.generate_token()
     if "access_token" not in response:
         return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
-    supabase.table("broker_tokens").upsert({
-        "broker": "fyers",
-        "access_token": response["access_token"],
-        "updated_at": "now()",
-    }).execute()
+    store_broker_tokens(response)
     start_live_feed_if_ready()
     return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=success")
 

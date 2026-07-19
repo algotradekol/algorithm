@@ -12,12 +12,13 @@ below. Nothing else in this file changes.
 import datetime
 import threading
 import time
+from zoneinfo import ZoneInfo
 
 from app.broadcaster import broadcast_sync
 from .symbols import get_nse500_watchlist
 from .candle_aggregator import CandleAggregator
 from .fyers_client import connect_live_feed
-from .fyers_auth import get_stored_access_token
+from .fyers_auth import get_stored_access_token, refresh_access_token_from_refresh_token
 from .strategies.algo1_opening_range import Algo1OpeningRange
 from .strategies.algo2_momentum import Algo2Momentum
 from .config import ENTRY_CHECK_TIME, SQUARE_OFF_TIME
@@ -36,6 +37,8 @@ _engine_lock = threading.Lock()
 _engine_status = {
     "state": "new",
     "error": None,
+    "last_token_refresh": None,
+    "last_token_refresh_error": None,
 }
 
 
@@ -72,11 +75,16 @@ def _scheduler_loop():
     9:16 entry trigger (algo1) and 3:15 square-off (both algos)."""
     entries_fired_date = None
     squareoff_fired_date = None
+    token_refresh_fired_date = None
 
     while True:
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
         today = now.date()
         current_time = now.strftime("%H:%M")
+
+        if current_time >= "08:30" and token_refresh_fired_date != today:
+            try_refresh_access_token(reason="scheduled_08_30")
+            token_refresh_fired_date = today
 
         if current_time >= ENTRY_CHECK_TIME and entries_fired_date != today:
             for strategy in STRATEGIES.values():
@@ -116,9 +124,29 @@ def get_engine_status() -> dict:
     return {
         "state": _engine_status["state"],
         "error": _engine_status["error"],
+        "last_token_refresh": _engine_status.get("last_token_refresh"),
+        "last_token_refresh_error": _engine_status.get("last_token_refresh_error"),
         "watchlist_count": len(WATCHLIST),
         "strategies_running": list(STRATEGIES.keys()),
     }
+
+
+def try_refresh_access_token(reason: str = "manual_or_startup") -> bool:
+    try:
+        refresh_access_token_from_refresh_token()
+        with _engine_lock:
+            _engine_status.update({
+                "last_token_refresh": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "last_token_refresh_error": None,
+            })
+        print(f"[engine] Fyers access token refreshed via refresh token ({reason})")
+        start_live_feed_if_ready()
+        return True
+    except Exception as exc:
+        with _engine_lock:
+            _engine_status["last_token_refresh_error"] = str(exc)
+        print(f"[engine] Fyers refresh-token refresh skipped/failed ({reason}): {exc}")
+        return False
 
 
 def start_engine():
@@ -151,6 +179,7 @@ def start_engine():
             threading.Thread(target=_scheduler_loop, daemon=True).start()
             _scheduler_started = True
 
+        try_refresh_access_token(reason="startup")
         if not start_live_feed_if_ready():
             print("[engine] started without live feed; complete manual Fyers login to enable it")
         print(f"[engine] started with {len(WATCHLIST)} symbols, {len(STRATEGIES)} strategies")

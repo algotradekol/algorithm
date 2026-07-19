@@ -3,8 +3,28 @@
 create table if not exists broker_tokens (
     broker text primary key,
     access_token text not null,
+    refresh_token text,
+    access_token_updated_at timestamptz,
+    refresh_token_updated_at timestamptz,
+    last_refresh_attempt_at timestamptz,
+    last_refresh_error text,
     updated_at timestamptz default now()
 );
+
+alter table broker_tokens
+    add column if not exists refresh_token text,
+    add column if not exists access_token_updated_at timestamptz,
+    add column if not exists refresh_token_updated_at timestamptz,
+    add column if not exists last_refresh_attempt_at timestamptz,
+    add column if not exists last_refresh_error text;
+
+create table if not exists fyers_token_refresh_logs (
+    id bigserial primary key,
+    attempted_at timestamptz default now(),
+    status text not null check (status in ('success', 'failed')),
+    error text
+);
+create index if not exists idx_fyers_token_refresh_logs_attempted_at on fyers_token_refresh_logs (attempted_at desc);
 
 create table if not exists charges_config (
     id int primary key default 1,

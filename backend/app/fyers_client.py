@@ -7,7 +7,7 @@ from fyers_apiv3 import fyersModel
 from fyers_apiv3.FyersWebsocket import data_ws
 
 from .config import FYERS_CLIENT_ID
-from .fyers_auth import get_stored_access_token
+from .fyers_auth import get_stored_access_token, get_stored_token_row
 
 
 def get_fyers_model():
@@ -18,12 +18,15 @@ def get_fyers_model():
 
 
 def get_connection_status() -> dict:
-    token = get_stored_access_token()
+    token_row = get_stored_token_row()
+    token = token_row.get("access_token") if token_row else None
+    refresh_token_present = bool(token_row and token_row.get("refresh_token"))
     if not token:
         return {
             "connected": False,
             "status": "disconnected",
             "message": "No Fyers access token found. Login to Fyers before trading.",
+            "refresh_token_present": refresh_token_present,
         }
 
     try:
@@ -33,6 +36,9 @@ def get_connection_status() -> dict:
             "connected": False,
             "status": "error",
             "message": f"Fyers token check failed: {exc}",
+            "refresh_token_present": refresh_token_present,
+            "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
+            "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
         }
 
     if response.get("s") == "ok":
@@ -40,12 +46,18 @@ def get_connection_status() -> dict:
             "connected": True,
             "status": "connected",
             "message": "Fyers token is valid.",
+            "refresh_token_present": refresh_token_present,
+            "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
+            "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
         }
 
     return {
         "connected": False,
         "status": "expired",
         "message": response.get("message") or "Fyers token is missing, expired, or rejected.",
+        "refresh_token_present": refresh_token_present,
+        "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
+        "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
     }
 
 

@@ -43,6 +43,8 @@ export const api = {
   compare: () => authedFetch('/api/compare'),
   engineStatus: () => authedFetch('/api/engine/status'),
   fyersStatus: () => authedFetch('/api/fyers/status'),
+  fyersRefreshToken: () => authedFetch('/api/fyers/refresh-token', { method: 'POST' }),
+  fyersTokenStatus: () => authedFetch('/api/fyers/token-status'),
   aiSessions: () => authedFetch('/api/ai/sessions'),
   aiCreateSession: (title = 'New chat') => authedFetch('/api/ai/sessions', { method: 'POST', body: JSON.stringify({ title }) }),
   aiMessages: (sessionId: string) => authedFetch(`/api/ai/sessions/${sessionId}/messages`),

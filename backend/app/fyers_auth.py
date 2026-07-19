@@ -13,6 +13,8 @@ first.
 """
 import sys
 import base64
+import datetime
+import hashlib
 import pyotp
 import requests
 from fyers_apiv3 import fyersModel
@@ -22,6 +24,7 @@ from .supabase_client import run_with_supabase
 
 BASE = "https://api-t2.fyers.in/vagator/v2"
 TOKEN_URL = "https://api.fyers.in/api/v2/token"
+REFRESH_TOKEN_URL = "https://api-t1.fyers.in/api/v3/validate-refresh-token"
 FYERS_PROXIES = {"http": FYERS_PROXY_URL, "https": FYERS_PROXY_URL} if FYERS_PROXY_URL else None
 
 
@@ -101,22 +104,158 @@ def refresh_access_token() -> str:
         raise RuntimeError(f"Token generation failed: {response}")
 
     token = response["access_token"]
-    run_with_supabase(
-        lambda supabase: supabase.table("broker_tokens").upsert({
-            "broker": "fyers", "access_token": token,
-            "updated_at": "now()",
-        }).execute()
-    )
+    store_broker_tokens(response)
     return token
 
 
+def store_broker_tokens(response: dict) -> None:
+    now = _now()
+    payload = {
+        "broker": "fyers",
+        "access_token": response["access_token"],
+        "access_token_updated_at": now,
+        "last_refresh_attempt_at": now,
+        "last_refresh_error": None,
+        "updated_at": now,
+    }
+    if response.get("refresh_token"):
+        payload["refresh_token"] = response["refresh_token"]
+        payload["refresh_token_updated_at"] = now
+    run_with_supabase(lambda supabase: supabase.table("broker_tokens").upsert(payload).execute())
+    _record_refresh_log("success", None)
+
+
+def refresh_access_token_from_refresh_token() -> str:
+    stored = get_stored_token_row()
+    refresh_token = stored.get("refresh_token") if stored else None
+    if not refresh_token:
+        raise RuntimeError("No Fyers refresh token in Supabase. Complete manual Fyers login first.")
+    if not FYERS_PIN:
+        raise RuntimeError("FYERS_PIN is not configured. It is required for Fyers refresh-token validation.")
+
+    last_error = None
+    for app_id_hash in _candidate_app_id_hashes():
+        response = requests.post(
+            REFRESH_TOKEN_URL,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            json={
+                "grant_type": "refresh_token",
+                "appIdHash": app_id_hash,
+                "refresh_token": refresh_token,
+                "pin": FYERS_PIN,
+            },
+            proxies=FYERS_PROXIES,
+            timeout=30,
+        )
+        try:
+            data = response.json()
+        except ValueError:
+            data = {"s": "error", "message": response.text}
+        if response.ok and data.get("access_token"):
+            store_broker_tokens(data)
+            return data["access_token"]
+        last_error = data
+        if data.get("code") != -371:
+            break
+    message = f"Fyers refresh-token validation failed: {last_error}"
+    _record_refresh_error(message)
+    _record_refresh_log("failed", message)
+    raise RuntimeError(message)
+
+
 def get_stored_access_token() -> str | None:
+    row = get_stored_token_row()
+    return row.get("access_token") if row else None
+
+
+def get_stored_token_row() -> dict | None:
     result = run_with_supabase(
-        lambda supabase: supabase.table("broker_tokens").select("access_token").eq("broker", "fyers").execute()
+        lambda supabase: supabase.table("broker_tokens").select("*").eq("broker", "fyers").execute()
     )
     if result.data:
-        return result.data[0]["access_token"]
+        return result.data[0]
     return None
+
+
+def get_token_status() -> dict:
+    row = get_stored_token_row() or {}
+    refresh_updated_at = row.get("refresh_token_updated_at")
+    refresh_expires_at = _add_days(refresh_updated_at, 15) if refresh_updated_at else None
+    days_left = _days_until(refresh_expires_at) if refresh_expires_at else None
+    logs = run_with_supabase(
+        lambda supabase: supabase.table("fyers_token_refresh_logs")
+        .select("*")
+        .order("attempted_at", desc=True)
+        .limit(20)
+        .execute()
+    )
+    return {
+        "refresh_token_present": bool(row.get("refresh_token")),
+        "access_token_updated_at": row.get("access_token_updated_at") or row.get("updated_at"),
+        "refresh_token_updated_at": refresh_updated_at,
+        "refresh_token_estimated_expires_at": refresh_expires_at,
+        "refresh_token_days_left": days_left,
+        "last_refresh_attempt_at": row.get("last_refresh_attempt_at"),
+        "last_refresh_error": row.get("last_refresh_error"),
+        "logs": logs.data or [],
+    }
+
+
+def _candidate_app_id_hashes() -> list[str]:
+    values = [
+        f"{FYERS_CLIENT_ID}:{FYERS_SECRET_KEY}",
+        f"{FYERS_CLIENT_ID}{FYERS_SECRET_KEY}",
+    ]
+    app_id_without_type = FYERS_CLIENT_ID.split("-")[0]
+    if app_id_without_type and app_id_without_type != FYERS_CLIENT_ID:
+        values.extend([
+            f"{app_id_without_type}:{FYERS_SECRET_KEY}",
+            f"{app_id_without_type}{FYERS_SECRET_KEY}",
+        ])
+    seen = set()
+    hashes = []
+    for value in values:
+        if value and value not in seen:
+            seen.add(value)
+            hashes.append(hashlib.sha256(value.encode()).hexdigest())
+    return hashes
+
+
+def _record_refresh_error(message: str) -> None:
+    run_with_supabase(lambda supabase: supabase.table("broker_tokens").update({
+        "last_refresh_attempt_at": _now(),
+        "last_refresh_error": message,
+        "updated_at": _now(),
+    }).eq("broker", "fyers").execute())
+
+
+def _record_refresh_log(status: str, error: str | None) -> None:
+    try:
+        run_with_supabase(lambda supabase: supabase.table("fyers_token_refresh_logs").insert({
+            "status": status,
+            "error": error,
+            "attempted_at": _now(),
+        }).execute())
+    except Exception as exc:
+        print(f"[fyers_auth] refresh log insert skipped: {exc}")
+
+
+def _now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _add_days(value: str | None, days: int) -> str | None:
+    if not value:
+        return None
+    return (datetime.datetime.fromisoformat(value.replace("Z", "+00:00")) + datetime.timedelta(days=days)).isoformat()
+
+
+def _days_until(value: str | None) -> float | None:
+    if not value:
+        return None
+    target = datetime.datetime.fromisoformat(value.replace("Z", "+00:00"))
+    remaining = target - datetime.datetime.now(datetime.timezone.utc)
+    return max(0, round(remaining.total_seconds() / 86400, 1))
 
 
 if __name__ == "__main__":
