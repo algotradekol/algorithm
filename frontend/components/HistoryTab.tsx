@@ -65,7 +65,15 @@ export default function HistoryTab() {
   }, [algoId, days, resolution, symbol]);
 
   return (
-    <section className="space-y-4">
+    <section
+      className="space-y-4"
+      data-ai-section="History"
+      data-ai-history-algo={algoId}
+      data-ai-history-days={days}
+      data-ai-history-symbol={symbol}
+      data-ai-history-resolution={resolution}
+      data-ai-history-candle-count={marketHistory.length}
+    >
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -142,6 +150,7 @@ function ZoomableCandleChart({
   const [offsetFromEnd, setOffsetFromEnd] = useState(0);
   const [crosshair, setCrosshair] = useState<{ x: number; y: number } | null>(null);
   const chartRef = useRef<HTMLDivElement | null>(null);
+  const pinchRef = useRef<{ distance: number; ratio: number } | null>(null);
 
   useEffect(() => {
     setVisibleCount(80);
@@ -249,8 +258,49 @@ function ZoomableCandleChart({
     setOffsetFromEnd(Math.max(0, normalized.length - (clampedStart + nextVisible)));
   }
 
+  function handleTouchStart(event: React.TouchEvent<HTMLDivElement>) {
+    if (event.touches.length !== 2 || !chartRef.current) return;
+    event.preventDefault();
+    const rect = chartRef.current.getBoundingClientRect();
+    const midpointX = (event.touches[0].clientX + event.touches[1].clientX) / 2;
+    pinchRef.current = {
+      distance: touchDistance(event.touches[0], event.touches[1]),
+      ratio: Math.min(1, Math.max(0, (midpointX - rect.left) / rect.width)),
+    };
+  }
+
+  function handleTouchMove(event: React.TouchEvent<HTMLDivElement>) {
+    if (event.touches.length !== 2 || !pinchRef.current) return;
+    event.preventDefault();
+    const nextDistance = touchDistance(event.touches[0], event.touches[1]);
+    const previousDistance = pinchRef.current.distance;
+    if (!previousDistance) return;
+    const scale = nextDistance / previousDistance;
+    if (Math.abs(scale - 1) < 0.06) return;
+    zoomAtRatio(pinchRef.current.ratio, scale > 1);
+    pinchRef.current = { ...pinchRef.current, distance: nextDistance };
+  }
+
+  function handleTouchEnd(event: React.TouchEvent<HTMLDivElement>) {
+    if (event.touches.length < 2) pinchRef.current = null;
+  }
+
   return (
-    <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
+    <div
+      className="rounded border border-[#1f2937] bg-[#111827] p-3"
+      data-ai-chart="candlestick"
+      data-ai-chart-symbol={symbol}
+      data-ai-chart-resolution={resolution}
+      data-ai-chart-total-candles={normalized.length}
+      data-ai-chart-visible-range={`${start + 1}-${end}`}
+      data-ai-chart-open={formatNumber(first.open)}
+      data-ai-chart-high={formatNumber(high)}
+      data-ai-chart-low={formatNumber(low)}
+      data-ai-chart-close={formatNumber(last.close)}
+      data-ai-chart-change={`${change >= 0 ? '+' : ''}${formatNumber(change)} (${changePct.toFixed(2)}%)`}
+      data-ai-chart-first-time={first.time}
+      data-ai-chart-last-time={last.time}
+    >
       <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
         <div>
           <div className="font-mono text-sm font-semibold text-gray-100">{symbol || 'Symbol'} / {resolution}</div>
@@ -275,6 +325,10 @@ function ZoomableCandleChart({
       <div
         ref={chartRef}
         onWheelCapture={(event) => event.preventDefault()}
+        onTouchStart={handleTouchStart}
+        onTouchMove={handleTouchMove}
+        onTouchEnd={handleTouchEnd}
+        onTouchCancel={() => { pinchRef.current = null; }}
         className="overscroll-contain overflow-x-auto border border-[#1f2937] bg-[#0a0e14]"
         style={{ overscrollBehavior: 'contain', touchAction: 'none' }}
       >
@@ -362,4 +416,8 @@ function Stat({ label, value, tone = 'text-gray-100' }: { label: string; value: 
 
 function formatNumber(value: number) {
   return value.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+}
+
+function touchDistance(first: React.Touch, second: React.Touch) {
+  return Math.hypot(first.clientX - second.clientX, first.clientY - second.clientY);
 }

@@ -43,11 +43,7 @@ export default function AIAssistant() {
       const result = await api.aiChat({
         session_id: sessionId || null,
         message,
-        page_context: {
-          url: typeof window !== 'undefined' ? window.location.href : '',
-          active_tab_text: typeof document !== 'undefined' ? document.title : '',
-          visible_page_text: typeof document !== 'undefined' ? document.body.innerText.slice(0, 12000) : '',
-        },
+        page_context: getLivePageContext(),
       });
       setSessionId(result.session.id);
       setMessages(result.messages || [...optimistic, { role: 'assistant', content: result.answer }]);
@@ -131,6 +127,43 @@ export default function AIAssistant() {
       </button>
     </div>
   );
+}
+
+function getLivePageContext() {
+  if (typeof document === 'undefined') return {};
+  const main = document.querySelector('main');
+  const activeTab = main?.getAttribute('data-ai-active-tab') || '';
+  const activeSection = document.querySelector('[data-ai-section]');
+  const chart = document.querySelector('[data-ai-chart]');
+
+  return {
+    url: typeof window !== 'undefined' ? window.location.href : '',
+    document_title: document.title,
+    active_tab: activeTab,
+    active_section: activeSection?.getAttribute('data-ai-section') || activeTab,
+    history: activeSection?.getAttribute('data-ai-section') === 'History' ? {
+      algo: activeSection.getAttribute('data-ai-history-algo'),
+      days: activeSection.getAttribute('data-ai-history-days'),
+      symbol: activeSection.getAttribute('data-ai-history-symbol'),
+      resolution: activeSection.getAttribute('data-ai-history-resolution'),
+      candle_count: activeSection.getAttribute('data-ai-history-candle-count'),
+    } : null,
+    chart: chart ? {
+      type: chart.getAttribute('data-ai-chart'),
+      symbol: chart.getAttribute('data-ai-chart-symbol'),
+      resolution: chart.getAttribute('data-ai-chart-resolution'),
+      total_candles: chart.getAttribute('data-ai-chart-total-candles'),
+      visible_range: chart.getAttribute('data-ai-chart-visible-range'),
+      open: chart.getAttribute('data-ai-chart-open'),
+      high: chart.getAttribute('data-ai-chart-high'),
+      low: chart.getAttribute('data-ai-chart-low'),
+      close: chart.getAttribute('data-ai-chart-close'),
+      change: chart.getAttribute('data-ai-chart-change'),
+      first_time: chart.getAttribute('data-ai-chart-first-time'),
+      last_time: chart.getAttribute('data-ai-chart-last-time'),
+    } : null,
+    visible_page_text: document.body.innerText.slice(0, 12000),
+  };
 }
 
 function FormattedMessage({ content }: { content: string }) {

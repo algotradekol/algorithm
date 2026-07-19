@@ -105,7 +105,7 @@ function DashboardContent() {
   if (!ready) return null;
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-[#0a0e14]">
+    <main className="min-h-screen overflow-x-hidden bg-[#0a0e14]" data-ai-active-tab={tab}>
       <div className="mx-auto max-w-[1400px] px-3 py-3 sm:px-6 sm:py-4">
         {fyersLogin && showFyersBanner && (
           <div
