@@ -172,8 +172,8 @@ function ZoomableCandleChart({
       });
     }
 
-    chart.addEventListener('wheel', handleWheel, { passive: false });
-    return () => chart.removeEventListener('wheel', handleWheel);
+    chart.addEventListener('wheel', handleWheel, { passive: false, capture: true });
+    return () => chart.removeEventListener('wheel', handleWheel, { capture: true });
   }, [maxVisible]);
 
   if (loading) return <p className="rounded border border-[#1f2937] bg-[#111827] p-4 text-sm text-gray-500">Loading candle history...</p>;
@@ -247,7 +247,12 @@ function ZoomableCandleChart({
         </div>
       </div>
 
-      <div ref={chartRef} className="overscroll-contain overflow-x-auto border border-[#1f2937] bg-[#0a0e14]">
+      <div
+        ref={chartRef}
+        onWheelCapture={(event) => event.preventDefault()}
+        className="overscroll-contain overflow-x-auto border border-[#1f2937] bg-[#0a0e14]"
+        style={{ overscrollBehavior: 'contain', touchAction: 'none' }}
+      >
         <svg
           viewBox={`0 0 ${width} ${totalHeight}`}
           className="h-[440px] min-w-[900px] w-full cursor-crosshair"

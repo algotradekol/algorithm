@@ -115,6 +115,27 @@ ALTER TABLE strategy_settings
     ADD COLUMN IF NOT EXISTS filter_liquidity boolean default true,
     ADD COLUMN IF NOT EXISTS filter_price_range boolean default true;
 
+-- AI assistant chat memory. Run manually in Supabase SQL Editor before using the assistant.
+CREATE TABLE IF NOT EXISTS ai_chat_sessions (
+    id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
+    user_id text not null,
+    title text default 'New chat',
+    created_at timestamptz default now(),
+    updated_at timestamptz default now()
+);
+
+CREATE TABLE IF NOT EXISTS ai_chat_messages (
+    id bigserial PRIMARY KEY,
+    session_id uuid references ai_chat_sessions(id) on delete cascade,
+    role text not null check (role in ('user', 'assistant', 'system')),
+    content text not null,
+    context jsonb,
+    created_at timestamptz default now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_ai_chat_sessions_user_updated on ai_chat_sessions (user_id, updated_at desc);
+CREATE INDEX IF NOT EXISTS idx_ai_chat_messages_session_created on ai_chat_messages (session_id, created_at asc);
+
 -- Row Level Security: since only the backend (using the service role
 -- key) writes to these tables, and only your authenticated frontend
 -- session reads via the backend API (never directly from the

@@ -43,6 +43,10 @@ export const api = {
   compare: () => authedFetch('/api/compare'),
   engineStatus: () => authedFetch('/api/engine/status'),
   fyersStatus: () => authedFetch('/api/fyers/status'),
+  aiSessions: () => authedFetch('/api/ai/sessions'),
+  aiCreateSession: (title = 'New chat') => authedFetch('/api/ai/sessions', { method: 'POST', body: JSON.stringify({ title }) }),
+  aiMessages: (sessionId: string) => authedFetch(`/api/ai/sessions/${sessionId}/messages`),
+  aiChat: (payload: object) => authedFetch('/api/ai/chat', { method: 'POST', body: JSON.stringify(payload) }),
   getCharges: () => authedFetch('/api/charges'),
   updateCharges: (config: object) =>
     authedFetch('/api/charges', { method: 'PUT', body: JSON.stringify(config) }),

@@ -157,6 +157,38 @@ def fyers_status(_user=Depends(require_auth)):
     return get_connection_status()
 
 
+@app.get("/api/ai/sessions")
+def ai_sessions(_user=Depends(require_auth)):
+    from app.ai_assistant import list_sessions
+    return list_sessions(_user.get("sub", "unknown"))
+
+
+@app.post("/api/ai/sessions")
+def ai_create_session(payload: dict, _user=Depends(require_auth)):
+    from app.ai_assistant import create_session
+    return create_session(_user.get("sub", "unknown"), payload.get("title") or "New chat")
+
+
+@app.get("/api/ai/sessions/{session_id}/messages")
+def ai_messages(session_id: str, _user=Depends(require_auth)):
+    from app.ai_assistant import get_messages
+    return get_messages(session_id)
+
+
+@app.post("/api/ai/chat")
+def ai_chat(payload: dict, _user=Depends(require_auth)):
+    from app.ai_assistant import send_message
+    try:
+        return send_message(
+            _user.get("sub", "unknown"),
+            payload.get("session_id"),
+            payload.get("message", ""),
+            payload.get("page_context") or {},
+        )
+    except Exception as exc:
+        raise HTTPException(status_code=500, detail=str(exc))
+
+
 @app.get("/api/fyers/callback")
 def fyers_callback(auth_code: str = None, code: str = None):
     received_code = auth_code or code
