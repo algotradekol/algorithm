@@ -24,9 +24,6 @@ from .base import Strategy
 from ..paper_broker import PaperBroker
 
 VOLUME_MULTIPLIER = 1.5
-TRAIL_SL_ENABLED = True
-TRAIL_TRIGGER_PCT = 1.0   # once price moves 1% in favor, start trailing
-TRAIL_STEP_PCT = 0.5      # trail SL to lock in 0.5% once triggered
 
 
 class Algo2Momentum(Strategy):
@@ -101,18 +98,8 @@ class Algo2Momentum(Strategy):
             ltp = position.get("_last_ltp")
             if not ltp:
                 continue
-            entry, sl, target = position["entry_price"], position["sl_price"], position["target_price"]
-
-            if TRAIL_SL_ENABLED:
-                move_pct = (ltp - entry) / entry * 100
-                if move_pct >= TRAIL_TRIGGER_PCT:
-                    new_sl = entry * (1 + TRAIL_STEP_PCT / 100)
-                    if new_sl > sl:
-                        from ..supabase_client import run_with_supabase
-                        run_with_supabase(
-                            lambda supabase: supabase.table("positions").update({"sl_price": new_sl}).eq("id", position["id"]).execute()
-                        )
-                        sl = new_sl
+            position = self.broker.apply_trailing_stop(position, ltp, self.settings)
+            sl, target = position["sl_price"], position["target_price"]
 
             if ltp <= sl:
                 self.broker.close_trade(position, ltp, "SL")

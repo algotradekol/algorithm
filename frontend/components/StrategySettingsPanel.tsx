@@ -13,6 +13,8 @@ const CAPITAL_FIELDS: Field[] = [
 const RISK_FIELDS: Field[] = [
   ['target_pct', 'Target % (per trade)', 'profit target from entry price'],
   ['sl_pct', 'Stop Loss % (per trade)', 'stop loss from entry price'],
+  ['trailing_sl_trigger_pct', 'Trailing SL Trigger %', 'start trailing after price moves this much in favor'],
+  ['trailing_sl_distance_pct', 'Trailing SL Distance %', 'trail stop this far behind the best favorable price'],
   ['max_trades_per_day', 'Max Trades Per Day', 'daily total trade cap'],
   ['max_buy_trades', 'Max Buy Trades Per Day', 'daily buy-side trade cap'],
   ['max_sell_trades', 'Max Sell Trades Per Day', 'daily sell-side trade cap'],
@@ -85,6 +87,7 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
         {error && <p className="mb-4 rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
 
         <FieldGroup title="Capital Settings" fields={CAPITAL_FIELDS} settings={settings} setSettings={setSettings} />
+        <TrailingStopToggle settings={settings} setSettings={setSettings} />
         <FieldGroup title="Risk Settings" fields={RISK_FIELDS} settings={settings} setSettings={setSettings} />
         {algoId === 'algo4' && (
           <>
@@ -113,6 +116,32 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
         </div>
       </aside>
     </section>
+  );
+}
+
+function TrailingStopToggle({
+  settings,
+  setSettings,
+}: {
+  settings: Record<string, any>;
+  setSettings: (settings: Record<string, any>) => void;
+}) {
+  return (
+    <label className="mt-5 flex gap-3 rounded border border-[#1f2937] bg-[#0d1117] p-3">
+      <input
+        type="checkbox"
+        checked={Boolean(settings.trailing_sl_enabled)}
+        onChange={(e) => setSettings({ ...settings, trailing_sl_enabled: e.target.checked })}
+        className="peer sr-only"
+      />
+      <span className="mt-1 h-5 w-9 rounded-full border border-[#1f2937] bg-gray-700 after:block after:h-4 after:w-4 after:translate-x-0.5 after:translate-y-0.5 after:rounded-full after:bg-gray-400 after:transition peer-checked:bg-[#3b82f6] peer-checked:after:translate-x-4 peer-checked:after:bg-white" />
+      <span className="flex-1">
+        <span className="text-sm font-semibold text-gray-100">Trailing Stop Loss</span>
+        <span className="mt-1 block text-xs text-gray-500">
+          Per-algo toggle. Once profit reaches the trigger, SL follows the best favorable price by the configured distance.
+        </span>
+      </span>
+    </label>
   );
 }
 

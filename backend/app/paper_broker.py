@@ -81,6 +81,8 @@ class PaperBroker:
             lambda supabase: supabase.table("positions").insert({
                 "algo_id": self.algo_id, "symbol": symbol, "side": side, "qty": qty,
                 "entry_price": entry_price, "sl_price": sl_price, "target_price": target_price,
+                "highest_price": entry_price, "lowest_price": entry_price,
+                "trailing_sl_active": False,
                 "status": "open", "entry_time": datetime.datetime.now().isoformat(),
             }).execute()
         )
@@ -102,6 +104,46 @@ class PaperBroker:
             "sl_price": sl_price,
             "target_price": target_price,
         })
+
+    def apply_trailing_stop(self, position: dict, ltp: float, settings: dict) -> dict:
+        if not settings.get("trailing_sl_enabled"):
+            return position
+
+        entry = float(position["entry_price"])
+        side = position["side"]
+        current_sl = float(position["sl_price"])
+        trigger_pct = float(settings.get("trailing_sl_trigger_pct") or 0)
+        distance_pct = float(settings.get("trailing_sl_distance_pct") or 0)
+        if trigger_pct <= 0 or distance_pct <= 0:
+            return position
+
+        highest = max(float(position.get("highest_price") or entry), float(ltp))
+        lowest = min(float(position.get("lowest_price") or entry), float(ltp))
+        active = bool(position.get("trailing_sl_active"))
+        updates = {"highest_price": highest, "lowest_price": lowest}
+
+        if side == "BUY":
+            move_pct = (highest - entry) / entry * 100
+            if move_pct >= trigger_pct:
+                active = True
+                new_sl = highest * (1 - distance_pct / 100)
+                if new_sl > current_sl:
+                    updates["sl_price"] = new_sl
+                    current_sl = new_sl
+        else:
+            move_pct = (entry - lowest) / entry * 100
+            if move_pct >= trigger_pct:
+                active = True
+                new_sl = lowest * (1 + distance_pct / 100)
+                if new_sl < current_sl:
+                    updates["sl_price"] = new_sl
+                    current_sl = new_sl
+
+        updates["trailing_sl_active"] = active
+        run_with_supabase(
+            lambda supabase: supabase.table("positions").update(updates).eq("id", position["id"]).execute()
+        )
+        return {**position, **updates, "sl_price": current_sl}
 
     def close_trade(self, position: dict, exit_price: float, exit_reason: str):
         side = position["side"]

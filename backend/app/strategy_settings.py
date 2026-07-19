@@ -4,6 +4,9 @@ DEFAULT_SETTINGS = {
     "margin_multiplier": 5,
     "target_pct": 2.0,
     "sl_pct": 1.0,
+    "trailing_sl_enabled": False,
+    "trailing_sl_trigger_pct": 1.0,
+    "trailing_sl_distance_pct": 0.5,
     "max_trades_per_day": 10,
     "max_buy_trades": 5,
     "max_sell_trades": 5,
@@ -44,6 +47,7 @@ BOOL_FIELDS = {
     "filter_volume",
     "filter_liquidity",
     "filter_price_range",
+    "trailing_sl_enabled",
 }
 
 

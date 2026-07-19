@@ -56,6 +56,9 @@ create table if not exists positions (
     entry_price numeric not null,
     sl_price numeric not null,
     target_price numeric not null,
+    highest_price numeric,
+    lowest_price numeric,
+    trailing_sl_active boolean default false,
     status text not null default 'open',
     entry_time timestamptz not null
 );
@@ -97,6 +100,9 @@ CREATE TABLE IF NOT EXISTS strategy_settings (
     -- Risk
     target_pct numeric default 2.0,
     sl_pct numeric default 1.0,
+    trailing_sl_enabled boolean default false,
+    trailing_sl_trigger_pct numeric default 1.0,
+    trailing_sl_distance_pct numeric default 0.5,
     max_trades_per_day int default 10,
     max_buy_trades int default 5,
     max_sell_trades int default 5,
@@ -134,6 +140,18 @@ ALTER TABLE strategy_settings
     ADD COLUMN IF NOT EXISTS filter_volume boolean default true,
     ADD COLUMN IF NOT EXISTS filter_liquidity boolean default true,
     ADD COLUMN IF NOT EXISTS filter_price_range boolean default true;
+
+-- Per-algo trailing stop loss settings.
+ALTER TABLE strategy_settings
+    ADD COLUMN IF NOT EXISTS trailing_sl_enabled boolean default false,
+    ADD COLUMN IF NOT EXISTS trailing_sl_trigger_pct numeric default 1.0,
+    ADD COLUMN IF NOT EXISTS trailing_sl_distance_pct numeric default 0.5;
+
+-- Per-position trailing stop state.
+ALTER TABLE positions
+    ADD COLUMN IF NOT EXISTS highest_price numeric,
+    ADD COLUMN IF NOT EXISTS lowest_price numeric,
+    ADD COLUMN IF NOT EXISTS trailing_sl_active boolean default false;
 
 -- AI assistant chat memory. Run manually in Supabase SQL Editor before using the assistant.
 CREATE TABLE IF NOT EXISTS ai_chat_sessions (

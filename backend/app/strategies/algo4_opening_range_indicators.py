@@ -230,6 +230,7 @@ class Algo4OpeningRangeIndicators(Strategy):
             ltp = position.get("_last_ltp")
             if not ltp:
                 continue
+            position = self.broker.apply_trailing_stop(position, ltp, self.settings)
             side, sl, target = position["side"], position["sl_price"], position["target_price"]
             if side == "BUY":
                 if ltp <= sl:
