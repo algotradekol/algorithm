@@ -238,7 +238,14 @@ def fyers_callback(auth_code: str = None, code: str = None):
 @app.get("/api/algo/{algo_id}/summary")
 def algo_summary(algo_id: str, _user=Depends(require_auth)):
     strategy = get_strategy_or_raise(algo_id)
-    return strategy.broker.summary()
+    summary = strategy.broker.summary()
+    settings = getattr(strategy, "settings", None) or {}
+    return {
+        **summary,
+        "max_trades_per_day": settings.get("max_trades_per_day", 10),
+        "max_buy_trades": settings.get("max_buy_trades", 5),
+        "max_sell_trades": settings.get("max_sell_trades", 5),
+    }
 
 
 @app.get("/api/algo/{algo_id}/positions")

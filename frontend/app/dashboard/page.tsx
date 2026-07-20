@@ -238,7 +238,7 @@ function DashboardContent() {
               <AlgoTab
                 algoId="algo5"
                 displayName="Algo 5 - Afternoon Candle Continuation"
-                description="Scheduled 2 PM test: use the closed 2:00 PM candle as signal, then enter at 2:02 PM. Green candle above threshold/VWAP becomes BUY; red candle below threshold/VWAP becomes SELL."
+                description="Scheduled 2 PM test: uses the first closed candle from 2:00-2:10 PM as signal, then enters from 2:02 PM onward. Green candle above threshold/VWAP becomes BUY; red candle below threshold/VWAP becomes SELL."
                 onWebSocketStatus={setWsStatus}
               />
             )}

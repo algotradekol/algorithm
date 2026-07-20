@@ -133,7 +133,7 @@ export default function AlgoTab({
       <div className="grid grid-cols-3 gap-1.5 sm:gap-2 lg:grid-cols-6">
         <MetricCard label="Cash Available" value={formatMoney(cash)} />
         <MetricCard label="Equity" value={formatMoney(cash)} delta={formatSignedMoney(equityDelta)} pnl={equityDelta} />
-        <MetricCard label="Trades Today" value={`${summary.trade_count_today} / 10`} />
+        <MetricCard label="Trades Today" value={`${summary.trade_count_today} / ${summary.max_trades_per_day || 10}`} />
         <MetricCard label="Buy / Sell" value={`${summary.buy_count_today}B ${summary.sell_count_today}S`} />
         <MetricCard label="Gross P&L" value={formatMoney(grossPnl)} pnl={grossPnl} />
         <MetricCard label="Net P&L" value={formatMoney(netPnl)} pnl={netPnl} important />

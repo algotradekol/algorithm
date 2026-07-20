@@ -5,6 +5,7 @@ from ..paper_broker import PaperBroker
 
 SIGNAL_CANDLE_TIME = "14:00"
 ENTRY_TIME = "14:02"
+SIGNAL_FALLBACK_END_TIME = "14:10"
 MIN_CANDLE_MOVE_PCT = 0.08
 MIN_VOLUME = 1
 MIN_PRICE = 50
@@ -39,7 +40,10 @@ class Algo5Live1150Test(Strategy):
             self.latest_ltp[symbol] = float(ltp)
 
     def on_candle_close(self, symbol: str, candle: dict, indicators: dict):
-        if candle["time"].strftime("%H:%M") != SIGNAL_CANDLE_TIME:
+        candle_time = candle["time"].strftime("%H:%M")
+        if candle_time < SIGNAL_CANDLE_TIME or candle_time > SIGNAL_FALLBACK_END_TIME:
+            return
+        if self.entries_evaluated_today == datetime.date.today():
             return
 
         side, rejection_reason = self._signal_side(candle, indicators)
@@ -75,14 +79,20 @@ class Algo5Live1150Test(Strategy):
         today = datetime.date.today()
         if self.entries_evaluated_today == today:
             return
-        self.entries_evaluated_today = today
+        if not self.candidates:
+            self._record_scan_results()
+            return
 
         for symbol, row in list(self.candidates.items()):
             side = row.get("side")
             if side not in {"BUY", "SELL"}:
                 continue
             entry_price = get_ltp_fn(symbol) or self.latest_ltp.get(symbol) or row.get("close")
+            before_selected = symbol in self.selected_symbols
             self._enter(symbol, side, float(entry_price))
+            if symbol not in self.selected_symbols and not before_selected:
+                row["rejection_reason"] = "trade_cap_full_or_duplicate"
+        self.entries_evaluated_today = today
         self._record_scan_results()
 
     def _signal_side(self, candle: dict, indicators: dict) -> tuple[str | None, str | None]:
