@@ -113,6 +113,7 @@ def _on_tick(message: dict):
         for position in strategy.broker.open_positions():
             if position["symbol"] == symbol:
                 position["_last_ltp"] = ltp
+                strategy.broker.update_position_range(position, ltp)
         strategy.check_exits()
 
 
@@ -234,10 +235,14 @@ def enrich_positions_with_ltp(positions: list[dict]) -> list[dict]:
             unrealized = (entry - ltp) * qty if side == "SELL" else (ltp - entry) * qty
             row["ltp"] = ltp
             row["unrealized_pnl"] = round(unrealized, 2)
+            row["high_price"] = max(float(row.get("highest_price") or entry), float(ltp))
+            row["low_price"] = min(float(row.get("lowest_price") or entry), float(ltp))
         return_row_ltp = row.get("ltp")
         if return_row_ltp is None:
             row["ltp"] = row.get("entry_price")
             row["unrealized_pnl"] = 0
+            row["high_price"] = row.get("highest_price") or row.get("entry_price")
+            row["low_price"] = row.get("lowest_price") or row.get("entry_price")
         enriched.append(row)
     return enriched
 

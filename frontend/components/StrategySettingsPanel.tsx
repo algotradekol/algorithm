@@ -37,8 +37,8 @@ const FILTERS: [string, string, string, string][] = [
   ['filter_rsi', 'RSI Filter', 'Momentum confirmation - RSI above/below threshold', 'Threshold: buy / sell'],
   ['filter_adx', 'ADX Filter', 'Trend strength - filters out sideways/choppy stocks', 'Threshold'],
   ['filter_supertrend', 'Supertrend Filter', 'Price must be above/below Supertrend line', 'Period / Mult'],
-  ['filter_ema20', 'EMA20 Filter', 'Price above/below 20-period EMA - may not fire at 9:16', 'Needs pre-warm data'],
-  ['filter_ema50', 'EMA50 Filter', 'EMA20 must be above/below EMA50 - needs 50 candles minimum', 'Needs pre-warm data'],
+  ['filter_ema20', 'EMA20 Filter', 'Price above/below 20-period EMA using pre-warmed 1-minute candles', 'Pre-warmed'],
+  ['filter_ema50', 'EMA50 Filter', 'EMA20 must be above/below EMA50 using pre-warmed 1-minute candles', 'Pre-warmed'],
   ['filter_volume', 'Volume Filter', 'Minimum shares traded in the 9:15 candle', 'Min volume'],
   ['filter_liquidity', 'Liquidity Filter', 'Minimum total traded value for the day', 'Min value'],
   ['filter_price_range', 'Price Range Filter', 'Avoids penny stocks and very expensive stocks', 'Min / Max'],
@@ -214,7 +214,7 @@ function FilterGroup({
             <span className="flex-1">
               <span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-gray-100">
                 {label}
-                {meta && <span className={`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider ${meta.includes('Needs') ? 'border-[#f59e0b]/40 text-[#f59e0b]' : 'border-[#1f2937] text-gray-500'}`}>{meta}</span>}
+                {meta && <span className={`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider ${meta.includes('Needs') ? 'border-[#f59e0b]/40 text-[#f59e0b]' : meta.includes('Pre') ? 'border-[#22c55e]/40 text-[#22c55e]' : 'border-[#1f2937] text-gray-500'}`}>{meta}</span>}
               </span>
               <span className="mt-1 block text-xs text-gray-500">{helper}</span>
             </span>

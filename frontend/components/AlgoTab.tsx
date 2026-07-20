@@ -59,7 +59,13 @@ export default function AlgoTab({
   const handleWsMessage = useCallback((message: any) => {
     if (message.event === 'price_update') {
       setPositions((current) => current.map((position) => (
-        position.symbol === message.symbol ? { ...position, ltp: message.ltp, unrealized_pnl: calculateUnrealized(position, message.ltp) } : position
+        position.symbol === message.symbol ? {
+          ...position,
+          ltp: message.ltp,
+          high_price: Math.max(Number(position.high_price ?? position.highest_price ?? position.entry_price ?? message.ltp), Number(message.ltp)),
+          low_price: Math.min(Number(position.low_price ?? position.lowest_price ?? position.entry_price ?? message.ltp), Number(message.ltp)),
+          unrealized_pnl: calculateUnrealized(position, message.ltp),
+        } : position
       )));
       return;
     }
@@ -218,6 +224,8 @@ function PositionsTable({ rows }: { rows: any[] }) {
                 <MobileField label="Qty" value={row.qty} />
                 <MobileField label="Entry" value={formatNumber(row.entry_price)} />
                 <MobileField label="LTP" value={Number.isFinite(ltp) ? formatNumber(ltp) : '--'} />
+                <MobileField label="High" value={formatNumber(row.high_price ?? row.highest_price)} />
+                <MobileField label="Low" value={formatNumber(row.low_price ?? row.lowest_price)} />
                 <MobileField label="SL" value={formatNumber(row.sl_price)} />
                 <MobileField label="Target" value={formatNumber(row.target_price)} />
               </div>
@@ -229,7 +237,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
         <table className="w-full min-w-[760px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['Symbol', 'Side', 'Qty', 'Entry', 'LTP', 'SL', 'Target', 'Unreal P&L'].map((column) => (
+            {['Symbol', 'Side', 'Qty', 'Entry', 'LTP', 'High', 'Low', 'SL', 'Target', 'Unreal P&L'].map((column) => (
               <th key={column} className="table-cell label">{column}</th>
             ))}
           </tr>
@@ -237,7 +245,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={8} className="table-cell text-gray-500">No open positions</td>
+              <td colSpan={10} className="table-cell text-gray-500">No open positions</td>
             </tr>
           ) : rows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
@@ -258,6 +266,8 @@ function PositionsTable({ rows }: { rows: any[] }) {
                 <td className="table-cell num text-gray-100">{row.qty}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.entry_price)}</td>
                 <td className="table-cell num text-gray-100">{Number.isFinite(ltp) ? formatNumber(ltp) : '--'}</td>
+                <td className="table-cell num text-gray-100">{formatNumber(row.high_price ?? row.highest_price)}</td>
+                <td className="table-cell num text-gray-100">{formatNumber(row.low_price ?? row.lowest_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.sl_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.target_price)}</td>
                 <td className={`table-cell num font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>

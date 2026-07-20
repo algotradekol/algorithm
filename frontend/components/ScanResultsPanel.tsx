@@ -2,7 +2,7 @@
 import { useMemo, useState } from 'react';
 
 const PAGE_SIZE = 20;
-const COLUMNS = ['symbol', 'side', 'gap_pct', 'vwap', 'rsi', 'adx', 'supertrend', 'volume', 'selected_for_trade', 'rejection_reason'];
+const COLUMNS = ['symbol', 'side', 'open', 'high', 'low', 'prev_close', 'gap_pct', 'vwap', 'rsi', 'adx', 'supertrend', 'volume', 'selected_for_trade', 'rejection_reason'];
 const FUNNEL_INDICATORS = [
   ['vwap', 'VWAP condition'],
   ['rsi', 'RSI / move condition'],
@@ -14,6 +14,13 @@ const FUNNEL_INDICATORS = [
   ['liquidity', 'Liquidity condition'],
   ['price_range', 'Price range condition'],
 ] as const;
+
+type FunnelStepData = {
+  label: string;
+  passed: number;
+  total: number;
+  note?: string;
+};
 
 export default function ScanResultsPanel({ results }: { results: any }) {
   const [query, setQuery] = useState('');
@@ -106,6 +113,10 @@ export default function ScanResultsPanel({ results }: { results: any }) {
               <tr key={`${row.symbol}-${index}`} className={`${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'} border-l-2 ${rowBorder(row)}`}>
                 <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
                 <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>{row.side}</td>
+                <td className="table-cell num text-gray-100">{formatNumber(row.open)}</td>
+                <td className="table-cell num text-gray-100">{formatNumber(row.high)}</td>
+                <td className="table-cell num text-gray-100">{formatNumber(row.low)}</td>
+                <td className="table-cell num text-gray-100">{formatNumber(row.prev_close)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.gap_pct)}%</td>
                 {['vwap', 'rsi', 'adx', 'supertrend', 'volume'].map((name) => (
                   <IndicatorCell key={name} result={row.indicator_results?.[name]} />
@@ -139,7 +150,11 @@ function ScanStat({ label, value }: { label: string; value: number }) {
 }
 
 function buildConditionFunnel(results: any, rows: any[]) {
-  const steps: { label: string; passed: number; total: number; note?: string }[] = [];
+  if (Array.isArray(results?.condition_breakdown) && results.condition_breakdown.length) {
+    return results.condition_breakdown as FunnelStepData[];
+  }
+
+  const steps: FunnelStepData[] = [];
   const totalScanned = Number(results?.total_scanned || rows.length || 0);
   const signalPassed = rows.length;
   steps.push({ label: 'Scanned universe', passed: totalScanned, total: totalScanned });
@@ -176,7 +191,7 @@ function FunnelStep({
   step,
   index,
 }: {
-  step: { label: string; passed: number; total: number; note?: string };
+  step: FunnelStepData;
   index: number;
 }) {
   const pct = step.total > 0 ? step.passed / step.total * 100 : 0;

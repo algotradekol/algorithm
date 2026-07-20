@@ -65,16 +65,15 @@ class PaperBroker:
         return len(result.data) > 0
 
     def can_open_new_trade(self, side: str, max_total: int, max_per_side: int) -> bool:
-        state = self._get_state()
-        if state["trade_count_today"] >= max_total:
+        counts = self.today_counts()
+        if counts["trade_count_today"] >= max_total:
             return False
-        side_count = state["buy_count_today"] if side == "BUY" else state["sell_count_today"]
-        other_count = state["sell_count_today"] if side == "BUY" else state["buy_count_today"]
+        side_count = counts["buy_count_today"] if side == "BUY" else counts["sell_count_today"]
         if side_count < max_per_side:
             return True
         # allow counter/overflow trades on this side if the OTHER side hasn't used its full quota
         # and the total cap isn't hit yet (fills the 10-trade cap even if one side has fewer signals)
-        return state["trade_count_today"] < max_total
+        return counts["trade_count_today"] < max_total
 
     def open_trade(self, symbol: str, side: str, qty: int, entry_price: float, sl_price: float, target_price: float):
         run_with_supabase(
@@ -103,7 +102,24 @@ class PaperBroker:
             "entry_price": entry_price,
             "sl_price": sl_price,
             "target_price": target_price,
+            "high_price": entry_price,
+            "low_price": entry_price,
         })
+
+    def update_position_range(self, position: dict, ltp: float) -> dict:
+        entry = float(position.get("entry_price") or ltp)
+        highest = max(float(position.get("highest_price") or entry), float(ltp))
+        lowest = min(float(position.get("lowest_price") or entry), float(ltp))
+        updates = {}
+        if highest != float(position.get("highest_price") or entry):
+            updates["highest_price"] = highest
+        if lowest != float(position.get("lowest_price") or entry):
+            updates["lowest_price"] = lowest
+        if updates:
+            run_with_supabase(
+                lambda supabase: supabase.table("positions").update(updates).eq("id", position["id"]).execute()
+            )
+        return {**position, **updates}
 
     def apply_trailing_stop(self, position: dict, ltp: float, settings: dict) -> dict:
         if not should_use_trailing_stop(settings):
@@ -148,6 +164,25 @@ class PaperBroker:
     def should_exit_at_target(self, settings: dict) -> bool:
         return should_use_fixed_target(settings)
 
+    def today_counts(self) -> dict:
+        today = datetime.date.today().isoformat()
+        trades = run_with_supabase(
+            lambda supabase: supabase.table("trades").select("side").eq("algo_id", self.algo_id)
+            .gte("entry_time", today).execute()
+        ).data
+        positions = run_with_supabase(
+            lambda supabase: supabase.table("positions").select("side").eq("algo_id", self.algo_id)
+            .eq("status", "open").gte("entry_time", today).execute()
+        ).data
+        rows = trades + positions
+        buy_count = len([row for row in rows if row.get("side") == "BUY"])
+        sell_count = len([row for row in rows if row.get("side") == "SELL"])
+        return {
+            "trade_count_today": len(rows),
+            "buy_count_today": buy_count,
+            "sell_count_today": sell_count,
+        }
+
     def close_trade(self, position: dict, exit_price: float, exit_reason: str):
         side = position["side"]
         qty = position["qty"]
@@ -188,6 +223,7 @@ class PaperBroker:
 
     def summary(self) -> dict:
         state = self._get_state()
+        counts = self.today_counts()
         trades_today = run_with_supabase(
             lambda supabase: supabase.table("trades").select("net_pnl,gross_pnl,total_charges")
             .eq("algo_id", self.algo_id).gte("entry_time", datetime.date.today().isoformat()).execute()
@@ -198,9 +234,9 @@ class PaperBroker:
         return {
             "cash": round(state["cash"], 2),
             "starting_capital": self.starting_capital,
-            "trade_count_today": state["trade_count_today"],
-            "buy_count_today": state["buy_count_today"],
-            "sell_count_today": state["sell_count_today"],
+            "trade_count_today": counts["trade_count_today"],
+            "buy_count_today": counts["buy_count_today"],
+            "sell_count_today": counts["sell_count_today"],
             "realized_gross_pnl": round(realized_gross, 2),
             "realized_charges": round(realized_charges, 2),
             "realized_net_pnl": round(realized_net, 2),

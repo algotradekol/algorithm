@@ -329,6 +329,15 @@ function ZoomableCandleChart({
   const activeCandle = activeIndex !== null ? visible[activeIndex] : null;
   const activeX = activeIndex !== null ? activeIndex * candleWidth + candleWidth / 2 : 0;
   const activePrice = crosshair ? high - ((crosshair.y - 16) / (priceHeight - 32)) * priceSpan : null;
+  const tooltipWidth = 240;
+  const tooltipHeight = 94;
+  const tooltipGap = 18;
+  const tooltipX = activeX > width / 2
+    ? Math.max(8, activeX - tooltipWidth - tooltipGap)
+    : Math.min(width - tooltipWidth - 8, activeX + tooltipGap);
+  const tooltipY = crosshair && crosshair.y < tooltipHeight + 34
+    ? Math.min(priceHeight - tooltipHeight - 8, crosshair.y + tooltipGap)
+    : 18;
 
   function y(price: number) {
     return 16 + ((high - price) / priceSpan) * (priceHeight - 32);
@@ -480,15 +489,15 @@ function ZoomableCandleChart({
               <text x={width - 82} y={Math.max(15, Math.min(priceHeight - 7, crosshair.y + 4))} fill="#e5e7eb" fontSize="11" fontFamily="ui-monospace">
                 {formatNumber(activePrice)}
               </text>
-              <rect x={Math.min(width - 250, activeX + 10)} y={18} width={240} height={94} fill="#111827" stroke="#1f2937" />
-              <text x={Math.min(width - 240, activeX + 20)} y={38} fill="#e5e7eb" fontSize="11" fontFamily="ui-monospace">{activeCandle.time}</text>
-              <text x={Math.min(width - 240, activeX + 20)} y={56} fill="#9ca3af" fontSize="11" fontFamily="ui-monospace">
+              <rect x={tooltipX} y={tooltipY} width={tooltipWidth} height={tooltipHeight} fill="#111827" stroke="#1f2937" />
+              <text x={tooltipX + 10} y={tooltipY + 20} fill="#e5e7eb" fontSize="11" fontFamily="ui-monospace">{activeCandle.time}</text>
+              <text x={tooltipX + 10} y={tooltipY + 38} fill="#9ca3af" fontSize="11" fontFamily="ui-monospace">
                 O {formatNumber(activeCandle.open)}  H {formatNumber(activeCandle.high)}
               </text>
-              <text x={Math.min(width - 240, activeX + 20)} y={74} fill="#9ca3af" fontSize="11" fontFamily="ui-monospace">
+              <text x={tooltipX + 10} y={tooltipY + 56} fill="#9ca3af" fontSize="11" fontFamily="ui-monospace">
                 L {formatNumber(activeCandle.low)}  C {formatNumber(activeCandle.close)}
               </text>
-              <text x={Math.min(width - 240, activeX + 20)} y={92} fill="#9ca3af" fontSize="11" fontFamily="ui-monospace">
+              <text x={tooltipX + 10} y={tooltipY + 74} fill="#9ca3af" fontSize="11" fontFamily="ui-monospace">
                 Vol {activeCandle.volume.toLocaleString('en-IN')}
               </text>
             </g>

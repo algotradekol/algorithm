@@ -4,7 +4,7 @@ from collections import defaultdict
 
 from .base import Strategy
 from ..fyers_auth import get_stored_access_token
-from ..fyers_client import get_previous_close
+from ..fyers_client import get_previous_close, get_recent_intraday_candles
 from ..paper_broker import PaperBroker
 
 MIN_GAP_PCT = 0.5
@@ -24,6 +24,7 @@ class Algo4OpeningRangeIndicators(Strategy):
         self.prev_close: dict[str, float] = {}
         self.candles: dict[str, list[dict]] = defaultdict(list)
         self.total_value: dict[str, float] = defaultdict(float)
+        self.warmup_loaded: set[str] = set()
         self.candidates: dict[str, tuple[str, float]] = {}
         self.candidate_details: dict[str, dict] = {}
         self.selected_symbols: set[str] = set()
@@ -42,11 +43,18 @@ class Algo4OpeningRangeIndicators(Strategy):
                 return
             for symbol in self.watchlist:
                 try:
-                    close = get_previous_close(symbol)
-                    if close:
-                        self.prev_close[symbol] = close
+                    warmup = get_recent_intraday_candles(symbol, resolution="1", days=7, limit=120)
+                    if warmup:
+                        self.candles[symbol] = warmup
+                        self.prev_close[symbol] = float(warmup[-1]["close"])
+                        self.warmup_loaded.add(symbol)
+                    else:
+                        close = get_previous_close(symbol)
+                        if close:
+                            self.prev_close[symbol] = close
                 except Exception as e:
                     print(f"[{self.algo_id}] couldn't get prev close for {symbol}: {e}")
+            print(f"[{self.algo_id}] indicator warmup loaded for {len(self.warmup_loaded)}/{len(self.watchlist)} symbols")
         except Exception as e:
             print(f"[{self.algo_id}] error in background preload: {e}")
 
@@ -114,10 +122,14 @@ class Algo4OpeningRangeIndicators(Strategy):
             "symbol": symbol,
             "side": side,
             "open": open_price,
+            "high": candle["high"],
+            "low": candle["low"],
+            "close": candle["close"],
             "prev_close": prev_close,
             "gap_pct": gap / prev_close * 100,
             "passed_indicators": passed_indicators,
             "indicator_results": indicator_results,
+            "warmup_candles": max(0, len(self.candles[symbol]) - 1),
             "selected_for_trade": False,
             "rejection_reason": None if passed_indicators else "failed_indicator_filter",
         }
@@ -219,11 +231,51 @@ class Algo4OpeningRangeIndicators(Strategy):
             "overflow_buy": 0,
             "overflow_sell": 0,
             "total_filtered_out": max(0, len(self.watchlist) - len(rows)),
+            "condition_breakdown": self._condition_breakdown(rows),
+            "warmup_loaded_symbols": len(self.warmup_loaded),
+            "warmup_required_candles": {
+                "ema20": 20,
+                "ema50": 50,
+                "rsi": 15,
+                "adx": 28,
+                "supertrend": int(self.settings["supertrend_period"]) + 1,
+            },
         }
         from app.engine import SCAN_RESULTS
         from app.broadcaster import broadcast_sync
         SCAN_RESULTS[self.algo_id] = result
         broadcast_sync({"event": "scan_complete", "algo_id": self.algo_id, "results": result})
+
+    def _condition_breakdown(self, rows: list[dict]) -> list[dict]:
+        steps = [
+            {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
+            {"label": "Condition 1: opening range + gap", "passed": len(rows), "total": len(self.watchlist)},
+        ]
+        survivors = rows
+        labels = {
+            "vwap": "VWAP condition",
+            "rsi": "RSI condition",
+            "adx": "ADX condition",
+            "supertrend": "Supertrend condition",
+            "ema20": "EMA20 condition",
+            "ema50": "EMA50 condition",
+            "volume": "Volume condition",
+            "liquidity": "Liquidity condition",
+            "price_range": "Price range condition",
+        }
+        for key, label in labels.items():
+            if not any(row.get("indicator_results", {}).get(key, {}).get("enabled") for row in survivors):
+                continue
+            passed_rows = [
+                row for row in survivors
+                if not row.get("indicator_results", {}).get(key, {}).get("enabled") or
+                row.get("indicator_results", {}).get(key, {}).get("passed")
+            ]
+            steps.append({"label": f"Condition {len(steps)}: {label}", "passed": len(passed_rows), "total": len(survivors)})
+            survivors = passed_rows
+        selected = len([row for row in rows if row.get("selected_for_trade")])
+        steps.append({"label": "Final: selected for trade", "passed": selected, "total": len(survivors)})
+        return steps
 
     def check_exits(self):
         for position in self.broker.open_positions():

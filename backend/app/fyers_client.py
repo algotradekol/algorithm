@@ -3,6 +3,7 @@ fyers_client.py — thin wrapper around Fyers' live WebSocket and
 historical candle REST API, used by engine.py.
 """
 import datetime
+from zoneinfo import ZoneInfo
 from fyers_apiv3 import fyersModel
 from fyers_apiv3.FyersWebsocket import data_ws
 
@@ -111,6 +112,37 @@ def get_price_history(symbol: str, resolution: str = "15", days: int = 5) -> dic
         "warning": warning,
         "raw_status": response.get("s"),
     }
+
+
+def get_recent_intraday_candles(symbol: str, resolution: str = "1", days: int = 5, limit: int = 120) -> list[dict]:
+    """Recent completed intraday candles for indicator warmup before market open."""
+    fyers = get_fyers_model()
+    today = datetime.date.today()
+    start_date = today - datetime.timedelta(days=max(days, 1))
+    end_date = today - datetime.timedelta(days=1)
+    data = {
+        "symbol": symbol,
+        "resolution": resolution,
+        "date_format": "1",
+        "range_from": start_date.isoformat(),
+        "range_to": end_date.isoformat(),
+        "cont_flag": "1",
+    }
+    response = fyers.history(data)
+    candles = response.get("candles", [])
+    ist = ZoneInfo("Asia/Kolkata")
+    normalized = [
+        {
+            "time": datetime.datetime.fromtimestamp(candle[0], tz=ist).replace(tzinfo=None),
+            "open": candle[1],
+            "high": candle[2],
+            "low": candle[3],
+            "close": candle[4],
+            "volume": candle[5],
+        }
+        for candle in candles
+    ]
+    return normalized[-limit:]
 
 
 def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=None):

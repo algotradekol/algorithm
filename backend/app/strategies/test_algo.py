@@ -143,6 +143,20 @@ class TestAlgo(Strategy):
             "overflow_buy": 0,
             "overflow_sell": 0,
             "total_filtered_out": max(0, len(self.watchlist) - len(self.candidates)),
+            "condition_breakdown": [
+                {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
+                {"label": "Condition 1: live candle received", "passed": len(self.candidates), "total": len(self.watchlist)},
+                {
+                    "label": "Condition 2: +/-0.03% candle move",
+                    "passed": len([row for row in rows if row["side"] in {"BUY", "SELL"}]),
+                    "total": len(rows),
+                },
+                {
+                    "label": "Final: selected for trade",
+                    "passed": len([row for row in rows if row["selected_for_trade"]]),
+                    "total": len([row for row in rows if row["side"] in {"BUY", "SELL"}]),
+                },
+            ],
         }
         from app.engine import SCAN_RESULTS
         from app.broadcaster import broadcast_sync

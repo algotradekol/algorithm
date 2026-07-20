@@ -38,6 +38,8 @@ class Algo1OpeningRange(Strategy):
         self.buy_candidates: list[str] = []
         self.sell_candidates: list[str] = []
         self.candidate_details: dict[str, dict] = {}
+        self.scan_seen_symbols: set[str] = set()
+        self.open_extreme_symbols: set[str] = set()
         self.selected_symbols: set[str] = set()
         self.entries_evaluated_today = None
         # Load previous closes in background to avoid blocking startup
@@ -75,8 +77,10 @@ class Algo1OpeningRange(Strategy):
             return
 
         open_price, high, low = candle["open"], candle["high"], candle["low"]
+        self.scan_seen_symbols.add(symbol)
 
         if open_price == low:
+            self.open_extreme_symbols.add(symbol)
             gap_pct = abs(open_price - prev_close) / prev_close * 100
             if gap_pct <= GAP_LIMIT_PCT:
                 self.buy_candidates.append(symbol)
@@ -84,6 +88,9 @@ class Algo1OpeningRange(Strategy):
                     "symbol": symbol,
                     "side": "BUY",
                     "open": open_price,
+                    "high": high,
+                    "low": low,
+                    "close": candle["close"],
                     "prev_close": prev_close,
                     "gap_pct": gap_pct,
                     "passed_indicators": True,
@@ -93,6 +100,7 @@ class Algo1OpeningRange(Strategy):
                 }
 
         if open_price == high:
+            self.open_extreme_symbols.add(symbol)
             gap_pct = abs(prev_close - open_price) / prev_close * 100
             if gap_pct <= GAP_LIMIT_PCT:
                 self.sell_candidates.append(symbol)
@@ -100,6 +108,9 @@ class Algo1OpeningRange(Strategy):
                     "symbol": symbol,
                     "side": "SELL",
                     "open": open_price,
+                    "high": high,
+                    "low": low,
+                    "close": candle["close"],
                     "prev_close": prev_close,
                     "gap_pct": gap_pct,
                     "passed_indicators": True,
@@ -169,6 +180,13 @@ class Algo1OpeningRange(Strategy):
             "overflow_buy": max(0, len(buys) - self.settings["max_buy_trades"]),
             "overflow_sell": max(0, len(sells) - self.settings["max_sell_trades"]),
             "total_filtered_out": max(0, len(self.watchlist) - len(rows)),
+            "condition_breakdown": [
+                {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
+                {"label": "Condition 1: 9:15 candle received", "passed": len(self.scan_seen_symbols), "total": len(self.watchlist)},
+                {"label": "Condition 2: open equals low/high", "passed": len(self.open_extreme_symbols), "total": len(self.scan_seen_symbols)},
+                {"label": "Condition 3: opening gap <= 2%", "passed": len(rows), "total": len(self.open_extreme_symbols)},
+                {"label": "Final: selected for trade", "passed": len(self.selected_symbols), "total": len(rows)},
+            ],
         }
         from app.engine import SCAN_RESULTS
         from app.broadcaster import broadcast_sync
