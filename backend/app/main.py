@@ -306,6 +306,25 @@ def compare_algos(_user=Depends(require_auth)):
     return {algo_id: strategy.broker.summary() for algo_id, strategy in STRATEGIES.items()}
 
 
+@app.get("/api/calendar")
+def calendar_days(days: int = Query(default=60, ge=1, le=365), _user=Depends(require_auth)):
+    from app.calendar_store import list_calendar_days
+    return list_calendar_days(days)
+
+
+@app.get("/api/calendar/{snapshot_date}")
+def calendar_day(snapshot_date: str, _user=Depends(require_auth)):
+    from app.calendar_store import get_calendar_day
+    return get_calendar_day(snapshot_date)
+
+
+@app.post("/api/calendar/snapshot")
+def calendar_snapshot(payload: dict | None = None, _user=Depends(require_auth)):
+    from app.calendar_store import save_dashboard_snapshot
+    algo_id = (payload or {}).get("algo_id")
+    return save_dashboard_snapshot(algo_id=algo_id, note=(payload or {}).get("note") or "manual")
+
+
 @app.get("/api/charges")
 def read_charges(_user=Depends(require_auth)):
     return get_charges_config()
@@ -335,6 +354,11 @@ def market_history(
         history = get_price_history(symbol, resolution=resolution, days=days)
         candles = history["candles"]
         warning = history["warning"]
+        try:
+            from app.calendar_store import store_market_candles
+            store_market_candles(symbol, resolution, candles)
+        except Exception as store_exc:
+            warning = warning or f"History loaded but candle persistence failed: {store_exc}"
     except Exception as exc:
         candles = []
         warning = str(exc)

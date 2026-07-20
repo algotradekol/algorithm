@@ -137,11 +137,21 @@ def _scheduler_loop():
             for strategy in STRATEGIES.values():
                 if hasattr(strategy, "evaluate_entries"):
                     strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
+            try:
+                from app.calendar_store import save_dashboard_snapshot
+                save_dashboard_snapshot(note="entry_scan")
+            except Exception as exc:
+                print(f"[engine] entry-scan calendar snapshot failed: {exc}")
             entries_fired_date = today
 
         if current_time >= SQUARE_OFF_TIME and squareoff_fired_date != today:
             for strategy in STRATEGIES.values():
                 strategy.square_off_all()
+            try:
+                from app.calendar_store import save_dashboard_snapshot
+                save_dashboard_snapshot(note="eod_squareoff")
+            except Exception as exc:
+                print(f"[engine] EOD calendar snapshot failed: {exc}")
             squareoff_fired_date = today
 
         time.sleep(15)

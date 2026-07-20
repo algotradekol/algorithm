@@ -43,6 +43,10 @@ export const api = {
   resetSettings: (algoId: string) =>
     authedFetch(`/api/algo/${algoId}/settings/reset`, { method: 'POST' }),
   compare: () => authedFetch('/api/compare'),
+  calendarDays: (days = 60) => authedFetch(`/api/calendar?days=${days}`),
+  calendarDay: (date: string) => authedFetch(`/api/calendar/${encodeURIComponent(date)}`),
+  saveCalendarSnapshot: (payload: object = {}) =>
+    authedFetch('/api/calendar/snapshot', { method: 'POST', body: JSON.stringify(payload) }),
   engineStatus: () => authedFetch('/api/engine/status'),
   fyersStatus: () => authedFetch('/api/fyers/status'),
   fyersRefreshToken: () => authedFetch('/api/fyers/refresh-token', { method: 'POST' }),

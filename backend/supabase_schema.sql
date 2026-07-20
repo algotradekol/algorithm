@@ -168,6 +168,48 @@ ALTER TABLE positions
 ALTER TABLE trades
     ADD COLUMN IF NOT EXISTS entry_trigger text;
 
+-- Calendar/audit snapshots: stores the dashboard state date-wise for review.
+CREATE TABLE IF NOT EXISTS calendar_snapshots (
+    id bigserial PRIMARY KEY,
+    snapshot_date date not null,
+    algo_id text not null,
+    display_name text,
+    summary jsonb,
+    positions jsonb,
+    trades jsonb,
+    scan_results jsonb,
+    settings jsonb,
+    engine_status jsonb,
+    fyers_status jsonb,
+    note text,
+    created_at timestamptz default now(),
+    updated_at timestamptz default now(),
+    UNIQUE (snapshot_date, algo_id)
+);
+
+CREATE INDEX IF NOT EXISTS idx_calendar_snapshots_date
+    ON calendar_snapshots (snapshot_date desc, algo_id);
+
+-- Stored OHLCV candles fetched by the History graph endpoint.
+CREATE TABLE IF NOT EXISTS market_candles (
+    id bigserial PRIMARY KEY,
+    symbol text not null,
+    resolution text not null,
+    candle_time timestamptz not null,
+    open numeric,
+    high numeric,
+    low numeric,
+    close numeric,
+    volume numeric,
+    source text default 'fyers_history',
+    raw jsonb,
+    created_at timestamptz default now(),
+    UNIQUE (symbol, resolution, candle_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_market_candles_symbol_time
+    ON market_candles (symbol, resolution, candle_time desc);
+
 -- AI assistant chat memory. Run manually in Supabase SQL Editor before using the assistant.
 CREATE TABLE IF NOT EXISTS ai_chat_sessions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

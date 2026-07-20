@@ -4,6 +4,7 @@ import { useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
 import AlgoTab from '../../components/AlgoTab';
 import CompareTab from '../../components/CompareTab';
+import CalendarTab from '../../components/CalendarTab';
 import ChargesPanel from '../../components/ChargesPanel';
 import HistoryTab from '../../components/HistoryTab';
 import FyersLoginButton from '../../components/FyersLoginButton';
@@ -12,7 +13,7 @@ import { clearPinToken } from '../../lib/pinAuth';
 import { api } from '../../lib/api';
 import { WebSocketState } from '../../lib/useWebSocket';
 
-const TABS = ['Simple', 'Filter', 'Test Algo', 'Compare', 'History', 'Charges'] as const;
+const TABS = ['Simple', 'Filter', 'Test Algo', 'Compare', 'History', 'Calendar', 'Charges'] as const;
 
 function formatIstTime() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -189,7 +190,7 @@ function DashboardContent() {
 
         {tradingReady && <LiveDiagnostics engineStatus={engineStatus} />}
 
-        {!tradingReady && tab !== 'Charges' ? (
+        {!tradingReady && !['Compare', 'History', 'Calendar', 'Charges'].includes(tab) ? (
           <section className="panel p-4">
             <div className="flex items-center gap-2 text-sm font-semibold text-gray-100">
               <i className={`ri-checkbox-blank-circle-fill text-[8px] ${statusIconTone}`} />
@@ -242,6 +243,7 @@ function DashboardContent() {
             )}
             {tab === 'Compare' && <CompareTab />}
             {tab === 'History' && <HistoryTab />}
+            {tab === 'Calendar' && <CalendarTab />}
             {tab === 'Charges' && <ChargesPanel />}
           </>
         )}
