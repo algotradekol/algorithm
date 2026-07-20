@@ -237,8 +237,8 @@ function DashboardContent() {
             {tab === 'Algo 5' && (
               <AlgoTab
                 algoId="algo5"
-                displayName="Algo 5 - Live Candle Movement Test"
-                description="Temporary live-market test: every closed 1-minute candle with close >= open +0.05% becomes BUY; close <= open -0.05% becomes SELL. Entry is at candle close."
+                displayName="Algo 5 - Afternoon Candle Continuation"
+                description="Scheduled 2 PM test: use the closed 2:00 PM candle as signal, then enter at 2:02 PM. Green candle above threshold/VWAP becomes BUY; red candle below threshold/VWAP becomes SELL."
                 onWebSocketStatus={setWsStatus}
               />
             )}

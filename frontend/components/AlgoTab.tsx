@@ -115,6 +115,11 @@ export default function AlgoTab({
         <div>
           <h2 className="text-base font-semibold text-gray-100">{displayName}</h2>
           {description && <p className="mt-1 text-xs text-gray-500">{description}</p>}
+          {algoId === 'algo5' && (
+            <p className="mt-2 rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-xs text-[#f59e0b]">
+              Algo 5 is still a paper-test strategy. It is designed to test the 2:00 PM signal and 2:02 PM scheduled entry flow, not to guarantee profit.
+            </p>
+          )}
         </div>
         <button
           onClick={() => setSettingsOpen((open) => !open)}
@@ -138,14 +143,14 @@ export default function AlgoTab({
 
       <ScanResultsPanel results={scanResults} />
 
-      <div className="grid gap-4 xl:grid-cols-2">
+      <div className="grid gap-4">
         <section>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Open Positions</h3>
           <PositionsTable rows={positions} />
         </section>
 
         <section>
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Today's Trades</h3>
+          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Closed Trades Today</h3>
           <TradesTable rows={trades} />
         </section>
       </div>
@@ -182,15 +187,15 @@ function MetricCard({
   important?: boolean;
 }) {
   return (
-    <div className="rounded border border-[#1f2937] bg-[#111827] p-2 sm:p-3">
+    <div className="min-w-0 rounded border border-[#1f2937] bg-[#111827] p-2 sm:p-3">
       <div className="label text-[10px] sm:text-xs">{label}</div>
-      <div className={`num mt-1.5 flex items-center gap-1 font-semibold sm:mt-2 ${important ? 'text-lg sm:text-2xl' : 'text-xs sm:text-base'} ${pnlColor(pnl)}`}>
+      <div className={`num mt-1.5 flex min-w-0 items-center gap-1 whitespace-nowrap font-semibold sm:mt-2 ${important ? 'text-base sm:text-xl' : 'text-xs sm:text-base'} ${pnlColor(pnl)}`}>
         {label === 'Trades Today' && <i className="ri-exchange-fill text-xs text-slate-400" />}
-        {pnl !== undefined && pnl > 0 && <i className="ri-arrow-up-circle-fill text-sm text-[#22c55e]" />}
-        {pnl !== undefined && pnl < 0 && <i className="ri-arrow-down-circle-fill text-sm text-[#ef4444]" />}
-        {value}
+        {pnl !== undefined && pnl > 0 && <i className="ri-arrow-up-circle-fill shrink-0 text-sm text-[#22c55e]" />}
+        {pnl !== undefined && pnl < 0 && <i className="ri-arrow-down-circle-fill shrink-0 text-sm text-[#ef4444]" />}
+        <span className="min-w-0 overflow-hidden text-ellipsis">{value}</span>
       </div>
-      {delta && <div className={`num mt-1 text-xs ${pnlColor(pnl)}`}>{delta} vs start</div>}
+      {delta && <div className={`num mt-1 truncate text-xs ${pnlColor(pnl)}`}>{delta} vs start</div>}
     </div>
   );
 }
@@ -226,7 +231,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
         })}
       </div>
       <div className="hidden overflow-x-auto rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-max border-collapse text-xs">
+        <table className="w-full min-w-[760px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
             {['Symbol', 'Side', 'Qty', 'Entry', 'LTP', 'SL', 'Target', 'Unreal P&L'].map((column) => (
@@ -275,7 +280,7 @@ function TradesTable({ rows }: { rows: any[] }) {
   return (
     <>
       <div className="space-y-2 sm:hidden">
-        {!rows.length ? <p className="rounded border border-[#1f2937] bg-[#0d1117] p-3 text-sm text-gray-500">No trades today</p> : rows.map((row, index) => (
+        {!rows.length ? <p className="rounded border border-[#1f2937] bg-[#0d1117] p-3 text-sm text-gray-500">No closed trades yet</p> : rows.map((row, index) => (
           <div key={row.id || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
             <div className="flex items-center justify-between gap-3">
               <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
@@ -300,7 +305,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         ))}
       </div>
       <div className="hidden overflow-x-auto rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-max border-collapse text-xs">
+        <table className="w-full min-w-[860px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
             {['Symbol', 'Side', 'Entry', 'Exit', 'Reason', 'Gross', 'Charges', 'Net'].map((column) => (
@@ -311,7 +316,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={8} className="table-cell text-gray-500">No trades today</td>
+              <td colSpan={8} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
           ) : rows.map((row, index) => (
             <tr key={row.id || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>

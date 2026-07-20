@@ -139,6 +139,10 @@ def _scheduler_loop():
                     strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
             entries_fired_date = today
 
+        algo5 = STRATEGIES.get("algo5")
+        if algo5 and getattr(algo5, "entries_evaluated_today", None) != today and current_time >= "14:02":
+            algo5.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
+
         if current_time >= SQUARE_OFF_TIME and squareoff_fired_date != today:
             for strategy in STRATEGIES.values():
                 strategy.square_off_all()

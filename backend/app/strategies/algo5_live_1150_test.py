@@ -3,15 +3,20 @@ import datetime
 from .base import Strategy
 from ..paper_broker import PaperBroker
 
-MIN_CANDLE_MOVE_PCT = 0.05
-DIAGNOSTIC_TARGET_PCT = 0.10
-DIAGNOSTIC_SL_PCT = 0.05
+SIGNAL_CANDLE_TIME = "14:00"
+ENTRY_TIME = "14:02"
+MIN_CANDLE_MOVE_PCT = 0.08
+MIN_VOLUME = 1
+MIN_PRICE = 50
+MAX_PRICE = 5000
+TARGET_PCT = 0.35
+SL_PCT = 0.20
 MAX_SCAN_ROWS = 100
 
 
 class Algo5Live1150Test(Strategy):
     algo_id = "algo5"
-    display_name = "Algo 5 - Live Candle Movement Test"
+    display_name = "Algo 5 - Afternoon Candle Continuation"
 
     def __init__(self, watchlist: list[str]):
         self.watchlist = watchlist
@@ -19,9 +24,10 @@ class Algo5Live1150Test(Strategy):
         self.settings = get_settings(self.algo_id)
         self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
         self.latest_ltp: dict[str, float] = {}
-        self.latest_candles: dict[str, dict] = {}
+        self.candidates: dict[str, dict] = {}
         self.selected_symbols: set[str] = set()
         self.selected_sides: dict[str, str] = {}
+        self.entries_evaluated_today = None
 
     def reload_settings(self):
         from app.strategy_settings import get_settings
@@ -33,9 +39,14 @@ class Algo5Live1150Test(Strategy):
             self.latest_ltp[symbol] = float(ltp)
 
     def on_candle_close(self, symbol: str, candle: dict, indicators: dict):
-        side = self._signal_side(candle)
+        if candle["time"].strftime("%H:%M") != SIGNAL_CANDLE_TIME:
+            return
+
+        side, rejection_reason = self._signal_side(candle, indicators)
         move_pct = self._candle_move_pct(candle)
-        self.latest_candles[symbol] = {
+        close = float(candle["close"])
+        vwap = indicators.get("vwap")
+        row = {
             "symbol": symbol,
             "side": side or "WATCH",
             "open": candle["open"],
@@ -43,41 +54,69 @@ class Algo5Live1150Test(Strategy):
             "gap_pct": move_pct,
             "passed_indicators": bool(side),
             "indicator_results": {
-                "vwap": {"value": candle["close"], "passed": bool(side), "enabled": False},
-                "rsi": {"value": move_pct, "passed": bool(side), "enabled": True},
+                "vwap": {"value": vwap or close, "passed": self._vwap_pass(side, close, vwap), "enabled": vwap is not None},
+                "rsi": {"value": move_pct, "passed": abs(move_pct) >= MIN_CANDLE_MOVE_PCT, "enabled": True},
                 "adx": {"value": abs(move_pct), "passed": abs(move_pct) >= MIN_CANDLE_MOVE_PCT, "enabled": True},
                 "supertrend": {"value": candle["open"], "passed": bool(side), "enabled": False},
-                "volume": {"value": candle.get("volume", 0), "passed": True, "enabled": False},
+                "volume": {"value": candle.get("volume", 0), "passed": candle.get("volume", 0) >= MIN_VOLUME, "enabled": True},
             },
-            "selected_for_trade": symbol in self.selected_symbols,
-            "rejection_reason": None if side else "waiting_for_0.05pct_closed_candle_move",
+            "selected_for_trade": False,
+            "rejection_reason": rejection_reason,
             "candle_time": candle["time"].isoformat() if hasattr(candle["time"], "isoformat") else str(candle["time"]),
-            "close": candle["close"],
+            "close": close,
             "high": candle["high"],
             "low": candle["low"],
             "volume": candle.get("volume", 0),
         }
-
-        if side:
-            self._enter(symbol, side, float(candle["close"]))
-            self.latest_candles[symbol]["selected_for_trade"] = symbol in self.selected_symbols
-            if self.latest_candles[symbol]["selected_for_trade"]:
-                self.latest_candles[symbol]["rejection_reason"] = None
-            else:
-                self.latest_candles[symbol]["rejection_reason"] = "trade_slots_or_duplicate_check"
-
+        self.candidates[symbol] = row
         self._record_scan_results()
 
     def evaluate_entries(self, get_ltp_fn):
+        today = datetime.date.today()
+        if self.entries_evaluated_today == today:
+            return
+        self.entries_evaluated_today = today
+
+        for symbol, row in list(self.candidates.items()):
+            side = row.get("side")
+            if side not in {"BUY", "SELL"}:
+                continue
+            entry_price = get_ltp_fn(symbol) or self.latest_ltp.get(symbol) or row.get("close")
+            self._enter(symbol, side, float(entry_price))
         self._record_scan_results()
 
-    def _signal_side(self, candle: dict) -> str | None:
+    def _signal_side(self, candle: dict, indicators: dict) -> tuple[str | None, str | None]:
+        open_price = float(candle.get("open") or 0)
+        close_price = float(candle.get("close") or 0)
+        volume = float(candle.get("volume") or 0)
+        vwap = indicators.get("vwap")
         move_pct = self._candle_move_pct(candle)
+
+        if not (MIN_PRICE <= close_price <= MAX_PRICE):
+            return None, "outside_price_range"
+        if volume < MIN_VOLUME:
+            return None, "no_candle_volume"
+
         if move_pct >= MIN_CANDLE_MOVE_PCT:
-            return "BUY"
+            if vwap is not None and close_price < float(vwap):
+                return None, "buy_failed_vwap"
+            return "BUY", None
+
         if move_pct <= -MIN_CANDLE_MOVE_PCT:
-            return "SELL"
-        return None
+            if vwap is not None and close_price > float(vwap):
+                return None, "sell_failed_vwap"
+            return "SELL", None
+
+        return None, "waiting_for_0.08pct_2pm_candle_move"
+
+    def _vwap_pass(self, side: str | None, close: float, vwap: float | None) -> bool:
+        if side is None or vwap is None:
+            return False
+        if side == "BUY":
+            return close >= float(vwap)
+        if side == "SELL":
+            return close <= float(vwap)
+        return False
 
     def _candle_move_pct(self, candle: dict) -> float:
         open_price = float(candle.get("open") or 0)
@@ -104,11 +143,11 @@ class Algo5Live1150Test(Strategy):
             return
 
         if side == "BUY":
-            sl_price = entry_price * (1 - DIAGNOSTIC_SL_PCT / 100)
-            target_price = entry_price * (1 + DIAGNOSTIC_TARGET_PCT / 100)
+            sl_price = entry_price * (1 - SL_PCT / 100)
+            target_price = entry_price * (1 + TARGET_PCT / 100)
         else:
-            sl_price = entry_price * (1 + DIAGNOSTIC_SL_PCT / 100)
-            target_price = entry_price * (1 - DIAGNOSTIC_TARGET_PCT / 100)
+            sl_price = entry_price * (1 + SL_PCT / 100)
+            target_price = entry_price * (1 - TARGET_PCT / 100)
         self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price)
         self.selected_symbols.add(symbol)
         self.selected_sides[symbol] = side
@@ -120,12 +159,12 @@ class Algo5Live1150Test(Strategy):
         selected_sides = {**self.selected_sides, **open_position_sides}
         for position in open_positions:
             symbol = position["symbol"]
-            if symbol not in self.latest_candles:
+            if symbol not in self.candidates:
                 entry = float(position["entry_price"])
-                self.latest_candles[symbol] = self._position_row(position, entry)
+                self.candidates[symbol] = self._position_row(position, entry)
 
         prepared_rows = []
-        for row in self.latest_candles.values():
+        for row in self.candidates.values():
             prepared = dict(row)
             symbol = prepared["symbol"]
             if symbol in selected_symbols:
@@ -153,7 +192,7 @@ class Algo5Live1150Test(Strategy):
             "sell_selected": sell_selected,
             "overflow_buy": 0,
             "overflow_sell": 0,
-            "total_filtered_out": max(0, len(self.watchlist) - len(self.latest_candles)),
+            "total_filtered_out": max(0, len(self.watchlist) - len(self.candidates)),
         }
         from app.engine import SCAN_RESULTS
         from app.broadcaster import broadcast_sync
@@ -194,14 +233,7 @@ class Algo5Live1150Test(Strategy):
             ltp = self.latest_ltp.get(position["symbol"]) or position.get("_last_ltp")
             if not ltp:
                 continue
-            side = position["side"]
-            entry = float(position["entry_price"])
-            if side == "BUY":
-                sl = entry * (1 - DIAGNOSTIC_SL_PCT / 100)
-                target = entry * (1 + DIAGNOSTIC_TARGET_PCT / 100)
-            else:
-                sl = entry * (1 + DIAGNOSTIC_SL_PCT / 100)
-                target = entry * (1 - DIAGNOSTIC_TARGET_PCT / 100)
+            side, sl, target = position["side"], float(position["sl_price"]), float(position["target_price"])
             if side == "BUY":
                 if ltp <= sl:
                     self.broker.close_trade(position, ltp, "SL")
