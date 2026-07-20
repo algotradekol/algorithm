@@ -228,16 +228,17 @@ function PositionsTable({ rows }: { rows: any[] }) {
                 <MobileField label="Low" value={formatNumber(row.low_price ?? row.lowest_price)} />
                 <MobileField label="SL" value={formatNumber(row.sl_price)} />
                 <MobileField label="Target" value={formatNumber(row.target_price)} />
+                <MobileField label="Trigger" value={row.entry_trigger || '--'} wide />
               </div>
             </div>
           );
         })}
       </div>
       <div className="hidden overflow-x-auto rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[760px] border-collapse text-xs">
+        <table className="w-full min-w-[1040px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['Symbol', 'Side', 'Qty', 'Entry', 'LTP', 'High', 'Low', 'SL', 'Target', 'Unreal P&L'].map((column) => (
+            {['Symbol', 'Side', 'Qty', 'Entry', 'LTP', 'High', 'Low', 'SL', 'Target', 'Trigger', 'Unreal P&L'].map((column) => (
               <th key={column} className="table-cell label">{column}</th>
             ))}
           </tr>
@@ -245,7 +246,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={10} className="table-cell text-gray-500">No open positions</td>
+              <td colSpan={11} className="table-cell text-gray-500">No open positions</td>
             </tr>
           ) : rows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
@@ -270,6 +271,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
                 <td className="table-cell num text-gray-100">{formatNumber(row.low_price ?? row.lowest_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.sl_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.target_price)}</td>
+                <td className="table-cell max-w-[300px] text-gray-400">{row.entry_trigger || '--'}</td>
                 <td className={`table-cell num font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
               </tr>
             );
@@ -303,6 +305,7 @@ function TradesTable({ rows }: { rows: any[] }) {
               <MobileField label="Entry" value={formatNumber(row.entry_price)} />
               <MobileField label="Exit" value={formatNumber(row.exit_price)} />
               <MobileField label="Reason" value={formatReason(row.exit_reason)} />
+              <MobileField label="Trigger" value={row.entry_trigger || '--'} wide />
               <MobileField label="Gross" value={formatMoney(row.gross_pnl)} />
               <MobileField label="Charges" value={formatMoney(row.total_charges)} />
             </div>
@@ -310,10 +313,10 @@ function TradesTable({ rows }: { rows: any[] }) {
         ))}
       </div>
       <div className="hidden overflow-x-auto rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[860px] border-collapse text-xs">
+        <table className="w-full min-w-[1080px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['Symbol', 'Side', 'Entry', 'Exit', 'Reason', 'Gross', 'Charges', 'Net'].map((column) => (
+            {['Symbol', 'Side', 'Entry', 'Exit', 'Reason', 'Trigger', 'Gross', 'Charges', 'Net'].map((column) => (
               <th key={column} className="table-cell label">{column}</th>
             ))}
           </tr>
@@ -321,7 +324,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={8} className="table-cell text-gray-500">No closed trades yet</td>
+              <td colSpan={9} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
           ) : rows.map((row, index) => (
             <tr key={row.id || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
@@ -336,6 +339,7 @@ function TradesTable({ rows }: { rows: any[] }) {
                 {reasonIcon(row.exit_reason)}
                 {formatReason(row.exit_reason)}
               </td>
+              <td className="table-cell max-w-[300px] text-gray-400">{row.entry_trigger || '--'}</td>
               <td className={`table-cell num ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
               <td className="table-cell num text-gray-100">{formatMoney(row.total_charges)}</td>
               <td className={`table-cell num font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>{formatMoney(row.net_pnl)}</td>
@@ -348,9 +352,9 @@ function TradesTable({ rows }: { rows: any[] }) {
   );
 }
 
-function MobileField({ label, value }: { label: string; value: any }) {
+function MobileField({ label, value, wide = false }: { label: string; value: any; wide?: boolean }) {
   return (
-    <div>
+    <div className={wide ? 'col-span-2' : ''}>
       <div className="label text-[10px]">{label}</div>
       <div className="num mt-0.5 text-gray-100">{value}</div>
     </div>

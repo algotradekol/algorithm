@@ -130,7 +130,12 @@ class Algo3OpeningRangeBasic(Strategy):
         else:
             sl_price = entry_price * (1 + self.settings["sl_pct"] / 100)
             target_price = entry_price * (1 - self.settings["target_pct"] / 100)
-        self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price)
+        trigger = (
+            "9:15 opening range basic trigger: "
+            f"{'open ~= low BUY' if side == 'BUY' else 'open ~= high SELL'}, "
+            f"gap between {MIN_GAP_PCT:.2f}% and {MAX_GAP_PCT:.2f}%, entry at 9:16 LTP."
+        )
+        self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price, trigger)
         self.selected_symbols.add(symbol)
 
     def _record_scan_results(self):

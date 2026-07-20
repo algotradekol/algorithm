@@ -282,6 +282,16 @@ def update_algo_settings(algo_id: str, settings: dict, _user=Depends(require_aut
     return {"status": "updated", "algo_id": algo_id}
 
 
+@app.post("/api/algo/{algo_id}/settings/reset")
+def reset_algo_settings(algo_id: str, _user=Depends(require_auth)):
+    from app.strategy_settings import reset_settings
+    settings = reset_settings(algo_id)
+    strategy = STRATEGIES.get(algo_id)
+    if strategy and hasattr(strategy, "reload_settings"):
+        strategy.reload_settings()
+    return settings
+
+
 @app.get("/api/algo/{algo_id}/scan-results")
 def get_scan_results(algo_id: str, _user=Depends(require_auth)):
     from app.engine import SCAN_RESULTS

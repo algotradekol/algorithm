@@ -158,7 +158,11 @@ class Algo5Live1150Test(Strategy):
         else:
             sl_price = entry_price * (1 + SL_PCT / 100)
             target_price = entry_price * (1 - TARGET_PCT / 100)
-        self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price)
+        trigger = (
+            "Afternoon candle continuation trigger: 2:00 PM candle direction and threshold/VWAP checks passed; "
+            "entry attempted at 2:02 PM/current LTP."
+        )
+        self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price, trigger)
         self.selected_symbols.add(symbol)
         self.selected_sides[symbol] = side
 

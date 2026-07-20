@@ -75,16 +75,36 @@ class PaperBroker:
         # and the total cap isn't hit yet (fills the 10-trade cap even if one side has fewer signals)
         return counts["trade_count_today"] < max_total
 
-    def open_trade(self, symbol: str, side: str, qty: int, entry_price: float, sl_price: float, target_price: float):
-        run_with_supabase(
-            lambda supabase: supabase.table("positions").insert({
-                "algo_id": self.algo_id, "symbol": symbol, "side": side, "qty": qty,
-                "entry_price": entry_price, "sl_price": sl_price, "target_price": target_price,
-                "highest_price": entry_price, "lowest_price": entry_price,
-                "trailing_sl_active": False,
-                "status": "open", "entry_time": datetime.datetime.now().isoformat(),
-            }).execute()
-        )
+    def open_trade(
+        self,
+        symbol: str,
+        side: str,
+        qty: int,
+        entry_price: float,
+        sl_price: float,
+        target_price: float,
+        entry_trigger: str | None = None,
+    ):
+        position_row = {
+            "algo_id": self.algo_id, "symbol": symbol, "side": side, "qty": qty,
+            "entry_price": entry_price, "sl_price": sl_price, "target_price": target_price,
+            "highest_price": entry_price, "lowest_price": entry_price,
+            "trailing_sl_active": False,
+            "entry_trigger": entry_trigger or "Strategy entry conditions matched",
+            "status": "open", "entry_time": datetime.datetime.now().isoformat(),
+        }
+        try:
+            run_with_supabase(
+                lambda supabase: supabase.table("positions").insert(position_row).execute()
+            )
+        except Exception as exc:
+            if "entry_trigger" not in str(exc):
+                raise
+            # Backward compatible until the Supabase migration is applied.
+            position_row.pop("entry_trigger", None)
+            run_with_supabase(
+                lambda supabase: supabase.table("positions").insert(position_row).execute()
+            )
         state = self._get_state()
         updates = {"trade_count_today": state["trade_count_today"] + 1}
         updates["buy_count_today" if side == "BUY" else "sell_count_today"] = \
@@ -104,6 +124,7 @@ class PaperBroker:
             "target_price": target_price,
             "high_price": entry_price,
             "low_price": entry_price,
+            "entry_trigger": entry_trigger or "Strategy entry conditions matched",
         })
 
     def update_position_range(self, position: dict, ltp: float) -> dict:
@@ -197,14 +218,24 @@ class PaperBroker:
         run_with_supabase(
             lambda supabase: supabase.table("positions").update({"status": "closed"}).eq("id", position["id"]).execute()
         )
-        run_with_supabase(
-            lambda supabase: supabase.table("trades").insert({
-                "algo_id": self.algo_id, "symbol": position["symbol"], "side": side, "qty": qty,
-                "entry_price": entry_price, "exit_price": exit_price,
-                "entry_time": position["entry_time"], "exit_time": datetime.datetime.now().isoformat(),
-                "exit_reason": exit_reason, **charges,
-            }).execute()
-        )
+        trade_row = {
+            "algo_id": self.algo_id, "symbol": position["symbol"], "side": side, "qty": qty,
+            "entry_price": entry_price, "exit_price": exit_price,
+            "entry_time": position["entry_time"], "exit_time": datetime.datetime.now().isoformat(),
+            "entry_trigger": position.get("entry_trigger"),
+            "exit_reason": exit_reason, **charges,
+        }
+        try:
+            run_with_supabase(
+                lambda supabase: supabase.table("trades").insert(trade_row).execute()
+            )
+        except Exception as exc:
+            if "entry_trigger" not in str(exc):
+                raise
+            trade_row.pop("entry_trigger", None)
+            run_with_supabase(
+                lambda supabase: supabase.table("trades").insert(trade_row).execute()
+            )
 
         state = self._get_state()
         run_with_supabase(
@@ -215,7 +246,12 @@ class PaperBroker:
             "event": "position_closed",
             "algo_id": self.algo_id,
             "symbol": position["symbol"],
+            "side": side,
+            "qty": qty,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
             "exit_reason": exit_reason,
+            "entry_trigger": position.get("entry_trigger"),
             "net_pnl": charges["net_pnl"],
             "gross_pnl": charges["gross_pnl"],
             "total_charges": charges["total_charges"],
@@ -244,11 +280,20 @@ class PaperBroker:
 
     def daily_history(self, days: int = 30) -> list[dict]:
         start_date = datetime.date.today() - datetime.timedelta(days=max(days - 1, 0))
-        trades = run_with_supabase(
-            lambda supabase: supabase.table("trades").select(
-                "entry_time,exit_time,symbol,side,qty,entry_price,exit_price,gross_pnl,total_charges,net_pnl"
-            ).eq("algo_id", self.algo_id).gte("exit_time", start_date.isoformat()).order("exit_time").execute()
-        ).data
+        try:
+            trades = run_with_supabase(
+                lambda supabase: supabase.table("trades").select(
+                    "entry_time,exit_time,symbol,side,qty,entry_price,exit_price,entry_trigger,gross_pnl,total_charges,net_pnl"
+                ).eq("algo_id", self.algo_id).gte("exit_time", start_date.isoformat()).order("exit_time").execute()
+            ).data
+        except Exception as exc:
+            if "entry_trigger" not in str(exc):
+                raise
+            trades = run_with_supabase(
+                lambda supabase: supabase.table("trades").select(
+                    "entry_time,exit_time,symbol,side,qty,entry_price,exit_price,gross_pnl,total_charges,net_pnl"
+                ).eq("algo_id", self.algo_id).gte("exit_time", start_date.isoformat()).order("exit_time").execute()
+            ).data
 
         grouped: dict[str, dict] = {}
         for trade in trades:

@@ -54,6 +54,7 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
   const [settings, setSettings] = useState<Record<string, number> | null>(null);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
+  const defaultsLabel = algoId === 'test_algo' ? 'Reset to test defaults' : 'Reset to Tradetron defaults';
 
   useEffect(() => {
     let cancelled = false;
@@ -80,6 +81,18 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
     }
   }
 
+  async function resetDefaults() {
+    try {
+      const result = await api.resetSettings(algoId);
+      setSettings(result);
+      setSaved(true);
+      setError('');
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to reset strategy settings');
+    }
+  }
+
   if (!settings) return <p className="text-sm text-gray-500">Loading strategy settings...</p>;
 
   const preview = calculatePreview(settings);
@@ -103,13 +116,22 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
           </>
         )}
 
-        <button
-          onClick={save}
-          className="mt-5 inline-flex min-h-10 w-full items-center justify-center gap-2 rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2.5 text-sm font-semibold text-white"
-        >
-          <i className="ri-save-fill text-sm text-white" />
-          {saved ? 'Saved' : 'Save settings'}
-        </button>
+        <div className="mt-5 grid gap-2 sm:grid-cols-[1fr_auto]">
+          <button
+            onClick={save}
+            className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2.5 text-sm font-semibold text-white"
+          >
+            <i className="ri-save-fill text-sm text-white" />
+            {saved ? 'Saved' : 'Save settings'}
+          </button>
+          <button
+            onClick={resetDefaults}
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded border border-[#f59e0b]/70 bg-[#f59e0b]/10 px-4 py-2.5 text-sm font-semibold text-[#f59e0b]"
+          >
+            <i className="ri-refresh-fill text-sm text-[#f59e0b]" />
+            {defaultsLabel}
+          </button>
+        </div>
       </div>
 
       <aside className="panel p-4">

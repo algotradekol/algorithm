@@ -161,6 +161,13 @@ ALTER TABLE positions
     ADD COLUMN IF NOT EXISTS lowest_price numeric,
     ADD COLUMN IF NOT EXISTS trailing_sl_active boolean default false;
 
+-- Entry trigger audit trail: shows why each paper position/trade was opened.
+ALTER TABLE positions
+    ADD COLUMN IF NOT EXISTS entry_trigger text;
+
+ALTER TABLE trades
+    ADD COLUMN IF NOT EXISTS entry_trigger text;
+
 -- AI assistant chat memory. Run manually in Supabase SQL Editor before using the assistant.
 CREATE TABLE IF NOT EXISTS ai_chat_sessions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),

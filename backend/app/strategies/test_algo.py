@@ -46,7 +46,7 @@ class TestAlgo(Strategy):
 
         if side:
             entry_price = indicators.get("last_ltp") or self.latest_ltp.get(symbol) or candle["close"]
-            opened = self._enter(symbol, side, float(entry_price))
+            opened = self._enter(symbol, side, float(entry_price), row.get("entry_trigger"))
             if opened:
                 row["selected_for_trade"] = True
                 row["rejection_reason"] = None
@@ -79,6 +79,7 @@ class TestAlgo(Strategy):
             },
             "selected_for_trade": False,
             "rejection_reason": rejection_reason,
+            "entry_trigger": self._entry_trigger(candle, side, move_pct) if side else rejection_reason,
             "candle_time": candle["time"].isoformat() if hasattr(candle["time"], "isoformat") else str(candle["time"]),
             "close": candle["close"],
             "high": candle["high"],
@@ -93,6 +94,16 @@ class TestAlgo(Strategy):
             return 0.0
         return (close_price - open_price) / open_price * 100
 
+    def _entry_trigger(self, candle: dict, side: str | None, move_pct: float) -> str:
+        if not side:
+            return "No entry: candle move below +/-0.03% test threshold"
+        direction = "green" if side == "BUY" else "red"
+        candle_time = candle["time"].strftime("%H:%M") if hasattr(candle["time"], "strftime") else str(candle["time"])
+        return (
+            f"{candle_time} closed 1-minute {direction} candle moved {move_pct:.3f}% "
+            f"from open {candle['open']} to close {candle['close']}; threshold +/-{MIN_MOVE_PCT:.2f}%."
+        )
+
     def _can_open_side(self, side: str) -> bool:
         state = self.broker.summary()
         if state["trade_count_today"] >= min(MAX_TRADES, self.settings["max_trades_per_day"]):
@@ -101,7 +112,7 @@ class TestAlgo(Strategy):
             return state["buy_count_today"] < min(MAX_PER_SIDE, self.settings["max_buy_trades"])
         return state["sell_count_today"] < min(MAX_PER_SIDE, self.settings["max_sell_trades"])
 
-    def _enter(self, symbol: str, side: str, entry_price: float) -> bool:
+    def _enter(self, symbol: str, side: str, entry_price: float, entry_trigger: str | None = None) -> bool:
         open_symbols = {position["symbol"] for position in self.broker.open_positions()}
         if (
             symbol in open_symbols or
@@ -122,7 +133,7 @@ class TestAlgo(Strategy):
         else:
             sl_price = entry_price * (1 + SL_PCT / 100)
             target_price = entry_price * (1 - TARGET_PCT / 100)
-        self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price)
+        self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price, entry_trigger)
         self.selected_symbols.add(symbol)
         return True
 

@@ -199,8 +199,30 @@ class Algo4OpeningRangeIndicators(Strategy):
         else:
             sl_price = entry_price * (1 + self.settings["sl_pct"] / 100)
             target_price = entry_price * (1 - self.settings["target_pct"] / 100)
-        self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price)
+        self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price, self._entry_trigger(symbol, side))
         self.selected_symbols.add(symbol)
+
+    def _entry_trigger(self, symbol: str, side: str) -> str:
+        details = self.candidate_details.get(symbol, {})
+        indicator_results = details.get("indicator_results") or {}
+        enabled_filters = [
+            name for name, result in indicator_results.items()
+            if result.get("enabled") and result.get("passed")
+        ]
+        failed_filters = [
+            name for name, result in indicator_results.items()
+            if result.get("enabled") and not result.get("passed")
+        ]
+        candle_shape = "open ~= low" if side == "BUY" else "open ~= high"
+        gap_pct = details.get("gap_pct")
+        gap_text = f"{float(gap_pct):.2f}%" if gap_pct is not None else "--"
+        filter_text = ", ".join(enabled_filters) if enabled_filters else "no enabled indicator filters"
+        if failed_filters:
+            filter_text += f"; failed: {', '.join(failed_filters)}"
+        return (
+            f"9:15 candle {candle_shape}; gap {gap_text} between {MIN_GAP_PCT:.2f}% and {MAX_GAP_PCT:.2f}%; "
+            f"passed filters: {filter_text}. Entry at 9:16 LTP."
+        )
 
     def _record_scan_results(self):
         rows = []

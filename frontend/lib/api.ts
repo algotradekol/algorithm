@@ -40,6 +40,8 @@ export const api = {
   getSettings: (algoId: string) => authedFetch(`/api/algo/${algoId}/settings`),
   updateSettings: (algoId: string, settings: object) =>
     authedFetch(`/api/algo/${algoId}/settings`, { method: 'PUT', body: JSON.stringify(settings) }),
+  resetSettings: (algoId: string) =>
+    authedFetch(`/api/algo/${algoId}/settings/reset`, { method: 'POST' }),
   compare: () => authedFetch('/api/compare'),
   engineStatus: () => authedFetch('/api/engine/status'),
   fyersStatus: () => authedFetch('/api/fyers/status'),

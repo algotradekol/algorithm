@@ -158,8 +158,20 @@ class Algo1OpeningRange(Strategy):
         else:
             sl_price = entry_price * (1 + self.settings["sl_pct"] / 100)
             target_price = entry_price * (1 - self.settings["target_pct"] / 100)
-        self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price)
+        self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price, self._entry_trigger(symbol, side))
         self.selected_symbols.add(symbol)
+
+    def _entry_trigger(self, symbol: str, side: str) -> str:
+        details = self.candidate_details.get(symbol, {})
+        open_price = details.get("open")
+        prev_close = details.get("prev_close")
+        gap_pct = details.get("gap_pct")
+        candle_shape = "open = low" if side == "BUY" else "open = high"
+        gap_text = f"{float(gap_pct):.2f}%" if gap_pct is not None else "--"
+        return (
+            f"9:15 candle {candle_shape}; gap {gap_text} within <= {GAP_LIMIT_PCT:.2f}%; "
+            f"entry at 9:16 LTP. Open {open_price}, prev close {prev_close}."
+        )
 
     def _record_scan_results(self, buys: list[str], sells: list[str]):
         rows = []

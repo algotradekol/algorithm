@@ -91,7 +91,11 @@ class Algo2Momentum(Strategy):
             return
         sl_price = entry_price * (1 - self.settings["sl_pct"] / 100)
         target_price = entry_price * (1 + self.settings["target_pct"] / 100)
-        self.broker.open_trade(symbol, "BUY", qty, entry_price, sl_price, target_price)
+        trigger = (
+            "Momentum trigger: price above VWAP and EMA20 with volume above configured multiplier; "
+            "BUY entry at current price."
+        )
+        self.broker.open_trade(symbol, "BUY", qty, entry_price, sl_price, target_price, trigger)
 
     def check_exits(self):
         for position in self.broker.open_positions():
