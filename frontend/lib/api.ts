@@ -45,6 +45,9 @@ export const api = {
   compare: () => authedFetch('/api/compare'),
   calendarDays: (days = 60) => authedFetch(`/api/calendar?days=${days}`),
   calendarDay: (date: string) => authedFetch(`/api/calendar/${encodeURIComponent(date)}`),
+  deleteCalendarDay: (date: string) => authedFetch(`/api/calendar/${encodeURIComponent(date)}`, { method: 'DELETE' }),
+  deleteCalendarSnapshot: (date: string, algoId: string) =>
+    authedFetch(`/api/calendar/${encodeURIComponent(date)}/${encodeURIComponent(algoId)}`, { method: 'DELETE' }),
   saveCalendarSnapshot: (payload: object = {}) =>
     authedFetch('/api/calendar/snapshot', { method: 'POST', body: JSON.stringify(payload) }),
   engineStatus: () => authedFetch('/api/engine/status'),

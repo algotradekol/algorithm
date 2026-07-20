@@ -23,7 +23,7 @@ def _today_ist() -> str:
 
 
 def save_dashboard_snapshot(algo_id: str | None = None, note: str = "manual") -> list[dict]:
-    from app.engine import SCAN_RESULTS, STRATEGIES, enrich_positions_with_ltp, get_engine_status
+    from app.engine import SCAN_RESULTS, STRATEGIES, attach_entry_triggers, enrich_positions_with_ltp, get_engine_status
     from app.fyers_client import get_connection_status
 
     strategy_items = STRATEGIES.items()
@@ -45,8 +45,8 @@ def save_dashboard_snapshot(algo_id: str | None = None, note: str = "manual") ->
             "algo_id": current_algo_id,
             "display_name": getattr(strategy, "display_name", current_algo_id),
             "summary": _jsonable(strategy.broker.summary()),
-            "positions": _jsonable(enrich_positions_with_ltp(strategy.broker.open_positions())),
-            "trades": _jsonable(strategy.broker.recent_trades(limit=500)),
+            "positions": _jsonable(attach_entry_triggers(current_algo_id, enrich_positions_with_ltp(strategy.broker.open_positions()))),
+            "trades": _jsonable(attach_entry_triggers(current_algo_id, strategy.broker.recent_trades(limit=10000))),
             "scan_results": _jsonable(SCAN_RESULTS.get(current_algo_id)),
             "settings": _jsonable(settings),
             "engine_status": engine_status,
@@ -85,6 +85,27 @@ def get_calendar_day(snapshot_date: str) -> list[dict]:
         .execute()
     )
     return result.data
+
+
+def delete_calendar_day(snapshot_date: str) -> dict:
+    result = run_with_supabase(
+        lambda supabase: supabase.table("calendar_snapshots")
+        .delete()
+        .eq("snapshot_date", snapshot_date)
+        .execute()
+    )
+    return {"status": "deleted", "snapshot_date": snapshot_date, "deleted": len(result.data or [])}
+
+
+def delete_calendar_snapshot(snapshot_date: str, algo_id: str) -> dict:
+    result = run_with_supabase(
+        lambda supabase: supabase.table("calendar_snapshots")
+        .delete()
+        .eq("snapshot_date", snapshot_date)
+        .eq("algo_id", algo_id)
+        .execute()
+    )
+    return {"status": "deleted", "snapshot_date": snapshot_date, "algo_id": algo_id, "deleted": len(result.data or [])}
 
 
 def store_market_candles(symbol: str, resolution: str, candles: list[dict], source: str = "fyers_history") -> int:

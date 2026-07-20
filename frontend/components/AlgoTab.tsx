@@ -228,7 +228,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
                 <MobileField label="Low" value={formatNumber(row.low_price ?? row.lowest_price)} />
                 <MobileField label="SL" value={formatNumber(row.sl_price)} />
                 <MobileField label="Target" value={formatNumber(row.target_price)} />
-                <MobileField label="Trigger" value={row.entry_trigger || '--'} wide />
+                <MobileField label="Trigger" value={formatTrigger(row.entry_trigger)} wide />
               </div>
             </div>
           );
@@ -271,7 +271,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
                 <td className="table-cell num text-gray-100">{formatNumber(row.low_price ?? row.lowest_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.sl_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.target_price)}</td>
-                <td className="table-cell max-w-[300px] text-gray-400">{row.entry_trigger || '--'}</td>
+                <td className="table-cell max-w-[300px] text-gray-400">{formatTrigger(row.entry_trigger)}</td>
                 <td className={`table-cell num font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
               </tr>
             );
@@ -305,7 +305,7 @@ function TradesTable({ rows }: { rows: any[] }) {
               <MobileField label="Entry" value={formatNumber(row.entry_price)} />
               <MobileField label="Exit" value={formatNumber(row.exit_price)} />
               <MobileField label="Reason" value={formatReason(row.exit_reason)} />
-              <MobileField label="Trigger" value={row.entry_trigger || '--'} wide />
+              <MobileField label="Trigger" value={formatTrigger(row.entry_trigger)} wide />
               <MobileField label="Gross" value={formatMoney(row.gross_pnl)} />
               <MobileField label="Charges" value={formatMoney(row.total_charges)} />
             </div>
@@ -339,7 +339,7 @@ function TradesTable({ rows }: { rows: any[] }) {
                 {reasonIcon(row.exit_reason)}
                 {formatReason(row.exit_reason)}
               </td>
-              <td className="table-cell max-w-[300px] text-gray-400">{row.entry_trigger || '--'}</td>
+              <td className="table-cell max-w-[300px] text-gray-400">{formatTrigger(row.entry_trigger)}</td>
               <td className={`table-cell num ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
               <td className="table-cell num text-gray-100">{formatMoney(row.total_charges)}</td>
               <td className={`table-cell num font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>{formatMoney(row.net_pnl)}</td>
@@ -433,4 +433,9 @@ function reasonIcon(reason: string) {
 function formatReason(reason: string) {
   if (reason === 'EOD_SQUAREOFF') return 'EOD';
   return reason || '--';
+}
+
+function formatTrigger(trigger: unknown) {
+  const value = String(trigger || '').trim();
+  return value || 'Legacy row: trigger was not stored when this trade opened.';
 }

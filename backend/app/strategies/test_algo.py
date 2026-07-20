@@ -10,7 +10,7 @@ TARGET_PCT = 0.15
 SL_PCT = 0.10
 MAX_TRADES = 6
 MAX_PER_SIDE = 3
-MAX_SCAN_ROWS = 100
+MAX_SCAN_ROWS = 500
 
 
 class TestAlgo(Strategy):

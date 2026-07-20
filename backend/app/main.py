@@ -15,7 +15,7 @@ import jwt
 
 from .config import ALLOWED_ORIGINS
 from .auth import require_auth
-from .engine import enrich_positions_with_ltp, get_engine_status, restart_live_feed, start_engine, STRATEGIES
+from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, restart_live_feed, start_engine, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_connection_status, get_price_history
 from .fyers_auth import store_broker_tokens
@@ -251,13 +251,13 @@ def algo_summary(algo_id: str, _user=Depends(require_auth)):
 @app.get("/api/algo/{algo_id}/positions")
 def algo_positions(algo_id: str, _user=Depends(require_auth)):
     strategy = get_strategy_or_raise(algo_id)
-    return enrich_positions_with_ltp(strategy.broker.open_positions())
+    return attach_entry_triggers(algo_id, enrich_positions_with_ltp(strategy.broker.open_positions()))
 
 
 @app.get("/api/algo/{algo_id}/trades")
 def algo_trades(algo_id: str, _user=Depends(require_auth)):
     strategy = get_strategy_or_raise(algo_id)
-    return strategy.broker.recent_trades()
+    return attach_entry_triggers(algo_id, strategy.broker.recent_trades())
 
 
 @app.get("/api/algo/{algo_id}/history")
@@ -316,6 +316,18 @@ def calendar_days(days: int = Query(default=60, ge=1, le=365), _user=Depends(req
 def calendar_day(snapshot_date: str, _user=Depends(require_auth)):
     from app.calendar_store import get_calendar_day
     return get_calendar_day(snapshot_date)
+
+
+@app.delete("/api/calendar/{snapshot_date}")
+def delete_calendar_date(snapshot_date: str, _user=Depends(require_auth)):
+    from app.calendar_store import delete_calendar_day
+    return delete_calendar_day(snapshot_date)
+
+
+@app.delete("/api/calendar/{snapshot_date}/{algo_id}")
+def delete_calendar_algo_snapshot(snapshot_date: str, algo_id: str, _user=Depends(require_auth)):
+    from app.calendar_store import delete_calendar_snapshot
+    return delete_calendar_snapshot(snapshot_date, algo_id)
 
 
 @app.post("/api/calendar/snapshot")

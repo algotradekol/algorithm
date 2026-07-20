@@ -257,6 +257,52 @@ def enrich_positions_with_ltp(positions: list[dict]) -> list[dict]:
     return enriched
 
 
+def attach_entry_triggers(algo_id: str, rows: list[dict]) -> list[dict]:
+    enriched = []
+    scan_rows = SCAN_RESULTS.get(algo_id, {}).get("passed_opening_range") or []
+    scan_by_symbol = {row.get("symbol"): row for row in scan_rows}
+    for row in rows:
+        item = dict(row)
+        if not item.get("entry_trigger"):
+            item["entry_trigger"] = _infer_entry_trigger(algo_id, item, scan_by_symbol.get(item.get("symbol")))
+        enriched.append(item)
+    return enriched
+
+
+def _infer_entry_trigger(algo_id: str, row: dict, scan_row: dict | None) -> str:
+    side = row.get("side") or "--"
+    if scan_row:
+        if scan_row.get("entry_trigger"):
+            return scan_row["entry_trigger"]
+        if algo_id == "test_algo":
+            move_pct = scan_row.get("gap_pct")
+            candle_time = str(scan_row.get("candle_time") or "")[11:16] or "live"
+            move_text = f"{float(move_pct):.3f}%" if move_pct is not None else "--"
+            return f"{candle_time} closed 1-minute candle moved {move_text}; test algo threshold matched for {side}."
+        gap_pct = scan_row.get("gap_pct")
+        gap_text = f"{float(gap_pct):.2f}%" if gap_pct is not None else "--"
+        open_price = scan_row.get("open")
+        prev_close = scan_row.get("prev_close")
+        if algo_id == "algo2":
+            passed_filters = [
+                name for name, result in (scan_row.get("indicator_results") or {}).items()
+                if result.get("enabled") and result.get("passed")
+            ]
+            filters = ", ".join(passed_filters) if passed_filters else "base filters only"
+            return (
+                f"9:15 filtered opening-range trigger for {side}; gap {gap_text}; "
+                f"passed filters: {filters}. Open {open_price}, prev close {prev_close}."
+            )
+        return f"9:15 simple opening-range trigger for {side}; gap {gap_text}. Open {open_price}, prev close {prev_close}."
+
+    labels = {
+        "algo1": "Legacy trade before trigger storage: likely 9:15 simple opening-range condition matched.",
+        "algo2": "Legacy trade before trigger storage: likely 9:15 filtered opening-range conditions matched.",
+        "test_algo": "Legacy trade before trigger storage: likely live 1-minute test candle move matched.",
+    }
+    return labels.get(algo_id, "Legacy trade before trigger storage; exact trigger was not saved.")
+
+
 def try_refresh_access_token(reason: str = "manual_or_startup") -> bool:
     try:
         refresh_access_token_from_refresh_token()
@@ -291,6 +337,10 @@ def start_engine():
             "algo2": UN1915Filtered(watchlist),
             "test_algo": TestAlgo(watchlist),
         }
+        for algo_id, strategy in strategies.items():
+            stale_count = strategy.broker.close_stale_open_positions()
+            if stale_count:
+                print(f"[engine] closed {stale_count} stale open positions for {algo_id}")
 
         with _engine_lock:
             WATCHLIST = watchlist

@@ -44,16 +44,38 @@ class PaperBroker:
             row.update({"trading_date": today, "trade_count_today": 0, "buy_count_today": 0, "sell_count_today": 0})
         return row
 
-    def open_positions(self) -> list[dict]:
-        return run_with_supabase(
-            lambda supabase: supabase.table("positions").select("*").eq("algo_id", self.algo_id).eq("status", "open").execute()
-        ).data
+    def open_positions(self, include_stale: bool = False) -> list[dict]:
+        query_date = datetime.date.today().isoformat()
 
-    def recent_trades(self, limit: int = 200) -> list[dict]:
-        result = run_with_supabase(
-            lambda supabase: supabase.table("trades").select("*").eq("algo_id", self.algo_id)
-            .order("exit_time", desc=True).limit(limit).execute()
-        )
+        def query(supabase):
+            request = supabase.table("positions").select("*").eq("algo_id", self.algo_id).eq("status", "open")
+            if not include_stale:
+                request = request.gte("entry_time", query_date)
+            return request.execute()
+
+        return run_with_supabase(query).data
+
+    def close_stale_open_positions(self) -> int:
+        """Close previous-day open paper positions so they never appear as live positions."""
+        today = datetime.date.today().isoformat()
+        stale_positions = [
+            position for position in self.open_positions(include_stale=True)
+            if str(position.get("entry_time") or "")[:10] < today
+        ]
+        for position in stale_positions:
+            self.close_trade(position, float(position.get("entry_price") or 0), "MISSED_EOD_STALE")
+        return len(stale_positions)
+
+    def recent_trades(self, limit: int = 200, today_only: bool = True) -> list[dict]:
+        query_date = datetime.date.today().isoformat()
+
+        def query(supabase):
+            request = supabase.table("trades").select("*").eq("algo_id", self.algo_id)
+            if today_only:
+                request = request.gte("entry_time", query_date)
+            return request.order("exit_time", desc=True).limit(limit).execute()
+
+        result = run_with_supabase(query)
         return result.data
 
     def already_traded_today(self, symbol: str) -> bool:
