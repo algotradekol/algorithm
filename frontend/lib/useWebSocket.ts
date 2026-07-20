@@ -14,21 +14,41 @@ export function useWebSocket(
 ) {
   const ws = useRef<WebSocket | null>(null);
   const reconnectTimer = useRef<any>(null);
+  const heartbeatTimer = useRef<any>(null);
   const retryCount = useRef(0);
   const shouldReconnect = useRef(false);
+  const connecting = useRef(false);
+
+  function clearHeartbeat() {
+    clearInterval(heartbeatTimer.current);
+    heartbeatTimer.current = null;
+  }
 
   const connect = useCallback(async () => {
     if (!shouldReconnect.current) return;
     if (!WS_URL) return;
+    if (connecting.current || ws.current?.readyState === WebSocket.OPEN || ws.current?.readyState === WebSocket.CONNECTING) return;
+
+    connecting.current = true;
     const token = await getAuthToken();
-    if (!token) return;
+    if (!token) {
+      connecting.current = false;
+      return;
+    }
 
     const url = `${WS_URL}/ws?token=${encodeURIComponent(token)}`;
     ws.current = new WebSocket(url);
 
     ws.current.onopen = () => {
+      connecting.current = false;
       retryCount.current = 0;
       onStatus?.('connected');
+      clearHeartbeat();
+      heartbeatTimer.current = setInterval(() => {
+        if (ws.current?.readyState === WebSocket.OPEN) {
+          ws.current.send('ping');
+        }
+      }, 20_000);
     };
 
     ws.current.onmessage = (e) => {
@@ -37,6 +57,8 @@ export function useWebSocket(
     };
 
     ws.current.onclose = () => {
+      connecting.current = false;
+      clearHeartbeat();
       if (!shouldReconnect.current) return;
       retryCount.current += 1;
       onStatus?.(retryCount.current > 3 ? 'offline' : 'reconnecting');
@@ -44,6 +66,7 @@ export function useWebSocket(
     };
 
     ws.current.onerror = () => {
+      connecting.current = false;
       ws.current?.close();
     };
   }, [onMessage, onStatus]);
@@ -55,6 +78,7 @@ export function useWebSocket(
     return () => {
       shouldReconnect.current = false;
       clearTimeout(reconnectTimer.current);
+      clearHeartbeat();
       ws.current?.close();
     };
   }, [connect, enabled]);

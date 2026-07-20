@@ -237,8 +237,8 @@ function DashboardContent() {
             {tab === 'Algo 5' && (
               <AlgoTab
                 algoId="algo5"
-                displayName="Algo 5 - Live Tick Smoke Test"
-                description="Temporary live-market test: starts working as soon as ticks arrive. It compares each symbol's current LTP to its first seen LTP and paper-enters after a +/-0.10% move."
+                displayName="Algo 5 - Live Candle Movement Test"
+                description="Temporary live-market test: every closed 1-minute candle with close >= open +0.05% becomes BUY; close <= open -0.05% becomes SELL. Entry is at candle close."
                 onWebSocketStatus={setWsStatus}
               />
             )}

@@ -31,7 +31,12 @@ export default function AlgoTab({
     ]);
 
     if (summaryResult.status === 'fulfilled') setSummary(summaryResult.value);
-    if (positionsResult.status === 'fulfilled') setPositions(positionsResult.value);
+    if (positionsResult.status === 'fulfilled') {
+      setPositions(positionsResult.value.map((position: any) => ({
+        ...position,
+        ltp: position.ltp ?? position.last_ltp ?? position._last_ltp ?? position.entry_price,
+      })));
+    }
     if (tradesResult.status === 'fulfilled') setTrades(tradesResult.value);
     if (scanResult.status === 'fulfilled') setScanResults(scanResult.value);
 
@@ -61,7 +66,7 @@ export default function AlgoTab({
     if (message.algo_id !== algoId) return;
 
     if (message.event === 'position_opened') {
-      setPositions((current) => [{ ...message, status: 'open' }, ...current]);
+      setPositions((current) => [{ ...message, ltp: message.ltp ?? message.entry_price, status: 'open' }, ...current]);
     } else if (message.event === 'position_closed') {
       setPositions((current) => current.filter((position) => position.symbol !== message.symbol));
       setTrades((current) => [message, ...current]);
