@@ -27,7 +27,7 @@ GAP_LIMIT_PCT = 2.0
 
 class Algo1OpeningRange(Strategy):
     algo_id = "algo1"
-    display_name = "Algo 1 — Opening Range Gap"
+    display_name = "UN1 9:15 v15 — Simple"
 
     def __init__(self, watchlist: list[str]):
         self.watchlist = watchlist

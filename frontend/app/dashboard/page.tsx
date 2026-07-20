@@ -12,7 +12,7 @@ import { clearPinToken } from '../../lib/pinAuth';
 import { api } from '../../lib/api';
 import { WebSocketState } from '../../lib/useWebSocket';
 
-const TABS = ['Algo 1', 'Algo 2', 'Algo 3', 'Algo 4', 'Algo 5', 'Compare', 'History', 'Charges'] as const;
+const TABS = ['Simple', 'Filter', 'Test Algo', 'Compare', 'History', 'Charges'] as const;
 
 function formatIstTime() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -25,7 +25,7 @@ function formatIstTime() {
 }
 
 function DashboardContent() {
-  const [tab, setTab] = useState<(typeof TABS)[number]>('Algo 1');
+  const [tab, setTab] = useState<(typeof TABS)[number]>('Simple');
   const [ready, setReady] = useState(false);
   const [showFyersBanner, setShowFyersBanner] = useState(true);
   const [istTime, setIstTime] = useState(formatIstTime());
@@ -216,29 +216,27 @@ function DashboardContent() {
           </section>
         ) : (
           <>
-            {tab === 'Algo 1' && <AlgoTab algoId="algo1" displayName="Algo 1 - Opening Range Gap" onWebSocketStatus={setWsStatus} />}
-            {tab === 'Algo 2' && <AlgoTab algoId="algo2" displayName="Algo 2 - VWAP/EMA/Volume Momentum" onWebSocketStatus={setWsStatus} />}
-            {tab === 'Algo 3' && (
+            {tab === 'Simple' && (
               <AlgoTab
-                algoId="algo3"
-                displayName="Algo 3 - Opening Range Gap (Basic)"
-                description="9:15 candle open=low/high + 0.5-2% gap filter. No indicator filters. Max 10 trades (5B+5S)."
+                algoId="algo1"
+                displayName="UN1 9:15 v15 - Simple"
+                description="Simple 9:15 opening-range strategy from UN1_915_v15(simple). Open=low gives BUY, open=high gives SELL, max 2% opening gap, 9:16 entry, 2% target, 1% stop loss."
                 onWebSocketStatus={setWsStatus}
               />
             )}
-            {tab === 'Algo 4' && (
+            {tab === 'Filter' && (
               <AlgoTab
-                algoId="algo4"
-                displayName="Algo 4 - Opening Range Gap (With Indicators)"
-                description="Same as Algo 3 + VWAP, EMA20/EMA50, RSI, ADX, Supertrend, volume and liquidity filters. Fewer but higher-quality signals."
+                algoId="algo2"
+                displayName="UN1 9:15 v14 - Filter"
+                description="Filtered 9:15 opening-range strategy from UN1_915_v14(filter). Adds VWAP, EMA20/EMA50, RSI 50, ADX 20, Supertrend, volume, liquidity, and price-range filters."
                 onWebSocketStatus={setWsStatus}
               />
             )}
-            {tab === 'Algo 5' && (
+            {tab === 'Test Algo' && (
               <AlgoTab
-                algoId="algo5"
-                displayName="Algo 5 - Afternoon Candle Continuation"
-                description="Scheduled 2 PM test: uses the first closed candle from 2:00-2:10 PM as signal, then enters from 2:02 PM onward. Green candle above threshold/VWAP becomes BUY; red candle below threshold/VWAP becomes SELL."
+                algoId="test_algo"
+                displayName="Test Algo - Live Feature Check"
+                description="Testing-only paper strategy. After 9:20 AM, a closed 1-minute candle above +0.03% becomes BUY and below -0.03% becomes SELL, with small target/SL to verify scan, positions, trades, WebSocket, and history."
                 onWebSocketStatus={setWsStatus}
               />
             )}

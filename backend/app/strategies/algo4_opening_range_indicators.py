@@ -38,7 +38,7 @@ class Algo4OpeningRangeIndicators(Strategy):
     def _load_previous_closes_background(self):
         try:
             if not get_stored_access_token():
-                print("[algo4] no Fyers access token yet, skipping previous-close preload")
+                print(f"[{self.algo_id}] no Fyers access token yet, skipping previous-close preload")
                 return
             for symbol in self.watchlist:
                 try:
@@ -46,9 +46,9 @@ class Algo4OpeningRangeIndicators(Strategy):
                     if close:
                         self.prev_close[symbol] = close
                 except Exception as e:
-                    print(f"[algo4] couldn't get prev close for {symbol}: {e}")
+                    print(f"[{self.algo_id}] couldn't get prev close for {symbol}: {e}")
         except Exception as e:
-            print(f"[algo4] error in background preload: {e}")
+            print(f"[{self.algo_id}] error in background preload: {e}")
 
     def on_tick(self, symbol: str, ltp: float, timestamp):
         pass

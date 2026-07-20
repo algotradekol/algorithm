@@ -21,9 +21,9 @@ const RISK_FIELDS: Field[] = [
 ];
 
 const INDICATOR_FIELDS: Field[] = [
-  ['rsi_buy_threshold', 'RSI Buy Threshold', 'Algo 4 buy confirmation threshold'],
-  ['rsi_sell_threshold', 'RSI Sell Threshold', 'Algo 4 sell confirmation threshold'],
-  ['adx_threshold', 'ADX Threshold', 'minimum trend strength for Algo 4'],
+  ['rsi_buy_threshold', 'RSI Buy Threshold', 'Filter strategy buy confirmation threshold'],
+  ['rsi_sell_threshold', 'RSI Sell Threshold', 'Filter strategy sell confirmation threshold'],
+  ['adx_threshold', 'ADX Threshold', 'minimum trend strength for filter strategy'],
   ['min_volume', 'Min Volume', 'minimum 9:15 candle volume'],
   ['min_total_value', 'Min Total Value (Rs)', 'minimum traded value for the day'],
   ['ltp_min', 'LTP Min (Rs)', 'minimum allowed entry price'],
@@ -96,7 +96,7 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
         <ExitModeSelect settings={settings} setSettings={setSettings} />
         <TrailingStopToggle settings={settings} setSettings={setSettings} />
         <FieldGroup title="Risk Settings" fields={RISK_FIELDS} settings={settings} setSettings={setSettings} />
-        {algoId === 'algo4' && (
+        {algoId === 'algo2' && (
           <>
             <FilterGroup settings={settings} setSettings={setSettings} />
             <FieldGroup title="Indicator Thresholds" fields={INDICATOR_FIELDS} settings={settings} setSettings={setSettings} />

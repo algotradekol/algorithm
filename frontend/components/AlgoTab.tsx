@@ -115,11 +115,6 @@ export default function AlgoTab({
         <div>
           <h2 className="text-base font-semibold text-gray-100">{displayName}</h2>
           {description && <p className="mt-1 text-xs text-gray-500">{description}</p>}
-          {algoId === 'algo5' && (
-            <p className="mt-2 rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-xs text-[#f59e0b]">
-              Algo 5 is still a paper-test strategy. It is designed to test the 2:00 PM signal and 2:02 PM scheduled entry flow, not to guarantee profit.
-            </p>
-          )}
         </div>
         <button
           onClick={() => setSettingsOpen((open) => !open)}

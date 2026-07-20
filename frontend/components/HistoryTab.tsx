@@ -105,11 +105,9 @@ export default function HistoryTab() {
         <label>
           <div className="label mb-1">Algo</div>
           <select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control">
-            <option value="algo1">Algo 1</option>
-            <option value="algo2">Algo 2</option>
-            <option value="algo3">Algo 3</option>
-            <option value="algo4">Algo 4</option>
-            <option value="algo5">Algo 5</option>
+            <option value="algo1">UN1 9:15 v15 - Simple</option>
+            <option value="algo2">UN1 9:15 v14 - Filter</option>
+            <option value="test_algo">Test Algo - Live Feature Check</option>
           </select>
         </label>
         <label>

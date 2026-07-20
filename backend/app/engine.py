@@ -20,7 +20,8 @@ from .candle_aggregator import CandleAggregator
 from .fyers_client import connect_live_feed
 from .fyers_auth import get_stored_access_token, refresh_access_token_from_refresh_token
 from .strategies.algo1_opening_range import Algo1OpeningRange
-from .strategies.algo2_momentum import Algo2Momentum
+from .strategies.test_algo import TestAlgo
+from .strategies.un1_915_filtered import UN1915Filtered
 from .config import ENTRY_CHECK_TIME, SQUARE_OFF_TIME
 
 aggregator = CandleAggregator()
@@ -133,15 +134,9 @@ def _scheduler_loop():
 
         if current_time >= ENTRY_CHECK_TIME and entries_fired_date != today:
             for strategy in STRATEGIES.values():
-                if getattr(strategy, "algo_id", None) == "algo5":
-                    continue
                 if hasattr(strategy, "evaluate_entries"):
                     strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
             entries_fired_date = today
-
-        algo5 = STRATEGIES.get("algo5")
-        if algo5 and getattr(algo5, "entries_evaluated_today", None) != today and current_time >= "14:02":
-            algo5.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
 
         if current_time >= SQUARE_OFF_TIME and squareoff_fired_date != today:
             for strategy in STRATEGIES.values():
@@ -276,15 +271,10 @@ def start_engine():
 
     try:
         watchlist = get_nse500_watchlist()
-        from app.strategies.algo3_opening_range_basic import Algo3OpeningRangeBasic
-        from app.strategies.algo4_opening_range_indicators import Algo4OpeningRangeIndicators
-        from app.strategies.algo5_live_1150_test import Algo5Live1150Test
         strategies = {
             "algo1": Algo1OpeningRange(watchlist),
-            "algo2": Algo2Momentum(watchlist),
-            "algo3": Algo3OpeningRangeBasic(watchlist),
-            "algo4": Algo4OpeningRangeIndicators(watchlist),
-            "algo5": Algo5Live1150Test(watchlist),
+            "algo2": UN1915Filtered(watchlist),
+            "test_algo": TestAlgo(watchlist),
         }
 
         with _engine_lock:

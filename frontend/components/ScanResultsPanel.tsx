@@ -3,6 +3,17 @@ import { useMemo, useState } from 'react';
 
 const PAGE_SIZE = 20;
 const COLUMNS = ['symbol', 'side', 'gap_pct', 'vwap', 'rsi', 'adx', 'supertrend', 'volume', 'selected_for_trade', 'rejection_reason'];
+const FUNNEL_INDICATORS = [
+  ['vwap', 'VWAP condition'],
+  ['rsi', 'RSI / move condition'],
+  ['adx', 'ADX / strength condition'],
+  ['supertrend', 'Supertrend condition'],
+  ['ema20', 'EMA20 condition'],
+  ['ema50', 'EMA50 condition'],
+  ['volume', 'Volume condition'],
+  ['liquidity', 'Liquidity condition'],
+  ['price_range', 'Price range condition'],
+] as const;
 
 export default function ScanResultsPanel({ results }: { results: any }) {
   const [query, setQuery] = useState('');
@@ -34,6 +45,7 @@ export default function ScanResultsPanel({ results }: { results: any }) {
 
   const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const visible = filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
+  const funnel = buildConditionFunnel(results, rows);
 
   function sort(column: string) {
     setPage(0);
@@ -55,6 +67,18 @@ export default function ScanResultsPanel({ results }: { results: any }) {
         <ScanStat label="Filtered Out" value={results.total_filtered_out} />
       </div>
       <div className="mt-2 text-xs text-gray-500">Last scan: {formatTime(results.scan_time)}</div>
+
+      <div className="mt-4 rounded border border-[#1f2937] bg-[#0d1117] p-3">
+        <div className="label">Condition Funnel</div>
+        <p className="mt-1 text-xs text-gray-500">
+          Temporary screener check: how many stocks survived each condition, step by step.
+        </p>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          {funnel.map((step, index) => (
+            <FunnelStep key={`${step.label}-${index}`} step={step} index={index} />
+          ))}
+        </div>
+      </div>
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <h3 className="label">All Candidates</h3>
@@ -110,6 +134,71 @@ function ScanStat({ label, value }: { label: string; value: number }) {
     <div className="rounded border border-[#1f2937] bg-[#0d1117] p-2">
       <div className="label">{label}</div>
       <div className="num mt-1 text-lg font-semibold text-gray-100">{Number(value || 0).toLocaleString('en-IN')}</div>
+    </div>
+  );
+}
+
+function buildConditionFunnel(results: any, rows: any[]) {
+  const steps: { label: string; passed: number; total: number; note?: string }[] = [];
+  const totalScanned = Number(results?.total_scanned || rows.length || 0);
+  const signalPassed = rows.length;
+  steps.push({ label: 'Scanned universe', passed: totalScanned, total: totalScanned });
+  steps.push({
+    label: 'Condition 1: signal candle',
+    passed: signalPassed,
+    total: totalScanned,
+    note: 'Opening-range signal rule',
+  });
+
+  let survivors = rows;
+  for (const [key, labelText] of FUNNEL_INDICATORS) {
+    const enabledRows = survivors.filter((row: any) => row.indicator_results?.[key]?.enabled);
+    if (!enabledRows.length) continue;
+    const passedRows = survivors.filter((row: any) => {
+      const result = row.indicator_results?.[key];
+      return !result?.enabled || Boolean(result.passed);
+    });
+    steps.push({
+      label: `Condition ${steps.length}: ${labelText}`,
+      passed: passedRows.length,
+      total: survivors.length,
+    });
+    survivors = passedRows;
+  }
+
+  const selected = rows.filter((row: any) => row.selected_for_trade).length
+    || Number(results?.buy_selected || 0) + Number(results?.sell_selected || 0);
+  steps.push({ label: 'Final: selected for trade', passed: selected, total: survivors.length });
+  return steps;
+}
+
+function FunnelStep({
+  step,
+  index,
+}: {
+  step: { label: string; passed: number; total: number; note?: string };
+  index: number;
+}) {
+  const pct = step.total > 0 ? step.passed / step.total * 100 : 0;
+  return (
+    <div className="rounded border border-[#1f2937] bg-[#111827] p-2">
+      <div className="flex items-start justify-between gap-2">
+        <div>
+          <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500">Step {index + 1}</div>
+          <div className="mt-1 text-xs font-semibold text-gray-200">{step.label}</div>
+        </div>
+        <div className="num text-right text-sm font-bold text-gray-100">
+          {Number(step.passed || 0).toLocaleString('en-IN')}
+          <span className="text-gray-500"> / {Number(step.total || 0).toLocaleString('en-IN')}</span>
+        </div>
+      </div>
+      <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-[#020617]">
+        <div className="h-full bg-[#3b82f6]" style={{ width: `${Math.max(0, Math.min(100, pct))}%` }} />
+      </div>
+      <div className="mt-1 flex items-center justify-between gap-2 text-[11px] text-gray-500">
+        <span>{formatNumber(pct)}% pass</span>
+        {step.note && <span className="truncate">{step.note}</span>}
+      </div>
     </div>
   );
 }
