@@ -15,7 +15,7 @@ import jwt
 
 from .config import ALLOWED_ORIGINS
 from .auth import require_auth
-from .engine import get_engine_status, restart_live_feed, start_engine, STRATEGIES
+from .engine import enrich_positions_with_ltp, get_engine_status, restart_live_feed, start_engine, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_connection_status, get_price_history
 from .fyers_auth import store_broker_tokens
@@ -244,7 +244,7 @@ def algo_summary(algo_id: str, _user=Depends(require_auth)):
 @app.get("/api/algo/{algo_id}/positions")
 def algo_positions(algo_id: str, _user=Depends(require_auth)):
     strategy = get_strategy_or_raise(algo_id)
-    return strategy.broker.open_positions()
+    return enrich_positions_with_ltp(strategy.broker.open_positions())
 
 
 @app.get("/api/algo/{algo_id}/trades")

@@ -223,6 +223,26 @@ def get_engine_status() -> dict:
     }
 
 
+def enrich_positions_with_ltp(positions: list[dict]) -> list[dict]:
+    enriched = []
+    for position in positions:
+        row = dict(position)
+        ltp = last_ltp.get(row["symbol"])
+        if ltp is not None:
+            entry = float(row.get("entry_price") or 0)
+            qty = int(row.get("qty") or 0)
+            side = row.get("side")
+            unrealized = (entry - ltp) * qty if side == "SELL" else (ltp - entry) * qty
+            row["ltp"] = ltp
+            row["unrealized_pnl"] = round(unrealized, 2)
+        return_row_ltp = row.get("ltp")
+        if return_row_ltp is None:
+            row["ltp"] = row.get("entry_price")
+            row["unrealized_pnl"] = 0
+        enriched.append(row)
+    return enriched
+
+
 def try_refresh_access_token(reason: str = "manual_or_startup") -> bool:
     try:
         refresh_access_token_from_refresh_token()

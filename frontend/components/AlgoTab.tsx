@@ -35,6 +35,7 @@ export default function AlgoTab({
       setPositions(positionsResult.value.map((position: any) => ({
         ...position,
         ltp: position.ltp ?? position.last_ltp ?? position._last_ltp ?? position.entry_price,
+        unrealized_pnl: position.unrealized_pnl ?? 0,
       })));
     }
     if (tradesResult.status === 'fulfilled') setTrades(tradesResult.value);
@@ -58,7 +59,7 @@ export default function AlgoTab({
   const handleWsMessage = useCallback((message: any) => {
     if (message.event === 'price_update') {
       setPositions((current) => current.map((position) => (
-        position.symbol === message.symbol ? { ...position, ltp: message.ltp } : position
+        position.symbol === message.symbol ? { ...position, ltp: message.ltp, unrealized_pnl: calculateUnrealized(position, message.ltp) } : position
       )));
       return;
     }
@@ -125,7 +126,7 @@ export default function AlgoTab({
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
 
       <div className="grid grid-cols-3 gap-1.5 sm:gap-2 lg:grid-cols-6">
-        <MetricCard label="Cash Remaining" value={formatMoney(cash)} />
+        <MetricCard label="Cash Available" value={formatMoney(cash)} />
         <MetricCard label="Equity" value={formatMoney(cash)} delta={formatSignedMoney(equityDelta)} pnl={equityDelta} />
         <MetricCard label="Trades Today" value={`${summary.trade_count_today} / 10`} />
         <MetricCard label="Buy / Sell" value={`${summary.buy_count_today}B ${summary.sell_count_today}S`} />
@@ -202,7 +203,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
           const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
           const entry = Number(row.entry_price || 0);
           const qty = Number(row.qty || 0);
-          const unreal = Number.isFinite(ltp) ? (row.side === 'SELL' ? entry - ltp : ltp - entry) * qty : null;
+          const unreal = Number.isFinite(Number(row.unrealized_pnl)) ? Number(row.unrealized_pnl) : Number.isFinite(ltp) ? (row.side === 'SELL' ? entry - ltp : ltp - entry) * qty : null;
           return (
             <div key={row.id || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
               <div className="flex items-center justify-between gap-3">
@@ -242,7 +243,9 @@ function PositionsTable({ rows }: { rows: any[] }) {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
             const entry = Number(row.entry_price || 0);
             const qty = Number(row.qty || 0);
-            const unreal = Number.isFinite(ltp)
+            const unreal = Number.isFinite(Number(row.unrealized_pnl))
+              ? Number(row.unrealized_pnl)
+              : Number.isFinite(ltp)
               ? (row.side === 'SELL' ? entry - ltp : ltp - entry) * qty
               : null;
             return (
@@ -371,6 +374,14 @@ export function Table({ rows, columns }: { rows: any[]; columns: string[] }) {
 function formatMoney(value: unknown) {
   const number = Number(value || 0);
   return `Rs ${number.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+}
+
+function calculateUnrealized(position: any, ltpValue: unknown) {
+  const ltp = Number(ltpValue);
+  const entry = Number(position.entry_price || 0);
+  const qty = Number(position.qty || 0);
+  if (!Number.isFinite(ltp) || !entry || !qty) return position.unrealized_pnl ?? 0;
+  return (position.side === 'SELL' ? entry - ltp : ltp - entry) * qty;
 }
 
 function formatSignedMoney(value: number) {
