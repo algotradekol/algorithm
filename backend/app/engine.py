@@ -32,6 +32,7 @@ STRATEGIES = {}   # populated in start_engine() once the watchlist is known
 WATCHLIST: list[str] = []
 _scheduler_started = False
 _live_feed_started = False
+_live_feed_socket = None
 _live_feed_lock = threading.Lock()
 _engine_lock = threading.Lock()
 _engine_status = {
@@ -39,7 +40,39 @@ _engine_status = {
     "error": None,
     "last_token_refresh": None,
     "last_token_refresh_error": None,
+    "live_feed_started": False,
+    "fyers_ws_connected": False,
+    "fyers_ws_error": None,
+    "fyers_ws_last_event_at": None,
+    "last_tick_at": None,
+    "last_tick_symbol": None,
+    "last_tick_ltp": None,
+    "tick_count": 0,
+    "last_candle_close_at": None,
+    "closed_candle_count": 0,
 }
+
+
+def _utc_now() -> str:
+    return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _on_live_feed_status(status: dict):
+    global _live_feed_started
+
+    connected = bool(status.get("connected"))
+    error = status.get("error")
+    with _engine_lock:
+        _engine_status.update({
+            "fyers_ws_connected": connected,
+            "fyers_ws_error": None if connected else error,
+            "fyers_ws_last_event_at": _utc_now(),
+            "live_feed_started": connected or _engine_status.get("live_feed_started"),
+        })
+
+    if not connected:
+        with _live_feed_lock:
+            _live_feed_started = False
 
 
 def _on_tick(message: dict):
@@ -52,11 +85,23 @@ def _on_tick(message: dict):
     last_ltp[symbol] = ltp
     now = datetime.datetime.now()
     now_ts = time.time()
+    with _engine_lock:
+        _engine_status.update({
+            "last_tick_at": _utc_now(),
+            "last_tick_symbol": symbol,
+            "last_tick_ltp": ltp,
+            "tick_count": int(_engine_status.get("tick_count") or 0) + 1,
+        })
     if now_ts - last_price_broadcast.get(symbol, 0) >= 1:
         broadcast_sync({"event": "price_update", "symbol": symbol, "ltp": ltp})
         last_price_broadcast[symbol] = now_ts
 
     def on_candle_close(sym, candle, indicators):
+        with _engine_lock:
+            _engine_status.update({
+                "last_candle_close_at": _utc_now(),
+                "closed_candle_count": int(_engine_status.get("closed_candle_count") or 0) + 1,
+            })
         for strategy in STRATEGIES.values():
             strategy.on_candle_close(sym, candle, indicators)
 
@@ -88,9 +133,15 @@ def _scheduler_loop():
 
         if current_time >= ENTRY_CHECK_TIME and entries_fired_date != today:
             for strategy in STRATEGIES.values():
+                if getattr(strategy, "algo_id", None) == "algo5":
+                    continue
                 if hasattr(strategy, "evaluate_entries"):
                     strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
             entries_fired_date = today
+
+        algo5 = STRATEGIES.get("algo5")
+        if algo5 and getattr(algo5, "entries_evaluated_today", None) != today and current_time >= "11:51":
+            algo5.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
 
         if current_time >= SQUARE_OFF_TIME and squareoff_fired_date != today:
             for strategy in STRATEGIES.values():
@@ -100,8 +151,8 @@ def _scheduler_loop():
         time.sleep(15)
 
 
-def start_live_feed_if_ready() -> bool:
-    global _live_feed_started
+def start_live_feed_if_ready(force: bool = False) -> bool:
+    global _live_feed_started, _live_feed_socket
 
     if not WATCHLIST:
         print("[engine] watchlist not initialized yet, cannot start live feed")
@@ -112,12 +163,46 @@ def start_live_feed_if_ready() -> bool:
         return False
 
     with _live_feed_lock:
-        if _live_feed_started:
+        if _live_feed_started and not force:
             return True
-        threading.Thread(target=lambda: connect_live_feed(WATCHLIST, _on_tick), daemon=True).start()
+        if force:
+            # Fyers' SDK may call close callbacks synchronously; do not close it
+            # while holding our lock. The old token socket is expected to die.
+            _live_feed_socket = None
+
+        def run_live_feed():
+            global _live_feed_socket, _live_feed_started
+            try:
+                socket = connect_live_feed(WATCHLIST, _on_tick, _on_live_feed_status)
+                with _live_feed_lock:
+                    _live_feed_socket = socket
+            except Exception as exc:
+                with _engine_lock:
+                    _engine_status.update({
+                        "fyers_ws_connected": False,
+                        "fyers_ws_error": str(exc),
+                        "fyers_ws_last_event_at": _utc_now(),
+                        "live_feed_started": False,
+                    })
+                with _live_feed_lock:
+                    _live_feed_started = False
+                print(f"[engine] live feed failed: {exc}")
+
+        threading.Thread(target=run_live_feed, daemon=True).start()
         _live_feed_started = True
+        with _engine_lock:
+            _engine_status.update({
+                "live_feed_started": True,
+                "fyers_ws_error": None,
+                "fyers_ws_last_event_at": _utc_now(),
+            })
         print(f"[engine] live feed start requested for {len(WATCHLIST)} symbols")
         return True
+
+
+def restart_live_feed(reason: str = "manual") -> bool:
+    print(f"[engine] restarting Fyers live feed ({reason})")
+    return start_live_feed_if_ready(force=True)
 
 
 def get_engine_status() -> dict:
@@ -126,6 +211,17 @@ def get_engine_status() -> dict:
         "error": _engine_status["error"],
         "last_token_refresh": _engine_status.get("last_token_refresh"),
         "last_token_refresh_error": _engine_status.get("last_token_refresh_error"),
+        "live_feed_started": _engine_status.get("live_feed_started"),
+        "fyers_ws_connected": _engine_status.get("fyers_ws_connected"),
+        "fyers_ws_error": _engine_status.get("fyers_ws_error"),
+        "fyers_ws_last_event_at": _engine_status.get("fyers_ws_last_event_at"),
+        "last_tick_at": _engine_status.get("last_tick_at"),
+        "last_tick_symbol": _engine_status.get("last_tick_symbol"),
+        "last_tick_ltp": _engine_status.get("last_tick_ltp"),
+        "tick_count": _engine_status.get("tick_count"),
+        "symbols_with_ticks": len(last_ltp),
+        "last_candle_close_at": _engine_status.get("last_candle_close_at"),
+        "closed_candle_count": _engine_status.get("closed_candle_count"),
         "watchlist_count": len(WATCHLIST),
         "strategies_running": list(STRATEGIES.keys()),
     }
@@ -136,11 +232,11 @@ def try_refresh_access_token(reason: str = "manual_or_startup") -> bool:
         refresh_access_token_from_refresh_token()
         with _engine_lock:
             _engine_status.update({
-                "last_token_refresh": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                "last_token_refresh": _utc_now(),
                 "last_token_refresh_error": None,
             })
         print(f"[engine] Fyers access token refreshed via refresh token ({reason})")
-        start_live_feed_if_ready()
+        restart_live_feed(reason=f"token_refresh_{reason}")
         return True
     except Exception as exc:
         with _engine_lock:
@@ -162,11 +258,13 @@ def start_engine():
         watchlist = get_nse500_watchlist()
         from app.strategies.algo3_opening_range_basic import Algo3OpeningRangeBasic
         from app.strategies.algo4_opening_range_indicators import Algo4OpeningRangeIndicators
+        from app.strategies.algo5_live_1150_test import Algo5Live1150Test
         strategies = {
             "algo1": Algo1OpeningRange(watchlist),
             "algo2": Algo2Momentum(watchlist),
             "algo3": Algo3OpeningRangeBasic(watchlist),
             "algo4": Algo4OpeningRangeIndicators(watchlist),
+            "algo5": Algo5Live1150Test(watchlist),
         }
 
         with _engine_lock:

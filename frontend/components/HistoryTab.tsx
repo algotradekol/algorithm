@@ -109,6 +109,7 @@ export default function HistoryTab() {
             <option value="algo2">Algo 2</option>
             <option value="algo3">Algo 3</option>
             <option value="algo4">Algo 4</option>
+            <option value="algo5">Algo 5</option>
           </select>
         </label>
         <label>

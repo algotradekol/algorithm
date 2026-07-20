@@ -6,7 +6,7 @@ import { getAuthToken } from '../lib/authToken';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
-export default function FyersLoginButton() {
+export default function FyersLoginButton({ connected = false }: { connected?: boolean }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const searchParams = useSearchParams();
@@ -44,7 +44,7 @@ export default function FyersLoginButton() {
     }
   }
 
-  if (connectedFromRedirect) {
+  if (connected || connectedFromRedirect) {
     return (
       <div className="flex items-center gap-2 text-sm text-gray-300">
         <i className="ri-shield-check-fill text-sm text-[#22c55e]" />

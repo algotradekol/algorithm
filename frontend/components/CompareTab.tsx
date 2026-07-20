@@ -99,6 +99,7 @@ export default function CompareTab() {
           <p>Algo 2: VWAP/EMA/Volume Momentum</p>
           <p>Algo 3: Opening Range Gap (Basic) - pure price action, no indicators</p>
           <p>Algo 4: Opening Range Gap (With Indicators) - price action + momentum confirmation filters</p>
+          <p>Algo 5: Live 11:50 Test - temporary intraday feed/candle validation strategy</p>
         </div>
       </div>
     </section>

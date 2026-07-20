@@ -113,22 +113,29 @@ def get_price_history(symbol: str, resolution: str = "15", days: int = 5) -> dic
     }
 
 
-def connect_live_feed(symbols: list[str], on_tick_callback):
+def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=None):
     token = get_stored_access_token()
     if not token:
         raise RuntimeError("No Fyers access token in Supabase yet")
+
+    def report_status(**data):
+        if on_status_callback:
+            on_status_callback(data)
 
     def on_message(message):
         on_tick_callback(message)
 
     def on_open():
+        report_status(connected=True, message="Fyers websocket connected")
         socket.subscribe(symbols=symbols, data_type="SymbolUpdate")
 
     def on_error(message):
         print("Fyers WS error:", message)
+        report_status(connected=False, error=str(message), message="Fyers websocket error")
 
     def on_close(message):
         print("Fyers WS closed:", message)
+        report_status(connected=False, error=str(message), message="Fyers websocket closed")
 
     socket = data_ws.FyersDataSocket(
         access_token=f"{FYERS_CLIENT_ID}:{token}",
@@ -138,5 +145,9 @@ def connect_live_feed(symbols: list[str], on_tick_callback):
         on_error=on_error,
         on_close=on_close,
     )
-    socket.connect()
+    try:
+        socket.connect()
+    except Exception as exc:
+        report_status(connected=False, error=str(exc), message="Fyers websocket connect failed")
+        raise
     return socket

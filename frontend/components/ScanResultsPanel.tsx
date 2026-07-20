@@ -153,5 +153,11 @@ function formatNumber(value: any) {
 
 function formatTime(value: string) {
   if (!value) return '--';
-  return new Date(value).toLocaleTimeString('en-IN', { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  const normalized = /Z$|[+-]\d\d:\d\d$/.test(value) ? value : `${value}Z`;
+  return new Date(normalized).toLocaleTimeString('en-IN', {
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    timeZone: 'Asia/Kolkata',
+  });
 }

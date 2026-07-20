@@ -15,7 +15,7 @@ import jwt
 
 from .config import ALLOWED_ORIGINS
 from .auth import require_auth
-from .engine import get_engine_status, start_engine, start_live_feed_if_ready, STRATEGIES
+from .engine import get_engine_status, restart_live_feed, start_engine, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_connection_status, get_price_history
 from .fyers_auth import store_broker_tokens
@@ -231,7 +231,7 @@ def fyers_callback(auth_code: str = None, code: str = None):
     if "access_token" not in response:
         return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
     store_broker_tokens(response)
-    start_live_feed_if_ready()
+    restart_live_feed(reason="fyers_oauth_callback")
     return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=success")
 
 

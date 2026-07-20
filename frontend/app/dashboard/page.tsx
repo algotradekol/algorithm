@@ -12,7 +12,7 @@ import { clearPinToken } from '../../lib/pinAuth';
 import { api } from '../../lib/api';
 import { WebSocketState } from '../../lib/useWebSocket';
 
-const TABS = ['Algo 1', 'Algo 2', 'Algo 3', 'Algo 4', 'Compare', 'History', 'Charges'] as const;
+const TABS = ['Algo 1', 'Algo 2', 'Algo 3', 'Algo 4', 'Algo 5', 'Compare', 'History', 'Charges'] as const;
 
 function formatIstTime() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -39,6 +39,17 @@ function DashboardContent() {
     error?: string | null;
     watchlist_count: number;
     strategies_running: string[];
+    live_feed_started?: boolean;
+    fyers_ws_connected?: boolean;
+    fyers_ws_error?: string | null;
+    fyers_ws_last_event_at?: string | null;
+    last_tick_at?: string | null;
+    last_tick_symbol?: string | null;
+    last_tick_ltp?: number | null;
+    tick_count?: number;
+    symbols_with_ticks?: number;
+    last_candle_close_at?: string | null;
+    closed_candle_count?: number;
   } | null>(null);
   const [wsStatus, setWsStatus] = useState<WebSocketState>('reconnecting');
   const router = useRouter();
@@ -95,7 +106,7 @@ function DashboardContent() {
     const interval = window.setInterval(() => {
       loadFyersStatus();
       loadEngineStatus();
-    }, 60_000);
+    }, 10_000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
@@ -149,7 +160,7 @@ function DashboardContent() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            <FyersLoginButton />
+            <FyersLoginButton connected={Boolean(fyersStatus?.connected)} />
             <button
               onClick={async () => { clearPinToken(); await supabase.auth.signOut(); router.replace('/login'); }}
               className="inline-flex min-h-10 items-center gap-1 text-sm text-gray-500 hover:text-gray-100"
@@ -175,6 +186,8 @@ function DashboardContent() {
             </button>
           ))}
         </nav>
+
+        {tradingReady && <LiveDiagnostics engineStatus={engineStatus} />}
 
         {!tradingReady && tab !== 'Charges' ? (
           <section className="panel p-4">
@@ -221,6 +234,14 @@ function DashboardContent() {
                 onWebSocketStatus={setWsStatus}
               />
             )}
+            {tab === 'Algo 5' && (
+              <AlgoTab
+                algoId="algo5"
+                displayName="Algo 5 - Live 11:50 Test"
+                description="Temporary live-market test: uses the 11:50 candle and evaluates at 11:51 so we can confirm Fyers ticks, candle building, scan results, and paper entries during the session."
+                onWebSocketStatus={setWsStatus}
+              />
+            )}
             {tab === 'Compare' && <CompareTab />}
             {tab === 'History' && <HistoryTab />}
             {tab === 'Charges' && <ChargesPanel />}
@@ -242,6 +263,75 @@ function StatusCard({ label, dotClass, value, detail }: { label: string; dotClas
       <p className="mt-2 text-xs text-gray-500">{detail}</p>
     </div>
   );
+}
+
+function LiveDiagnostics({ engineStatus }: { engineStatus: any }) {
+  const hasRecentTick = isRecent(engineStatus?.last_tick_at, 90);
+  return (
+    <section className="mb-4 grid gap-2 rounded border border-[#1f2937] bg-[#111827] p-3 text-xs sm:grid-cols-2 lg:grid-cols-6">
+      <DiagnosticItem
+        label="Fyers Feed"
+        value={engineStatus?.live_feed_started ? 'Start requested' : 'Not started'}
+        tone={engineStatus?.live_feed_started ? 'text-[#f59e0b]' : 'text-[#ef4444]'}
+      />
+      <DiagnosticItem
+        label="Fyers WS"
+        value={engineStatus?.fyers_ws_connected ? 'Connected' : 'Disconnected'}
+        tone={engineStatus?.fyers_ws_connected ? 'text-[#22c55e]' : 'text-[#ef4444]'}
+        detail={engineStatus?.fyers_ws_error ? String(engineStatus.fyers_ws_error).slice(0, 80) : formatRelativeTime(engineStatus?.fyers_ws_last_event_at, 'No WS event yet')}
+      />
+      <DiagnosticItem
+        label="Last Tick"
+        value={formatRelativeTime(engineStatus?.last_tick_at)}
+        tone={hasRecentTick ? 'text-[#22c55e]' : 'text-[#f59e0b]'}
+      />
+      <DiagnosticItem
+        label="Last Symbol"
+        value={engineStatus?.last_tick_symbol ? `${engineStatus.last_tick_symbol} @ ${formatNumber(engineStatus.last_tick_ltp)}` : '--'}
+      />
+      <DiagnosticItem
+        label="Tick Coverage"
+        value={`${engineStatus?.symbols_with_ticks || 0} / ${engineStatus?.watchlist_count || 0} symbols`}
+      />
+      <DiagnosticItem
+        label="Closed Candles"
+        value={`${engineStatus?.closed_candle_count || 0} total`}
+        detail={engineStatus?.last_candle_close_at ? `Last ${formatRelativeTime(engineStatus.last_candle_close_at)}` : 'Waiting'}
+      />
+    </section>
+  );
+}
+
+function DiagnosticItem({ label, value, tone = 'text-gray-100', detail }: { label: string; value: string; tone?: string; detail?: string }) {
+  return (
+    <div className="rounded border border-[#1f2937] bg-[#0d1117] p-2">
+      <div className="label text-[10px]">{label}</div>
+      <div className={`num mt-1 font-semibold ${tone}`}>{value}</div>
+      {detail && <div className="mt-1 text-[11px] text-gray-500">{detail}</div>}
+    </div>
+  );
+}
+
+function formatNumber(value: unknown) {
+  const number = Number(value);
+  if (!Number.isFinite(number)) return '--';
+  return number.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+}
+
+function formatRelativeTime(value?: string | null, emptyLabel = 'No ticks yet') {
+  if (!value) return emptyLabel;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return '--';
+  const seconds = Math.max(0, Math.round((Date.now() - date.getTime()) / 1000));
+  if (seconds < 60) return `${seconds}s ago`;
+  return `${Math.round(seconds / 60)}m ago`;
+}
+
+function isRecent(value: string | null | undefined, maxAgeSeconds: number) {
+  if (!value) return false;
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return false;
+  return Date.now() - date.getTime() <= maxAgeSeconds * 1000;
 }
 
 export default function Dashboard() {
