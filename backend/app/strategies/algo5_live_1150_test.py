@@ -1,113 +1,69 @@
 import datetime
-import threading
+import time
 
 from .base import Strategy
-from ..fyers_auth import get_stored_access_token
-from ..fyers_client import get_previous_close
 from ..paper_broker import PaperBroker
 
-MIN_GAP_PCT = 0.5
-MAX_GAP_PCT = 2.0
-TICK_SIZE = 0.05
-SIGNAL_CANDLE_TIME = "11:50"
+MIN_MOVE_PCT = 0.10
+SCAN_BROADCAST_SECONDS = 5
+MAX_SCAN_ROWS = 100
 
 
 class Algo5Live1150Test(Strategy):
     algo_id = "algo5"
-    display_name = "Algo 5 - Live 11:50 Test"
+    display_name = "Algo 5 - Live Tick Smoke Test"
 
     def __init__(self, watchlist: list[str]):
         self.watchlist = watchlist
         from app.strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
         self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
-        self.prev_close: dict[str, float] = {}
-        self.candidates: dict[str, tuple[str, float]] = {}
-        self.candidate_details: dict[str, dict] = {}
+        self.first_ltp: dict[str, float] = {}
+        self.latest_ltp: dict[str, float] = {}
+        self.latest_seen_at: dict[str, str] = {}
         self.selected_symbols: set[str] = set()
-        self.entries_evaluated_today = None
-        threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
+        self.last_scan_broadcast_at = 0.0
 
     def reload_settings(self):
         from app.strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
 
-    def _load_previous_closes_background(self):
-        try:
-            if not get_stored_access_token():
-                print("[algo5] no Fyers access token yet, skipping previous-close preload")
-                return
-            for symbol in self.watchlist:
-                try:
-                    close = get_previous_close(symbol)
-                    if close:
-                        self.prev_close[symbol] = close
-                except Exception as e:
-                    print(f"[algo5] couldn't get prev close for {symbol}: {e}")
-        except Exception as e:
-            print(f"[algo5] error in background preload: {e}")
-
     def on_tick(self, symbol: str, ltp: float, timestamp):
-        pass
+        if not ltp:
+            return
+
+        self.first_ltp.setdefault(symbol, float(ltp))
+        self.latest_ltp[symbol] = float(ltp)
+        self.latest_seen_at[symbol] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        side = self._signal_side(symbol)
+        if side:
+            self._enter(symbol, side, float(ltp))
+
+        now = time.time()
+        if now - self.last_scan_broadcast_at >= SCAN_BROADCAST_SECONDS:
+            self.last_scan_broadcast_at = now
+            self._record_scan_results()
 
     def on_candle_close(self, symbol: str, candle: dict, indicators: dict):
-        if candle["time"].strftime("%H:%M") != SIGNAL_CANDLE_TIME:
-            return
-
-        side = self._signal_side(symbol, candle)
-        if side:
-            self.candidates[symbol] = (side, candle["close"])
-            prev_close = self.prev_close[symbol]
-            self.candidate_details[symbol] = {
-                "symbol": symbol,
-                "side": side,
-                "open": candle["open"],
-                "prev_close": prev_close,
-                "gap_pct": abs(candle["open"] - prev_close) / prev_close * 100,
-                "passed_indicators": True,
-                "indicator_results": {},
-                "selected_for_trade": False,
-                "rejection_reason": None,
-            }
-
-        now = datetime.datetime.now()
-        if side and self._is_entry_window(now):
-            self._enter(symbol, side, indicators.get("last_ltp") or candle["close"])
+        pass
 
     def evaluate_entries(self, get_ltp_fn):
-        today = datetime.date.today()
-        if self.entries_evaluated_today == today:
-            return
-        self.entries_evaluated_today = today
-
-        for symbol, (side, fallback_price) in list(self.candidates.items()):
-            entry_price = get_ltp_fn(symbol) or fallback_price
-            self._enter(symbol, side, entry_price)
         self._record_scan_results()
 
-    def _signal_side(self, symbol: str, candle: dict) -> str | None:
-        prev_close = self.prev_close.get(symbol)
-        if not prev_close:
+    def _signal_side(self, symbol: str) -> str | None:
+        first = self.first_ltp.get(symbol)
+        latest = self.latest_ltp.get(symbol)
+        if not first or not latest:
             return None
 
-        open_price = candle["open"]
-        if abs(open_price - candle["low"]) <= TICK_SIZE:
-            gap = open_price - prev_close
-            if MIN_GAP_PCT / 100 * prev_close <= gap <= MAX_GAP_PCT / 100 * prev_close:
-                return "BUY"
-
-        if abs(open_price - candle["high"]) <= TICK_SIZE:
-            gap = prev_close - open_price
-            if MIN_GAP_PCT / 100 * prev_close <= gap <= MAX_GAP_PCT / 100 * prev_close:
-                return "SELL"
-
+        move_pct = (latest - first) / first * 100
+        if move_pct >= MIN_MOVE_PCT:
+            return "BUY"
+        if move_pct <= -MIN_MOVE_PCT:
+            return "SELL"
         return None
-
-    def _is_entry_window(self, now: datetime.datetime) -> bool:
-        start = now.replace(hour=11, minute=51, second=0, microsecond=0)
-        end = now.replace(hour=11, minute=52, second=0, microsecond=0)
-        return start <= now < end
 
     def _can_open_side(self, side: str) -> bool:
         state = self.broker.summary()
@@ -118,7 +74,8 @@ class Algo5Live1150Test(Strategy):
         return state["sell_count_today"] < self.settings["max_sell_trades"] or state["buy_count_today"] == self.settings["max_buy_trades"]
 
     def _enter(self, symbol: str, side: str, entry_price: float):
-        if not entry_price or self.broker.already_traded_today(symbol) or not self._can_open_side(side):
+        open_symbols = {position["symbol"] for position in self.broker.open_positions()}
+        if symbol in open_symbols or symbol in self.selected_symbols or not entry_price or self.broker.already_traded_today(symbol) or not self._can_open_side(side):
             return
 
         qty = int(self.settings["capital_per_trade"] // entry_price)
@@ -136,33 +93,58 @@ class Algo5Live1150Test(Strategy):
 
     def _record_scan_results(self):
         rows = []
-        buy_selected = 0
-        sell_selected = 0
-        for symbol, details in self.candidate_details.items():
-            row = dict(details)
-            row["selected_for_trade"] = symbol in self.selected_symbols
-            if row["selected_for_trade"] and row["side"] == "BUY":
-                buy_selected += 1
-            if row["selected_for_trade"] and row["side"] == "SELL":
-                sell_selected += 1
-            rows.append(row)
+        for symbol, latest in sorted(self.latest_ltp.items(), key=lambda item: abs(self._move_pct(item[0])), reverse=True)[:MAX_SCAN_ROWS]:
+            first = self.first_ltp.get(symbol) or latest
+            move_pct = self._move_pct(symbol)
+            side = self._signal_side(symbol) or "WATCH"
+            selected = symbol in self.selected_symbols
+            rows.append({
+                "symbol": symbol,
+                "side": side,
+                "open": first,
+                "prev_close": first,
+                "gap_pct": move_pct,
+                "passed_indicators": side != "WATCH",
+                "indicator_results": {
+                    "vwap": {"value": latest, "passed": True, "enabled": False},
+                    "rsi": {"value": move_pct, "passed": abs(move_pct) >= MIN_MOVE_PCT, "enabled": True},
+                    "adx": {"value": abs(move_pct), "passed": abs(move_pct) >= MIN_MOVE_PCT, "enabled": True},
+                    "supertrend": {"value": first, "passed": True, "enabled": False},
+                    "volume": {"value": 0, "passed": True, "enabled": False},
+                },
+                "selected_for_trade": selected,
+                "rejection_reason": None if selected else ("waiting_for_0.10pct_move" if side == "WATCH" else "trade_slots_or_duplicate_check"),
+                "last_seen_at": self.latest_seen_at.get(symbol),
+            })
+
+        buy_candidates = len([row for row in rows if row["side"] == "BUY"])
+        sell_candidates = len([row for row in rows if row["side"] == "SELL"])
+        buy_selected = len([row for row in rows if row["selected_for_trade"] and row["side"] == "BUY"])
+        sell_selected = len([row for row in rows if row["selected_for_trade"] and row["side"] == "SELL"])
         result = {
             "algo_id": self.algo_id,
             "scan_time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "total_scanned": len(self.watchlist),
             "passed_opening_range": rows,
-            "buy_candidates": len([r for r in rows if r["side"] == "BUY"]),
-            "sell_candidates": len([r for r in rows if r["side"] == "SELL"]),
+            "buy_candidates": buy_candidates,
+            "sell_candidates": sell_candidates,
             "buy_selected": buy_selected,
             "sell_selected": sell_selected,
             "overflow_buy": 0,
             "overflow_sell": 0,
-            "total_filtered_out": max(0, len(self.watchlist) - len(rows)),
+            "total_filtered_out": max(0, len(self.watchlist) - len(self.latest_ltp)),
         }
         from app.engine import SCAN_RESULTS
         from app.broadcaster import broadcast_sync
         SCAN_RESULTS[self.algo_id] = result
         broadcast_sync({"event": "scan_complete", "algo_id": self.algo_id, "results": result})
+
+    def _move_pct(self, symbol: str) -> float:
+        first = self.first_ltp.get(symbol)
+        latest = self.latest_ltp.get(symbol)
+        if not first or not latest:
+            return 0.0
+        return (latest - first) / first * 100
 
     def check_exits(self):
         for position in self.broker.open_positions():

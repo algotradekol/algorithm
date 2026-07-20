@@ -426,7 +426,6 @@ function ZoomableCandleChart({
 
       <div
         ref={chartRef}
-        onWheelCapture={(event) => event.preventDefault()}
         onTouchStart={handleTouchStart}
         onTouchMove={handleTouchMove}
         onTouchEnd={handleTouchEnd}
