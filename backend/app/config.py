@@ -26,7 +26,11 @@ SUPABASE_SERVICE_ROLE_KEY = os.environ.get("SUPABASE_SERVICE_ROLE_KEY", "")  # b
 SUPABASE_JWT_SECRET = os.environ.get("SUPABASE_JWT_SECRET", "")  # for verifying frontend auth tokens
 
 # App
-ALLOWED_ORIGINS = os.environ.get("ALLOWED_ORIGINS", "*").split(",")  # set to your Vercel URL in production
+_configured_origins = [origin.strip().rstrip("/") for origin in os.environ.get("ALLOWED_ORIGINS", "*").split(",") if origin.strip()]
+# Keep both production hostnames working when one redirects to the other. Railway
+# still receives the browser's original Origin header before that redirect occurs.
+_first_party_origins = {"https://kolkatalgo.in", "https://www.kolkatalgo.in"}
+ALLOWED_ORIGINS = ["*"] if "*" in _configured_origins else sorted(set(_configured_origins) | _first_party_origins)
 FRONTEND_URL = os.environ.get("FRONTEND_URL", "https://your-app.vercel.app")
 APP_PIN = os.environ.get("APP_PIN", "1402")
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")

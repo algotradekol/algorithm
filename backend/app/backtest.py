@@ -8,6 +8,7 @@ from .charges import calculate_charges, get_charges_config
 from .fyers_client import get_intraday_candles_for_range
 from .strategy_settings import get_settings
 from .strategies.algo4_opening_range_indicators import Algo4OpeningRangeIndicators
+from .supabase_client import run_with_supabase
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
 SUPPORTED_ALGOS = {"algo1", "algo2"}
@@ -55,6 +56,7 @@ def start_backtest(
     }
     with _lock:
         _jobs[job_id] = job
+    _persist_job(job)
     threading.Thread(target=_run_job, args=(job_id, algo_id, first_date, last_date, list(watchlist)), daemon=True).start()
     return _public_job(job)
 
@@ -62,7 +64,9 @@ def start_backtest(
 def get_backtest_job(job_id: str) -> dict | None:
     with _lock:
         job = _jobs.get(job_id)
-        return _public_job(job) if job else None
+    if job:
+        return _public_job(job)
+    return _load_persisted_job(job_id)
 
 
 def _public_job(job: dict | None) -> dict | None:
@@ -75,6 +79,60 @@ def _update(job_id: str, **values):
     with _lock:
         if job_id in _jobs:
             _jobs[job_id].update(values)
+            job = dict(_jobs[job_id])
+        else:
+            job = None
+    # Progress changes many times per run; persist only lifecycle transitions.
+    if job and any(key in values for key in ("status", "error", "result")):
+        _persist_job(job)
+
+
+def _persist_job(job: dict) -> None:
+    """Persist a job when the optional Supabase table has been installed."""
+    row = {
+        "job_id": job["id"],
+        "status": job.get("status"),
+        "algo_id": job.get("algo_id"),
+        "start_date": job.get("start_date"),
+        "end_date": job.get("end_date"),
+        "payload": _public_job(job),
+        "updated_at": "now()",
+    }
+    try:
+        run_with_supabase(
+            lambda supabase: supabase.table("backtest_jobs").upsert(
+                row, on_conflict="job_id"
+            ).execute()
+        )
+    except Exception:
+        # The feature remains usable before the migration is run. The API still
+        # serves the in-process job, but will clearly report a restart loss.
+        return
+
+
+def _load_persisted_job(job_id: str) -> dict | None:
+    try:
+        result = run_with_supabase(
+            lambda supabase: supabase.table("backtest_jobs")
+            .select("payload")
+            .eq("job_id", job_id)
+            .limit(1)
+            .execute()
+        )
+        rows = result.data or []
+        if not rows:
+            return None
+        job = rows[0].get("payload") or None
+        if job and job.get("status") in {"queued", "running"}:
+            job.update({
+                "status": "failed",
+                "error": "Backtest interrupted by a backend restart. Start a new run.",
+                "message": "Backtest interrupted by a backend restart.",
+            })
+            _persist_job(job)
+        return job
+    except Exception:
+        return None
 
 
 def _run_job(

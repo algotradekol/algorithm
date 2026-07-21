@@ -18,6 +18,18 @@ export default function BacktestTab() {
   async function run() {
     setError('');
     setJob(null);
+    if (!startDate || !endDate) {
+      setError('Choose both a start date and an end date.');
+      return;
+    }
+    if (startDate > endDate) {
+      setError('Start date must be on or before end date.');
+      return;
+    }
+    if (endDate > today) {
+      setError('Choose today or an earlier date.');
+      return;
+    }
     try {
       setJob(await api.startBacktest({ algo_id: algoId, start_date: startDate, end_date: endDate }));
     } catch (e: any) {
@@ -31,7 +43,13 @@ export default function BacktestTab() {
       try {
         setJob(await api.backtestStatus(job.id));
       } catch (e: any) {
-        setError(e?.message || 'Could not read backtest progress');
+        const message = e?.message || 'Could not read backtest progress';
+        if (message.includes('API error 404')) {
+          setJob(null);
+          setError('This backtest was interrupted because the backend restarted or was redeployed. Start it again after the backend is healthy; the previous in-memory job cannot be recovered.');
+          return;
+        }
+        setError(message);
       }
     }, 2_000);
     return () => window.clearInterval(timer);

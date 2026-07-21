@@ -418,6 +418,6 @@ def backtest_status(job_id: str, _user=Depends(require_auth)):
     from app.backtest import get_backtest_job
     job = get_backtest_job(job_id)
     if not job:
-        raise HTTPException(status_code=404, detail="Backtest job not found. Jobs are kept until the backend restarts.")
+        raise HTTPException(status_code=404, detail="Backtest job not found. It may predate durable job storage or have been removed.")
     return job
 

@@ -222,6 +222,22 @@ CREATE TABLE IF NOT EXISTS market_candles (
 CREATE INDEX IF NOT EXISTS idx_market_candles_symbol_time
     ON market_candles (symbol, resolution, candle_time desc);
 
+-- Durable historical-backtest jobs. This lets the dashboard retrieve a job
+-- after a Railway restart instead of losing an in-memory job ID.
+CREATE TABLE IF NOT EXISTS backtest_jobs (
+    job_id text PRIMARY KEY,
+    status text NOT NULL,
+    algo_id text NOT NULL,
+    start_date date NOT NULL,
+    end_date date NOT NULL,
+    payload jsonb NOT NULL,
+    created_at timestamptz default now(),
+    updated_at timestamptz default now()
+);
+
+CREATE INDEX IF NOT EXISTS idx_backtest_jobs_updated_at
+    ON backtest_jobs (updated_at desc);
+
 -- AI assistant chat memory. Run manually in Supabase SQL Editor before using the assistant.
 CREATE TABLE IF NOT EXISTS ai_chat_sessions (
     id uuid PRIMARY KEY DEFAULT gen_random_uuid(),
