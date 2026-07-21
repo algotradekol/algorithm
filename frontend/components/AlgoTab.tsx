@@ -113,7 +113,18 @@ export default function AlgoTab({
   const cash = Number(summary.cash || 0);
   const netPnl = Number(summary.realized_net_pnl || 0);
   const grossPnl = Number(summary.realized_gross_pnl || 0);
-  const equityDelta = cash - startingCapital;
+  const openUnrealizedPnl = positions.reduce((total, position) => {
+    const ltp = Number(position.ltp ?? position.last_ltp ?? position._last_ltp ?? position.entry_price);
+    const entry = Number(position.entry_price || 0);
+    const qty = Number(position.qty || 0);
+    if (!Number.isFinite(ltp) || !Number.isFinite(entry) || !Number.isFinite(qty)) return total;
+    return total + (position.side === 'SELL' ? entry - ltp : ltp - entry) * qty;
+  }, 0);
+  const capitalUsed = positions.reduce((total, position) => total + Number(position.entry_price || 0) * Number(position.qty || 0), 0);
+  // Cash already includes closed-trade P&L. Add open mark-to-market movement
+  // once so Total Capital represents the live paper-account value.
+  const totalCapital = cash + openUnrealizedPnl;
+  const liveNetPnl = netPnl + openUnrealizedPnl;
 
   return (
     <section className="space-y-4">
@@ -132,12 +143,12 @@ export default function AlgoTab({
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
 
       <div className="grid grid-cols-3 gap-1.5 sm:gap-2 lg:grid-cols-6">
-        <MetricCard label="Cash Available" value={formatMoney(cash)} />
-        <MetricCard label="Equity" value={formatMoney(cash)} delta={formatSignedMoney(equityDelta)} pnl={equityDelta} />
+        <MetricCard label="Total Capital" value={formatMoney(totalCapital)} delta={formatSignedMoney(totalCapital - startingCapital)} pnl={totalCapital - startingCapital} />
+        <MetricCard label="Capital Used" value={formatMoney(capitalUsed)} />
         <MetricCard label="Trades Today" value={`${summary.trade_count_today} / ${summary.max_trades_per_day || 10}`} />
         <MetricCard label="Buy / Sell" value={`${summary.buy_count_today}B ${summary.sell_count_today}S`} />
-        <MetricCard label="Gross P&L" value={formatMoney(grossPnl)} pnl={grossPnl} />
-        <MetricCard label="Net P&L" value={formatMoney(netPnl)} pnl={netPnl} important />
+        <MetricCard label="Realized Gross P&L" value={formatMoney(grossPnl)} pnl={grossPnl} />
+        <MetricCard label="Live Net P&L" value={formatMoney(liveNetPnl)} pnl={liveNetPnl} important />
       </div>
 
       <SettingsDrawer open={settingsOpen} algoId={algoId} onClose={() => setSettingsOpen(false)} />
