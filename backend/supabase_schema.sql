@@ -166,7 +166,7 @@ ALTER TABLE positions
     ADD COLUMN IF NOT EXISTS entry_trigger text;
 
 ALTER TABLE trades
-    ADD COLUMN IF NOT EXISTS entry_trigger text;
+    ADD COLUMN IF NOT EXISTS entry_trigger text; 
 
 -- Calendar/audit snapshots: stores the dashboard state date-wise for review.
 CREATE TABLE IF NOT EXISTS calendar_snapshots (
