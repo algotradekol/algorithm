@@ -12,7 +12,7 @@ from .supabase_client import run_with_supabase
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
 SUPPORTED_ALGOS = {"algo1", "algo2"}
-MAX_WORKERS = 4
+MAX_WORKERS = 2
 MAX_BACKTEST_DAYS = 31
 
 _jobs: dict[str, dict] = {}
@@ -55,6 +55,12 @@ def start_backtest(
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     with _lock:
+        active = next(
+            (existing for existing in _jobs.values() if existing.get("status") in {"queued", "running"}),
+            None,
+        )
+        if active:
+            raise ValueError("A backtest is already running. Wait for it to finish before starting another one.")
         _jobs[job_id] = job
     _persist_job(job)
     threading.Thread(target=_run_job, args=(job_id, algo_id, first_date, last_date, list(watchlist)), daemon=True).start()
@@ -143,43 +149,75 @@ def _run_job(
     watchlist: list[str],
 ):
     try:
-        _update(job_id, status="running", message="Downloading 1-minute candles from Fyers.")
+        _update(job_id, status="running", message="Screening NSE 500 one symbol at a time.")
         lookback_start = first_date - datetime.timedelta(days=7)
-        histories: dict[str, list[dict]] = {}
-
-        def load(symbol: str):
-            return symbol, get_intraday_candles_for_range(symbol, lookback_start, last_date)
-
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
-            futures = [pool.submit(load, symbol) for symbol in watchlist]
-            for future in as_completed(futures):
-                try:
-                    symbol, candles = future.result()
-                    if candles:
-                        histories[symbol] = candles
-                    else:
-                        _increment(job_id, "failed_symbols")
-                except Exception:
-                    _increment(job_id, "failed_symbols")
-                finally:
-                    _increment(job_id, "completed_symbols")
-
-        _update(job_id, message="Replaying entries, exits, and charges.")
-        settings = get_settings(algo_id)
         trading_days = [
             first_date + datetime.timedelta(days=offset)
             for offset in range((last_date - first_date).days + 1)
             if (first_date + datetime.timedelta(days=offset)).weekday() < 5
         ]
-        _update(job_id, message=f"Replaying {len(trading_days)} trading days, exits, and charges.")
-        daily_results = [
-            _simulate(algo_id, target_date, watchlist, histories, settings)
-            for target_date in trading_days
-        ]
+        settings = get_settings(algo_id)
+        rows_by_day: dict[datetime.date, list[dict]] = {day: [] for day in trading_days}
+        symbols_with_history = 0
+
+        def screen_symbol(symbol: str):
+            # Keep this history local to one worker. Retaining every symbol's
+            # minute candles was enough to exhaust a Railway container.
+            history = get_intraday_candles_for_range(symbol, lookback_start, last_date)
+            rows = [_evaluate_symbol(algo_id, symbol, day, history, settings) for day in trading_days]
+            return rows, bool(history)
+
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = [pool.submit(screen_symbol, symbol) for symbol in watchlist]
+            for future in as_completed(futures):
+                try:
+                    rows, has_history = future.result()
+                    if has_history:
+                        symbols_with_history += 1
+                    else:
+                        _increment(job_id, "failed_symbols")
+                    for day, row in zip(trading_days, rows):
+                        rows_by_day[day].append(row)
+                except Exception:
+                    _increment(job_id, "failed_symbols")
+                finally:
+                    _increment(job_id, "completed_symbols")
+
+        _update(job_id, message=f"Selecting and replaying trades for {len(trading_days)} trading days.")
+        charges_config = get_charges_config()
+        daily_results = []
+        for target_date in trading_days:
+            daily_result, selected = _prepare_daily_result(
+                algo_id, target_date, rows_by_day[target_date], len(watchlist), settings
+            )
+            trades = []
+            # Only selected candidates need a second full intraday download for
+            # target/SL replay. At most the strategy's daily trade cap is held.
+            for row in selected:
+                try:
+                    history = get_intraday_candles_for_range(row["symbol"], lookback_start, last_date)
+                    trade = _simulate_trade(row, history, target_date, settings, charges_config)
+                except Exception:
+                    trade = None
+                if trade:
+                    trades.append(trade)
+                    row["selected_for_trade"] = True
+                    row["rejection_reason"] = None
+                else:
+                    row["selected_for_trade"] = False
+                    row["rejection_reason"] = "no_09_16_entry_candle"
+            daily_result["trades"] = trades
+            daily_result["summary"] = {
+                **_performance_summary(trades),
+                "buy_count": len([trade for trade in trades if trade["side"] == "BUY"]),
+                "sell_count": len([trade for trade in trades if trade["side"] == "SELL"]),
+            }
+            daily_result["condition_breakdown"][-1]["passed"] = len(trades)
+            daily_results.append(daily_result)
         coverage = {
             "requested_symbols": len(watchlist),
-            "symbols_with_history": len(histories),
-            "symbols_without_history": len(watchlist) - len(histories),
+            "symbols_with_history": symbols_with_history,
+            "symbols_without_history": len(watchlist) - symbols_with_history,
             "lookback_start": lookback_start.isoformat(),
         }
         result = _range_result(algo_id, first_date, last_date, daily_results, coverage)
@@ -248,6 +286,45 @@ def _simulate(algo_id: str, target_date: datetime.date, watchlist: list[str], hi
         "candidates": rows,
         "trades": trades,
     }
+
+
+def _prepare_daily_result(
+    algo_id: str,
+    target_date: datetime.date,
+    rows: list[dict],
+    watchlist_size: int,
+    settings: dict,
+) -> tuple[dict, list[dict]]:
+    """Select a day's candidates without retaining historical candle arrays."""
+    condition = {
+        "candle": sum(bool(row.get("has_opening_candle")) for row in rows),
+        "shape": sum(bool(row.get("shape_passed")) for row in rows),
+        "gap": sum(bool(row.get("gap_passed")) for row in rows),
+        "filters": sum(bool(row.get("filters_passed")) for row in rows),
+    }
+    candidates = [row for row in rows if row.get("side") and row.get("filters_passed")]
+    selected = _select_candidates(candidates, settings)
+    selected_symbols = {row["symbol"] for row in selected}
+    for row in rows:
+        if row.get("side") and row.get("filters_passed") and row["symbol"] not in selected_symbols:
+            row["rejection_reason"] = "slots_full"
+    return {
+        "algo_id": algo_id,
+        "date": target_date.isoformat(),
+        "mode": "historical_candle_replay",
+        "execution_assumption": "Entry uses the 09:16 candle open. If a later candle touches both stop-loss and target, stop-loss is assumed first (conservative).",
+        "summary": {},
+        "condition_breakdown": [
+            {"label": "Scanned universe", "passed": watchlist_size, "total": watchlist_size},
+            {"label": "Condition 1: 09:15 candle received", "passed": condition["candle"], "total": watchlist_size},
+            {"label": "Condition 2: open equals low/high", "passed": condition["shape"], "total": condition["candle"]},
+            {"label": "Condition 3: gap rule", "passed": condition["gap"], "total": condition["shape"]},
+            {"label": "Condition 4: enabled filters", "passed": condition["filters"], "total": condition["gap"]},
+            {"label": "Final: selected for trade", "passed": 0, "total": len(candidates)},
+        ],
+        "candidates": rows,
+        "trades": [],
+    }, selected
 
 
 def _performance_summary(trades: list[dict]) -> dict:
