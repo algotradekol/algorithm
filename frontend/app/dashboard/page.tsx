@@ -7,13 +7,14 @@ import CompareTab from '../../components/CompareTab';
 import CalendarTab from '../../components/CalendarTab';
 import ChargesPanel from '../../components/ChargesPanel';
 import HistoryTab from '../../components/HistoryTab';
+import BacktestTab from '../../components/BacktestTab';
 import FyersLoginButton from '../../components/FyersLoginButton';
 import { getAuthToken } from '../../lib/authToken';
 import { clearPinToken } from '../../lib/pinAuth';
 import { api } from '../../lib/api';
 import { WebSocketState } from '../../lib/useWebSocket';
 
-const TABS = ['Simple', 'Filter', 'Test Algo', 'Compare', 'History', 'Calendar', 'Charges'] as const;
+const TABS = ['Simple', 'Filter', 'Test Algo', 'Backtest', 'Compare', 'History', 'Calendar', 'Charges'] as const;
 
 function formatIstTime() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -196,7 +197,7 @@ function DashboardContent() {
 
         {tradingReady && <LiveDiagnostics engineStatus={engineStatus} />}
 
-        {!tradingReady && !['Compare', 'History', 'Calendar', 'Charges'].includes(tab) ? (
+        {!tradingReady && !['Backtest', 'Compare', 'History', 'Calendar', 'Charges'].includes(tab) ? (
           <section className="panel p-4">
             <div className="flex items-center gap-2 text-sm font-semibold text-gray-100">
               <i className={`ri-checkbox-blank-circle-fill text-[8px] ${statusIconTone}`} />
@@ -247,6 +248,7 @@ function DashboardContent() {
                 onWebSocketStatus={setWsStatus}
               />
             )}
+            {tab === 'Backtest' && <BacktestTab />}
             {tab === 'Compare' && <CompareTab />}
             {tab === 'History' && <HistoryTab />}
             {tab === 'Calendar' && <CalendarTab />}

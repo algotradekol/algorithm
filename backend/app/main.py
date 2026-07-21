@@ -15,7 +15,7 @@ import jwt
 
 from .config import ALLOWED_ORIGINS
 from .auth import require_auth
-from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, restart_live_feed, start_engine, STRATEGIES
+from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, restart_live_feed, start_engine, STRATEGIES, WATCHLIST
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_connection_status, get_price_history
 from .fyers_auth import store_broker_tokens
@@ -381,4 +381,24 @@ def market_history(
         "candles": candles,
         "warning": warning,
     }
+
+
+@app.post("/api/backtests")
+def create_backtest(payload: dict, _user=Depends(require_auth)):
+    from app.backtest import start_backtest
+    algo_id = str(payload.get("algo_id") or "")
+    session_date = str(payload.get("date") or "")
+    try:
+        return start_backtest(algo_id, session_date, WATCHLIST)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.get("/api/backtests/{job_id}")
+def backtest_status(job_id: str, _user=Depends(require_auth)):
+    from app.backtest import get_backtest_job
+    job = get_backtest_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Backtest job not found. Jobs are kept until the backend restarts.")
+    return job
 

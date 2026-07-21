@@ -73,4 +73,7 @@ export const api = {
   watchlist: () => authedFetch('/api/watchlist'),
   marketHistory: (symbol: string, days = 5, resolution = '15') =>
     authedFetch(`/api/market/history?symbol=${encodeURIComponent(symbol)}&days=${days}&resolution=${encodeURIComponent(resolution)}`),
+  startBacktest: (payload: { algo_id: string; date: string }) =>
+    authedFetch('/api/backtests', { method: 'POST', body: JSON.stringify(payload) }),
+  backtestStatus: (jobId: string) => authedFetch(`/api/backtests/${encodeURIComponent(jobId)}`),
 };

@@ -145,6 +145,32 @@ def get_recent_intraday_candles(symbol: str, resolution: str = "1", days: int = 
     return normalized[-limit:]
 
 
+def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_date: datetime.date) -> list[dict]:
+    """Fetch normalized one-minute candles for an explicit historical range."""
+    fyers = get_fyers_model()
+    response = fyers.history({
+        "symbol": symbol,
+        "resolution": "1",
+        "date_format": "1",
+        "range_from": start_date.isoformat(),
+        "range_to": end_date.isoformat(),
+        "cont_flag": "1",
+    })
+    candles = response.get("candles", [])
+    ist = ZoneInfo("Asia/Kolkata")
+    return [
+        {
+            "time": datetime.datetime.fromtimestamp(candle[0], tz=ist).replace(tzinfo=None),
+            "open": float(candle[1]),
+            "high": float(candle[2]),
+            "low": float(candle[3]),
+            "close": float(candle[4]),
+            "volume": float(candle[5] or 0),
+        }
+        for candle in candles
+    ]
+
+
 def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=None):
     token = get_stored_access_token()
     if not token:
