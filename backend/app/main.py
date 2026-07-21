@@ -15,7 +15,7 @@ import jwt
 
 from .config import ALLOWED_ORIGINS
 from .auth import require_auth
-from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, restart_live_feed, start_engine, STRATEGIES, WATCHLIST
+from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, restart_live_feed, start_engine, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_connection_status, get_price_history
 from .fyers_auth import store_broker_tokens
@@ -385,11 +385,15 @@ def market_history(
 
 @app.post("/api/backtests")
 def create_backtest(payload: dict, _user=Depends(require_auth)):
+    # Read the engine module's current watchlist at request time. start_engine
+    # replaces this list after symbol loading, so a module-level imported alias
+    # would remain the initial empty list.
+    from app import engine
     from app.backtest import start_backtest
     algo_id = str(payload.get("algo_id") or "")
     session_date = str(payload.get("date") or "")
     try:
-        return start_backtest(algo_id, session_date, WATCHLIST)
+        return start_backtest(algo_id, session_date, engine.WATCHLIST)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 
