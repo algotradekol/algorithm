@@ -6,6 +6,10 @@ identical bars.
 """
 import datetime
 from collections import defaultdict, deque
+# Railway containers run in UTC. Strategies, however, are defined against NSE
+# market time, so every live candle must be bucketed in IST. A fixed offset is
+# deliberate: India has no daylight-saving time and it works without tzdata.
+MARKET_TZ = datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
 
 
 class SymbolState:
@@ -32,7 +36,7 @@ class CandleAggregator:
         it to get per-tick incremental volume.
         """
         state = self.symbols[symbol]
-        now = datetime.datetime.now()
+        now = datetime.datetime.now(MARKET_TZ).replace(tzinfo=None)
         minute_bucket = now.replace(second=0, microsecond=0)
 
         incremental_volume = 0

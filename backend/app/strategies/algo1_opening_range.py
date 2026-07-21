@@ -18,6 +18,7 @@ tracks the ₹50,000-per-trade capital allocation and P&L against it.
 """
 import datetime
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from .base import Strategy
 from ..paper_broker import PaperBroker
 from ..fyers_client import get_previous_close
@@ -39,6 +40,7 @@ class Algo1OpeningRange(Strategy):
         self.sell_candidates: list[str] = []
         self.candidate_details: dict[str, dict] = {}
         self.scan_seen_symbols: set[str] = set()
+        self.prev_close_ready_symbols: set[str] = set()
         self.open_extreme_symbols: set[str] = set()
         self.selected_symbols: set[str] = set()
         self.entries_evaluated_today = None
@@ -56,11 +58,20 @@ class Algo1OpeningRange(Strategy):
             if not get_stored_access_token():
                 print("[algo1] no Fyers access token yet, skipping previous-close preload")
                 return
-            for symbol in self.watchlist:
-                try:
-                    self.prev_close[symbol] = get_previous_close(symbol)
-                except Exception as e:
-                    print(f"[algo1] couldn't get prev close for {symbol}: {e}")
+            # A sequential 500-symbol history preload can still be running at
+            # 09:16 after a restart. Keep concurrency deliberately modest to
+            # finish pre-market without flooding the broker API.
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                futures = {pool.submit(get_previous_close, symbol): symbol for symbol in self.watchlist}
+                for future in as_completed(futures):
+                    symbol = futures[future]
+                    try:
+                        close = future.result()
+                        if close:
+                            self.prev_close[symbol] = close
+                    except Exception as e:
+                        print(f"[algo1] couldn't get prev close for {symbol}: {e}")
+            print(f"[algo1] previous closes loaded for {len(self.prev_close)}/{len(self.watchlist)} symbols")
         except Exception as e:
             print(f"[algo1] error in background preload: {e}")
 
@@ -72,12 +83,13 @@ class Algo1OpeningRange(Strategy):
         if candle["time"].strftime("%H:%M") != "09:15":
             return
 
+        self.scan_seen_symbols.add(symbol)
         prev_close = self.prev_close.get(symbol)
         if not prev_close:
             return
 
         open_price, high, low = candle["open"], candle["high"], candle["low"]
-        self.scan_seen_symbols.add(symbol)
+        self.prev_close_ready_symbols.add(symbol)
 
         if open_price == low:
             self.open_extreme_symbols.add(symbol)
@@ -123,7 +135,10 @@ class Algo1OpeningRange(Strategy):
         """Called by the engine at 9:16. get_ltp_fn(symbol) -> current price."""
         today = datetime.date.today()
         if self.entries_evaluated_today == today:
-            return
+            return True
+        if not self._opening_data_ready():
+            self._record_scan_results([], [], scan_status="incomplete", scan_message=self._opening_data_message())
+            return False
         self.entries_evaluated_today = today
 
         max_total = self.settings["max_trades_per_day"]
@@ -145,6 +160,25 @@ class Algo1OpeningRange(Strategy):
         for symbol in sells:
             self._enter(symbol, "SELL", get_ltp_fn(symbol))
         self._record_scan_results(buys, sells)
+        return True
+
+    def _opening_data_ready(self) -> bool:
+        required = max(1, int(len(self.watchlist) * 0.98))
+        return len(self.scan_seen_symbols) >= required and len(self.prev_close_ready_symbols) >= required
+
+    def _opening_data_message(self) -> str:
+        required = max(1, int(len(self.watchlist) * 0.98))
+        return (
+            "Opening scan was not eligible for entry: "
+            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} 09:15 IST candles and "
+            f"loaded {len(self.prev_close_ready_symbols)}/{len(self.watchlist)} previous closes "
+            f"(requires {required} of each). No late trades will be placed."
+        )
+
+    def mark_opening_scan_missed(self):
+        if self.entries_evaluated_today == datetime.date.today():
+            return
+        self._record_scan_results([], [], scan_status="missed_data", scan_message=self._opening_data_message())
 
     def _enter(self, symbol: str, side: str, entry_price: float):
         if not entry_price or self.broker.already_traded_today(symbol):
@@ -173,7 +207,7 @@ class Algo1OpeningRange(Strategy):
             f"entry at 9:16 LTP. Open {open_price}, prev close {prev_close}."
         )
 
-    def _record_scan_results(self, buys: list[str], sells: list[str]):
+    def _record_scan_results(self, buys: list[str], sells: list[str], scan_status: str = "complete", scan_message: str | None = None):
         rows = []
         for symbol, details in self.candidate_details.items():
             row = dict(details)
@@ -192,6 +226,8 @@ class Algo1OpeningRange(Strategy):
             "overflow_buy": max(0, len(buys) - self.settings["max_buy_trades"]),
             "overflow_sell": max(0, len(sells) - self.settings["max_sell_trades"]),
             "total_filtered_out": max(0, len(self.watchlist) - len(rows)),
+            "scan_status": scan_status,
+            "scan_message": scan_message,
             "condition_breakdown": [
                 {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
                 {"label": "Condition 1: 9:15 candle received", "passed": len(self.scan_seen_symbols), "total": len(self.watchlist)},

@@ -70,6 +70,12 @@ function DashboardContent() {
   }, [router]);
 
   useEffect(() => {
+    const handleExpiredAuth = () => router.replace('/login');
+    window.addEventListener('algo-auth-expired', handleExpiredAuth);
+    return () => window.removeEventListener('algo-auth-expired', handleExpiredAuth);
+  }, [router]);
+
+  useEffect(() => {
     const interval = window.setInterval(() => setIstTime(formatIstTime()), 1000);
     return () => window.clearInterval(interval);
   }, []);

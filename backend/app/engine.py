@@ -133,15 +133,37 @@ def _scheduler_loop():
             try_refresh_access_token(reason="scheduled_08_30")
             token_refresh_fired_date = today
 
-        if current_time >= ENTRY_CHECK_TIME and entries_fired_date != today:
+        # Opening-range entries are valid only during the 09:16 minute.  Do
+        # not turn a missing opening candle/feed into a misleading zero-signal
+        # scan or into a late trade after the intended entry window.
+        if ENTRY_CHECK_TIME <= current_time < "09:17" and entries_fired_date != today:
+            pending = []
             for strategy in STRATEGIES.values():
                 if hasattr(strategy, "evaluate_entries"):
-                    strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
+                    completed = strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
+                    if completed is False:
+                        pending.append(strategy.algo_id)
+            if pending:
+                print(f"[engine] opening scan waiting for complete market data: {', '.join(pending)}")
+            else:
+                try:
+                    from app.calendar_store import save_dashboard_snapshot
+                    save_dashboard_snapshot(note="entry_scan")
+                except Exception as exc:
+                    print(f"[engine] entry-scan calendar snapshot failed: {exc}")
+                entries_fired_date = today
+
+        if current_time >= "09:17" and entries_fired_date != today:
+            for strategy in STRATEGIES.values():
+                mark_missed = getattr(strategy, "mark_opening_scan_missed", None)
+                if mark_missed:
+                    mark_missed()
             try:
                 from app.calendar_store import save_dashboard_snapshot
-                save_dashboard_snapshot(note="entry_scan")
+                save_dashboard_snapshot(note="entry_scan_incomplete")
             except Exception as exc:
-                print(f"[engine] entry-scan calendar snapshot failed: {exc}")
+                print(f"[engine] incomplete entry-scan calendar snapshot failed: {exc}")
+            print("[engine] opening entry window elapsed before complete data was available; no late entries were placed")
             entries_fired_date = today
 
         if current_time >= SQUARE_OFF_TIME and squareoff_fired_date != today:

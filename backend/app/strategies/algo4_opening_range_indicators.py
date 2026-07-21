@@ -1,5 +1,6 @@
 import datetime
 import threading
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 
 from .base import Strategy
@@ -28,6 +29,7 @@ class Algo4OpeningRangeIndicators(Strategy):
         self.candidates: dict[str, tuple[str, float]] = {}
         self.candidate_details: dict[str, dict] = {}
         self.selected_symbols: set[str] = set()
+        self.scan_seen_symbols: set[str] = set()
         self.entries_evaluated_today = None
         threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
 
@@ -41,19 +43,29 @@ class Algo4OpeningRangeIndicators(Strategy):
             if not get_stored_access_token():
                 print(f"[{self.algo_id}] no Fyers access token yet, skipping previous-close preload")
                 return
-            for symbol in self.watchlist:
+            def load_symbol(symbol: str):
                 try:
                     warmup = get_recent_intraday_candles(symbol, resolution="1", days=7, limit=120)
                     if warmup:
-                        self.candles[symbol] = warmup
-                        self.prev_close[symbol] = float(warmup[-1]["close"])
-                        self.warmup_loaded.add(symbol)
+                        return symbol, warmup, float(warmup[-1]["close"])
                     else:
                         close = get_previous_close(symbol)
-                        if close:
-                            self.prev_close[symbol] = close
+                        return symbol, None, close
                 except Exception as e:
                     print(f"[{self.algo_id}] couldn't get prev close for {symbol}: {e}")
+                    return symbol, None, None
+
+            # Keep the pre-market preload bounded. Sequential history calls
+            # make a post-deploy restart miss the 09:16 opening scan.
+            with ThreadPoolExecutor(max_workers=6) as pool:
+                futures = [pool.submit(load_symbol, symbol) for symbol in self.watchlist]
+                for future in as_completed(futures):
+                    symbol, warmup, close = future.result()
+                    if warmup:
+                        self.candles[symbol] = warmup
+                        self.warmup_loaded.add(symbol)
+                    if close:
+                        self.prev_close[symbol] = float(close)
             print(f"[{self.algo_id}] indicator warmup loaded for {len(self.warmup_loaded)}/{len(self.watchlist)} symbols")
         except Exception as e:
             print(f"[{self.algo_id}] error in background preload: {e}")
@@ -71,26 +83,46 @@ class Algo4OpeningRangeIndicators(Strategy):
         if candle["time"].strftime("%H:%M") != "09:15":
             return
 
+        self.scan_seen_symbols.add(symbol)
+
         side, details = self._signal_details(symbol, candle, indicators)
         if details:
             self.candidate_details[symbol] = details
         if side and details and details["passed_indicators"]:
             self.candidates[symbol] = (side, candle["close"])
 
-        now = datetime.datetime.now()
-        if side and self._is_entry_window(now):
-            self._enter(symbol, side, indicators.get("last_ltp") or candle["close"])
-
     def evaluate_entries(self, get_ltp_fn):
         today = datetime.date.today()
         if self.entries_evaluated_today == today:
-            return
+            return True
+        if not self._opening_data_ready():
+            self._record_scan_results(scan_status="incomplete", scan_message=self._opening_data_message())
+            return False
         self.entries_evaluated_today = today
 
         for symbol, (side, fallback_price) in list(self.candidates.items()):
             entry_price = get_ltp_fn(symbol) or fallback_price
             self._enter(symbol, side, entry_price)
         self._record_scan_results()
+        return True
+
+    def _opening_data_ready(self) -> bool:
+        required = max(1, int(len(self.watchlist) * 0.98))
+        return len(self.scan_seen_symbols) >= required and len(self.prev_close) >= required
+
+    def _opening_data_message(self) -> str:
+        required = max(1, int(len(self.watchlist) * 0.98))
+        return (
+            "Opening scan was not eligible for entry: "
+            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} 09:15 IST candles and "
+            f"loaded {len(self.prev_close)}/{len(self.watchlist)} previous closes "
+            f"(requires {required} of each). No late trades will be placed."
+        )
+
+    def mark_opening_scan_missed(self):
+        if self.entries_evaluated_today == datetime.date.today():
+            return
+        self._record_scan_results(scan_status="missed_data", scan_message=self._opening_data_message())
 
     def _signal_details(self, symbol: str, candle: dict, indicators: dict) -> tuple[str | None, dict | None]:
         prev_close = self.prev_close.get(symbol)
@@ -224,7 +256,7 @@ class Algo4OpeningRangeIndicators(Strategy):
             f"passed filters: {filter_text}. Entry at 9:16 LTP."
         )
 
-    def _record_scan_results(self):
+    def _record_scan_results(self, scan_status: str = "complete", scan_message: str | None = None):
         rows = []
         buy_selected = 0
         sell_selected = 0
@@ -253,6 +285,8 @@ class Algo4OpeningRangeIndicators(Strategy):
             "overflow_buy": 0,
             "overflow_sell": 0,
             "total_filtered_out": max(0, len(self.watchlist) - len(rows)),
+            "scan_status": scan_status,
+            "scan_message": scan_message,
             "condition_breakdown": self._condition_breakdown(rows),
             "warmup_loaded_symbols": len(self.warmup_loaded),
             "warmup_required_candles": {

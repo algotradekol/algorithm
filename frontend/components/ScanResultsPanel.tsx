@@ -65,6 +65,12 @@ export default function ScanResultsPanel({ results }: { results: any }) {
 
   return (
     <section className="rounded border border-[#1f2937] bg-[#111827] p-3">
+      {results.scan_status && results.scan_status !== 'complete' && (
+        <div className="mb-3 rounded border border-[#f59e0b]/50 bg-[#f59e0b]/10 px-3 py-2 text-xs text-[#fbbf24]">
+          <i className="ri-error-warning-fill mr-1" />
+          {results.scan_message || 'Opening market data was incomplete. This is not a valid zero-candidate scan.'}
+        </div>
+      )}
       <div className="grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
         <ScanStat label="Scanned" value={results.total_scanned} />
         <ScanStat label="Passed Gap Filter" value={rows.length} />

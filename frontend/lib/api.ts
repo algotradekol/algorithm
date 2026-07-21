@@ -1,4 +1,6 @@
 import { getAuthToken } from './authToken';
+import { clearPinToken } from './pinAuth';
+import { supabase } from './supabaseClient';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -16,6 +18,12 @@ async function authedFetch(path: string, options: RequestInit = {}) {
     },
   });
   if (!res.ok) {
+    if (res.status === 401 && typeof window !== 'undefined') {
+      // Do not keep a stale dashboard alive after an email/PIN token expires.
+      clearPinToken();
+      void supabase.auth.signOut();
+      window.dispatchEvent(new Event('algo-auth-expired'));
+    }
     const body = await res.text();
     let message = body;
     try {
