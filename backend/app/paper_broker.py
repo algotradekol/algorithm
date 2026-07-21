@@ -300,6 +300,16 @@ class PaperBroker:
             "realized_net_pnl": round(realized_net, 2),
         }
 
+    def set_available_cash(self, amount: float) -> float:
+        """Set this algo's paper balance without changing trade history or limits."""
+        cash = round(float(amount), 2)
+        if cash < 0:
+            raise ValueError("Available cash cannot be negative.")
+        run_with_supabase(
+            lambda supabase: supabase.table("algo_state").update({"cash": cash}).eq("algo_id", self.algo_id).execute()
+        )
+        return cash
+
     def daily_history(self, days: int = 30) -> list[dict]:
         start_date = datetime.date.today() - datetime.timedelta(days=max(days - 1, 0))
         try:

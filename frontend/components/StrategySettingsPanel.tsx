@@ -51,16 +51,19 @@ const EXIT_MODES = [
 ];
 
 export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
-  const [settings, setSettings] = useState<Record<string, number> | null>(null);
+  const [settings, setSettings] = useState<Record<string, any> | null>(null);
+  const [availableCash, setAvailableCash] = useState('');
+  const [cashSaving, setCashSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const defaultsLabel = algoId === 'test_algo' ? 'Reset to test defaults' : 'Reset to Tradetron defaults';
 
   useEffect(() => {
     let cancelled = false;
-    api.getSettings(algoId).then((result) => {
+    Promise.all([api.getSettings(algoId), api.summary(algoId)]).then(([result, summary]) => {
       if (!cancelled) {
         setSettings(result);
+        setAvailableCash(formatInputMoney(summary.cash));
         setError('');
       }
     }).catch((e: any) => {
@@ -93,6 +96,26 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
     }
   }
 
+  async function saveAvailableCash() {
+    const cash = Number(availableCash);
+    if (!Number.isFinite(cash) || cash < 0) {
+      setError('Available cash must be zero or greater.');
+      return;
+    }
+    setCashSaving(true);
+    try {
+      const result = await api.updateAvailableCash(algoId, roundMoney(cash));
+      setAvailableCash(formatInputMoney(result.cash));
+      setSaved(true);
+      setError('');
+      setTimeout(() => setSaved(false), 2000);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to update available cash');
+    } finally {
+      setCashSaving(false);
+    }
+  }
+
   if (!settings) return <p className="text-sm text-gray-500">Loading strategy settings...</p>;
 
   const preview = calculatePreview(settings);
@@ -105,15 +128,13 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
         </div>
         {error && <p className="mb-4 rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
 
+        <CashControl value={availableCash} setValue={setAvailableCash} onSave={saveAvailableCash} saving={cashSaving} />
         <FieldGroup title="Capital Settings" fields={CAPITAL_FIELDS} settings={settings} setSettings={setSettings} />
         <ExitModeSelect settings={settings} setSettings={setSettings} />
         <TrailingStopToggle settings={settings} setSettings={setSettings} />
         <FieldGroup title="Risk Settings" fields={RISK_FIELDS} settings={settings} setSettings={setSettings} />
         {algoId === 'algo2' && (
-          <>
-            <FilterGroup settings={settings} setSettings={setSettings} />
-            <FieldGroup title="Indicator Thresholds" fields={INDICATOR_FIELDS} settings={settings} setSettings={setSettings} />
-          </>
+          <IndicatorFilterSettings settings={settings} setSettings={setSettings} />
         )}
 
         <div className="mt-5 grid gap-2 sm:grid-cols-[1fr_auto]">
@@ -213,34 +234,77 @@ function TrailingStopToggle({
   );
 }
 
-function FilterGroup({
+function CashControl({
+  value,
+  setValue,
+  onSave,
+  saving,
+}: {
+  value: string;
+  setValue: (value: string) => void;
+  onSave: () => void;
+  saving: boolean;
+}) {
+  return (
+    <div className="mt-5 rounded border border-[#22c55e]/40 bg-[#22c55e]/5 p-3 first:mt-0">
+      <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
+        <label className="flex-1">
+          <div className="label">Available Cash (Rs)</div>
+          <input
+            type="number"
+            min="0"
+            step="0.01"
+            value={value}
+            onChange={(e) => setValue(e.target.value)}
+            onBlur={(e) => setValue(formatInputMoney(e.target.value))}
+            className="control mt-1 num"
+          />
+          <div className="mt-1 text-xs text-gray-500">Updates the Cash Available card for this algo only. This does not delete trades or reset daily limits.</div>
+        </label>
+        <button onClick={onSave} disabled={saving} className="inline-flex min-h-10 items-center justify-center gap-2 rounded border border-[#22c55e] bg-[#22c55e] px-4 py-2 text-sm font-semibold text-[#07130b] disabled:opacity-50">
+          <i className="ri-wallet-3-fill text-sm" />
+          {saving ? 'Updating...' : 'Set cash'}
+        </button>
+      </div>
+    </div>
+  );
+}
+
+function IndicatorFilterSettings({
   settings,
   setSettings,
 }: {
   settings: Record<string, any>;
   setSettings: (settings: Record<string, any>) => void;
 }) {
+  const filterFields: Record<string, Field[]> = {
+    filter_rsi: INDICATOR_FIELDS.filter(([key]) => key === 'rsi_buy_threshold' || key === 'rsi_sell_threshold'),
+    filter_adx: INDICATOR_FIELDS.filter(([key]) => key === 'adx_threshold'),
+    filter_supertrend: INDICATOR_FIELDS.filter(([key]) => key === 'supertrend_period' || key === 'supertrend_multiplier'),
+    filter_volume: INDICATOR_FIELDS.filter(([key]) => key === 'min_volume'),
+    filter_liquidity: INDICATOR_FIELDS.filter(([key]) => key === 'min_total_value'),
+    filter_price_range: INDICATOR_FIELDS.filter(([key]) => key === 'ltp_min' || key === 'ltp_max'),
+  };
   return (
     <div className="mt-5">
       <div className="label mb-3">Indicator Filters</div>
       <div className="space-y-2">
         {FILTERS.map(([key, label, helper, meta]) => (
-          <label key={key} className="flex gap-3 rounded border border-[#1f2937] bg-[#0d1117] p-3">
-            <input
-              type="checkbox"
-              checked={Boolean(settings[key])}
-              onChange={(e) => setSettings({ ...settings, [key]: e.target.checked })}
-              className="peer sr-only"
-            />
-            <span className="mt-1 h-5 w-9 rounded-full border border-[#1f2937] bg-gray-700 after:block after:h-4 after:w-4 after:translate-x-0.5 after:translate-y-0.5 after:rounded-full after:bg-gray-400 after:transition peer-checked:bg-[#3b82f6] peer-checked:after:translate-x-4 peer-checked:after:bg-white" />
-            <span className="flex-1">
-              <span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-gray-100">
-                {label}
-                {meta && <span className={`rounded border px-2 py-0.5 text-[10px] uppercase tracking-wider ${meta.includes('Needs') ? 'border-[#f59e0b]/40 text-[#f59e0b]' : meta.includes('Pre') ? 'border-[#22c55e]/40 text-[#22c55e]' : 'border-[#1f2937] text-gray-500'}`}>{meta}</span>}
-              </span>
-              <span className="mt-1 block text-xs text-gray-500">{helper}</span>
-            </span>
-          </label>
+          <div key={key} className="rounded border border-[#1f2937] bg-[#0d1117]">
+            <label className="flex gap-3 p-3">
+              <input type="checkbox" checked={Boolean(settings[key])} onChange={(e) => setSettings({ ...settings, [key]: e.target.checked })} className="peer sr-only" />
+              <span className="mt-1 h-5 w-9 shrink-0 rounded-full border border-[#1f2937] bg-gray-700 after:block after:h-4 after:w-4 after:translate-x-0.5 after:translate-y-0.5 after:rounded-full after:bg-gray-400 after:transition peer-checked:bg-[#3b82f6] peer-checked:after:translate-x-4 peer-checked:after:bg-white" />
+              <span className="flex-1"><span className="flex flex-wrap items-center gap-2 text-sm font-semibold text-gray-100">{label}{meta && <span className="rounded border border-[#1f2937] px-2 py-0.5 text-[10px] uppercase tracking-wider text-gray-500">{meta}</span>}</span><span className="mt-1 block text-xs text-gray-500">{helper}</span></span>
+            </label>
+            {settings[key] && filterFields[key]?.length ? (
+              <details className="border-t border-[#1f2937]" open>
+                <summary className="cursor-pointer px-3 py-2 text-xs font-semibold text-[#3b82f6]">Filter thresholds</summary>
+                <div className="grid gap-3 border-t border-[#1f2937] p-3 md:grid-cols-2">
+                  {filterFields[key].map(([fieldKey, fieldLabel, fieldHelper]) => <NumberField key={fieldKey} fieldKey={fieldKey} label={fieldLabel} helper={fieldHelper} settings={settings} setSettings={setSettings} />)}
+                </div>
+              </details>
+            ) : null}
+          </div>
         ))}
       </div>
     </div>
@@ -255,29 +319,26 @@ function FieldGroup({
 }: {
   title: string;
   fields: Field[];
-  settings: Record<string, number>;
-  setSettings: (settings: Record<string, number>) => void;
+  settings: Record<string, any>;
+  setSettings: (settings: Record<string, any>) => void;
 }) {
   return (
     <div className="mt-5 first:mt-0">
       <div className="label mb-3">{title}</div>
       <div className="grid gap-3 md:grid-cols-2">
         {fields.map(([key, label, helper]) => (
-          <label key={key}>
-            <div className="label">{label}</div>
-            <input
-              type="number"
-              step="0.0001"
-              value={Number.isFinite(settings[key]) ? settings[key] : 0}
-              onChange={(e) => setSettings({ ...settings, [key]: parseFloat(e.target.value) || 0 })}
-              className="control mt-1 num"
-            />
-            <div className="mt-1 text-xs text-gray-500">{helper}</div>
-          </label>
+          <NumberField key={key} fieldKey={key} label={label} helper={helper} settings={settings} setSettings={setSettings} />
         ))}
       </div>
     </div>
   );
+}
+
+function NumberField({ fieldKey, label, helper, settings, setSettings }: { fieldKey: string; label: string; helper: string; settings: Record<string, any>; setSettings: (settings: Record<string, any>) => void }) {
+  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume']);
+  const rupeeFields = new Set(['starting_capital', 'capital_per_trade', 'min_total_value', 'ltp_min', 'ltp_max']);
+  const step = integerFields.has(fieldKey) ? '1' : rupeeFields.has(fieldKey) ? '0.01' : '0.0001';
+  return <label><div className="label">{label}</div><input type="number" step={step} min="0" value={Number.isFinite(settings[fieldKey]) ? settings[fieldKey] : 0} onChange={(e) => setSettings({ ...settings, [fieldKey]: Number(e.target.value) || 0 })} onBlur={(e) => setSettings({ ...settings, [fieldKey]: roundForField(fieldKey, Number(e.target.value) || 0) })} className="control mt-1 num" /><div className="mt-1 text-xs text-gray-500">{helper}</div></label>;
 }
 
 function PreviewRow({ label, value, tone = 'text-gray-100' }: { label: string; value: string; tone?: string }) {
@@ -304,4 +365,21 @@ function calculatePreview(settings: Record<string, number>) {
 
 function formatMoney(value: number) {
   return `Rs ${value.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+}
+
+function roundMoney(value: number) {
+  return Math.round((value + Number.EPSILON) * 100) / 100;
+}
+
+function formatInputMoney(value: unknown) {
+  const amount = Number(value);
+  return Number.isFinite(amount) ? roundMoney(amount).toFixed(2) : '0.00';
+}
+
+function roundForField(key: string, value: number) {
+  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume']);
+  const rupeeFields = new Set(['starting_capital', 'capital_per_trade', 'min_total_value', 'ltp_min', 'ltp_max']);
+  if (integerFields.has(key)) return Math.round(value);
+  if (rupeeFields.has(key)) return roundMoney(value);
+  return Math.round((value + Number.EPSILON) * 10_000) / 10_000;
 }

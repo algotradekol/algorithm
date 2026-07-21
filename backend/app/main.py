@@ -5,6 +5,7 @@ polls for live state. All routes except /health require a valid
 Supabase auth token.
 """
 import datetime
+import math
 import threading
 from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -282,6 +283,18 @@ def update_algo_settings(algo_id: str, settings: dict, _user=Depends(require_aut
     return {"status": "updated", "algo_id": algo_id}
 
 
+@app.put("/api/algo/{algo_id}/available-cash")
+def update_available_cash(algo_id: str, payload: dict, _user=Depends(require_auth)):
+    strategy = get_strategy_or_raise(algo_id)
+    try:
+        cash = float(payload.get("cash"))
+        if not math.isfinite(cash):
+            raise ValueError("Available cash must be a valid number.")
+        return {"status": "updated", "algo_id": algo_id, "cash": strategy.broker.set_available_cash(cash)}
+    except (TypeError, ValueError) as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
 @app.post("/api/algo/{algo_id}/settings/reset")
 def reset_algo_settings(algo_id: str, _user=Depends(require_auth)):
     from app.strategy_settings import reset_settings
@@ -391,9 +404,11 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
     from app import engine
     from app.backtest import start_backtest
     algo_id = str(payload.get("algo_id") or "")
-    session_date = str(payload.get("date") or "")
+    # Accept date for existing clients while range-aware clients send both fields.
+    start_date = str(payload.get("start_date") or payload.get("date") or "")
+    end_date = str(payload.get("end_date") or start_date)
     try:
-        return start_backtest(algo_id, session_date, engine.WATCHLIST)
+        return start_backtest(algo_id, start_date, end_date, engine.WATCHLIST)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

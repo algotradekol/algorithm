@@ -12,17 +12,29 @@ from .strategies.algo4_opening_range_indicators import Algo4OpeningRangeIndicato
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
 SUPPORTED_ALGOS = {"algo1", "algo2"}
 MAX_WORKERS = 4
+MAX_BACKTEST_DAYS = 31
 
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
 
 
-def start_backtest(algo_id: str, session_date: str, watchlist: list[str]) -> dict:
+def start_backtest(
+    algo_id: str,
+    start_date: str,
+    end_date: str,
+    watchlist: list[str],
+) -> dict:
     if algo_id not in SUPPORTED_ALGOS:
         raise ValueError("Backtesting is currently available for Simple and Filter only.")
-    target_date = datetime.date.fromisoformat(session_date)
-    if target_date > datetime.datetime.now(IST).date():
+    first_date = datetime.date.fromisoformat(start_date)
+    last_date = datetime.date.fromisoformat(end_date)
+    today = datetime.datetime.now(IST).date()
+    if first_date > last_date:
+        raise ValueError("Start date must be on or before end date.")
+    if last_date > today:
         raise ValueError("Choose today or an earlier trading date.")
+    if (last_date - first_date).days + 1 > MAX_BACKTEST_DAYS:
+        raise ValueError(f"Choose a range of {MAX_BACKTEST_DAYS} calendar days or fewer.")
     if not watchlist:
         raise ValueError("The NSE 500 watchlist is not ready yet.")
 
@@ -31,7 +43,8 @@ def start_backtest(algo_id: str, session_date: str, watchlist: list[str]) -> dic
         "id": job_id,
         "status": "queued",
         "algo_id": algo_id,
-        "date": target_date.isoformat(),
+        "start_date": first_date.isoformat(),
+        "end_date": last_date.isoformat(),
         "total_symbols": len(watchlist),
         "completed_symbols": 0,
         "failed_symbols": 0,
@@ -42,7 +55,7 @@ def start_backtest(algo_id: str, session_date: str, watchlist: list[str]) -> dic
     }
     with _lock:
         _jobs[job_id] = job
-    threading.Thread(target=_run_job, args=(job_id, algo_id, target_date, list(watchlist)), daemon=True).start()
+    threading.Thread(target=_run_job, args=(job_id, algo_id, first_date, last_date, list(watchlist)), daemon=True).start()
     return _public_job(job)
 
 
@@ -64,14 +77,20 @@ def _update(job_id: str, **values):
             _jobs[job_id].update(values)
 
 
-def _run_job(job_id: str, algo_id: str, target_date: datetime.date, watchlist: list[str]):
+def _run_job(
+    job_id: str,
+    algo_id: str,
+    first_date: datetime.date,
+    last_date: datetime.date,
+    watchlist: list[str],
+):
     try:
         _update(job_id, status="running", message="Downloading 1-minute candles from Fyers.")
-        start_date = target_date - datetime.timedelta(days=7)
+        lookback_start = first_date - datetime.timedelta(days=7)
         histories: dict[str, list[dict]] = {}
 
         def load(symbol: str):
-            return symbol, get_intraday_candles_for_range(symbol, start_date, target_date)
+            return symbol, get_intraday_candles_for_range(symbol, lookback_start, last_date)
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             futures = [pool.submit(load, symbol) for symbol in watchlist]
@@ -89,13 +108,23 @@ def _run_job(job_id: str, algo_id: str, target_date: datetime.date, watchlist: l
 
         _update(job_id, message="Replaying entries, exits, and charges.")
         settings = get_settings(algo_id)
-        result = _simulate(algo_id, target_date, watchlist, histories, settings)
-        result["data_coverage"] = {
+        trading_days = [
+            first_date + datetime.timedelta(days=offset)
+            for offset in range((last_date - first_date).days + 1)
+            if (first_date + datetime.timedelta(days=offset)).weekday() < 5
+        ]
+        _update(job_id, message=f"Replaying {len(trading_days)} trading days, exits, and charges.")
+        daily_results = [
+            _simulate(algo_id, target_date, watchlist, histories, settings)
+            for target_date in trading_days
+        ]
+        coverage = {
             "requested_symbols": len(watchlist),
             "symbols_with_history": len(histories),
             "symbols_without_history": len(watchlist) - len(histories),
-            "lookback_start": start_date.isoformat(),
+            "lookback_start": lookback_start.isoformat(),
         }
+        result = _range_result(algo_id, first_date, last_date, daily_results, coverage)
         _update(job_id, status="complete", message="Backtest complete.", result=result)
     except Exception as exc:
         _update(job_id, status="failed", error=str(exc), message="Backtest failed.")
@@ -141,9 +170,7 @@ def _simulate(algo_id: str, target_date: datetime.date, watchlist: list[str], hi
         if row.get("side") and row.get("filters_passed") and row["symbol"] not in selected_symbols:
             row["rejection_reason"] = "slots_full"
 
-    gross = round(sum(float(trade["gross_pnl"]) for trade in trades), 2)
-    charges = round(sum(float(trade["total_charges"]) for trade in trades), 2)
-    net = round(sum(float(trade["net_pnl"]) for trade in trades), 2)
+    summary = _performance_summary(trades)
     buys = len([trade for trade in trades if trade["side"] == "BUY"])
     sells = len([trade for trade in trades if trade["side"] == "SELL"])
     return {
@@ -151,12 +178,7 @@ def _simulate(algo_id: str, target_date: datetime.date, watchlist: list[str], hi
         "date": target_date.isoformat(),
         "mode": "historical_candle_replay",
         "execution_assumption": "Entry uses the 09:16 candle open. If a later candle touches both stop-loss and target, stop-loss is assumed first (conservative).",
-        "summary": {
-            "trade_count": len(trades), "buy_count": buys, "sell_count": sells,
-            "gross_pnl": gross, "total_charges": charges, "net_pnl": net,
-            "win_count": len([trade for trade in trades if trade["net_pnl"] > 0]),
-            "loss_count": len([trade for trade in trades if trade["net_pnl"] <= 0]),
-        },
+        "summary": {**summary, "buy_count": buys, "sell_count": sells},
         "condition_breakdown": [
             {"label": "Scanned universe", "passed": len(watchlist), "total": len(watchlist)},
             {"label": "Condition 1: 09:15 candle received", "passed": condition["candle"], "total": len(watchlist)},
@@ -170,6 +192,85 @@ def _simulate(algo_id: str, target_date: datetime.date, watchlist: list[str], hi
     }
 
 
+def _performance_summary(trades: list[dict]) -> dict:
+    net_values = [float(trade["net_pnl"]) for trade in trades]
+    gross_values = [float(trade["gross_pnl"]) for trade in trades]
+    charge_values = [float(trade["total_charges"]) for trade in trades]
+    wins = [value for value in net_values if value > 0]
+    losses = [value for value in net_values if value < 0]
+    gross_profit = round(sum(wins), 2)
+    gross_loss = round(abs(sum(losses)), 2)
+    deployed = round(sum(float(trade["entry_price"]) * int(trade["qty"]) for trade in trades), 2)
+    exit_counts = {reason: 0 for reason in ("TARGET", "SL", "EOD_SQUAREOFF")}
+    for trade in trades:
+        reason = trade.get("exit_reason")
+        if reason in exit_counts:
+            exit_counts[reason] += 1
+    return {
+        "trade_count": len(trades),
+        "gross_pnl": round(sum(gross_values), 2),
+        "total_charges": round(sum(charge_values), 2),
+        "net_pnl": round(sum(net_values), 2),
+        "win_count": len(wins),
+        "loss_count": len(losses),
+        "breakeven_count": len(net_values) - len(wins) - len(losses),
+        "win_rate_pct": round((len(wins) / len(net_values) * 100) if net_values else 0, 2),
+        "gross_profit": gross_profit,
+        "gross_loss": gross_loss,
+        "profit_factor": round(gross_profit / gross_loss, 2) if gross_loss else (None if not gross_profit else "Infinity"),
+        "average_win": round(sum(wins) / len(wins), 2) if wins else 0,
+        "average_loss": round(sum(losses) / len(losses), 2) if losses else 0,
+        "average_net_per_trade": round(sum(net_values) / len(net_values), 2) if net_values else 0,
+        "capital_deployed": deployed,
+        "net_return_on_deployed_pct": round((sum(net_values) / deployed * 100) if deployed else 0, 3),
+        "exit_counts": exit_counts,
+    }
+
+
+def _range_result(
+    algo_id: str,
+    first_date: datetime.date,
+    last_date: datetime.date,
+    daily_results: list[dict],
+    data_coverage: dict,
+) -> dict:
+    all_trades = [trade for day in daily_results for trade in day["trades"]]
+    summary = _performance_summary(all_trades)
+    equity = 0.0
+    peak = 0.0
+    max_drawdown = 0.0
+    daily_rows = []
+    for day in daily_results:
+        day_summary = day["summary"]
+        equity += float(day_summary["net_pnl"])
+        peak = max(peak, equity)
+        max_drawdown = min(max_drawdown, equity - peak)
+        daily_rows.append({
+            "date": day["date"],
+            "summary": day_summary,
+            "condition_breakdown": day["condition_breakdown"],
+            "data_available_symbols": next(
+                (step["passed"] for step in day["condition_breakdown"] if step["label"] == "Condition 1: 09:15 candle received"), 0,
+            ),
+            "trades": day["trades"],
+            "candidates": day["candidates"],
+        })
+    best_day = max(daily_rows, key=lambda day: float(day["summary"]["net_pnl"]), default=None)
+    worst_day = min(daily_rows, key=lambda day: float(day["summary"]["net_pnl"]), default=None)
+    return {
+        "algo_id": algo_id,
+        "start_date": first_date.isoformat(),
+        "end_date": last_date.isoformat(),
+        "mode": "historical_candle_replay",
+        "execution_assumption": "Entry uses the 09:16 candle open. If a later candle touches both stop-loss and target, stop-loss is assumed first (conservative).",
+        "summary": {**summary, "trading_days_replayed": len(daily_results), "max_drawdown": round(max_drawdown, 2)},
+        "best_day": {"date": best_day["date"], "net_pnl": best_day["summary"]["net_pnl"]} if best_day else None,
+        "worst_day": {"date": worst_day["date"], "net_pnl": worst_day["summary"]["net_pnl"]} if worst_day else None,
+        "data_coverage": data_coverage,
+        "daily_results": daily_rows,
+    }
+
+
 def _evaluate_symbol(algo_id: str, symbol: str, target_date: datetime.date, history: list[dict], settings: dict) -> dict:
     opening = next((candle for candle in history if candle["time"].date() == target_date and candle["time"].strftime("%H:%M") == "09:15"), None)
     base = {"symbol": symbol, "has_opening_candle": bool(opening), "shape_passed": False, "gap_passed": False, "filters_passed": False, "selected_for_trade": False, "rejection_reason": "missing_09_15_candle", "indicator_results": {}}
@@ -177,7 +278,14 @@ def _evaluate_symbol(algo_id: str, symbol: str, target_date: datetime.date, hist
         return base
     prior = [candle for candle in history if candle["time"].date() < target_date]
     prev_close = float(prior[-1]["close"]) if prior else None
-    base.update({"open": opening["open"], "high": opening["high"], "low": opening["low"], "close": opening["close"], "prev_close": prev_close})
+    base.update({
+        "open": opening["open"],
+        "high": opening["high"],
+        "low": opening["low"],
+        "close": opening["close"],
+        "volume": opening.get("volume") or 0,
+        "prev_close": prev_close,
+    })
     if not prev_close:
         base["rejection_reason"] = "missing_previous_close"
         return base
@@ -190,6 +298,7 @@ def _evaluate_symbol(algo_id: str, symbol: str, target_date: datetime.date, hist
         return base
     buy_gap = (opening["open"] - prev_close) / prev_close * 100
     sell_gap = (prev_close - opening["open"]) / prev_close * 100
+    base["gap_pct"] = round(buy_gap, 4)
     if algo_id == "algo1":
         buy_ok = is_buy_shape and abs(buy_gap) <= 2
         sell_ok = is_sell_shape and abs(sell_gap) <= 2
@@ -197,7 +306,7 @@ def _evaluate_symbol(algo_id: str, symbol: str, target_date: datetime.date, hist
         buy_ok = is_buy_shape and 0.5 <= buy_gap <= 2
         sell_ok = is_sell_shape and 0.5 <= sell_gap <= 2
     side = "BUY" if buy_ok else "SELL" if sell_ok else None
-    base.update({"side": side or "WATCH", "gap_pct": buy_gap if buy_ok else sell_gap if sell_ok else abs(buy_gap), "gap_passed": bool(side)})
+    base.update({"side": side or "WATCH", "gap_pct": buy_gap if buy_ok else sell_gap if sell_ok else buy_gap, "gap_passed": bool(side)})
     if not side:
         base["rejection_reason"] = "gap_rule_failed"
         return base
@@ -267,6 +376,7 @@ def _simulate_trade(row: dict, history: list[dict], target_date: datetime.date, 
     highest = lowest = entry
     exit_price = None
     exit_reason = None
+    exit_time = None
     candles = [candle for candle in history if candle["time"].date() == target_date and candle["time"].strftime("%H:%M") >= "09:17" and candle["time"].strftime("%H:%M") < "15:15"]
     for candle in candles:
         # Conservative order: an existing stop is checked before target when
@@ -275,9 +385,11 @@ def _simulate_trade(row: dict, history: list[dict], target_date: datetime.date, 
         target_hit = candle["high"] >= target if side == "BUY" else candle["low"] <= target
         if stop_hit:
             exit_price, exit_reason = sl, "SL"
+            exit_time = candle["time"]
             break
         if target_hit and settings.get("exit_mode") != "trailing_sl_only":
             exit_price, exit_reason = target, "TARGET"
+            exit_time = candle["time"]
             break
         highest = max(highest, float(candle["high"]))
         lowest = min(lowest, float(candle["low"]))
@@ -292,13 +404,14 @@ def _simulate_trade(row: dict, history: list[dict], target_date: datetime.date, 
     if exit_price is None:
         final_candle = candles[-1] if candles else entry_candle
         exit_price, exit_reason = float(final_candle["close"]), "EOD_SQUAREOFF"
+        exit_time = final_candle["time"]
     buy_value = entry * qty if side == "BUY" else exit_price * qty
     sell_value = exit_price * qty if side == "BUY" else entry * qty
     charges = calculate_charges(buy_value, sell_value, charges_config)
     return {
         "symbol": row["symbol"], "side": side, "qty": qty,
         "entry_price": round(entry, 2), "entry_time": entry_candle["time"].isoformat(),
-        "exit_price": round(exit_price, 2), "exit_reason": exit_reason,
+        "exit_price": round(exit_price, 2), "exit_time": exit_time.isoformat(), "exit_reason": exit_reason,
         "target_price": round(target, 2), "sl_price": round(sl, 2),
         "entry_trigger": f"Historical {target_date.isoformat()} 09:15 opening-range replay.",
         **charges,

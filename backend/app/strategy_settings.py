@@ -101,6 +101,16 @@ TEXT_FIELDS = {
     "exit_mode",
 }
 
+# Rupee amounts are stored to paise precision. Percentages and multipliers are
+# intentionally retained to four decimals for strategy tuning.
+RUPEE_FIELDS = {
+    "starting_capital",
+    "capital_per_trade",
+    "min_total_value",
+    "ltp_min",
+    "ltp_max",
+}
+
 EXIT_MODES = {
     "fixed_target_sl",
     "trailing_sl_only",
@@ -126,7 +136,8 @@ def _normalize(settings: dict, algo_id: str) -> dict:
         elif key in INT_FIELDS:
             normalized[key] = int(value)
         else:
-            normalized[key] = float(value)
+            number = float(value)
+            normalized[key] = round(number, 2) if key in RUPEE_FIELDS else round(number, 4)
     return normalized
 
 
@@ -144,6 +155,7 @@ def update_settings(algo_id: str, settings: dict):
     """Write updated settings back to Supabase."""
     from app.supabase_client import supabase
 
+    settings = _normalize(settings, algo_id)
     supabase.table("strategy_settings").upsert({
         "algo_id": algo_id,
         **settings,

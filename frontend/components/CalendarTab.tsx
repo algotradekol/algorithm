@@ -296,7 +296,9 @@ function SnapshotModal({ snapshot, onClose, onDelete }: { snapshot: any; onClose
                 ['side', 'Side'],
                 ['qty', 'Qty'],
                 ['entry_price', 'Entry'],
+                ['entry_time', 'Entry Time'],
                 ['exit_price', 'Exit'],
+                ['exit_time', 'Exit Time'],
                 ['exit_reason', 'Reason'],
                 ['entry_trigger', 'Trigger'],
                 ['gross_pnl', 'Gross'],
@@ -404,6 +406,9 @@ function ArchiveList({ title, rows, empty }: { title: string; rows: any[]; empty
               <div className="num mt-1 text-xs text-gray-400">
                 Entry {formatNumber(row.entry_price)} · Exit {row.exit_price ? formatNumber(row.exit_price) : 'open'}
               </div>
+              <div className="mt-1 text-[11px] text-gray-500">
+                Opened {formatTradeTime(row.entry_time)}{row.exit_time ? ` · Closed ${formatTradeTime(row.exit_time)}` : ''}
+              </div>
               {row.entry_trigger && <div className="mt-1 text-[11px] text-gray-500">{row.entry_trigger}</div>}
             </div>
           ))}
@@ -439,6 +444,21 @@ function formatDateTime(value: string) {
   });
 }
 
+function formatTradeTime(value: unknown) {
+  if (!value) return '--';
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  });
+}
+
 function formatMoney(value: unknown) {
   const number = Number(value || 0);
   return `Rs ${number.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
@@ -453,6 +473,7 @@ function formatNumber(value: unknown) {
 function formatCell(value: unknown, key: string) {
   if (value === null || value === undefined || value === '') return '--';
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
+  if (key === 'entry_time' || key === 'exit_time') return formatTradeTime(value);
   if (key.includes('price') || key.includes('pnl') || key === 'ltp' || key === 'open' || key === 'high' || key === 'low' || key === 'prev_close' || key === 'gap_pct' || key === 'qty') {
     return formatNumber(value);
   }

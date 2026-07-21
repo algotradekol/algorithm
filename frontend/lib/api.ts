@@ -48,6 +48,8 @@ export const api = {
   getSettings: (algoId: string) => authedFetch(`/api/algo/${algoId}/settings`),
   updateSettings: (algoId: string, settings: object) =>
     authedFetch(`/api/algo/${algoId}/settings`, { method: 'PUT', body: JSON.stringify(settings) }),
+  updateAvailableCash: (algoId: string, cash: number) =>
+    authedFetch(`/api/algo/${algoId}/available-cash`, { method: 'PUT', body: JSON.stringify({ cash }) }),
   resetSettings: (algoId: string) =>
     authedFetch(`/api/algo/${algoId}/settings/reset`, { method: 'POST' }),
   compare: () => authedFetch('/api/compare'),
@@ -73,7 +75,7 @@ export const api = {
   watchlist: () => authedFetch('/api/watchlist'),
   marketHistory: (symbol: string, days = 5, resolution = '15') =>
     authedFetch(`/api/market/history?symbol=${encodeURIComponent(symbol)}&days=${days}&resolution=${encodeURIComponent(resolution)}`),
-  startBacktest: (payload: { algo_id: string; date: string }) =>
+  startBacktest: (payload: { algo_id: string; start_date: string; end_date: string }) =>
     authedFetch('/api/backtests', { method: 'POST', body: JSON.stringify(payload) }),
   backtestStatus: (jobId: string) => authedFetch(`/api/backtests/${encodeURIComponent(jobId)}`),
 };

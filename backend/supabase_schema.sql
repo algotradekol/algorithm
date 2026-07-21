@@ -190,6 +190,18 @@ CREATE TABLE IF NOT EXISTS calendar_snapshots (
 CREATE INDEX IF NOT EXISTS idx_calendar_snapshots_date
     ON calendar_snapshots (snapshot_date desc, algo_id);
 
+-- Trade timestamps are retained in calendar snapshot JSON and displayed in
+-- the calendar. These statements are safe for databases created by older app versions.
+ALTER TABLE positions
+    ADD COLUMN IF NOT EXISTS entry_time timestamptz;
+
+ALTER TABLE trades
+    ADD COLUMN IF NOT EXISTS entry_time timestamptz,
+    ADD COLUMN IF NOT EXISTS exit_time timestamptz;
+
+CREATE INDEX IF NOT EXISTS idx_trades_entry_time
+    ON trades (algo_id, entry_time desc);
+
 -- Stored OHLCV candles fetched by the History graph endpoint.
 CREATE TABLE IF NOT EXISTS market_candles (
     id bigserial PRIMARY KEY,
