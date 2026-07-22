@@ -11,6 +11,10 @@ from ..paper_broker import PaperBroker
 MIN_GAP_PCT = 0.5
 MAX_GAP_PCT = 2.0
 TICK_SIZE = 0.05
+# A one-minute candle only exists for a symbol that traded during that minute.
+# Keep a small health floor, rather than incorrectly requiring all NSE 500
+# symbols to print an opening tick.
+MIN_OPENING_READY_SYMBOLS = 10
 
 
 class Algo4OpeningRangeIndicators(Strategy):
@@ -150,16 +154,21 @@ class Algo4OpeningRangeIndicators(Strategy):
         return True
 
     def _opening_data_ready(self) -> bool:
-        required = max(1, int(len(self.watchlist) * 0.98))
-        return len(self.scan_seen_symbols) >= required and len(self.prev_close) >= required
+        if self.settings.get("test_schedule_enabled"):
+            return bool(self._opening_ready_symbols())
+        return len(self._opening_ready_symbols()) >= min(MIN_OPENING_READY_SYMBOLS, len(self.watchlist))
+
+    def _opening_ready_symbols(self) -> set[str]:
+        return self.scan_seen_symbols & set(self.prev_close)
 
     def _opening_data_message(self) -> str:
-        required = max(1, int(len(self.watchlist) * 0.98))
+        required = min(MIN_OPENING_READY_SYMBOLS, len(self.watchlist))
+        ready_count = len(self._opening_ready_symbols())
         return (
             "Opening scan was not eligible for entry: "
             f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} {self.scan_candle_time()} IST candles and "
-            f"loaded {len(self.prev_close)}/{len(self.watchlist)} previous closes "
-            f"(requires {required} of each). No late trades will be placed."
+            f"matched {ready_count}/{len(self.watchlist)} symbols with previous closes "
+            f"(requires at least {required} ready symbols to detect a healthy feed). No late trades will be placed."
         )
 
     def mark_opening_scan_missed(self):

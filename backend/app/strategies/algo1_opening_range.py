@@ -24,6 +24,10 @@ from ..paper_broker import PaperBroker
 from ..fyers_client import get_previous_close
 from ..fyers_auth import get_stored_access_token
 GAP_LIMIT_PCT = 2.0
+# A one-minute candle only exists for a symbol that traded during that minute.
+# This floor detects a dead/broken feed without requiring every NSE 500 symbol
+# to trade at the opening bell.
+MIN_OPENING_READY_SYMBOLS = 10
 
 
 class Algo1OpeningRange(Strategy):
@@ -212,21 +216,23 @@ class Algo1OpeningRange(Strategy):
         return True
 
     def _opening_data_ready(self) -> bool:
-        # A manually enabled Test Schedule is a paper-only pipeline check. It
-        # must be able to test the symbols actually received in that minute;
-        # the 98% coverage safety gate remains mandatory for the real 09:15 run.
+        # A manually enabled Test Schedule is a paper-only pipeline check and
+        # can run from any received symbol. Production still needs a small
+        # non-zero sample to detect a dead or unhealthy market-data feed.
         if self.settings.get("test_schedule_enabled"):
             return bool(self.scan_seen_symbols and self.prev_close_ready_symbols)
-        required = max(1, int(len(self.watchlist) * 0.98))
-        return len(self.scan_seen_symbols) >= required and len(self.prev_close_ready_symbols) >= required
+        return self._opening_ready_symbol_count() >= min(MIN_OPENING_READY_SYMBOLS, len(self.watchlist))
+
+    def _opening_ready_symbol_count(self) -> int:
+        return len(self.scan_seen_symbols & self.prev_close_ready_symbols)
 
     def _opening_data_message(self) -> str:
-        required = max(1, int(len(self.watchlist) * 0.98))
+        required = min(MIN_OPENING_READY_SYMBOLS, len(self.watchlist))
         return (
             "Opening scan was not eligible for entry: "
             f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} {self.scan_candle_time()} IST candles and "
-            f"loaded {len(self.prev_close_ready_symbols)}/{len(self.watchlist)} previous closes "
-            f"(requires {required} of each). No late trades will be placed."
+            f"matched {self._opening_ready_symbol_count()}/{len(self.watchlist)} symbols with previous closes "
+            f"(requires at least {required} ready symbols to detect a healthy feed). No late trades will be placed."
         )
 
     def mark_opening_scan_missed(self):
