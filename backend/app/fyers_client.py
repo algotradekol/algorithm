@@ -180,12 +180,36 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
         if on_status_callback:
             on_status_callback(data)
 
+    first_tick_received = False
+
     def on_message(message):
+        nonlocal first_tick_received
+        if not first_tick_received and message.get("symbol") and message.get("ltp") is not None:
+            first_tick_received = True
+            report_status(
+                connected=True,
+                first_tick_received=True,
+                message="Fyers websocket is receiving market ticks",
+            )
         on_tick_callback(message)
 
     def on_open():
-        report_status(connected=True, message="Fyers websocket connected")
-        socket.subscribe(symbols=symbols, data_type="SymbolUpdate")
+        try:
+            socket.subscribe(symbols=symbols, data_type="SymbolUpdate")
+        except Exception as exc:
+            print("Fyers WS subscription error:", exc)
+            report_status(
+                connected=False,
+                error=str(exc),
+                message="Fyers websocket subscription failed",
+            )
+            return
+        print(f"[fyers] websocket subscribed to {len(symbols)} symbols")
+        report_status(
+            connected=True,
+            subscribed_symbols=len(symbols),
+            message=f"Fyers websocket subscribed to {len(symbols)} symbols",
+        )
 
     def on_error(message):
         print("Fyers WS error:", message)

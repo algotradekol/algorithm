@@ -31,7 +31,9 @@ class Algo4OpeningRangeIndicators(Strategy):
         self.selected_symbols: set[str] = set()
         self.scan_seen_symbols: set[str] = set()
         self.entries_evaluated_today = None
-        threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
+        self._previous_close_load_lock = threading.Lock()
+        self._previous_close_loading = False
+        self.refresh_market_data()
 
     def reload_settings(self):
         from app.strategy_settings import get_settings
@@ -69,6 +71,32 @@ class Algo4OpeningRangeIndicators(Strategy):
             print(f"[{self.algo_id}] indicator warmup loaded for {len(self.warmup_loaded)}/{len(self.watchlist)} symbols")
         except Exception as e:
             print(f"[{self.algo_id}] error in background preload: {e}")
+        finally:
+            with self._previous_close_load_lock:
+                self._previous_close_loading = False
+
+    def refresh_market_data(self):
+        """Retry the preload after manual OAuth has made a token available."""
+        with self._previous_close_load_lock:
+            if self._previous_close_loading or len(self.prev_close) >= len(self.watchlist):
+                return
+            self._previous_close_loading = True
+        threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
+
+    def set_previous_close(self, symbol: str, previous_close: float):
+        if symbol in self.watchlist and previous_close > 0:
+            self.prev_close[symbol] = previous_close
+
+    def scan_candle_time(self) -> str:
+        return self.settings.get("test_candle_time", "11:10") if self.settings.get("test_schedule_enabled") else "09:15"
+
+    def entry_window(self, current_time: str) -> bool:
+        entry = (datetime.datetime.strptime(self.scan_candle_time(), "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M")
+        return entry <= current_time < (datetime.datetime.strptime(entry, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M")
+
+    def entry_window_elapsed(self, current_time: str) -> bool:
+        deadline = (datetime.datetime.strptime(self.scan_candle_time(), "%H:%M") + datetime.timedelta(minutes=2)).strftime("%H:%M")
+        return current_time >= deadline
 
     def on_tick(self, symbol: str, ltp: float, timestamp):
         pass
@@ -80,7 +108,7 @@ class Algo4OpeningRangeIndicators(Strategy):
             del history[:-120]
         self.total_value[symbol] += float(candle["close"]) * float(candle.get("volume") or 0)
 
-        if candle["time"].strftime("%H:%M") != "09:15":
+        if candle["time"].strftime("%H:%M") != self.scan_candle_time():
             return
 
         self.scan_seen_symbols.add(symbol)
@@ -114,7 +142,7 @@ class Algo4OpeningRangeIndicators(Strategy):
         required = max(1, int(len(self.watchlist) * 0.98))
         return (
             "Opening scan was not eligible for entry: "
-            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} 09:15 IST candles and "
+            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} {self.scan_candle_time()} IST candles and "
             f"loaded {len(self.prev_close)}/{len(self.watchlist)} previous closes "
             f"(requires {required} of each). No late trades will be placed."
         )
@@ -252,8 +280,8 @@ class Algo4OpeningRangeIndicators(Strategy):
         if failed_filters:
             filter_text += f"; failed: {', '.join(failed_filters)}"
         return (
-            f"9:15 candle {candle_shape}; gap {gap_text} between {MIN_GAP_PCT:.2f}% and {MAX_GAP_PCT:.2f}%; "
-            f"passed filters: {filter_text}. Entry at 9:16 LTP."
+            f"{self.scan_candle_time()} candle {candle_shape}; gap {gap_text} between {MIN_GAP_PCT:.2f}% and {MAX_GAP_PCT:.2f}%; "
+            f"passed filters: {filter_text}. Entry during the following minute."
         )
 
     def _record_scan_results(self, scan_status: str = "complete", scan_message: str | None = None):
@@ -305,7 +333,7 @@ class Algo4OpeningRangeIndicators(Strategy):
     def _condition_breakdown(self, rows: list[dict]) -> list[dict]:
         steps = [
             {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
-            {"label": "Condition 1: opening range + gap", "passed": len(rows), "total": len(self.watchlist)},
+            {"label": f"Condition 1: {self.scan_candle_time()} opening range + gap", "passed": len(rows), "total": len(self.watchlist)},
         ]
         survivors = rows
         labels = {

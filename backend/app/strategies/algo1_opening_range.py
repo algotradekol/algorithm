@@ -44,8 +44,10 @@ class Algo1OpeningRange(Strategy):
         self.open_extreme_symbols: set[str] = set()
         self.selected_symbols: set[str] = set()
         self.entries_evaluated_today = None
+        self._previous_close_load_lock = threading.Lock()
+        self._previous_close_loading = False
         # Load previous closes in background to avoid blocking startup
-        threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
+        self.refresh_market_data()
 
     def reload_settings(self):
         from app.strategy_settings import get_settings
@@ -74,13 +76,40 @@ class Algo1OpeningRange(Strategy):
             print(f"[algo1] previous closes loaded for {len(self.prev_close)}/{len(self.watchlist)} symbols")
         except Exception as e:
             print(f"[algo1] error in background preload: {e}")
+        finally:
+            with self._previous_close_load_lock:
+                self._previous_close_loading = False
+
+    def refresh_market_data(self):
+        """Retry preloading after a manual Fyers OAuth login supplies a token."""
+        with self._previous_close_load_lock:
+            if self._previous_close_loading or len(self.prev_close) >= len(self.watchlist):
+                return
+            self._previous_close_loading = True
+        threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
+
+    def set_previous_close(self, symbol: str, previous_close: float):
+        """Use the broker's live previous-close field when the feed provides it."""
+        if symbol in self.watchlist and previous_close > 0:
+            self.prev_close[symbol] = previous_close
+
+    def scan_candle_time(self) -> str:
+        return self.settings.get("test_candle_time", "11:10") if self.settings.get("test_schedule_enabled") else "09:15"
+
+    def entry_window(self, current_time: str) -> bool:
+        entry = (datetime.datetime.strptime(self.scan_candle_time(), "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M")
+        return entry <= current_time < (datetime.datetime.strptime(entry, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M")
+
+    def entry_window_elapsed(self, current_time: str) -> bool:
+        deadline = (datetime.datetime.strptime(self.scan_candle_time(), "%H:%M") + datetime.timedelta(minutes=2)).strftime("%H:%M")
+        return current_time >= deadline
 
     def on_tick(self, symbol: str, ltp: float, timestamp):
         pass  # algo1 only acts on the 9:15 candle close and the 9:16 entry check
 
     def on_candle_close(self, symbol: str, candle: dict, indicators: dict):
         # Only care about the very first candle of the day (9:15-9:16 bar)
-        if candle["time"].strftime("%H:%M") != "09:15":
+        if candle["time"].strftime("%H:%M") != self.scan_candle_time():
             return
 
         self.scan_seen_symbols.add(symbol)
@@ -170,7 +199,7 @@ class Algo1OpeningRange(Strategy):
         required = max(1, int(len(self.watchlist) * 0.98))
         return (
             "Opening scan was not eligible for entry: "
-            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} 09:15 IST candles and "
+            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} {self.scan_candle_time()} IST candles and "
             f"loaded {len(self.prev_close_ready_symbols)}/{len(self.watchlist)} previous closes "
             f"(requires {required} of each). No late trades will be placed."
         )
@@ -203,8 +232,8 @@ class Algo1OpeningRange(Strategy):
         candle_shape = "open = low" if side == "BUY" else "open = high"
         gap_text = f"{float(gap_pct):.2f}%" if gap_pct is not None else "--"
         return (
-            f"9:15 candle {candle_shape}; gap {gap_text} within <= {GAP_LIMIT_PCT:.2f}%; "
-            f"entry at 9:16 LTP. Open {open_price}, prev close {prev_close}."
+            f"{self.scan_candle_time()} candle {candle_shape}; gap {gap_text} within <= {GAP_LIMIT_PCT:.2f}%; "
+            f"entry during the following minute. Open {open_price}, prev close {prev_close}."
         )
 
     def _record_scan_results(self, buys: list[str], sells: list[str], scan_status: str = "complete", scan_message: str | None = None):
@@ -230,7 +259,7 @@ class Algo1OpeningRange(Strategy):
             "scan_message": scan_message,
             "condition_breakdown": [
                 {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
-                {"label": "Condition 1: 9:15 candle received", "passed": len(self.scan_seen_symbols), "total": len(self.watchlist)},
+                {"label": f"Condition 1: {self.scan_candle_time()} candle received", "passed": len(self.scan_seen_symbols), "total": len(self.watchlist)},
                 {"label": "Condition 2: open equals low/high", "passed": len(self.open_extreme_symbols), "total": len(self.scan_seen_symbols)},
                 {"label": "Condition 3: opening gap <= 2%", "passed": len(rows), "total": len(self.open_extreme_symbols)},
                 {"label": "Final: selected for trade", "passed": len(self.selected_symbols), "total": len(rows)},

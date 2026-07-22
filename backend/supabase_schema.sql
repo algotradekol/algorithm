@@ -142,6 +142,10 @@ ALTER TABLE strategy_settings
     ADD COLUMN IF NOT EXISTS filter_liquidity boolean default true,
     ADD COLUMN IF NOT EXISTS filter_price_range boolean default true;
 
+ALTER TABLE strategy_settings
+    ADD COLUMN IF NOT EXISTS test_schedule_enabled boolean default false,
+    ADD COLUMN IF NOT EXISTS test_candle_time text default '11:10';
+
 -- Per-algo trailing stop loss settings.
 ALTER TABLE strategy_settings
     ADD COLUMN IF NOT EXISTS trailing_sl_enabled boolean default false,

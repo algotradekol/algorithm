@@ -133,6 +133,7 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
         <ExitModeSelect settings={settings} setSettings={setSettings} />
         <TrailingStopToggle settings={settings} setSettings={setSettings} />
         <FieldGroup title="Risk Settings" fields={RISK_FIELDS} settings={settings} setSettings={setSettings} />
+        {(algoId === 'algo1' || algoId === 'algo2') && <TestSchedule settings={settings} setSettings={setSettings} />}
         {algoId === 'algo2' && (
           <IndicatorFilterSettings settings={settings} setSettings={setSettings} />
         )}
@@ -166,6 +167,20 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
         </div>
       </aside>
     </section>
+  );
+}
+
+function TestSchedule({ settings, setSettings }: { settings: Record<string, any>; setSettings: (settings: Record<string, any>) => void }) {
+  const enabled = Boolean(settings.test_schedule_enabled);
+  return (
+    <div className="mt-5 rounded border border-[#f59e0b]/40 bg-[#f59e0b]/5 p-3">
+      <label className="flex gap-3">
+        <input type="checkbox" checked={enabled} onChange={(e) => setSettings({ ...settings, test_schedule_enabled: e.target.checked })} className="peer sr-only" />
+        <span className="mt-1 h-5 w-9 shrink-0 rounded-full border border-[#1f2937] bg-gray-700 after:block after:h-4 after:w-4 after:translate-x-0.5 after:translate-y-0.5 after:rounded-full after:bg-gray-400 after:transition peer-checked:bg-[#f59e0b] peer-checked:after:translate-x-4 peer-checked:after:bg-white" />
+        <span><span className="text-sm font-semibold text-gray-100">Test Schedule</span><span className="mt-1 block text-xs text-gray-500">Uses a future intraday candle for a paper-only pipeline check. Turn this off to restore the 09:15 production schedule.</span></span>
+      </label>
+      {enabled && <label className="mt-3 block"><div className="label">Test Candle Time (IST)</div><input type="time" value={settings.test_candle_time || '11:10'} onChange={(e) => setSettings({ ...settings, test_candle_time: e.target.value })} className="control mt-1" /><p className="mt-1 text-xs text-[#f59e0b]">The strategy evaluates this candle when it closes and enters during the following minute. It still compares against the previous-day close, so this is a systems test, not a valid opening-gap trade signal.</p></label>}
+    </div>
   );
 }
 

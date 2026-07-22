@@ -36,6 +36,7 @@ _live_feed_started = False
 _live_feed_socket = None
 _live_feed_lock = threading.Lock()
 _engine_lock = threading.Lock()
+_opening_feed_retry_date = None
 _engine_status = {
     "state": "new",
     "error": None,
@@ -45,6 +46,8 @@ _engine_status = {
     "fyers_ws_connected": False,
     "fyers_ws_error": None,
     "fyers_ws_last_event_at": None,
+    "fyers_ws_subscribed_symbols": 0,
+    "fyers_ws_first_tick_at": None,
     "last_tick_at": None,
     "last_tick_symbol": None,
     "last_tick_ltp": None,
@@ -64,12 +67,17 @@ def _on_live_feed_status(status: dict):
     connected = bool(status.get("connected"))
     error = status.get("error")
     with _engine_lock:
-        _engine_status.update({
+        update = {
             "fyers_ws_connected": connected,
             "fyers_ws_error": None if connected else error,
             "fyers_ws_last_event_at": _utc_now(),
             "live_feed_started": connected or _engine_status.get("live_feed_started"),
-        })
+        }
+        if status.get("subscribed_symbols") is not None:
+            update["fyers_ws_subscribed_symbols"] = int(status["subscribed_symbols"])
+        if status.get("first_tick_received") and not _engine_status.get("fyers_ws_first_tick_at"):
+            update["fyers_ws_first_tick_at"] = _utc_now()
+        _engine_status.update(update)
 
     if not connected:
         with _live_feed_lock:
@@ -84,6 +92,21 @@ def _on_tick(message: dict):
         return
 
     last_ltp[symbol] = ltp
+    prev_close = (
+        message.get("prev_close_price")
+        or message.get("prev_close")
+        or message.get("previous_close")
+    )
+    if prev_close:
+        try:
+            previous_close_value = float(prev_close)
+        except (TypeError, ValueError):
+            previous_close_value = None
+        if previous_close_value:
+            for strategy in STRATEGIES.values():
+                set_previous_close = getattr(strategy, "set_previous_close", None)
+                if set_previous_close:
+                    set_previous_close(symbol, previous_close_value)
     now = datetime.datetime.now()
     now_ts = time.time()
     with _engine_lock:
@@ -120,9 +143,10 @@ def _on_tick(message: dict):
 def _scheduler_loop():
     """Runs alongside the tick handler -- checks the clock for the
     9:16 entry trigger (algo1) and 3:15 square-off (both algos)."""
-    entries_fired_date = None
+    entries_fired_date: dict[str, datetime.date] = {}
     squareoff_fired_date = None
     token_refresh_fired_date = None
+    global _opening_feed_retry_date
 
     while True:
         now = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
@@ -133,38 +157,42 @@ def _scheduler_loop():
             try_refresh_access_token(reason="scheduled_08_30")
             token_refresh_fired_date = today
 
-        # Opening-range entries are valid only during the 09:16 minute.  Do
-        # not turn a missing opening candle/feed into a misleading zero-signal
-        # scan or into a late trade after the intended entry window.
-        if ENTRY_CHECK_TIME <= current_time < "09:17" and entries_fired_date != today:
-            pending = []
-            for strategy in STRATEGIES.values():
-                if hasattr(strategy, "evaluate_entries"):
-                    completed = strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
-                    if completed is False:
-                        pending.append(strategy.algo_id)
-            if pending:
-                print(f"[engine] opening scan waiting for complete market data: {', '.join(pending)}")
-            else:
-                try:
-                    from app.calendar_store import save_dashboard_snapshot
-                    save_dashboard_snapshot(note="entry_scan")
-                except Exception as exc:
-                    print(f"[engine] entry-scan calendar snapshot failed: {exc}")
-                entries_fired_date = today
+        # An SDK handshake alone is not enough for an opening-range strategy:
+        # it needs actual ticks during 09:15 to build the opening candle. Make
+        # one bounded retry early in that minute if no market tick has arrived.
+        if "09:15" <= current_time < "09:16" and _opening_feed_retry_date != today:
+            last_tick_at = _engine_status.get("last_tick_at") or ""
+            if not last_tick_at.startswith(today.isoformat()):
+                _opening_feed_retry_date = today
+                print("[engine] no market tick at 09:15; restarting Fyers live feed once before opening scan")
+                restart_live_feed(reason="opening_no_first_tick")
 
-        if current_time >= "09:17" and entries_fired_date != today:
-            for strategy in STRATEGIES.values():
-                mark_missed = getattr(strategy, "mark_opening_scan_missed", None)
-                if mark_missed:
-                    mark_missed()
+        # Each opening strategy can opt into a one-off test schedule without
+        # changing the production 09:15/09:16 defaults for the other strategy.
+        pending = []
+        completed_any = False
+        for strategy in STRATEGIES.values():
+            if not hasattr(strategy, "entry_window") or entries_fired_date.get(strategy.algo_id) == today:
+                continue
+            if strategy.entry_window(current_time):
+                completed = strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
+                if completed is False:
+                    pending.append(strategy.algo_id)
+                else:
+                    entries_fired_date[strategy.algo_id] = today
+                    completed_any = True
+            elif strategy.entry_window_elapsed(current_time):
+                strategy.mark_opening_scan_missed()
+                entries_fired_date[strategy.algo_id] = today
+                print(f"[engine] entry window elapsed without complete data for {strategy.algo_id}; no late entries were placed")
+        if pending:
+            print(f"[engine] opening scan waiting for complete market data: {', '.join(pending)}")
+        if completed_any:
             try:
                 from app.calendar_store import save_dashboard_snapshot
-                save_dashboard_snapshot(note="entry_scan_incomplete")
+                save_dashboard_snapshot(note="entry_scan")
             except Exception as exc:
-                print(f"[engine] incomplete entry-scan calendar snapshot failed: {exc}")
-            print("[engine] opening entry window elapsed before complete data was available; no late entries were placed")
-            entries_fired_date = today
+                print(f"[engine] entry-scan calendar snapshot failed: {exc}")
 
         if current_time >= SQUARE_OFF_TIME and squareoff_fired_date != today:
             for strategy in STRATEGIES.values():
@@ -190,14 +218,25 @@ def start_live_feed_if_ready(force: bool = False) -> bool:
         print("[engine] no Fyers access token in Supabase yet, waiting for manual login")
         return False
 
+    socket_to_close = None
     with _live_feed_lock:
         if _live_feed_started and not force:
             return True
         if force:
-            # Fyers' SDK may call close callbacks synchronously; do not close it
-            # while holding our lock. The old token socket is expected to die.
+            # Close the old SDK connection outside the lock before starting the
+            # replacement, otherwise a stale socket can keep the feed silent.
+            socket_to_close = _live_feed_socket
             _live_feed_socket = None
 
+    if socket_to_close is not None:
+        close_connection = getattr(socket_to_close, "close_connection", None)
+        if callable(close_connection):
+            try:
+                close_connection()
+            except Exception as exc:
+                print(f"[engine] old Fyers websocket close failed: {exc}")
+
+    with _live_feed_lock:
         def run_live_feed():
             global _live_feed_socket, _live_feed_started
             try:
@@ -223,8 +262,14 @@ def start_live_feed_if_ready(force: bool = False) -> bool:
                 "live_feed_started": True,
                 "fyers_ws_error": None,
                 "fyers_ws_last_event_at": _utc_now(),
+                "fyers_ws_subscribed_symbols": 0,
+                "fyers_ws_first_tick_at": None,
             })
         print(f"[engine] live feed start requested for {len(WATCHLIST)} symbols")
+        for strategy in STRATEGIES.values():
+            refresh_market_data = getattr(strategy, "refresh_market_data", None)
+            if refresh_market_data:
+                refresh_market_data()
         return True
 
 
@@ -243,6 +288,8 @@ def get_engine_status() -> dict:
         "fyers_ws_connected": _engine_status.get("fyers_ws_connected"),
         "fyers_ws_error": _engine_status.get("fyers_ws_error"),
         "fyers_ws_last_event_at": _engine_status.get("fyers_ws_last_event_at"),
+        "fyers_ws_subscribed_symbols": _engine_status.get("fyers_ws_subscribed_symbols"),
+        "fyers_ws_first_tick_at": _engine_status.get("fyers_ws_first_tick_at"),
         "last_tick_at": _engine_status.get("last_tick_at"),
         "last_tick_symbol": _engine_status.get("last_tick_symbol"),
         "last_tick_ltp": _engine_status.get("last_tick_ltp"),

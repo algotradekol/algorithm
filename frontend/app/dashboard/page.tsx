@@ -45,6 +45,8 @@ function DashboardContent() {
     fyers_ws_connected?: boolean;
     fyers_ws_error?: string | null;
     fyers_ws_last_event_at?: string | null;
+    fyers_ws_subscribed_symbols?: number;
+    fyers_ws_first_tick_at?: string | null;
     last_tick_at?: string | null;
     last_tick_symbol?: string | null;
     last_tick_ltp?: number | null;
@@ -275,18 +277,20 @@ function StatusCard({ label, dotClass, value, detail }: { label: string; dotClas
 
 function LiveDiagnostics({ engineStatus }: { engineStatus: any }) {
   const hasRecentTick = isRecent(engineStatus?.last_tick_at, 90);
+  const subscribedSymbols = Number(engineStatus?.fyers_ws_subscribed_symbols || 0);
   return (
     <section className="mb-4 grid gap-2 rounded border border-[#1f2937] bg-[#111827] p-3 text-xs sm:grid-cols-2 lg:grid-cols-6">
       <DiagnosticItem
         label="Fyers Feed"
-        value={engineStatus?.live_feed_started ? 'Start requested' : 'Not started'}
-        tone={engineStatus?.live_feed_started ? 'text-[#f59e0b]' : 'text-[#ef4444]'}
+        value={hasRecentTick ? 'Receiving ticks' : subscribedSymbols ? 'Subscribed, waiting for tick' : engineStatus?.live_feed_started ? 'Start requested' : 'Not started'}
+        tone={hasRecentTick ? 'text-[#22c55e]' : engineStatus?.live_feed_started ? 'text-[#f59e0b]' : 'text-[#ef4444]'}
+        detail={subscribedSymbols ? `${subscribedSymbols} symbols subscribed` : undefined}
       />
       <DiagnosticItem
         label="Fyers WS"
         value={engineStatus?.fyers_ws_connected ? 'Connected' : 'Disconnected'}
         tone={engineStatus?.fyers_ws_connected ? 'text-[#22c55e]' : 'text-[#ef4444]'}
-        detail={engineStatus?.fyers_ws_error ? String(engineStatus.fyers_ws_error).slice(0, 80) : formatRelativeTime(engineStatus?.fyers_ws_last_event_at, 'No WS event yet')}
+        detail={engineStatus?.fyers_ws_error ? String(engineStatus.fyers_ws_error).slice(0, 80) : engineStatus?.fyers_ws_first_tick_at ? `First tick ${formatRelativeTime(engineStatus.fyers_ws_first_tick_at)}` : 'Socket open; no market tick yet'}
       />
       <DiagnosticItem
         label="Last Tick"

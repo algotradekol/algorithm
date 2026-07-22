@@ -1,3 +1,6 @@
+import datetime
+
+
 DEFAULT_SETTINGS = {
     "starting_capital": 500000,
     "capital_per_trade": 50000,
@@ -29,6 +32,8 @@ DEFAULT_SETTINGS = {
     "filter_volume": True,
     "filter_liquidity": True,
     "filter_price_range": True,
+    "test_schedule_enabled": False,
+    "test_candle_time": "11:10",
 }
 
 STRATEGY_DEFAULT_OVERRIDES = {
@@ -95,10 +100,12 @@ BOOL_FIELDS = {
     "filter_liquidity",
     "filter_price_range",
     "trailing_sl_enabled",
+    "test_schedule_enabled",
 }
 
 TEXT_FIELDS = {
     "exit_mode",
+    "test_candle_time",
 }
 
 # Rupee amounts are stored to paise precision. Percentages and multipliers are
@@ -133,6 +140,11 @@ def _normalize(settings: dict, algo_id: str) -> dict:
             normalized[key] = str(value or defaults[key])
             if key == "exit_mode" and normalized[key] not in EXIT_MODES:
                 normalized[key] = defaults[key]
+            if key == "test_candle_time":
+                try:
+                    datetime.datetime.strptime(normalized[key], "%H:%M")
+                except ValueError:
+                    normalized[key] = defaults[key]
         elif key in INT_FIELDS:
             normalized[key] = int(value)
         else:
