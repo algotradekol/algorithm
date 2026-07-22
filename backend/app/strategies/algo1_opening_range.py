@@ -212,6 +212,11 @@ class Algo1OpeningRange(Strategy):
         return True
 
     def _opening_data_ready(self) -> bool:
+        # A manually enabled Test Schedule is a paper-only pipeline check. It
+        # must be able to test the symbols actually received in that minute;
+        # the 98% coverage safety gate remains mandatory for the real 09:15 run.
+        if self.settings.get("test_schedule_enabled"):
+            return bool(self.scan_seen_symbols and self.prev_close_ready_symbols)
         required = max(1, int(len(self.watchlist) * 0.98))
         return len(self.scan_seen_symbols) >= required and len(self.prev_close_ready_symbols) >= required
 
