@@ -4,6 +4,7 @@ import { api } from '../lib/api';
 import StrategySettingsPanel from './StrategySettingsPanel';
 import ScanResultsPanel from './ScanResultsPanel';
 import { useWebSocket, WebSocketState } from '../lib/useWebSocket';
+import { PAGE_SIZE, PaginationControls } from './PaginationControls';
 
 const FALLBACK_POLL_MS = 30_000;
 
@@ -213,10 +214,13 @@ function MetricCard({
 }
 
 function PositionsTable({ rows }: { rows: any[] }) {
+  const [page, setPage] = useState(0);
+  const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
+  const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
   return (
     <>
       <div className="space-y-2 sm:hidden">
-        {!rows.length ? <p className="rounded border border-[#1f2937] bg-[#0d1117] p-3 text-sm text-gray-500">No open positions</p> : rows.map((row, index) => {
+        {!rows.length ? <p className="rounded border border-[#1f2937] bg-[#0d1117] p-3 text-sm text-gray-500">No open positions</p> : visibleRows.map((row, index) => {
           const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
           const entry = Number(row.entry_price || 0);
           const qty = Number(row.qty || 0);
@@ -259,7 +263,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
             <tr className="bg-[#0d1117]">
               <td colSpan={11} className="table-cell text-gray-500">No open positions</td>
             </tr>
-          ) : rows.map((row, index) => {
+          ) : visibleRows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
             const entry = Number(row.entry_price || 0);
             const qty = Number(row.qty || 0);
@@ -290,15 +294,19 @@ function PositionsTable({ rows }: { rows: any[] }) {
         </tbody>
       </table>
       </div>
+      <PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} />
     </>
   );
 }
 
 function TradesTable({ rows }: { rows: any[] }) {
+  const [page, setPage] = useState(0);
+  const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
+  const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
   return (
     <>
       <div className="space-y-2 sm:hidden">
-        {!rows.length ? <p className="rounded border border-[#1f2937] bg-[#0d1117] p-3 text-sm text-gray-500">No closed trades yet</p> : rows.map((row, index) => (
+        {!rows.length ? <p className="rounded border border-[#1f2937] bg-[#0d1117] p-3 text-sm text-gray-500">No closed trades yet</p> : visibleRows.map((row, index) => (
           <div key={row.id || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
             <div className="flex items-center justify-between gap-3">
               <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
@@ -337,7 +345,7 @@ function TradesTable({ rows }: { rows: any[] }) {
             <tr className="bg-[#0d1117]">
               <td colSpan={9} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
-          ) : rows.map((row, index) => (
+          ) : visibleRows.map((row, index) => (
             <tr key={row.id || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
               <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
               <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
@@ -359,6 +367,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         </tbody>
       </table>
       </div>
+      <PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} />
     </>
   );
 }
@@ -373,9 +382,13 @@ function MobileField({ label, value, wide = false }: { label: string; value: any
 }
 
 export function Table({ rows, columns }: { rows: any[]; columns: string[] }) {
+  const [page, setPage] = useState(0);
+  const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
+  const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
   if (!rows.length) return <p className="text-sm text-gray-500">Nothing here yet.</p>;
   return (
-    <div className="mb-6 overflow-x-auto rounded border border-[#1f2937]">
+    <div className="mb-6">
+      <div className="overflow-x-auto rounded border border-[#1f2937]">
       <table className="w-full min-w-max border-collapse text-sm">
         <thead className="bg-[#111827]">
           <tr>{columns.map((c) => (
@@ -383,7 +396,7 @@ export function Table({ rows, columns }: { rows: any[]; columns: string[] }) {
           ))}</tr>
         </thead>
         <tbody>
-          {rows.map((row, i) => (
+          {visibleRows.map((row, i) => (
             <tr key={i} className={i % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
               {columns.map((c) => (
                 <td key={c} className="table-cell text-gray-100">{String(row[c] ?? '')}</td>
@@ -392,6 +405,8 @@ export function Table({ rows, columns }: { rows: any[]; columns: string[] }) {
           ))}
         </tbody>
       </table>
+      </div>
+      <PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} />
     </div>
   );
 }

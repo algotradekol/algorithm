@@ -1,7 +1,7 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
+import { PAGE_SIZE, PaginationControls } from './PaginationControls';
 
-const PAGE_SIZE = 20;
 const COLUMNS = ['symbol', 'side', 'open', 'high', 'low', 'prev_close', 'gap_pct', 'vwap', 'rsi', 'adx', 'supertrend', 'volume', 'selected_for_trade', 'rejection_reason'];
 const FUNNEL_INDICATORS = [
   ['vwap', 'VWAP condition'],
@@ -60,7 +60,6 @@ export default function ScanResultsPanel({ results }: { results: any }) {
     );
   }
 
-  const pageCount = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const visible = filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
   const funnel = buildConditionFunnel(results, rows);
 
@@ -154,13 +153,7 @@ export default function ScanResultsPanel({ results }: { results: any }) {
         </table>
       </div>
 
-      <div className="mt-3 flex items-center justify-between text-xs text-gray-500">
-        <span>Page {page + 1} / {pageCount}</span>
-        <div className="flex gap-2">
-          <button disabled={page === 0} onClick={() => setPage((p) => Math.max(0, p - 1))} className="rounded border border-[#1f2937] px-2 py-1 disabled:opacity-40">Previous</button>
-          <button disabled={page >= pageCount - 1} onClick={() => setPage((p) => Math.min(pageCount - 1, p + 1))} className="rounded border border-[#1f2937] px-2 py-1 disabled:opacity-40">Next</button>
-        </div>
-      </div>
+      <PaginationControls page={page} totalRows={filtered.length} onPageChange={setPage} />
     </section>
   );
 }

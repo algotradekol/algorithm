@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
+import { PAGE_SIZE, PaginationControls } from './PaginationControls';
 
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
 const defaultStart = new Date(`${today}T00:00:00`);
@@ -107,7 +108,10 @@ function BacktestResult({ result }: { result: any }) {
 }
 
 function DailyResults({ rows }: { rows: any[] }) {
-  return <section className="panel overflow-hidden"><div className="border-b border-[#1f2937] p-4"><h3 className="text-sm font-semibold text-gray-100">Daily Results</h3></div><div className="overflow-x-auto"><table className="w-full min-w-[900px] text-xs"><thead className="bg-[#111827]"><tr>{['Date', 'Data coverage', 'Trades', 'Wins / Losses', 'Win rate', 'Gross', 'Charges', 'Net', 'Selected'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr></thead><tbody>{rows.map((day: any, index: number) => { const s = day.summary || {}; const selected = (day.condition_breakdown || []).find((step: any) => step.label === 'Final: selected for trade'); return <tr key={day.date} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}><td className="table-cell num text-gray-100">{day.date}</td><td className="table-cell num">{day.data_available_symbols}</td><td className="table-cell num">{s.trade_count || 0}</td><td className="table-cell num">{s.win_count || 0} / {s.loss_count || 0}</td><td className="table-cell num">{number(s.win_rate_pct)}%</td><td className={`table-cell num ${tone(s.gross_pnl)}`}>{money(s.gross_pnl)}</td><td className="table-cell num">{money(s.total_charges)}</td><td className={`table-cell num font-semibold ${tone(s.net_pnl)}`}>{money(s.net_pnl)}</td><td className="table-cell num">{selected?.passed || 0}</td></tr>; })}</tbody></table></div></section>;
+  const [page, setPage] = useState(0);
+  const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
+  const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+  return <section className="panel overflow-hidden"><div className="border-b border-[#1f2937] p-4"><h3 className="text-sm font-semibold text-gray-100">Daily Results</h3></div><div className="overflow-x-auto"><table className="w-full min-w-[900px] text-xs"><thead className="bg-[#111827]"><tr>{['Date', 'Data coverage', 'Trades', 'Wins / Losses', 'Win rate', 'Gross', 'Charges', 'Net', 'Selected'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr></thead><tbody>{visibleRows.map((day: any, index: number) => { const s = day.summary || {}; const selected = (day.condition_breakdown || []).find((step: any) => step.label === 'Final: selected for trade'); return <tr key={day.date} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}><td className="table-cell num text-gray-100">{day.date}</td><td className="table-cell num">{day.data_available_symbols}</td><td className="table-cell num">{s.trade_count || 0}</td><td className="table-cell num">{s.win_count || 0} / {s.loss_count || 0}</td><td className="table-cell num">{number(s.win_rate_pct)}%</td><td className={`table-cell num ${tone(s.gross_pnl)}`}>{money(s.gross_pnl)}</td><td className="table-cell num">{money(s.total_charges)}</td><td className={`table-cell num font-semibold ${tone(s.net_pnl)}`}>{money(s.net_pnl)}</td><td className="table-cell num">{selected?.passed || 0}</td></tr>; })}</tbody></table></div><div className="px-4 pb-4"><PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} /></div></section>;
 }
 
 function BacktestCandidates({ days }: { days: any[] }) {

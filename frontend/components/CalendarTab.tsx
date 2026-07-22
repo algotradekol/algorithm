@@ -1,6 +1,7 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
+import { PAGE_SIZE, PaginationControls } from './PaginationControls';
 
 export default function CalendarTab() {
   const [days, setDays] = useState<any[]>([]);
@@ -10,6 +11,8 @@ export default function CalendarTab() {
   const [saving, setSaving] = useState(false);
   const [selectedSnapshot, setSelectedSnapshot] = useState<any | null>(null);
   const [error, setError] = useState('');
+  const [datePage, setDatePage] = useState(0);
+  const [snapshotPage, setSnapshotPage] = useState(0);
 
   async function loadDays() {
     setLoading(true);
@@ -96,6 +99,10 @@ export default function CalendarTab() {
     });
     return Array.from(map.entries());
   }, [days]);
+  const safeDatePage = Math.min(datePage, Math.max(0, Math.ceil(groupedDays.length / PAGE_SIZE) - 1));
+  const visibleDays = groupedDays.slice(safeDatePage * PAGE_SIZE, safeDatePage * PAGE_SIZE + PAGE_SIZE);
+  const safeSnapshotPage = Math.min(snapshotPage, Math.max(0, Math.ceil(snapshots.length / PAGE_SIZE) - 1));
+  const visibleSnapshots = snapshots.slice(safeSnapshotPage * PAGE_SIZE, safeSnapshotPage * PAGE_SIZE + PAGE_SIZE);
 
   return (
     <section className="space-y-4">
@@ -125,7 +132,7 @@ export default function CalendarTab() {
             <p className="text-sm text-gray-500">Loading calendar...</p>
           ) : groupedDays.length ? (
             <div className="space-y-2">
-              {groupedDays.map(([date, rows]) => {
+              {visibleDays.map(([date, rows]) => {
                 const net = rows.reduce((sum, row) => sum + Number(row.summary?.realized_net_pnl || 0), 0);
                 return (
                   <button
@@ -143,6 +150,7 @@ export default function CalendarTab() {
                   </button>
                 );
               })}
+              <PaginationControls page={safeDatePage} totalRows={groupedDays.length} onPageChange={setDatePage} />
             </div>
           ) : (
             <p className="text-sm text-gray-500">No snapshots yet. Click Save today snapshot.</p>
@@ -165,7 +173,7 @@ export default function CalendarTab() {
             <div className="panel p-4 text-sm text-gray-500">
               No saved snapshot for {selectedDate ? formatDate(selectedDate) : 'this date'} yet.
             </div>
-          ) : snapshots.map((snapshot) => (
+          ) : visibleSnapshots.map((snapshot) => (
             <SnapshotCard
               key={`${snapshot.snapshot_date}-${snapshot.algo_id}`}
               snapshot={snapshot}
@@ -173,6 +181,7 @@ export default function CalendarTab() {
               onDelete={() => deleteSnapshot(snapshot)}
             />
           ))}
+          {snapshots.length > 0 && <PaginationControls page={safeSnapshotPage} totalRows={snapshots.length} onPageChange={setSnapshotPage} />}
         </div>
       </div>
 
@@ -346,6 +355,9 @@ function SnapshotModal({ snapshot, onClose, onDelete }: { snapshot: any; onClose
 }
 
 function FullTable({ title, rows, columns }: { title: string; rows: any[]; columns: [string, string][] }) {
+  const [page, setPage] = useState(0);
+  const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
+  const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
   return (
     <section className="rounded border border-[#1f2937] bg-[#0d1117]">
       <div className="flex items-center justify-between gap-3 border-b border-[#1f2937] p-3">
@@ -364,7 +376,7 @@ function FullTable({ title, rows, columns }: { title: string; rows: any[]; colum
               <tr>
                 <td colSpan={columns.length} className="table-cell text-gray-500">No rows saved</td>
               </tr>
-            ) : rows.map((row, index) => (
+            ) : visibleRows.map((row, index) => (
               <tr key={row.id || `${row.symbol}-${index}`} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
                 {columns.map(([key]) => (
                   <td key={key} className={`table-cell ${key.includes('pnl') || key.includes('price') || key === 'ltp' || key === 'qty' ? 'num text-gray-100' : 'text-gray-300'}`}>
@@ -376,6 +388,7 @@ function FullTable({ title, rows, columns }: { title: string; rows: any[]; colum
           </tbody>
         </table>
       </div>
+      <div className="px-3 pb-3"><PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} /></div>
     </section>
   );
 }
