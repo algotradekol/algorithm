@@ -3,6 +3,8 @@ fyers_client.py — thin wrapper around Fyers' live WebSocket and
 historical candle REST API, used by engine.py.
 """
 import datetime
+import threading
+import time
 from zoneinfo import ZoneInfo
 from fyers_apiv3 import fyersModel
 from fyers_apiv3.FyersWebsocket import data_ws
@@ -181,6 +183,8 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
             on_status_callback(data)
 
     first_tick_received = False
+    subscription_sent = False
+    subscription_lock = threading.Lock()
 
     def on_message(message):
         nonlocal first_tick_received
@@ -193,29 +197,58 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
             )
         on_tick_callback(message)
 
-    def on_open():
-        try:
-            socket.subscribe(symbols=symbols, data_type="SymbolUpdate")
-        except Exception as exc:
-            print("Fyers WS subscription error:", exc)
-            report_status(
-                connected=False,
-                error=str(exc),
-                message="Fyers websocket subscription failed",
-            )
-            return
-        print(f"[fyers] websocket subscribed to {len(symbols)} symbols")
+    def subscribe_when_ready():
+        """Wait for the SDK's real socket-open callback before subscribing.
+
+        FyersDataSocket.connect() invokes the public on_connect callback after a
+        fixed two-second delay, not when its underlying websocket is necessarily
+        ready. Calling subscribe earlier can put the request in a queue which the
+        SDK replaces when the real socket opens, producing a silent 0-tick feed.
+        """
+        nonlocal subscription_sent
+
+        for _ in range(30):
+            if socket.is_connected():
+                with subscription_lock:
+                    if subscription_sent:
+                        return
+                    try:
+                        socket.subscribe(symbols=symbols, data_type="SymbolUpdate")
+                        subscription_sent = True
+                    except Exception as exc:
+                        print("Fyers WS subscription error:", exc)
+                        report_status(
+                            connected=False,
+                            error=str(exc),
+                            message="Fyers websocket subscription failed",
+                        )
+                        return
+                print(f"[fyers] websocket subscribed to {len(symbols)} symbols")
+                report_status(
+                    connected=True,
+                    subscribed_symbols=len(symbols),
+                    message=f"Fyers websocket subscribed to {len(symbols)} symbols; waiting for first tick",
+                )
+                return
+            time.sleep(0.5)
+
         report_status(
-            connected=True,
-            subscribed_symbols=len(symbols),
-            message=f"Fyers websocket subscribed to {len(symbols)} symbols",
+            connected=False,
+            error="Timed out waiting for the Fyers websocket to open",
+            message="Fyers websocket did not establish before subscription",
         )
+
+    def on_open():
+        threading.Thread(target=subscribe_when_ready, daemon=True).start()
 
     def on_error(message):
         print("Fyers WS error:", message)
         report_status(connected=False, error=str(message), message="Fyers websocket error")
 
     def on_close(message):
+        nonlocal subscription_sent
+        with subscription_lock:
+            subscription_sent = False
         print("Fyers WS closed:", message)
         report_status(connected=False, error=str(message), message="Fyers websocket closed")
 
@@ -232,11 +265,22 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
     )
     try:
         socket.connect()
-        # The SDK's documented usage keeps its data socket running after
-        # connect(). Without this, a successful setup can still become a
-        # silent subscription in a long-lived server process.
-        socket.keep_running()
     except Exception as exc:
         report_status(connected=False, error=str(exc), message="Fyers websocket connect failed")
         raise
+
+    def detect_missing_first_tick():
+        # A successful TCP/WebSocket handshake is not enough for a trading
+        # engine. Surface a missing market-data subscription quickly so the
+        # engine watchdog can reconnect instead of displaying a false green
+        # "connected" state until the scheduled scan has already been missed.
+        time.sleep(30)
+        if not first_tick_received:
+            report_status(
+                connected=False,
+                error="No Fyers market tick received within 30 seconds of subscription",
+                message="Fyers websocket is open but not delivering market data",
+            )
+
+    threading.Thread(target=detect_missing_first_tick, daemon=True).start()
     return socket

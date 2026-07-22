@@ -5,6 +5,8 @@ polls for live state. All routes except /health require a valid
 Supabase auth token.
 """
 import datetime
+import asyncio
+import json
 import math
 import threading
 from contextlib import asynccontextmanager
@@ -20,7 +22,7 @@ from .auth import require_auth
 from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, restart_live_feed, start_engine, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_connection_status, get_price_history
-from .fyers_auth import store_broker_tokens
+from .fyers_auth import exchange_auth_code, store_broker_tokens
 from app.config import APP_PIN, FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI, FRONTEND_URL, SUPABASE_JWT_SECRET
 from app.supabase_client import supabase
 
@@ -29,8 +31,9 @@ class ConnectionManager:
     def __init__(self):
         self.active: list[WebSocket] = []
 
-    async def connect(self, ws: WebSocket):
-        await ws.accept()
+    async def connect(self, ws: WebSocket, already_accepted: bool = False):
+        if not already_accepted:
+            await ws.accept()
         self.active.append(ws)
 
     def disconnect(self, ws: WebSocket):
@@ -102,16 +105,20 @@ def get_strategy_or_raise(algo_id: str):
 
 @app.websocket("/ws")
 async def websocket_endpoint(ws: WebSocket):
-    token = ws.query_params.get("token")
-    if not token:
-        await ws.close(code=1008)
-        return
+    # Browser WebSocket clients cannot add an Authorization header. Receive
+    # authentication as the first message instead of a URL query parameter so
+    # Railway request logs never retain the user's JWT.
+    await ws.accept()
     try:
+        first_message = await asyncio.wait_for(ws.receive_text(), timeout=10)
+        token = json.loads(first_message).get("token")
+        if not token:
+            raise ValueError("WebSocket authentication token is missing")
         jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"], audience="authenticated")
     except Exception:
         await ws.close(code=1008)
         return
-    await manager.connect(ws)
+    await manager.connect(ws, already_accepted=True)
     try:
         while True:
             await ws.receive_text()
@@ -228,9 +235,10 @@ def fyers_callback(auth_code: str = None, code: str = None):
         response_type="code",
         grant_type="authorization_code",
     )
-    session.set_token(received_code)
-    response = session.generate_token()
-    if "access_token" not in response:
+    try:
+        response = exchange_auth_code(received_code)
+    except Exception as exc:
+        print(f"[fyers] OAuth callback exchange failed: {exc}")
         return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
     store_broker_tokens(response)
     restart_live_feed(reason="fyers_oauth_callback")

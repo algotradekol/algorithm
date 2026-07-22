@@ -37,6 +37,8 @@ _live_feed_socket = None
 _live_feed_lock = threading.Lock()
 _engine_lock = threading.Lock()
 _feed_retry_schedules: set[tuple[datetime.date, str]] = set()
+_feed_watchdog_started = False
+_feed_watchdog_last_restart_at = 0.0
 _engine_status = {
     "state": "new",
     "error": None,
@@ -221,8 +223,42 @@ def _scheduler_loop():
         time.sleep(15)
 
 
+def _live_feed_watchdog_loop():
+    """Keep a real market-data stream alive before a scheduled scan.
+
+    A websocket connection flag only means a socket was requested. The opening
+    strategies need actual ticks to build their candle, so reconnect a stale
+    stream during NSE hours with a cooldown to avoid duplicate SDK sessions.
+    """
+    global _feed_watchdog_last_restart_at
+
+    while True:
+        try:
+            now = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
+            market_open = "09:15" <= now.strftime("%H:%M") < "15:30"
+            last_tick_at = _engine_status.get("last_tick_at")
+            tick_is_fresh = False
+            if last_tick_at:
+                try:
+                    tick_time = datetime.datetime.fromisoformat(last_tick_at.replace("Z", "+00:00"))
+                    tick_is_fresh = (datetime.datetime.now(datetime.timezone.utc) - tick_time).total_seconds() < 45
+                except (TypeError, ValueError):
+                    tick_is_fresh = False
+            stale_seconds = time.time() - _feed_watchdog_last_restart_at
+            market_open_at = now.replace(hour=9, minute=15, second=0, microsecond=0)
+            opening_grace_elapsed = (now - market_open_at).total_seconds() >= 60
+
+            if market_open and opening_grace_elapsed and get_stored_access_token() and not tick_is_fresh and stale_seconds >= 60:
+                _feed_watchdog_last_restart_at = time.time()
+                print("[engine] Fyers market tick is missing or stale; restarting live feed watchdog")
+                restart_live_feed(reason="watchdog_stale_or_missing_tick")
+        except Exception as exc:
+            print(f"[engine] live-feed watchdog error: {exc}")
+        time.sleep(15)
+
+
 def start_live_feed_if_ready(force: bool = False) -> bool:
-    global _live_feed_started, _live_feed_socket
+    global _live_feed_started, _live_feed_socket, _feed_watchdog_last_restart_at
 
     if not WATCHLIST:
         print("[engine] watchlist not initialized yet, cannot start live feed")
@@ -271,6 +307,7 @@ def start_live_feed_if_ready(force: bool = False) -> bool:
 
         threading.Thread(target=run_live_feed, daemon=True).start()
         _live_feed_started = True
+        _feed_watchdog_last_restart_at = time.time()
         with _engine_lock:
             _engine_status.update({
                 "live_feed_started": True,
@@ -406,7 +443,7 @@ def try_refresh_access_token(reason: str = "manual_or_startup") -> bool:
 
 def start_engine():
     """Called once from main.py's FastAPI startup event."""
-    global WATCHLIST, _scheduler_started
+    global WATCHLIST, _scheduler_started, _feed_watchdog_started
 
     with _engine_lock:
         if _engine_status["state"] in {"starting", "running"}:
@@ -434,6 +471,9 @@ def start_engine():
         if not _scheduler_started:
             threading.Thread(target=_scheduler_loop, daemon=True).start()
             _scheduler_started = True
+        if not _feed_watchdog_started:
+            threading.Thread(target=_live_feed_watchdog_loop, daemon=True).start()
+            _feed_watchdog_started = True
 
         try_refresh_access_token(reason="startup")
         if not start_live_feed_if_ready():

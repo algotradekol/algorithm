@@ -36,12 +36,14 @@ export function useWebSocket(
       return;
     }
 
-    const url = `${WS_URL}/ws?token=${encodeURIComponent(token)}`;
-    ws.current = new WebSocket(url);
+    ws.current = new WebSocket(`${WS_URL}/ws`);
 
     ws.current.onopen = () => {
       connecting.current = false;
       retryCount.current = 0;
+      // Keep JWTs out of proxy/request logs; the backend validates this as
+      // the first WebSocket message before registering the connection.
+      ws.current?.send(JSON.stringify({ token }));
       onStatus?.('connected');
       clearHeartbeat();
       heartbeatTimer.current = setInterval(() => {

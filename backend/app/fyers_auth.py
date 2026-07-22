@@ -25,6 +25,7 @@ from .supabase_client import run_with_supabase
 BASE = "https://api-t2.fyers.in/vagator/v2"
 TOKEN_URL = "https://api.fyers.in/api/v2/token"
 REFRESH_TOKEN_URL = "https://api-t1.fyers.in/api/v3/validate-refresh-token"
+AUTH_CODE_EXCHANGE_URL = "https://api-t1.fyers.in/api/v3/validate-authcode"
 FYERS_PROXIES = {"http": FYERS_PROXY_URL, "https": FYERS_PROXY_URL} if FYERS_PROXY_URL else None
 
 
@@ -48,6 +49,44 @@ def _raise_for_fyers_step(response: requests.Response, step: str):
             "Use your Fyers login id here, not the app client id."
         )
     raise RuntimeError(f"Fyers login failed at {step}: {message}")
+
+
+def exchange_auth_code(auth_code: str) -> dict:
+    """Exchange an OAuth callback code without bypassing FYERS_PROXY_URL.
+
+    The SDK's SessionModel.generate_token() always performs a direct request.
+    On Railway that can return an HTML gateway/proxy response, which the SDK
+    then crashes while parsing as JSON. Keeping this request here makes OAuth,
+    refresh-token validation, and legacy auth use the same outbound network
+    configuration and gives the caller a diagnosable error.
+    """
+    app_id_hash = hashlib.sha256(f"{FYERS_CLIENT_ID}:{FYERS_SECRET_KEY}".encode()).hexdigest()
+    response = requests.post(
+        AUTH_CODE_EXCHANGE_URL,
+        headers={"Content-Type": "application/json; charset=utf-8"},
+        json={
+            "grant_type": "authorization_code",
+            "appIdHash": app_id_hash,
+            "code": auth_code,
+        },
+        proxies=FYERS_PROXIES,
+        timeout=30,
+    )
+    try:
+        data = response.json()
+    except ValueError as exc:
+        content_type = response.headers.get("content-type", "unknown")
+        raise RuntimeError(
+            "Fyers auth-code exchange returned a non-JSON response "
+            f"(HTTP {response.status_code}, content-type {content_type}). "
+            "Check FYERS_PROXY_URL or the Railway outbound connection."
+        ) from exc
+    if not response.ok or not data.get("access_token"):
+        raise RuntimeError(
+            "Fyers auth-code exchange failed: "
+            f"{data.get('message') or data.get('error') or data}"
+        )
+    return data
 
 
 def refresh_access_token() -> str:
@@ -90,18 +129,7 @@ def refresh_access_token() -> str:
         raise RuntimeError(f"Auth code redirect missing: status={r4.status_code}, body={r4.text}")
     auth_code = redirect_location.split("auth_code=")[1].split("&")[0]
 
-    fyers_session = fyersModel.SessionModel(
-        client_id=FYERS_CLIENT_ID,
-        secret_key=FYERS_SECRET_KEY,
-        redirect_uri=FYERS_REDIRECT_URI,
-        response_type="code",
-        grant_type="authorization_code",
-    )
-    fyers_session.set_token(auth_code)
-    response = fyers_session.generate_token()
-
-    if "access_token" not in response:
-        raise RuntimeError(f"Token generation failed: {response}")
+    response = exchange_auth_code(auth_code)
 
     token = response["access_token"]
     store_broker_tokens(response)
