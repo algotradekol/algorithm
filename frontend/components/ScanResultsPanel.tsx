@@ -92,7 +92,7 @@ export default function ScanResultsPanel({ results }: { results: any }) {
         <ScanStat label="Passed Gap Filter" value={rows.length} filter="passed" active={scanFilter === 'passed'} onClick={() => selectFilter('passed')} />
         <ScanStat label="Buy" value={results.buy_candidates} filter="buy" active={scanFilter === 'buy'} onClick={() => selectFilter('buy')} />
         <ScanStat label="Sell" value={results.sell_candidates} filter="sell" active={scanFilter === 'sell'} onClick={() => selectFilter('sell')} />
-        <ScanStat label="Selected" value={(results.buy_selected || 0) + (results.sell_selected || 0)} filter="selected" active={scanFilter === 'selected'} onClick={() => selectFilter('selected')} />
+        <ScanStat label="Selected" value={rows.filter((row: any) => row.selected_for_trade).length} filter="selected" active={scanFilter === 'selected'} onClick={() => selectFilter('selected')} />
         <ScanStat label="Filtered Out" value={results.total_filtered_out} filter="filtered" active={scanFilter === 'filtered'} onClick={() => selectFilter('filtered')} />
       </div>
       <div className="mt-2 text-xs text-gray-500">Last scan: {formatTime(results.scan_time)}</div>
