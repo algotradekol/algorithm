@@ -184,38 +184,41 @@ class Algo4OpeningRangeIndicators(Strategy):
         open_price = candle["open"]
         buy_gap = open_price - prev_close
         sell_gap = prev_close - open_price
+        buy_shape = abs(open_price - candle["low"]) <= TICK_SIZE
+        sell_shape = abs(open_price - candle["high"]) <= TICK_SIZE
         buy_base = (
-            abs(open_price - candle["low"]) <= TICK_SIZE and
+            buy_shape and
             MIN_GAP_PCT / 100 * prev_close <= buy_gap <= MAX_GAP_PCT / 100 * prev_close
         )
         sell_base = (
-            abs(open_price - candle["high"]) <= TICK_SIZE and
+            sell_shape and
             MIN_GAP_PCT / 100 * prev_close <= sell_gap <= MAX_GAP_PCT / 100 * prev_close
         )
 
         side = "BUY" if buy_base else "SELL" if sell_base else None
-        if not side:
-            return None, None
-
-        indicator_results = self._indicator_results(symbol, candle, indicators, side)
-        passed_indicators = all(
+        indicator_results = self._indicator_results(symbol, candle, indicators, side) if side else {}
+        passed_indicators = bool(side) and all(
             result["passed"] for result in indicator_results.values() if result["enabled"]
         )
-        gap = buy_gap if side == "BUY" else sell_gap
+        gap = buy_gap if side == "BUY" else sell_gap if side == "SELL" else abs(open_price - prev_close)
         return side, {
             "symbol": symbol,
-            "side": side,
+            "side": side or "WATCH",
             "open": open_price,
             "high": candle["high"],
             "low": candle["low"],
             "close": candle["close"],
             "prev_close": prev_close,
             "gap_pct": gap / prev_close * 100,
+            "candle_received": True,
+            "shape_passed": buy_shape or sell_shape,
+            "gap_passed": bool(side),
+            "opening_range_gap_passed": bool(side),
             "passed_indicators": passed_indicators,
             "indicator_results": indicator_results,
             "warmup_candles": max(0, len(self.candles[symbol]) - 1),
             "selected_for_trade": False,
-            "rejection_reason": None if passed_indicators else "failed_indicator_filter",
+            "rejection_reason": None if passed_indicators else ("failed_indicator_filter" if side else "failed_opening_range_gap"),
         }
 
     def _passes_indicator_filters(self, symbol: str, candle: dict, indicators: dict, side: str) -> bool:
@@ -312,8 +315,30 @@ class Algo4OpeningRangeIndicators(Strategy):
         rows = []
         buy_selected = 0
         sell_selected = 0
-        for symbol, details in self.candidate_details.items():
-            row = dict(details)
+        for symbol in self.watchlist:
+            details = self.candidate_details.get(symbol)
+            if details is None:
+                has_candle = symbol in self.scan_seen_symbols
+                row = {
+                    "symbol": symbol,
+                    "side": "WATCH",
+                    "open": None,
+                    "high": None,
+                    "low": None,
+                    "close": None,
+                    "prev_close": self.prev_close.get(symbol),
+                    "gap_pct": None,
+                    "candle_received": has_candle,
+                    "shape_passed": False,
+                    "gap_passed": False,
+                    "opening_range_gap_passed": False,
+                    "passed_indicators": False,
+                    "indicator_results": {},
+                    "selected_for_trade": False,
+                    "rejection_reason": "missing_previous_close" if has_candle else "missing_opening_candle",
+                }
+            else:
+                row = dict(details)
             if symbol in self.selected_symbols:
                 row["selected_for_trade"] = True
             else:
@@ -330,13 +355,13 @@ class Algo4OpeningRangeIndicators(Strategy):
             "scan_time": datetime.datetime.now().isoformat(),
             "total_scanned": len(self.watchlist),
             "passed_opening_range": rows,
-            "buy_candidates": len([r for r in rows if r["side"] == "BUY"]),
-            "sell_candidates": len([r for r in rows if r["side"] == "SELL"]),
+            "buy_candidates": len([r for r in rows if r["side"] == "BUY" and r.get("opening_range_gap_passed")]),
+            "sell_candidates": len([r for r in rows if r["side"] == "SELL" and r.get("opening_range_gap_passed")]),
             "buy_selected": buy_selected,
             "sell_selected": sell_selected,
             "overflow_buy": 0,
             "overflow_sell": 0,
-            "total_filtered_out": max(0, len(self.watchlist) - len(rows)),
+            "total_filtered_out": max(0, len(self.watchlist) - sum(1 for row in rows if row.get("opening_range_gap_passed"))),
             "scan_status": scan_status,
             "scan_message": scan_message,
             "condition_breakdown": self._condition_breakdown(rows),
@@ -357,9 +382,9 @@ class Algo4OpeningRangeIndicators(Strategy):
     def _condition_breakdown(self, rows: list[dict]) -> list[dict]:
         steps = [
             {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
-            {"label": f"Condition 1: {self.scan_candle_time()} opening range + gap", "passed": len(rows), "total": len(self.watchlist)},
+            {"label": f"Condition 1: {self.scan_candle_time()} opening range + gap", "passed": sum(1 for row in rows if row.get("opening_range_gap_passed")), "total": len(self.watchlist)},
         ]
-        survivors = rows
+        survivors = [row for row in rows if row.get("opening_range_gap_passed")]
         labels = {
             "vwap": "VWAP condition",
             "rsi": "RSI condition",

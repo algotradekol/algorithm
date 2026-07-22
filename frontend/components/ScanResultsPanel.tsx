@@ -44,7 +44,7 @@ export default function ScanResultsPanel({ results }: { results: any }) {
     const q = query.trim().toLowerCase();
     return rows
       .filter((row: any) => matchesScanFilter(row, scanFilter))
-      .filter((row: any) => funnelFilter === null || matchesFunnelStep(row, funnel[funnelFilter]))
+      .filter((row: any) => funnelFilter === null || matchesFunnelStep(row, funnel, funnelFilter))
       .filter((row: any) => !q || String(row.symbol || '').toLowerCase().includes(q))
       .sort((a: any, b: any) => {
         const av = cellValue(a, sortKey);
@@ -97,7 +97,7 @@ export default function ScanResultsPanel({ results }: { results: any }) {
       )}
       <div className="grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
         <ScanStat label="Scanned" value={results.total_scanned} filter="all" active={scanFilter === 'all'} onClick={() => selectFilter('all')} />
-        <ScanStat label="Passed Gap Filter" value={rows.filter((row: any) => row.gap_passed !== false).length} filter="passed" active={scanFilter === 'passed'} onClick={() => selectFilter('passed')} />
+        <ScanStat label="Passed Gap Filter" value={rows.filter((row: any) => row.gap_passed === true || row.opening_range_gap_passed === true).length} filter="passed" active={scanFilter === 'passed'} onClick={() => selectFilter('passed')} />
         <ScanStat label="Buy" value={results.buy_candidates} filter="buy" active={scanFilter === 'buy'} onClick={() => selectFilter('buy')} />
         <ScanStat label="Sell" value={results.sell_candidates} filter="sell" active={scanFilter === 'sell'} onClick={() => selectFilter('sell')} />
         <ScanStat label="Selected" value={rows.filter((row: any) => row.selected_for_trade).length} filter="selected" active={scanFilter === 'selected'} onClick={() => selectFilter('selected')} />
@@ -204,7 +204,8 @@ function ScanStat({
 }
 
 function matchesScanFilter(row: any, filter: ScanFilter) {
-  if (filter === 'all' || filter === 'passed') return true;
+  if (filter === 'all') return true;
+  if (filter === 'passed') return row.gap_passed === true || row.opening_range_gap_passed === true;
   if (filter === 'buy') return row.side === 'BUY';
   if (filter === 'sell') return row.side === 'SELL';
   if (filter === 'selected') return Boolean(row.selected_for_trade);
@@ -296,20 +297,28 @@ function FunnelStep({
   );
 }
 
-function matchesFunnelStep(row: any, step: FunnelStepData | undefined) {
+function matchesFunnelStep(row: any, funnel: FunnelStepData[], stepIndex: number) {
+  const step = funnel[stepIndex];
   const labelText = step?.label.toLowerCase() || '';
   if (labelText.includes('scanned universe')) return true;
-  if (labelText.includes('candle received')) return row.candle_received !== false;
-  if (labelText.includes('open equals') || labelText.includes('opening range')) return row.shape_passed !== false;
-  if (labelText.includes('gap')) return row.gap_passed !== false;
+  if (labelText.includes('candle received')) return row.candle_received === true;
+  if (labelText.includes('open equals')) return row.shape_passed === true;
+  if (labelText.includes('opening range + gap')) return row.opening_range_gap_passed === true || row.gap_passed === true;
+  if (labelText.includes('gap')) return row.gap_passed === true;
   if (labelText.includes('selected for trade')) return Boolean(row.selected_for_trade);
 
-  const indicatorKey = FUNNEL_INDICATORS.find(([key]) => labelText.includes(key))?.[0];
-  if (indicatorKey) {
+  // Indicator steps are cumulative. Clicking RSI shows rows that passed the
+  // opening rule, every earlier active indicator, and RSI itself.
+  if (!(row.opening_range_gap_passed === true || row.gap_passed === true)) return false;
+  let foundIndicator = false;
+  for (let index = 1; index <= stepIndex; index += 1) {
+    const indicatorKey = FUNNEL_INDICATORS.find(([key]) => funnel[index]?.label.toLowerCase().includes(key))?.[0];
+    if (!indicatorKey) continue;
+    foundIndicator = true;
     const indicator = row.indicator_results?.[indicatorKey];
-    return !indicator?.enabled || Boolean(indicator.passed);
+    if (indicator?.enabled && !indicator.passed) return false;
   }
-  return true;
+  return foundIndicator;
 }
 
 function IndicatorCell({ result }: { result: any }) {

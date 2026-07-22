@@ -284,8 +284,31 @@ class Algo1OpeningRange(Strategy):
     ):
         planned_symbols = planned_symbols or set()
         rows = []
-        for symbol, details in self.candidate_details.items():
-            row = dict(details)
+        # Keep one audit row per watchlist symbol.  A funnel total is only
+        # useful when clicking it can show the same set of symbols it counted.
+        for symbol in self.watchlist:
+            details = self.candidate_details.get(symbol)
+            if details is None:
+                has_candle = symbol in self.scan_seen_symbols
+                row = {
+                    "symbol": symbol,
+                    "side": "WATCH",
+                    "open": None,
+                    "high": None,
+                    "low": None,
+                    "close": None,
+                    "prev_close": self.prev_close.get(symbol),
+                    "gap_pct": None,
+                    "candle_received": has_candle,
+                    "shape_passed": False,
+                    "gap_passed": False,
+                    "passed_indicators": False,
+                    "indicator_results": {},
+                    "selected_for_trade": False,
+                    "rejection_reason": "missing_previous_close" if has_candle else "missing_opening_candle",
+                }
+            else:
+                row = dict(details)
             row["selected_for_trade"] = symbol in self.selected_symbols
             if row["selected_for_trade"]:
                 # A flat candle can satisfy both open=low and open=high. The
