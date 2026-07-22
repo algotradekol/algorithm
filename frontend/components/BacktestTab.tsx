@@ -56,7 +56,10 @@ export default function BacktestTab() {
     return () => window.clearInterval(timer);
   }, [job?.id, job?.status]);
 
-  const progress = job ? Math.round((Number(job.completed_symbols || 0) / Math.max(1, Number(job.total_symbols || 1))) * 100) : 0;
+  const replaying = job?.phase === 'replaying';
+  const progressCompleted = replaying ? Number(job.replay_completed || 0) : Number(job?.completed_symbols || 0);
+  const progressTotal = replaying ? Number(job.replay_total || 0) : Number(job?.total_symbols || 0);
+  const progress = job ? Math.round((progressCompleted / Math.max(1, progressTotal)) * 100) : 0;
   const result = job?.result;
   return (
     <section className="space-y-4">
@@ -73,7 +76,7 @@ export default function BacktestTab() {
       </div>
 
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
-      {job && !result && <section className="panel p-4"><div className="flex justify-between gap-3 text-sm text-gray-200"><span>{job.message}</span><span className="num">{job.completed_symbols} / {job.total_symbols}</span></div><div className="mt-3 h-2 overflow-hidden rounded bg-[#020617]"><div className="h-full bg-[#3b82f6]" style={{ width: `${progress}%` }} /></div><p className="mt-2 text-xs text-gray-500">{progress}% complete. {job.failed_symbols || 0} symbols returned no usable history.</p></section>}
+      {job && !result && <section className="panel p-4"><div className="flex justify-between gap-3 text-sm text-gray-200"><span>{job.message}</span><span className="num">{progressCompleted} / {progressTotal}</span></div><div className="mt-3 h-2 overflow-hidden rounded bg-[#020617]"><div className="h-full bg-[#3b82f6]" style={{ width: `${progress}%` }} /></div><p className="mt-2 text-xs text-gray-500">{progress}% complete. {replaying ? `${job.replay_failed || 0} selected signals could not be replayed.` : `${job.failed_symbols || 0} symbols returned no usable history.`}</p></section>}
       {job?.status === 'failed' && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{job.error || job.message}</p>}
       {result && <BacktestResult result={result} />}
     </section>

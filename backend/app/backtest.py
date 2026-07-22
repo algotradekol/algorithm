@@ -53,6 +53,10 @@ def start_backtest(
         "total_symbols": len(watchlist),
         "completed_symbols": 0,
         "failed_symbols": 0,
+        "phase": "queued",
+        "replay_total": 0,
+        "replay_completed": 0,
+        "replay_failed": 0,
         "message": "Queued historical candle download.",
         "result": None,
         "error": None,
@@ -153,7 +157,12 @@ def _run_job(
     watchlist: list[str],
 ):
     try:
-        _update(job_id, status="running", message="Screening NSE 500 one symbol at a time.")
+        _update(
+            job_id,
+            status="running",
+            phase="screening",
+            message="Screening NSE 500 symbols with two bounded workers.",
+        )
         lookback_start = first_date - datetime.timedelta(days=7)
         trading_days = [
             first_date + datetime.timedelta(days=offset)
@@ -187,29 +196,74 @@ def _run_job(
                 finally:
                     _increment(job_id, "completed_symbols")
 
-        _update(job_id, message=f"Selecting and replaying trades for {len(trading_days)} trading days.")
-        charges_config = get_charges_config()
-        daily_results = []
+        # Selection is complete before replay begins. This lets the UI report
+        # the real remaining work instead of showing 500/500 while Fyers calls
+        # are still being made for every selected signal.
+        prepared_days = []
         for target_date in trading_days:
             daily_result, selected = _prepare_daily_result(
                 algo_id, target_date, rows_by_day[target_date], len(watchlist), settings
             )
-            trades = []
-            # Only selected candidates need a second full intraday download for
-            # target/SL replay. At most the strategy's daily trade cap is held.
-            for row in selected:
+            prepared_days.append((target_date, daily_result, selected))
+
+        replay_total = sum(len(selected) for _, _, selected in prepared_days)
+        _update(
+            job_id,
+            phase="replaying",
+            replay_total=replay_total,
+            replay_completed=0,
+            replay_failed=0,
+            message=f"Replaying 0 / {replay_total} selected signals across {len(trading_days)} trading days.",
+        )
+        charges_config = get_charges_config()
+        trades_by_date: dict[datetime.date, list[dict]] = {
+            target_date: [] for target_date, _, _ in prepared_days
+        }
+
+        # The original serial replay could make a high-cap backtest appear to
+        # freeze for many minutes. Keep concurrency deliberately low to avoid
+        # hammering Fyers, while making measurable forward progress.
+        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
+            futures = {}
+            for target_date, _, selected in prepared_days:
+                for row in selected:
+                    future = pool.submit(
+                        _load_and_simulate_trade,
+                        row,
+                        target_date,
+                        lookback_start,
+                        last_date,
+                        settings,
+                        charges_config,
+                    )
+                    futures[future] = (target_date, row)
+            for future in as_completed(futures):
+                target_date, row = futures[future]
                 try:
-                    history = get_intraday_candles_for_range(row["symbol"], lookback_start, last_date)
-                    trade = _simulate_trade(row, history, target_date, settings, charges_config)
+                    trade = future.result()
                 except Exception:
                     trade = None
+                    _increment(job_id, "replay_failed")
                 if trade:
-                    trades.append(trade)
+                    trades_by_date[target_date].append(trade)
                     row["selected_for_trade"] = True
                     row["rejection_reason"] = None
                 else:
                     row["selected_for_trade"] = False
                     row["rejection_reason"] = "no_09_18_entry_candle"
+                _increment(job_id, "replay_completed")
+                progress = _job_progress(job_id, "replay_completed")
+                _update(
+                    job_id,
+                    message=(
+                        f"Replaying {progress} / {replay_total} selected signals across "
+                        f"{len(trading_days)} trading days."
+                    ),
+                )
+
+        daily_results = []
+        for target_date, daily_result, _ in prepared_days:
+            trades = trades_by_date[target_date]
             daily_result["trades"] = trades
             daily_result["summary"] = {
                 **_performance_summary(trades),
@@ -225,7 +279,7 @@ def _run_job(
             "lookback_start": lookback_start.isoformat(),
         }
         result = _range_result(algo_id, first_date, last_date, daily_results, coverage)
-        _update(job_id, status="complete", message="Backtest complete.", result=result)
+        _update(job_id, status="complete", phase="complete", message="Backtest complete.", result=result)
     except Exception as exc:
         _update(job_id, status="failed", error=str(exc), message="Backtest failed.")
 
@@ -235,6 +289,24 @@ def _increment(job_id: str, field: str):
         job = _jobs.get(job_id)
         if job:
             job[field] = int(job.get(field) or 0) + 1
+
+
+def _job_progress(job_id: str, field: str) -> int:
+    with _lock:
+        return int((_jobs.get(job_id) or {}).get(field) or 0)
+
+
+def _load_and_simulate_trade(
+    row: dict,
+    target_date: datetime.date,
+    lookback_start: datetime.date,
+    last_date: datetime.date,
+    settings: dict,
+    charges_config: dict,
+) -> dict | None:
+    """Fetch just one selected symbol's replay candles in a bounded worker."""
+    history = get_intraday_candles_for_range(row["symbol"], lookback_start, last_date)
+    return _simulate_trade(row, history, target_date, settings, charges_config)
 
 
 def _simulate(algo_id: str, target_date: datetime.date, watchlist: list[str], histories: dict[str, list[dict]], settings: dict) -> dict:
