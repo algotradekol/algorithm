@@ -36,7 +36,7 @@ _live_feed_started = False
 _live_feed_socket = None
 _live_feed_lock = threading.Lock()
 _engine_lock = threading.Lock()
-_opening_feed_retry_date = None
+_feed_retry_schedules: set[tuple[datetime.date, str]] = set()
 _engine_status = {
     "state": "new",
     "error": None,
@@ -147,7 +147,7 @@ def _scheduler_loop():
     entries_fired_schedule: dict[str, tuple[bool, str]] = {}
     squareoff_fired_date = None
     token_refresh_fired_date = None
-    global _opening_feed_retry_date
+    global _feed_retry_schedules
 
     while True:
         now = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
@@ -158,15 +158,18 @@ def _scheduler_loop():
             try_refresh_access_token(reason="scheduled_08_30")
             token_refresh_fired_date = today
 
-        # An SDK handshake alone is not enough for an opening-range strategy:
-        # it needs actual ticks during 09:15 to build the opening candle. Make
-        # one bounded retry early in that minute if no market tick has arrived.
-        if "09:15" <= current_time < "09:16" and _opening_feed_retry_date != today:
-            last_tick_at = _engine_status.get("last_tick_at") or ""
-            if not last_tick_at.startswith(today.isoformat()):
-                _opening_feed_retry_date = today
-                print("[engine] no market tick at 09:15; restarting Fyers live feed once before opening scan")
-                restart_live_feed(reason="opening_no_first_tick")
+        # A socket handshake is not market data. Retry once during whichever
+        # candle minute a production or UI test schedule is using if no tick
+        # has arrived today, leaving enough time to build that candle.
+        for strategy in STRATEGIES.values():
+            scan_time = getattr(strategy, "scan_candle_time", lambda: None)()
+            retry_key = (today, scan_time) if scan_time else None
+            if retry_key and current_time == scan_time and retry_key not in _feed_retry_schedules:
+                last_tick_at = _engine_status.get("last_tick_at") or ""
+                if not last_tick_at.startswith(today.isoformat()):
+                    _feed_retry_schedules.add(retry_key)
+                    print(f"[engine] no market tick at {scan_time}; restarting Fyers live feed once before scheduled scan")
+                    restart_live_feed(reason=f"scheduled_{scan_time}_no_first_tick")
 
         # Each opening strategy can opt into a one-off test schedule without
         # changing the production 09:15/09:16 defaults for the other strategy.

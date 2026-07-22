@@ -222,6 +222,9 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
     socket = data_ws.FyersDataSocket(
         access_token=f"{FYERS_CLIENT_ID}:{token}",
         log_path="",
+        litemode=False,
+        reconnect=True,
+        write_to_file=False,
         on_connect=on_open,
         on_message=on_message,
         on_error=on_error,
@@ -229,6 +232,10 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
     )
     try:
         socket.connect()
+        # The SDK's documented usage keeps its data socket running after
+        # connect(). Without this, a successful setup can still become a
+        # silent subscription in a long-lived server process.
+        socket.keep_running()
     except Exception as exc:
         report_status(connected=False, error=str(exc), message="Fyers websocket connect failed")
         raise
