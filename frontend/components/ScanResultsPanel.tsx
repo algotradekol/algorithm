@@ -2,7 +2,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { PAGE_SIZE, PaginationControls } from './PaginationControls';
 
-const COLUMNS = ['symbol', 'side', 'open', 'high', 'low', 'prev_close', 'gap_pct', 'vwap', 'rsi', 'adx', 'supertrend', 'volume', 'selected_for_trade', 'rejection_reason'];
+const COLUMNS = ['rank', 'composite_score', 'symbol', 'side', 'open', 'high', 'low', 'prev_close', 'gap_pct', 'vwap', 'rsi', 'adx', 'supertrend', 'volume', 'selected_for_trade', 'rejection_reason'];
 const FUNNEL_INDICATORS = [
   ['vwap', 'VWAP condition'],
   ['rsi', 'RSI / move condition'],
@@ -40,6 +40,10 @@ export default function ScanResultsPanel({ results }: { results: any }) {
   }, [results?.scan_time]);
 
   const funnel = buildConditionFunnel(results, rows);
+  const bestMatches = [...rows]
+    .filter((row: any) => Number.isFinite(Number(row.composite_score)))
+    .sort((left: any, right: any) => Number(left.rank || Infinity) - Number(right.rank || Infinity))
+    .slice(0, 4);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return rows
@@ -105,6 +109,11 @@ export default function ScanResultsPanel({ results }: { results: any }) {
       </div>
       <div className="mt-2 text-xs text-gray-500">Last scan: {formatTime(results.scan_time)}</div>
 
+      {bestMatches.length > 0 && <div className="mt-4 rounded border border-[#3b82f6]/30 bg-[#0d1117] p-3">
+        <div className="flex flex-wrap items-baseline justify-between gap-2"><div className="label">Best Matches</div><p className="text-[11px] text-gray-500">{results.ranking?.method || 'Highest composite score is selected first within your configured trade limits.'}</p></div>
+        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{bestMatches.map((row: any) => <BestMatchCard key={row.symbol} row={row} />)}</div>
+      </div>}
+
       <div className="mt-4 rounded border border-[#1f2937] bg-[#0d1117] p-3">
         <div className="label">Condition Funnel</div>
         <p className="mt-1 text-xs text-gray-500">
@@ -144,6 +153,8 @@ export default function ScanResultsPanel({ results }: { results: any }) {
           <tbody>
             {visible.map((row: any, index: number) => (
               <tr key={`${row.symbol}-${index}`} className={`${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'} border-l-2 ${rowBorder(row)}`}>
+                <td className="table-cell num font-semibold text-[#60a5fa]">{row.rank ? `#${row.rank}` : '-'}</td>
+                <td className="table-cell num font-semibold text-gray-100">{formatScore(row.composite_score)}</td>
                 <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
                 <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>{row.side}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.open)}</td>
@@ -175,6 +186,20 @@ function TestScheduleStatus({ schedule }: { schedule: any }) {
     finished: `Scheduled test window ended. Review the scan funnel and positions below.`,
   };
   return <div className="mb-3 rounded border border-[#3b82f6]/50 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]"><i className="ri-time-fill mr-1" />{messages[schedule.state] || 'Scheduled test status is updating.'}</div>;
+}
+
+function BestMatchCard({ row }: { row: any }) {
+  const components = row.score_breakdown || {};
+  const componentText = Object.entries(components)
+    .map(([name, value]) => `${name.replace(/_/g, ' ')} ${Math.round(Number(value) * 100)}%`)
+    .join(' · ');
+  return <div className={`border-l-2 border border-[#1f2937] bg-[#111827] p-2 ${row.side === 'BUY' ? 'border-l-[#22c55e]' : 'border-l-[#ef4444]'}`}>
+    <div className="flex items-center justify-between gap-2"><span className="num text-[#60a5fa]">#{row.rank}</span><span className={`text-xs font-semibold ${row.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{row.side}</span></div>
+    <div className="mt-1 truncate font-mono text-sm font-semibold text-gray-100">{row.symbol}</div>
+    <div className="num mt-1 text-lg font-semibold text-gray-100">{formatScore(row.composite_score)}</div>
+    <div className="text-[10px] uppercase tracking-wide text-gray-500">Composite score / 100</div>
+    <div className="mt-1 line-clamp-2 text-[10px] text-gray-500" title={componentText}>{componentText || 'Gap-strength ranking'}</div>
+  </div>;
 }
 
 function ScanStat({
@@ -356,6 +381,11 @@ function formatNumber(value: any) {
   const number = Number(value);
   if (!Number.isFinite(number)) return '-';
   return number.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+}
+
+function formatScore(value: any) {
+  const score = Number(value);
+  return Number.isFinite(score) ? score.toFixed(2) : '-';
 }
 
 function formatTime(value: string) {

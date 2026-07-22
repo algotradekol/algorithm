@@ -24,6 +24,7 @@ from .base import Strategy
 from ..paper_broker import PaperBroker
 from ..fyers_client import get_previous_close
 from ..fyers_auth import get_stored_access_token
+from ..candidate_ranking import rank_candidates, select_ranked_candidates
 GAP_LIMIT_PCT = 2.0
 # A one-minute candle only exists for a symbol that traded during that minute.
 # This floor detects a dead/broken feed without requiring every NSE 500 symbol
@@ -199,8 +200,7 @@ class Algo1OpeningRange(Strategy):
                 if gap_pct <= GAP_LIMIT_PCT:
                     self.buy_candidates.append(symbol)
                     self.candidate_details[symbol].update({"side": "BUY", "gap_passed": True, "rejection_reason": None})
-
-            if sell_shape:
+            elif sell_shape:
                 self.open_extreme_symbols.add(symbol)
                 if gap_pct <= GAP_LIMIT_PCT:
                     self.sell_candidates.append(symbol)
@@ -217,24 +217,17 @@ class Algo1OpeningRange(Strategy):
             return False
         self.entries_evaluated_today = today
 
-        max_total = self.settings["max_trades_per_day"]
-        max_per_side = self.settings["max_buy_trades"]
-        self.buy_candidates.sort(key=lambda symbol: self.candidate_details[symbol]["gap_pct"], reverse=True)
-        self.sell_candidates.sort(key=lambda symbol: self.candidate_details[symbol]["gap_pct"], reverse=True)
-        buys = self.buy_candidates[:max_per_side]
-        sells = self.sell_candidates[:self.settings["max_sell_trades"]]
-
-        # Fill remaining slots up to the configured daily max from whichever side has leftover candidates.
-        remaining_slots = max_total - (len(buys) + len(sells))
-        overflow_pool = self.buy_candidates[max_per_side:] + self.sell_candidates[self.settings["max_sell_trades"]:]
-        for symbol in overflow_pool[:remaining_slots]:
-            if symbol in self.buy_candidates and symbol not in buys:
-                buys.append(symbol)
-            elif symbol in self.sell_candidates and symbol not in sells:
-                sells.append(symbol)
+        qualified = [
+            self.candidate_details[symbol]
+            for symbol in self.buy_candidates + self.sell_candidates
+        ]
+        ranked = rank_candidates(qualified, self.settings, profile="simple")
+        selected = select_ranked_candidates(ranked, self.settings)
+        buys = [row["symbol"] for row in selected if row["side"] == "BUY"]
+        sells = [row["symbol"] for row in selected if row["side"] == "SELL"]
 
         self.entry_failures = {}
-        planned_symbols = set(buys + sells)
+        planned_symbols = {row["symbol"] for row in selected}
         for symbol in buys:
             self._enter(symbol, "BUY", get_ltp_fn(symbol))
         for symbol in sells:
@@ -301,9 +294,12 @@ class Algo1OpeningRange(Strategy):
         gap_pct = details.get("gap_pct")
         candle_shape = "open = low" if side == "BUY" else "open = high"
         gap_text = f"{float(gap_pct):.2f}%" if gap_pct is not None else "--"
+        rank = details.get("rank")
+        score = details.get("composite_score")
+        ranking_text = f"rank #{rank}, score {float(score):.2f}/100" if rank and score is not None else "unranked"
         return (
             f"{self.scan_candle_time()}-{self._schedule_time(2)} opening window {candle_shape}; gap {gap_text} within <= {GAP_LIMIT_PCT:.2f}%; "
-            f"ranked by gap and entered at {self._schedule_time(3)}. Open {open_price}, prev close {prev_close}."
+            f"{ranking_text}; entered at {self._schedule_time(3)}. Open {open_price}, prev close {prev_close}."
         )
 
     def _record_scan_results(
@@ -372,6 +368,14 @@ class Algo1OpeningRange(Strategy):
             "total_filtered_out": max(0, len(self.watchlist) - sum(1 for row in rows if row.get("gap_passed"))),
             "scan_status": scan_status,
             "scan_message": scan_message,
+            "ranking": {
+                "method": "Gap strength only: closer to the 2% gap limit ranks higher.",
+                "weights": {"gap_strength": 1.0},
+            },
+            "best_matches": sorted(
+                (row for row in rows if row.get("composite_score") is not None),
+                key=lambda row: row.get("rank", 999999),
+            )[:4],
             "condition_breakdown": [
                 {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
                 {"label": f"Condition 1: {self.scan_candle_time()}-{self._schedule_time(2)} candles received", "passed": len(self.scan_seen_symbols), "total": len(self.watchlist)},

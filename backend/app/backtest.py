@@ -8,6 +8,7 @@ from .charges import calculate_charges, get_charges_config
 from .fyers_client import get_intraday_candles_for_range
 from .strategy_settings import get_settings
 from .strategies.algo4_opening_range_indicators import Algo4OpeningRangeIndicators
+from .candidate_ranking import rank_candidates, select_ranked_candidates
 from .supabase_client import run_with_supabase
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
@@ -600,15 +601,12 @@ def _evaluate_symbol(algo_id: str, symbol: str, target_date: datetime.date, hist
 
 
 def _select_candidates(candidates: list[dict], settings: dict) -> list[dict]:
-    max_total = int(settings["max_trades_per_day"])
-    max_buy = int(settings["max_buy_trades"])
-    max_sell = int(settings["max_sell_trades"])
-    buys = sorted((row for row in candidates if row["side"] == "BUY"), key=lambda row: float(row.get("gap_pct") or 0), reverse=True)
-    sells = sorted((row for row in candidates if row["side"] == "SELL"), key=lambda row: float(row.get("gap_pct") or 0), reverse=True)
-    selected = buys[:max_buy] + sells[:max_sell]
-    remaining = max(0, max_total - len(selected))
-    selected += (buys[max_buy:] + sells[max_sell:])[:remaining]
-    return selected
+    profile = "simple" if candidates and candidates[0].get("algo_id") == "algo1" else "filter"
+    # Candidate rows do not carry algo_id in older stored data. The simple
+    # strategy has no indicator data, which is the reliable fallback signal.
+    if candidates and not candidates[0].get("indicator_results"):
+        profile = "simple"
+    return select_ranked_candidates(rank_candidates(candidates, settings, profile), settings)
 
 
 def _simulate_trade(row: dict, history: list[dict], target_date: datetime.date, settings: dict, charges_config: dict) -> dict | None:
