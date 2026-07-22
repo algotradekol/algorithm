@@ -144,6 +144,7 @@ def _scheduler_loop():
     """Runs alongside the tick handler -- checks the clock for the
     9:16 entry trigger (algo1) and 3:15 square-off (both algos)."""
     entries_fired_date: dict[str, datetime.date] = {}
+    entries_fired_schedule: dict[str, tuple[bool, str]] = {}
     squareoff_fired_date = None
     token_refresh_fired_date = None
     global _opening_feed_retry_date
@@ -172,7 +173,15 @@ def _scheduler_loop():
         pending = []
         completed_any = False
         for strategy in STRATEGIES.values():
-            if not hasattr(strategy, "entry_window") or entries_fired_date.get(strategy.algo_id) == today:
+            if not hasattr(strategy, "entry_window"):
+                continue
+            schedule = (
+                bool(strategy.settings.get("test_schedule_enabled")),
+                strategy.scan_candle_time(),
+            )
+            # A later UI change from the production schedule to a test time is
+            # a new run. Do not let the already-missed 09:16 window suppress it.
+            if entries_fired_date.get(strategy.algo_id) == today and entries_fired_schedule.get(strategy.algo_id) == schedule:
                 continue
             if strategy.entry_window(current_time):
                 completed = strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
@@ -180,10 +189,12 @@ def _scheduler_loop():
                     pending.append(strategy.algo_id)
                 else:
                     entries_fired_date[strategy.algo_id] = today
+                    entries_fired_schedule[strategy.algo_id] = schedule
                     completed_any = True
             elif strategy.entry_window_elapsed(current_time):
                 strategy.mark_opening_scan_missed()
                 entries_fired_date[strategy.algo_id] = today
+                entries_fired_schedule[strategy.algo_id] = schedule
                 print(f"[engine] entry window elapsed without complete data for {strategy.algo_id}; no late entries were placed")
         if pending:
             print(f"[engine] opening scan waiting for complete market data: {', '.join(pending)}")

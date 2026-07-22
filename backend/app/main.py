@@ -8,6 +8,7 @@ import datetime
 import math
 import threading
 from contextlib import asynccontextmanager
+from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -308,10 +309,15 @@ def reset_algo_settings(algo_id: str, _user=Depends(require_auth)):
 @app.get("/api/algo/{algo_id}/scan-results")
 def get_scan_results(algo_id: str, _user=Depends(require_auth)):
     from app.engine import SCAN_RESULTS
-    return SCAN_RESULTS.get(algo_id, {
+    strategy = get_strategy_or_raise(algo_id)
+    result = SCAN_RESULTS.get(algo_id, {
         "algo_id": algo_id,
         "message": "No scan run yet today. Results appear at 9:16 AM."
     })
+    schedule_status = getattr(strategy, "schedule_status", None)
+    if schedule_status:
+        result = {**result, "schedule": schedule_status(datetime.datetime.now(ZoneInfo("Asia/Kolkata")))}
+    return result
 
 
 @app.get("/api/compare")

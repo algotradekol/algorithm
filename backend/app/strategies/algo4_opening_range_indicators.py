@@ -98,6 +98,21 @@ class Algo4OpeningRangeIndicators(Strategy):
         deadline = (datetime.datetime.strptime(self.scan_candle_time(), "%H:%M") + datetime.timedelta(minutes=2)).strftime("%H:%M")
         return current_time >= deadline
 
+    def schedule_status(self, now: datetime.datetime) -> dict:
+        if not self.settings.get("test_schedule_enabled"):
+            return {"enabled": False}
+        candle_time = self.scan_candle_time()
+        entry_time = (datetime.datetime.strptime(candle_time, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M")
+        current_time = now.strftime("%H:%M")
+        state = "waiting"
+        if candle_time <= current_time < entry_time:
+            state = "collecting_candle"
+        elif entry_time <= current_time < (datetime.datetime.strptime(entry_time, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M"):
+            state = "evaluating_entries"
+        elif current_time >= (datetime.datetime.strptime(entry_time, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M"):
+            state = "finished"
+        return {"enabled": True, "candle_time": candle_time, "entry_time": entry_time, "state": state}
+
     def on_tick(self, symbol: str, ltp: float, timestamp):
         pass
 

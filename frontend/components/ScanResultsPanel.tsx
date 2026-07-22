@@ -65,6 +65,7 @@ export default function ScanResultsPanel({ results }: { results: any }) {
 
   return (
     <section className="rounded border border-[#1f2937] bg-[#111827] p-3">
+      {results.schedule?.enabled && <TestScheduleStatus schedule={results.schedule} />}
       {results.scan_status && results.scan_status !== 'complete' && (
         <div className="mb-3 rounded border border-[#f59e0b]/50 bg-[#f59e0b]/10 px-3 py-2 text-xs text-[#fbbf24]">
           <i className="ri-error-warning-fill mr-1" />
@@ -144,6 +145,16 @@ export default function ScanResultsPanel({ results }: { results: any }) {
       </div>
     </section>
   );
+}
+
+function TestScheduleStatus({ schedule }: { schedule: any }) {
+  const messages: Record<string, string> = {
+    waiting: `Scheduled test: waiting to collect the ${schedule.candle_time} IST candle. Entry evaluation starts at ${schedule.entry_time}.`,
+    collecting_candle: `Scheduled test is active: collecting the ${schedule.candle_time} IST candle across the watchlist.`,
+    evaluating_entries: `Scheduled test is evaluating the ${schedule.candle_time} candle and opening eligible paper positions.`,
+    finished: `Scheduled test window ended. Review the scan funnel and positions below.`,
+  };
+  return <div className="mb-3 rounded border border-[#3b82f6]/50 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]"><i className="ri-time-fill mr-1" />{messages[schedule.state] || 'Scheduled test status is updating.'}</div>;
 }
 
 function ScanStat({ label, value }: { label: string; value: number }) {
