@@ -19,6 +19,7 @@ tracks the ₹50,000-per-trade capital allocation and P&L against it.
 import datetime
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from collections import defaultdict
 from .base import Strategy
 from ..paper_broker import PaperBroker
 from ..fyers_client import get_previous_close
@@ -43,6 +44,7 @@ class Algo1OpeningRange(Strategy):
         self.buy_candidates: list[str] = []
         self.sell_candidates: list[str] = []
         self.candidate_details: dict[str, dict] = {}
+        self.opening_candles: dict[str, list[dict]] = defaultdict(list)
         self.scan_seen_symbols: set[str] = set()
         self.prev_close_ready_symbols: set[str] = set()
         self.open_extreme_symbols: set[str] = set()
@@ -104,22 +106,30 @@ class Algo1OpeningRange(Strategy):
     def scan_candle_time(self) -> str:
         return self.settings.get("test_candle_time", "11:10") if self.settings.get("test_schedule_enabled") else "09:15"
 
+    def _schedule_time(self, minutes_after_start: int) -> str:
+        return (datetime.datetime.strptime(self.scan_candle_time(), "%H:%M") + datetime.timedelta(minutes=minutes_after_start)).strftime("%H:%M")
+
+    def _is_collection_candle(self, candle_time: str) -> bool:
+        # The signal is the combined 9:15, 9:16 and 9:17 candles. The
+        # preceding minute is only used to have the live feed ready.
+        return self.scan_candle_time() <= candle_time < self._schedule_time(3)
+
     def entry_window(self, current_time: str) -> bool:
-        entry = (datetime.datetime.strptime(self.scan_candle_time(), "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M")
+        entry = self._schedule_time(3)
         return entry <= current_time < (datetime.datetime.strptime(entry, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M")
 
     def entry_window_elapsed(self, current_time: str) -> bool:
-        deadline = (datetime.datetime.strptime(self.scan_candle_time(), "%H:%M") + datetime.timedelta(minutes=2)).strftime("%H:%M")
+        deadline = self._schedule_time(4)
         return current_time >= deadline
 
     def schedule_status(self, now: datetime.datetime) -> dict:
         if not self.settings.get("test_schedule_enabled"):
             return {"enabled": False}
         candle_time = self.scan_candle_time()
-        entry_time = (datetime.datetime.strptime(candle_time, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M")
+        entry_time = self._schedule_time(3)
         current_time = now.strftime("%H:%M")
         state = "waiting"
-        if candle_time <= current_time < entry_time:
+        if self._schedule_time(-1) <= current_time < entry_time:
             state = "collecting_candle"
         elif entry_time <= current_time < (datetime.datetime.strptime(entry_time, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M"):
             state = "evaluating_entries"
@@ -131,57 +141,77 @@ class Algo1OpeningRange(Strategy):
         pass  # algo1 only acts on the 9:15 candle close and the 9:16 entry check
 
     def on_candle_close(self, symbol: str, candle: dict, indicators: dict):
-        # Only care about the very first candle of the day (9:15-9:16 bar)
-        if candle["time"].strftime("%H:%M") != self.scan_candle_time():
+        if not self._is_collection_candle(candle["time"].strftime("%H:%M")):
             return
 
         self.scan_seen_symbols.add(symbol)
-        prev_close = self.prev_close.get(symbol)
-        if not prev_close:
-            return
+        self.opening_candles[symbol].append(candle)
 
-        open_price, high, low = candle["open"], candle["high"], candle["low"]
-        self.prev_close_ready_symbols.add(symbol)
-        buy_shape = open_price == low
-        sell_shape = open_price == high
-        gap_pct = abs(open_price - prev_close) / prev_close * 100
-        # Preserve every usable opening candle for the funnel audit, not only
-        # the rows that later pass the gap rule.
-        self.candidate_details[symbol] = {
-            "symbol": symbol,
-            "side": "WATCH",
-            "open": open_price,
-            "high": high,
-            "low": low,
-            "close": candle["close"],
-            "prev_close": prev_close,
-            "gap_pct": gap_pct,
-            "candle_received": True,
-            "shape_passed": buy_shape or sell_shape,
-            "gap_passed": False,
-            "passed_indicators": True,
-            "indicator_results": {},
-            "selected_for_trade": False,
-            "rejection_reason": "failed_opening_shape" if not (buy_shape or sell_shape) else "failed_gap_filter",
+    def _combined_opening_candle(self, candles: list[dict]) -> dict:
+        return {
+            "time": candles[0]["time"],
+            "open": candles[0]["open"],
+            "high": max(candle["high"] for candle in candles),
+            "low": min(candle["low"] for candle in candles),
+            "close": candles[-1]["close"],
+            "volume": sum(float(candle.get("volume") or 0) for candle in candles),
+            "window_candle_count": len(candles),
         }
 
-        if buy_shape:
-            self.open_extreme_symbols.add(symbol)
-            if gap_pct <= GAP_LIMIT_PCT:
-                self.buy_candidates.append(symbol)
-                self.candidate_details[symbol].update({"side": "BUY", "gap_passed": True, "rejection_reason": None})
+    def _build_candidates_from_collection(self):
+        self.buy_candidates = []
+        self.sell_candidates = []
+        self.candidate_details = {}
+        self.open_extreme_symbols = set()
+        self.prev_close_ready_symbols = set()
+        for symbol, candles in self.opening_candles.items():
+            prev_close = self.prev_close.get(symbol)
+            if not prev_close:
+                continue
 
-        if sell_shape:
-            self.open_extreme_symbols.add(symbol)
-            if gap_pct <= GAP_LIMIT_PCT:
-                self.sell_candidates.append(symbol)
-                self.candidate_details[symbol].update({"side": "SELL", "gap_passed": True, "rejection_reason": None})
+            candle = self._combined_opening_candle(candles)
+            open_price, high, low = candle["open"], candle["high"], candle["low"]
+            self.prev_close_ready_symbols.add(symbol)
+            buy_shape = open_price == low
+            sell_shape = open_price == high
+            gap_pct = abs(open_price - prev_close) / prev_close * 100
+            self.candidate_details[symbol] = {
+                "symbol": symbol,
+                "side": "WATCH",
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": candle["close"],
+                "prev_close": prev_close,
+                "gap_pct": gap_pct,
+                "candle_received": True,
+                "window_candle_count": candle["window_candle_count"],
+                "shape_passed": buy_shape or sell_shape,
+                "gap_passed": False,
+                "passed_indicators": True,
+                "indicator_results": {},
+                "selected_for_trade": False,
+                "rejection_reason": "failed_opening_shape" if not (buy_shape or sell_shape) else "failed_gap_filter",
+            }
+
+            if buy_shape:
+                self.open_extreme_symbols.add(symbol)
+                if gap_pct <= GAP_LIMIT_PCT:
+                    self.buy_candidates.append(symbol)
+                    self.candidate_details[symbol].update({"side": "BUY", "gap_passed": True, "rejection_reason": None})
+
+            if sell_shape:
+                self.open_extreme_symbols.add(symbol)
+                if gap_pct <= GAP_LIMIT_PCT:
+                    self.sell_candidates.append(symbol)
+                    self.candidate_details[symbol].update({"side": "SELL", "gap_passed": True, "rejection_reason": None})
 
     def evaluate_entries(self, get_ltp_fn):
-        """Called by the engine at 9:16. get_ltp_fn(symbol) -> current price."""
+        """Called at 9:18 after the three-minute opening collection window."""
         today = datetime.date.today()
         if self.entries_evaluated_today == today:
             return True
+        self._build_candidates_from_collection()
         if not self._opening_data_ready():
             self._record_scan_results([], [], scan_status="incomplete", scan_message=self._opening_data_message())
             return False
@@ -189,6 +219,8 @@ class Algo1OpeningRange(Strategy):
 
         max_total = self.settings["max_trades_per_day"]
         max_per_side = self.settings["max_buy_trades"]
+        self.buy_candidates.sort(key=lambda symbol: self.candidate_details[symbol]["gap_pct"], reverse=True)
+        self.sell_candidates.sort(key=lambda symbol: self.candidate_details[symbol]["gap_pct"], reverse=True)
         buys = self.buy_candidates[:max_per_side]
         sells = self.sell_candidates[:self.settings["max_sell_trades"]]
 
@@ -225,7 +257,7 @@ class Algo1OpeningRange(Strategy):
         required = min(MIN_OPENING_READY_SYMBOLS, len(self.watchlist))
         return (
             "Opening scan was not eligible for entry: "
-            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} {self.scan_candle_time()} IST candles and "
+            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} symbols during the {self.scan_candle_time()}-{self._schedule_time(2)} IST window and "
             f"matched {self._opening_ready_symbol_count()}/{len(self.watchlist)} symbols with previous closes "
             f"(requires at least {required} ready symbols to detect a healthy feed). No late trades will be placed."
         )
@@ -270,8 +302,8 @@ class Algo1OpeningRange(Strategy):
         candle_shape = "open = low" if side == "BUY" else "open = high"
         gap_text = f"{float(gap_pct):.2f}%" if gap_pct is not None else "--"
         return (
-            f"{self.scan_candle_time()} candle {candle_shape}; gap {gap_text} within <= {GAP_LIMIT_PCT:.2f}%; "
-            f"entry during the following minute. Open {open_price}, prev close {prev_close}."
+            f"{self.scan_candle_time()}-{self._schedule_time(2)} opening window {candle_shape}; gap {gap_text} within <= {GAP_LIMIT_PCT:.2f}%; "
+            f"ranked by gap and entered at {self._schedule_time(3)}. Open {open_price}, prev close {prev_close}."
         )
 
     def _record_scan_results(
@@ -342,7 +374,7 @@ class Algo1OpeningRange(Strategy):
             "scan_message": scan_message,
             "condition_breakdown": [
                 {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
-                {"label": f"Condition 1: {self.scan_candle_time()} candle received", "passed": len(self.scan_seen_symbols), "total": len(self.watchlist)},
+                {"label": f"Condition 1: {self.scan_candle_time()}-{self._schedule_time(2)} candles received", "passed": len(self.scan_seen_symbols), "total": len(self.watchlist)},
                 {"label": "Condition 2: open equals low/high", "passed": len(self.open_extreme_symbols), "total": len(self.scan_seen_symbols)},
                 {"label": "Condition 3: opening gap <= 2%", "passed": sum(1 for row in rows if row.get("gap_passed")), "total": len(self.open_extreme_symbols)},
                 {"label": "Final: selected for trade", "passed": len(self.selected_symbols), "total": len(rows)},

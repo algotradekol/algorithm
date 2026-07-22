@@ -69,7 +69,7 @@ export default function BacktestTab() {
           <label><span className="label">End date</span><input value={endDate} onChange={(e) => setEndDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <div className="flex items-end"><button onClick={run} disabled={['queued', 'running'].includes(job?.status)} className="min-h-10 w-full rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"><i className="ri-play-circle-fill mr-2" />Run range backtest</button></div>
         </div>
-        <p className="mt-3 text-xs text-[#f59e0b]"><i className="ri-error-warning-fill mr-1" />Maximum 31 calendar days. Entry uses the 09:16 candle open. If a later candle touches both SL and target, SL is assumed first.</p>
+        <p className="mt-3 text-xs text-[#f59e0b]"><i className="ri-error-warning-fill mr-1" />Maximum 31 calendar days. Signal uses the combined 09:15-09:17 window; entry uses the 09:18 candle open. If a later candle touches both SL and target, SL is assumed first.</p>
       </div>
 
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}

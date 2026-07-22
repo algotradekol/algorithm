@@ -1,4 +1,4 @@
-"""Historical, read-only replay for the two live 09:15 strategies."""
+"""Historical, read-only replay for the two live opening-window strategies."""
 import datetime
 import threading
 import uuid
@@ -14,6 +14,10 @@ IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
 SUPPORTED_ALGOS = {"algo1", "algo2"}
 MAX_WORKERS = 2
 MAX_BACKTEST_DAYS = 31
+OPENING_WINDOW_START = "09:15"
+OPENING_WINDOW_END = "09:18"
+ENTRY_TIME = "09:18"
+EXIT_SCAN_START = "09:19"
 
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -205,7 +209,7 @@ def _run_job(
                     row["rejection_reason"] = None
                 else:
                     row["selected_for_trade"] = False
-                    row["rejection_reason"] = "no_09_16_entry_candle"
+                    row["rejection_reason"] = "no_09_18_entry_candle"
             daily_result["trades"] = trades
             daily_result["summary"] = {
                 **_performance_summary(trades),
@@ -260,7 +264,7 @@ def _simulate(algo_id: str, target_date: datetime.date, watchlist: list[str], hi
         if trade:
             trades.append(trade)
         row["selected_for_trade"] = bool(trade)
-        row["rejection_reason"] = None if trade else "no_09_16_entry_candle"
+        row["rejection_reason"] = None if trade else "no_09_18_entry_candle"
 
     for row in rows:
         if row.get("side") and row.get("filters_passed") and row["symbol"] not in selected_symbols:
@@ -273,11 +277,11 @@ def _simulate(algo_id: str, target_date: datetime.date, watchlist: list[str], hi
         "algo_id": algo_id,
         "date": target_date.isoformat(),
         "mode": "historical_candle_replay",
-        "execution_assumption": "Entry uses the 09:16 candle open. If a later candle touches both stop-loss and target, stop-loss is assumed first (conservative).",
+        "execution_assumption": "Signal uses the combined 09:15-09:17 window; entry uses the 09:18 candle open. If a later candle touches both stop-loss and target, stop-loss is assumed first (conservative).",
         "summary": {**summary, "buy_count": buys, "sell_count": sells},
         "condition_breakdown": [
             {"label": "Scanned universe", "passed": len(watchlist), "total": len(watchlist)},
-            {"label": "Condition 1: 09:15 candle received", "passed": condition["candle"], "total": len(watchlist)},
+            {"label": "Condition 1: 09:15-09:17 candles received", "passed": condition["candle"], "total": len(watchlist)},
             {"label": "Condition 2: open equals low/high", "passed": condition["shape"], "total": condition["candle"]},
             {"label": "Condition 3: gap rule", "passed": condition["gap"], "total": condition["shape"]},
             {"label": "Condition 4: enabled filters", "passed": condition["filters"], "total": condition["gap"]},
@@ -312,11 +316,11 @@ def _prepare_daily_result(
         "algo_id": algo_id,
         "date": target_date.isoformat(),
         "mode": "historical_candle_replay",
-        "execution_assumption": "Entry uses the 09:16 candle open. If a later candle touches both stop-loss and target, stop-loss is assumed first (conservative).",
+        "execution_assumption": "Signal uses the combined 09:15-09:17 window; entry uses the 09:18 candle open. If a later candle touches both stop-loss and target, stop-loss is assumed first (conservative).",
         "summary": {},
         "condition_breakdown": [
             {"label": "Scanned universe", "passed": watchlist_size, "total": watchlist_size},
-            {"label": "Condition 1: 09:15 candle received", "passed": condition["candle"], "total": watchlist_size},
+            {"label": "Condition 1: 09:15-09:17 candles received", "passed": condition["candle"], "total": watchlist_size},
             {"label": "Condition 2: open equals low/high", "passed": condition["shape"], "total": condition["candle"]},
             {"label": "Condition 3: gap rule", "passed": condition["gap"], "total": condition["shape"]},
             {"label": "Condition 4: enabled filters", "passed": condition["filters"], "total": condition["gap"]},
@@ -385,7 +389,7 @@ def _range_result(
             "summary": day_summary,
             "condition_breakdown": day["condition_breakdown"],
             "data_available_symbols": next(
-                (step["passed"] for step in day["condition_breakdown"] if step["label"] == "Condition 1: 09:15 candle received"), 0,
+                (step["passed"] for step in day["condition_breakdown"] if step["label"] == "Condition 1: 09:15-09:17 candles received"), 0,
             ),
             "trades": day["trades"],
             "candidates": day["candidates"],
@@ -397,7 +401,7 @@ def _range_result(
         "start_date": first_date.isoformat(),
         "end_date": last_date.isoformat(),
         "mode": "historical_candle_replay",
-        "execution_assumption": "Entry uses the 09:16 candle open. If a later candle touches both stop-loss and target, stop-loss is assumed first (conservative).",
+        "execution_assumption": "Signal uses the combined 09:15-09:17 window; entry uses the 09:18 candle open. If a later candle touches both stop-loss and target, stop-loss is assumed first (conservative).",
         "summary": {**summary, "trading_days_replayed": len(daily_results), "max_drawdown": round(max_drawdown, 2)},
         "best_day": {"date": best_day["date"], "net_pnl": best_day["summary"]["net_pnl"]} if best_day else None,
         "worst_day": {"date": worst_day["date"], "net_pnl": worst_day["summary"]["net_pnl"]} if worst_day else None,
@@ -407,10 +411,21 @@ def _range_result(
 
 
 def _evaluate_symbol(algo_id: str, symbol: str, target_date: datetime.date, history: list[dict], settings: dict) -> dict:
-    opening = next((candle for candle in history if candle["time"].date() == target_date and candle["time"].strftime("%H:%M") == "09:15"), None)
-    base = {"symbol": symbol, "has_opening_candle": bool(opening), "shape_passed": False, "gap_passed": False, "filters_passed": False, "selected_for_trade": False, "rejection_reason": "missing_09_15_candle", "indicator_results": {}}
-    if not opening:
+    opening_candles = [
+        candle for candle in history
+        if candle["time"].date() == target_date and OPENING_WINDOW_START <= candle["time"].strftime("%H:%M") < OPENING_WINDOW_END
+    ]
+    base = {"symbol": symbol, "has_opening_candle": bool(opening_candles), "shape_passed": False, "gap_passed": False, "filters_passed": False, "selected_for_trade": False, "rejection_reason": "missing_09_15_09_17_window", "indicator_results": {}}
+    if not opening_candles:
         return base
+    opening = {
+        "time": opening_candles[0]["time"],
+        "open": opening_candles[0]["open"],
+        "high": max(candle["high"] for candle in opening_candles),
+        "low": min(candle["low"] for candle in opening_candles),
+        "close": opening_candles[-1]["close"],
+        "volume": sum(float(candle.get("volume") or 0) for candle in opening_candles),
+    }
     prior = [candle for candle in history if candle["time"].date() < target_date]
     prev_close = float(prior[-1]["close"]) if prior else None
     base.update({
@@ -450,7 +465,7 @@ def _evaluate_symbol(algo_id: str, symbol: str, target_date: datetime.date, hist
         base["rejection_reason"] = "slots_full"
         return base
 
-    prior_and_opening = [candle for candle in history if candle["time"] <= opening["time"]]
+    prior_and_opening = [candle for candle in history if candle["time"].date() < target_date or candle["time"].strftime("%H:%M") < OPENING_WINDOW_END]
     day_candles = [candle for candle in prior_and_opening if candle["time"].date() == target_date]
     volume = float(opening.get("volume") or 0)
     total_value = sum(float(candle["close"]) * float(candle.get("volume") or 0) for candle in day_candles)
@@ -489,8 +504,8 @@ def _select_candidates(candidates: list[dict], settings: dict) -> list[dict]:
     max_total = int(settings["max_trades_per_day"])
     max_buy = int(settings["max_buy_trades"])
     max_sell = int(settings["max_sell_trades"])
-    buys = [row for row in candidates if row["side"] == "BUY"]
-    sells = [row for row in candidates if row["side"] == "SELL"]
+    buys = sorted((row for row in candidates if row["side"] == "BUY"), key=lambda row: float(row.get("gap_pct") or 0), reverse=True)
+    sells = sorted((row for row in candidates if row["side"] == "SELL"), key=lambda row: float(row.get("gap_pct") or 0), reverse=True)
     selected = buys[:max_buy] + sells[:max_sell]
     remaining = max(0, max_total - len(selected))
     selected += (buys[max_buy:] + sells[max_sell:])[:remaining]
@@ -498,7 +513,7 @@ def _select_candidates(candidates: list[dict], settings: dict) -> list[dict]:
 
 
 def _simulate_trade(row: dict, history: list[dict], target_date: datetime.date, settings: dict, charges_config: dict) -> dict | None:
-    entry_candle = next((candle for candle in history if candle["time"].date() == target_date and candle["time"].strftime("%H:%M") == "09:16"), None)
+    entry_candle = next((candle for candle in history if candle["time"].date() == target_date and candle["time"].strftime("%H:%M") == ENTRY_TIME), None)
     if not entry_candle:
         return None
     side = row["side"]
@@ -512,7 +527,7 @@ def _simulate_trade(row: dict, history: list[dict], target_date: datetime.date, 
     exit_price = None
     exit_reason = None
     exit_time = None
-    candles = [candle for candle in history if candle["time"].date() == target_date and candle["time"].strftime("%H:%M") >= "09:17" and candle["time"].strftime("%H:%M") < "15:15"]
+    candles = [candle for candle in history if candle["time"].date() == target_date and candle["time"].strftime("%H:%M") >= EXIT_SCAN_START and candle["time"].strftime("%H:%M") < "15:15"]
     for candle in candles:
         # Conservative order: an existing stop is checked before target when
         # both are touched inside the same OHLC candle.
@@ -548,6 +563,6 @@ def _simulate_trade(row: dict, history: list[dict], target_date: datetime.date, 
         "entry_price": round(entry, 2), "entry_time": entry_candle["time"].isoformat(),
         "exit_price": round(exit_price, 2), "exit_time": exit_time.isoformat(), "exit_reason": exit_reason,
         "target_price": round(target, 2), "sl_price": round(sl, 2),
-        "entry_trigger": f"Historical {target_date.isoformat()} 09:15 opening-range replay.",
+        "entry_trigger": f"Historical {target_date.isoformat()} 09:15-09:17 opening-window replay.",
         **charges,
     }

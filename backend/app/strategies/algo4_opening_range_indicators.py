@@ -32,6 +32,8 @@ class Algo4OpeningRangeIndicators(Strategy):
         self.warmup_loaded: set[str] = set()
         self.candidates: dict[str, tuple[str, float]] = {}
         self.candidate_details: dict[str, dict] = {}
+        self.opening_candles: dict[str, list[dict]] = defaultdict(list)
+        self.opening_indicators: dict[str, dict] = {}
         self.selected_symbols: set[str] = set()
         self.scan_seen_symbols: set[str] = set()
         self.entries_evaluated_today = None
@@ -94,22 +96,28 @@ class Algo4OpeningRangeIndicators(Strategy):
     def scan_candle_time(self) -> str:
         return self.settings.get("test_candle_time", "11:10") if self.settings.get("test_schedule_enabled") else "09:15"
 
+    def _schedule_time(self, minutes_after_start: int) -> str:
+        return (datetime.datetime.strptime(self.scan_candle_time(), "%H:%M") + datetime.timedelta(minutes=minutes_after_start)).strftime("%H:%M")
+
+    def _is_collection_candle(self, candle_time: str) -> bool:
+        return self.scan_candle_time() <= candle_time < self._schedule_time(3)
+
     def entry_window(self, current_time: str) -> bool:
-        entry = (datetime.datetime.strptime(self.scan_candle_time(), "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M")
+        entry = self._schedule_time(3)
         return entry <= current_time < (datetime.datetime.strptime(entry, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M")
 
     def entry_window_elapsed(self, current_time: str) -> bool:
-        deadline = (datetime.datetime.strptime(self.scan_candle_time(), "%H:%M") + datetime.timedelta(minutes=2)).strftime("%H:%M")
+        deadline = self._schedule_time(4)
         return current_time >= deadline
 
     def schedule_status(self, now: datetime.datetime) -> dict:
         if not self.settings.get("test_schedule_enabled"):
             return {"enabled": False}
         candle_time = self.scan_candle_time()
-        entry_time = (datetime.datetime.strptime(candle_time, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M")
+        entry_time = self._schedule_time(3)
         current_time = now.strftime("%H:%M")
         state = "waiting"
-        if candle_time <= current_time < entry_time:
+        if self._schedule_time(-1) <= current_time < entry_time:
             state = "collecting_candle"
         elif entry_time <= current_time < (datetime.datetime.strptime(entry_time, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M"):
             state = "evaluating_entries"
@@ -127,27 +135,53 @@ class Algo4OpeningRangeIndicators(Strategy):
             del history[:-120]
         self.total_value[symbol] += float(candle["close"]) * float(candle.get("volume") or 0)
 
-        if candle["time"].strftime("%H:%M") != self.scan_candle_time():
+        if not self._is_collection_candle(candle["time"].strftime("%H:%M")):
             return
 
         self.scan_seen_symbols.add(symbol)
+        self.opening_candles[symbol].append(candle)
+        self.opening_indicators[symbol] = indicators
 
-        side, details = self._signal_details(symbol, candle, indicators)
-        if details:
+    def _combined_opening_candle(self, candles: list[dict]) -> dict:
+        return {
+            "time": candles[0]["time"],
+            "open": candles[0]["open"],
+            "high": max(candle["high"] for candle in candles),
+            "low": min(candle["low"] for candle in candles),
+            "close": candles[-1]["close"],
+            "volume": sum(float(candle.get("volume") or 0) for candle in candles),
+            "window_candle_count": len(candles),
+        }
+
+    def _build_candidates_from_collection(self):
+        self.candidates = {}
+        self.candidate_details = {}
+        for symbol, candles in self.opening_candles.items():
+            candle = self._combined_opening_candle(candles)
+            side, details = self._signal_details(symbol, candle, self.opening_indicators.get(symbol, {}))
+            if not details:
+                continue
+            details["window_candle_count"] = candle["window_candle_count"]
             self.candidate_details[symbol] = details
-        if side and details and details["passed_indicators"]:
-            self.candidates[symbol] = (side, candle["close"])
+            if side and details["passed_indicators"]:
+                self.candidates[symbol] = (side, candle["close"])
 
     def evaluate_entries(self, get_ltp_fn):
         today = datetime.date.today()
         if self.entries_evaluated_today == today:
             return True
+        self._build_candidates_from_collection()
         if not self._opening_data_ready():
             self._record_scan_results(scan_status="incomplete", scan_message=self._opening_data_message())
             return False
         self.entries_evaluated_today = today
 
-        for symbol, (side, fallback_price) in list(self.candidates.items()):
+        ranked_candidates = sorted(
+            self.candidates.items(),
+            key=lambda item: self.candidate_details[item[0]]["gap_pct"],
+            reverse=True,
+        )
+        for symbol, (side, fallback_price) in ranked_candidates:
             entry_price = get_ltp_fn(symbol) or fallback_price
             self._enter(symbol, side, entry_price)
         self._record_scan_results()
@@ -166,7 +200,7 @@ class Algo4OpeningRangeIndicators(Strategy):
         ready_count = len(self._opening_ready_symbols())
         return (
             "Opening scan was not eligible for entry: "
-            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} {self.scan_candle_time()} IST candles and "
+            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} symbols during the {self.scan_candle_time()}-{self._schedule_time(2)} IST window and "
             f"matched {ready_count}/{len(self.watchlist)} symbols with previous closes "
             f"(requires at least {required} ready symbols to detect a healthy feed). No late trades will be placed."
         )
@@ -307,8 +341,8 @@ class Algo4OpeningRangeIndicators(Strategy):
         if failed_filters:
             filter_text += f"; failed: {', '.join(failed_filters)}"
         return (
-            f"{self.scan_candle_time()} candle {candle_shape}; gap {gap_text} between {MIN_GAP_PCT:.2f}% and {MAX_GAP_PCT:.2f}%; "
-            f"passed filters: {filter_text}. Entry during the following minute."
+            f"{self.scan_candle_time()}-{self._schedule_time(2)} opening window {candle_shape}; gap {gap_text} between {MIN_GAP_PCT:.2f}% and {MAX_GAP_PCT:.2f}%; "
+            f"passed filters: {filter_text}. Ranked by gap and entered at {self._schedule_time(3)}."
         )
 
     def _record_scan_results(self, scan_status: str = "complete", scan_message: str | None = None):
@@ -382,7 +416,7 @@ class Algo4OpeningRangeIndicators(Strategy):
     def _condition_breakdown(self, rows: list[dict]) -> list[dict]:
         steps = [
             {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
-            {"label": f"Condition 1: {self.scan_candle_time()} opening range + gap", "passed": sum(1 for row in rows if row.get("opening_range_gap_passed")), "total": len(self.watchlist)},
+            {"label": f"Condition 1: {self.scan_candle_time()}-{self._schedule_time(2)} opening range + gap", "passed": sum(1 for row in rows if row.get("opening_range_gap_passed")), "total": len(self.watchlist)},
         ]
         survivors = [row for row in rows if row.get("opening_range_gap_passed")]
         labels = {

@@ -230,7 +230,7 @@ function DashboardContent() {
               <AlgoTab
                 algoId="algo1"
                 displayName="UN1 9:15 v15 - Simple"
-                description="Simple 9:15 opening-range strategy from UN1_915_v15(simple). Open=low gives BUY, open=high gives SELL, max 2% opening gap, 9:16 entry, 2% target, 1% stop loss."
+                description="Ranks the combined 9:15-9:17 opening window. Open=low gives BUY, open=high gives SELL, max 2% opening gap, 9:18 entry, 2% target, 1% stop loss."
                 onWebSocketStatus={setWsStatus}
               />
             )}
@@ -238,7 +238,7 @@ function DashboardContent() {
               <AlgoTab
                 algoId="algo2"
                 displayName="UN1 9:15 v14 - Filter"
-                description="Filtered 9:15 opening-range strategy from UN1_915_v14(filter). Adds VWAP, EMA20/EMA50, RSI 50, ADX 20, Supertrend, volume, liquidity, and price-range filters."
+                description="Ranks the combined 9:15-9:17 opening window, then applies VWAP, EMA20/EMA50, RSI 50, ADX 20, Supertrend, volume, liquidity, and price-range filters before the 9:18 entry."
                 onWebSocketStatus={setWsStatus}
               />
             )}
