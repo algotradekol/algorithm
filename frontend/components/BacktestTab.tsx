@@ -76,11 +76,27 @@ export default function BacktestTab() {
       </div>
 
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
-      {job && !result && <section className="panel p-4"><div className="flex justify-between gap-3 text-sm text-gray-200"><span>{job.message}</span><span className="num">{progressCompleted} / {progressTotal}</span></div><div className="mt-3 h-2 overflow-hidden rounded bg-[#020617]"><div className="h-full bg-[#3b82f6]" style={{ width: `${progress}%` }} /></div><p className="mt-2 text-xs text-gray-500">{progress}% complete. {replaying ? `${job.replay_failed || 0} selected signals could not be replayed.` : `${job.failed_symbols || 0} symbols returned no usable history.`}</p></section>}
+      {job && !result && <section className="panel p-4"><div className="flex justify-between gap-3 text-sm text-gray-200"><span>{job.message}</span><span className="num">{progressCompleted} / {progressTotal}</span></div><div className="mt-3 h-2 overflow-hidden rounded bg-[#020617]"><div className="h-full bg-[#3b82f6] transition-[width] duration-500" style={{ width: `${progress}%` }} /></div><p className="mt-2 text-xs text-gray-500">{progress}% complete. {replaying ? `${job.replay_failed || 0} selected signals could not be replayed.` : `${job.failed_symbols || 0} symbols returned no usable history.`}</p>{replaying && <ReplayMonitor activity={job.replay_activity || []} />}</section>}
       {job?.status === 'failed' && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{job.error || job.message}</p>}
       {result && <BacktestResult result={result} />}
     </section>
   );
+}
+
+function ReplayMonitor({ activity }: { activity: any[] }) {
+  return <div className="mt-4 border-t border-[#1f2937] pt-3">
+    <div className="flex items-center gap-2 text-xs font-semibold uppercase tracking-wide text-gray-400"><i className="ri-radar-fill animate-pulse text-[#3b82f6]" />Live replay monitor <span className="normal-case font-normal text-gray-600">Latest 8 completed simulations</span></div>
+    {!activity.length ? <p className="mt-2 text-xs text-gray-500">Preparing the first selected signal for replay...</p> : <div className="mt-2 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{[...activity].reverse().map((event, index) => {
+      const positive = Number(event.net_pnl) > 0;
+      const negative = Number(event.net_pnl) < 0;
+      const noEntry = event.status === 'NO_ENTRY_CANDLE';
+      return <div key={`${event.date}-${event.symbol}-${index}`} className="border border-[#1f2937] bg-[#0d1117] px-2 py-2 text-xs">
+        <div className="flex items-center justify-between gap-2"><span className="truncate font-mono text-gray-100">{event.symbol}</span><span className={event.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}>{event.side}</span></div>
+        <div className="mt-1 flex items-center justify-between gap-2 text-gray-500"><span>{event.date}</span><span className={noEntry ? 'text-[#f59e0b]' : event.status === 'TARGET' ? 'text-[#22c55e]' : event.status === 'SL' ? 'text-[#ef4444]' : 'text-gray-300'}>{noEntry ? 'No entry candle' : event.status}</span></div>
+        {!noEntry && <div className={`num mt-1 ${positive ? 'text-[#22c55e]' : negative ? 'text-[#ef4444]' : 'text-gray-300'}`}>Net {money(event.net_pnl)}</div>}
+      </div>;
+    })}</div>}
+  </div>;
 }
 
 function BacktestResult({ result }: { result: any }) {

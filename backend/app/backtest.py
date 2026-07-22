@@ -57,6 +57,7 @@ def start_backtest(
         "replay_total": 0,
         "replay_completed": 0,
         "replay_failed": 0,
+        "replay_activity": [],
         "message": "Queued historical candle download.",
         "result": None,
         "error": None,
@@ -248,9 +249,24 @@ def _run_job(
                     trades_by_date[target_date].append(trade)
                     row["selected_for_trade"] = True
                     row["rejection_reason"] = None
+                    _append_replay_activity(job_id, {
+                        "date": target_date.isoformat(),
+                        "symbol": row["symbol"],
+                        "side": row.get("side"),
+                        "status": trade.get("exit_reason", "SIMULATED"),
+                        "entry_price": trade.get("entry_price"),
+                        "exit_price": trade.get("exit_price"),
+                        "net_pnl": trade.get("net_pnl"),
+                    })
                 else:
                     row["selected_for_trade"] = False
                     row["rejection_reason"] = "no_09_18_entry_candle"
+                    _append_replay_activity(job_id, {
+                        "date": target_date.isoformat(),
+                        "symbol": row["symbol"],
+                        "side": row.get("side"),
+                        "status": "NO_ENTRY_CANDLE",
+                    })
                 _increment(job_id, "replay_completed")
                 progress = _job_progress(job_id, "replay_completed")
                 _update(
@@ -294,6 +310,17 @@ def _increment(job_id: str, field: str):
 def _job_progress(job_id: str, field: str) -> int:
     with _lock:
         return int((_jobs.get(job_id) or {}).get(field) or 0)
+
+
+def _append_replay_activity(job_id: str, activity: dict) -> None:
+    """Keep a small real-time audit trail without bloating the job payload."""
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return
+        events = list(job.get("replay_activity") or [])
+        events.append(activity)
+        job["replay_activity"] = events[-8:]
 
 
 def _load_and_simulate_trade(
