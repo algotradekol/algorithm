@@ -1,5 +1,5 @@
 'use client';
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 
 const PAGE_SIZE = 20;
 const COLUMNS = ['symbol', 'side', 'open', 'high', 'low', 'prev_close', 'gap_pct', 'vwap', 'rsi', 'adx', 'supertrend', 'volume', 'selected_for_trade', 'rejection_reason'];
@@ -22,15 +22,25 @@ type FunnelStepData = {
   note?: string;
 };
 
+type ScanFilter = 'all' | 'passed' | 'buy' | 'sell' | 'selected' | 'filtered';
+
 export default function ScanResultsPanel({ results }: { results: any }) {
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState('gap_pct');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [page, setPage] = useState(0);
+  const [scanFilter, setScanFilter] = useState<ScanFilter>('all');
   const rows = results?.passed_opening_range || [];
+
+  useEffect(() => {
+    setScanFilter('all');
+    setPage(0);
+  }, [results?.scan_time]);
+
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return rows
+      .filter((row: any) => matchesScanFilter(row, scanFilter))
       .filter((row: any) => !q || String(row.symbol || '').toLowerCase().includes(q))
       .sort((a: any, b: any) => {
         const av = cellValue(a, sortKey);
@@ -40,7 +50,7 @@ export default function ScanResultsPanel({ results }: { results: any }) {
           ? String(av).localeCompare(String(bv))
           : String(bv).localeCompare(String(av));
       });
-  }, [rows, query, sortKey, sortDir]);
+  }, [rows, query, scanFilter, sortKey, sortDir]);
 
   if (!results || results.message) {
     return (
@@ -63,6 +73,11 @@ export default function ScanResultsPanel({ results }: { results: any }) {
     }
   }
 
+  function selectFilter(filter: ScanFilter) {
+    setScanFilter(filter);
+    setPage(0);
+  }
+
   return (
     <section className="rounded border border-[#1f2937] bg-[#111827] p-3">
       {results.schedule?.enabled && <TestScheduleStatus schedule={results.schedule} />}
@@ -73,12 +88,12 @@ export default function ScanResultsPanel({ results }: { results: any }) {
         </div>
       )}
       <div className="grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
-        <ScanStat label="Scanned" value={results.total_scanned} />
-        <ScanStat label="Passed Gap Filter" value={rows.length} />
-        <ScanStat label="Buy" value={results.buy_candidates} />
-        <ScanStat label="Sell" value={results.sell_candidates} />
-        <ScanStat label="Selected" value={(results.buy_selected || 0) + (results.sell_selected || 0)} />
-        <ScanStat label="Filtered Out" value={results.total_filtered_out} />
+        <ScanStat label="Scanned" value={results.total_scanned} filter="all" active={scanFilter === 'all'} onClick={() => selectFilter('all')} />
+        <ScanStat label="Passed Gap Filter" value={rows.length} filter="passed" active={scanFilter === 'passed'} onClick={() => selectFilter('passed')} />
+        <ScanStat label="Buy" value={results.buy_candidates} filter="buy" active={scanFilter === 'buy'} onClick={() => selectFilter('buy')} />
+        <ScanStat label="Sell" value={results.sell_candidates} filter="sell" active={scanFilter === 'sell'} onClick={() => selectFilter('sell')} />
+        <ScanStat label="Selected" value={(results.buy_selected || 0) + (results.sell_selected || 0)} filter="selected" active={scanFilter === 'selected'} onClick={() => selectFilter('selected')} />
+        <ScanStat label="Filtered Out" value={results.total_filtered_out} filter="filtered" active={scanFilter === 'filtered'} onClick={() => selectFilter('filtered')} />
       </div>
       <div className="mt-2 text-xs text-gray-500">Last scan: {formatTime(results.scan_time)}</div>
 
@@ -95,7 +110,10 @@ export default function ScanResultsPanel({ results }: { results: any }) {
       </div>
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
-        <h3 className="label">All Candidates</h3>
+        <div>
+          <h3 className="label">{scanFilter === 'all' ? 'All Candidates' : `${filterLabel(scanFilter)} Candidates`}</h3>
+          {scanFilter !== 'all' && <button onClick={() => selectFilter('all')} className="mt-1 text-xs text-[#60a5fa]">Show all candidates</button>}
+        </div>
         <input
           value={query}
           onChange={(e) => { setQuery(e.target.value); setPage(0); }}
@@ -157,13 +175,50 @@ function TestScheduleStatus({ schedule }: { schedule: any }) {
   return <div className="mb-3 rounded border border-[#3b82f6]/50 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]"><i className="ri-time-fill mr-1" />{messages[schedule.state] || 'Scheduled test status is updating.'}</div>;
 }
 
-function ScanStat({ label, value }: { label: string; value: number }) {
+function ScanStat({
+  label,
+  value,
+  filter,
+  active,
+  onClick,
+}: {
+  label: string;
+  value: number;
+  filter: ScanFilter;
+  active: boolean;
+  onClick: () => void;
+}) {
   return (
-    <div className="rounded border border-[#1f2937] bg-[#0d1117] p-2">
+    <button
+      type="button"
+      title={`Show ${filterLabel(filter).toLowerCase()} candidates`}
+      onClick={onClick}
+      className={`min-h-16 rounded border p-2 text-left transition-colors ${active ? 'border-[#3b82f6] bg-[#172554]' : 'border-[#1f2937] bg-[#0d1117] hover:border-[#3b82f6]/70'}`}
+    >
       <div className="label">{label}</div>
       <div className="num mt-1 text-lg font-semibold text-gray-100">{Number(value || 0).toLocaleString('en-IN')}</div>
-    </div>
+    </button>
   );
+}
+
+function matchesScanFilter(row: any, filter: ScanFilter) {
+  if (filter === 'all' || filter === 'passed') return true;
+  if (filter === 'buy') return row.side === 'BUY';
+  if (filter === 'sell') return row.side === 'SELL';
+  if (filter === 'selected') return Boolean(row.selected_for_trade);
+  return Boolean(row.rejection_reason);
+}
+
+function filterLabel(filter: ScanFilter) {
+  const labels: Record<ScanFilter, string> = {
+    all: 'All',
+    passed: 'Passed Gap Filter',
+    buy: 'BUY',
+    sell: 'SELL',
+    selected: 'Selected',
+    filtered: 'Filtered Out',
+  };
+  return labels[filter];
 }
 
 function buildConditionFunnel(results: any, rows: any[]) {

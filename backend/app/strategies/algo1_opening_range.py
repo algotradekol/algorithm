@@ -47,6 +47,7 @@ class Algo1OpeningRange(Strategy):
         self.prev_close_ready_symbols: set[str] = set()
         self.open_extreme_symbols: set[str] = set()
         self.selected_symbols: set[str] = set()
+        self.selected_sides: dict[str, str] = {}
         # Keep the scan audit honest: a candidate selected for an entry slot can
         # still fail to open if its live entry price is unavailable.
         self.entry_failures: dict[str, str] = {}
@@ -264,6 +265,7 @@ class Algo1OpeningRange(Strategy):
             print(f"[algo1] paper entry failed for {symbol}: {exc}")
             return False
         self.selected_symbols.add(symbol)
+        self.selected_sides[symbol] = side
         return True
 
     def _entry_trigger(self, symbol: str, side: str) -> str:
@@ -292,6 +294,11 @@ class Algo1OpeningRange(Strategy):
             row = dict(details)
             row["selected_for_trade"] = symbol in self.selected_symbols
             if row["selected_for_trade"]:
+                # A flat candle can satisfy both open=low and open=high. The
+                # paper broker permits only the first actual entry; show that
+                # real entry side rather than a later overwritten candidate.
+                row["side"] = self.selected_sides.get(symbol, row["side"])
+            if row["selected_for_trade"]:
                 row["rejection_reason"] = None
             elif symbol in self.entry_failures:
                 row["rejection_reason"] = self.entry_failures[symbol]
@@ -309,8 +316,8 @@ class Algo1OpeningRange(Strategy):
             "passed_opening_range": rows,
             "buy_candidates": len(self.buy_candidates),
             "sell_candidates": len(self.sell_candidates),
-            "buy_selected": len(buys),
-            "sell_selected": len(sells),
+            "buy_selected": sum(1 for side in self.selected_sides.values() if side == "BUY"),
+            "sell_selected": sum(1 for side in self.selected_sides.values() if side == "SELL"),
             "overflow_buy": max(0, len(buys) - self.settings["max_buy_trades"]),
             "overflow_sell": max(0, len(sells) - self.settings["max_sell_trades"]),
             "total_filtered_out": max(0, len(self.watchlist) - len(rows)),
