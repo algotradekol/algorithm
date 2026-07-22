@@ -1,8 +1,15 @@
 """Historical, read-only replay for the two live opening-window strategies."""
 import datetime
+import gzip
+import hashlib
+import pickle
+import shutil
+import tempfile
 import threading
 import uuid
+from collections import defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
+from pathlib import Path
 
 from .charges import calculate_charges, get_charges_config
 from .fyers_client import get_intraday_candles_for_range
@@ -22,6 +29,31 @@ EXIT_SCAN_START = "09:19"
 
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
+
+
+class BacktestHistoryCache:
+    """Compressed, job-local candle cache used to avoid replay re-downloads."""
+
+    def __init__(self):
+        self.directory = Path(tempfile.mkdtemp(prefix="algo-backtest-"))
+
+    def _path(self, symbol: str) -> Path:
+        digest = hashlib.sha256(symbol.encode("utf-8")).hexdigest()
+        return self.directory / f"{digest}.pkl.gz"
+
+    def store(self, symbol: str, history: list[dict]) -> bool:
+        if not history:
+            return False
+        with gzip.open(self._path(symbol), "wb") as handle:
+            pickle.dump(history, handle, protocol=pickle.HIGHEST_PROTOCOL)
+        return True
+
+    def load(self, symbol: str) -> list[dict]:
+        with gzip.open(self._path(symbol), "rb") as handle:
+            return pickle.load(handle)
+
+    def cleanup(self) -> None:
+        shutil.rmtree(self.directory, ignore_errors=True)
 
 
 def start_backtest(
@@ -59,6 +91,7 @@ def start_backtest(
         "replay_completed": 0,
         "replay_failed": 0,
         "replay_activity": [],
+        "cached_history_symbols": 0,
         "message": "Queued historical candle download.",
         "result": None,
         "error": None,
@@ -158,6 +191,7 @@ def _run_job(
     last_date: datetime.date,
     watchlist: list[str],
 ):
+    history_cache = BacktestHistoryCache()
     try:
         _update(
             job_id,
@@ -176,19 +210,22 @@ def _run_job(
         symbols_with_history = 0
 
         def screen_symbol(symbol: str):
-            # Keep this history local to one worker. Retaining every symbol's
-            # minute candles was enough to exhaust a Railway container.
+            # Cache each response on disk. Keeping all 500 histories in RAM
+            # exhausted Railway, while discarding them forced duplicate Fyers
+            # requests for every selected replay signal.
             history = get_intraday_candles_for_range(symbol, lookback_start, last_date)
             rows = [_evaluate_symbol(algo_id, symbol, day, history, settings) for day in trading_days]
-            return rows, bool(history)
+            return rows, bool(history), history_cache.store(symbol, history)
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             futures = [pool.submit(screen_symbol, symbol) for symbol in watchlist]
             for future in as_completed(futures):
                 try:
-                    rows, has_history = future.result()
+                    rows, has_history, cached = future.result()
                     if has_history:
                         symbols_with_history += 1
+                    if cached:
+                        _increment(job_id, "cached_history_symbols")
                     else:
                         _increment(job_id, "failed_symbols")
                     for day, row in zip(trading_days, rows):
@@ -215,68 +252,79 @@ def _run_job(
             replay_total=replay_total,
             replay_completed=0,
             replay_failed=0,
-            message=f"Replaying 0 / {replay_total} selected signals across {len(trading_days)} trading days.",
+            message=(
+                f"Replaying 0 / {replay_total} selected signals from the local candle cache "
+                f"across {len(trading_days)} trading days."
+            ),
         )
         charges_config = get_charges_config()
         trades_by_date: dict[datetime.date, list[dict]] = {
             target_date: [] for target_date, _, _ in prepared_days
         }
 
-        # The original serial replay could make a high-cap backtest appear to
-        # freeze for many minutes. Keep concurrency deliberately low to avoid
-        # hammering Fyers, while making measurable forward progress.
+        replay_by_symbol: dict[str, list[tuple[datetime.date, dict]]] = defaultdict(list)
+        for target_date, _, selected in prepared_days:
+            for row in selected:
+                replay_by_symbol[row["symbol"]].append((target_date, row))
+
+        # Replay is now local CPU/disk work. One cached history is used for
+        # every selected date of that symbol, with no second Fyers API call.
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             futures = {}
-            for target_date, _, selected in prepared_days:
-                for row in selected:
-                    future = pool.submit(
-                        _load_and_simulate_trade,
-                        row,
-                        target_date,
-                        lookback_start,
-                        last_date,
-                        settings,
-                        charges_config,
-                    )
-                    futures[future] = (target_date, row)
-            for future in as_completed(futures):
-                target_date, row = futures[future]
-                try:
-                    trade = future.result()
-                except Exception:
-                    trade = None
-                    _increment(job_id, "replay_failed")
-                if trade:
-                    trades_by_date[target_date].append(trade)
-                    row["selected_for_trade"] = True
-                    row["rejection_reason"] = None
-                    _append_replay_activity(job_id, {
-                        "date": target_date.isoformat(),
-                        "symbol": row["symbol"],
-                        "side": row.get("side"),
-                        "status": trade.get("exit_reason", "SIMULATED"),
-                        "entry_price": trade.get("entry_price"),
-                        "exit_price": trade.get("exit_price"),
-                        "net_pnl": trade.get("net_pnl"),
-                    })
-                else:
-                    row["selected_for_trade"] = False
-                    row["rejection_reason"] = "no_09_18_entry_candle"
-                    _append_replay_activity(job_id, {
-                        "date": target_date.isoformat(),
-                        "symbol": row["symbol"],
-                        "side": row.get("side"),
-                        "status": "NO_ENTRY_CANDLE",
-                    })
-                _increment(job_id, "replay_completed")
-                progress = _job_progress(job_id, "replay_completed")
-                _update(
-                    job_id,
-                    message=(
-                        f"Replaying {progress} / {replay_total} selected signals across "
-                        f"{len(trading_days)} trading days."
-                    ),
+            for symbol, selected_rows in replay_by_symbol.items():
+                future = pool.submit(
+                    _replay_cached_symbol,
+                    history_cache,
+                    symbol,
+                    selected_rows,
+                    settings,
+                    charges_config,
                 )
+                futures[future] = selected_rows
+            for future in as_completed(futures):
+                try:
+                    replayed_rows = future.result()
+                except Exception:
+                    replayed_rows = future.result()
+                except Exception:
+                    replayed_rows = [
+                        (target_date, row, None, True)
+                        for target_date, row in futures[future]
+                    ]
+                for target_date, row, trade, failed in replayed_rows:
+                    if failed:
+                        _increment(job_id, "replay_failed")
+                    if trade:
+                        trades_by_date[target_date].append(trade)
+                        row["selected_for_trade"] = True
+                        row["rejection_reason"] = None
+                        _append_replay_activity(job_id, {
+                            "date": target_date.isoformat(),
+                            "symbol": row["symbol"],
+                            "side": row.get("side"),
+                            "status": trade.get("exit_reason", "SIMULATED"),
+                            "entry_price": trade.get("entry_price"),
+                            "exit_price": trade.get("exit_price"),
+                            "net_pnl": trade.get("net_pnl"),
+                        })
+                    else:
+                        row["selected_for_trade"] = False
+                        row["rejection_reason"] = "replay_cache_unavailable" if failed else "no_09_18_entry_candle"
+                        _append_replay_activity(job_id, {
+                            "date": target_date.isoformat(),
+                            "symbol": row["symbol"],
+                            "side": row.get("side"),
+                            "status": "CACHE_UNAVAILABLE" if failed else "NO_ENTRY_CANDLE",
+                        })
+                    _increment(job_id, "replay_completed")
+                    progress = _job_progress(job_id, "replay_completed")
+                    _update(
+                        job_id,
+                        message=(
+                            f"Replaying {progress} / {replay_total} selected signals from the local candle cache "
+                            f"across {len(trading_days)} trading days."
+                        ),
+                    )
 
         daily_results = []
         for target_date, daily_result, _ in prepared_days:
@@ -299,6 +347,8 @@ def _run_job(
         _update(job_id, status="complete", phase="complete", message="Backtest complete.", result=result)
     except Exception as exc:
         _update(job_id, status="failed", error=str(exc), message="Backtest failed.")
+    finally:
+        history_cache.cleanup()
 
 
 def _increment(job_id: str, field: str):
@@ -324,17 +374,19 @@ def _append_replay_activity(job_id: str, activity: dict) -> None:
         job["replay_activity"] = events[-8:]
 
 
-def _load_and_simulate_trade(
-    row: dict,
-    target_date: datetime.date,
-    lookback_start: datetime.date,
-    last_date: datetime.date,
+def _replay_cached_symbol(
+    cache: BacktestHistoryCache,
+    symbol: str,
+    selected_rows: list[tuple[datetime.date, dict]],
     settings: dict,
     charges_config: dict,
-) -> dict | None:
-    """Fetch just one selected symbol's replay candles in a bounded worker."""
-    history = get_intraday_candles_for_range(row["symbol"], lookback_start, last_date)
-    return _simulate_trade(row, history, target_date, settings, charges_config)
+) -> list[tuple[datetime.date, dict, dict | None, bool]]:
+    """Replay all selected dates for one symbol from one cached response."""
+    history = cache.load(symbol)
+    return [
+        (target_date, row, _simulate_trade(row, history, target_date, settings, charges_config), False)
+        for target_date, row in selected_rows
+    ]
 
 
 def _simulate(algo_id: str, target_date: datetime.date, watchlist: list[str], histories: dict[str, list[dict]], settings: dict) -> dict:
