@@ -30,17 +30,21 @@ export default function ScanResultsPanel({ results }: { results: any }) {
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [page, setPage] = useState(0);
   const [scanFilter, setScanFilter] = useState<ScanFilter>('all');
+  const [funnelFilter, setFunnelFilter] = useState<number | null>(null);
   const rows = results?.passed_opening_range || [];
 
   useEffect(() => {
     setScanFilter('all');
+    setFunnelFilter(null);
     setPage(0);
   }, [results?.scan_time]);
 
+  const funnel = buildConditionFunnel(results, rows);
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return rows
       .filter((row: any) => matchesScanFilter(row, scanFilter))
+      .filter((row: any) => funnelFilter === null || matchesFunnelStep(row, funnel[funnelFilter]))
       .filter((row: any) => !q || String(row.symbol || '').toLowerCase().includes(q))
       .sort((a: any, b: any) => {
         const av = cellValue(a, sortKey);
@@ -50,7 +54,7 @@ export default function ScanResultsPanel({ results }: { results: any }) {
           ? String(av).localeCompare(String(bv))
           : String(bv).localeCompare(String(av));
       });
-  }, [rows, query, scanFilter, sortKey, sortDir]);
+  }, [rows, query, scanFilter, funnelFilter, sortKey, sortDir, funnel]);
 
   if (!results || results.message) {
     return (
@@ -61,8 +65,6 @@ export default function ScanResultsPanel({ results }: { results: any }) {
   }
 
   const visible = filtered.slice(page * PAGE_SIZE, page * PAGE_SIZE + PAGE_SIZE);
-  const funnel = buildConditionFunnel(results, rows);
-
   function sort(column: string) {
     setPage(0);
     if (sortKey === column) setSortDir((dir) => dir === 'asc' ? 'desc' : 'asc');
@@ -74,6 +76,13 @@ export default function ScanResultsPanel({ results }: { results: any }) {
 
   function selectFilter(filter: ScanFilter) {
     setScanFilter(filter);
+    setFunnelFilter(null);
+    setPage(0);
+  }
+
+  function selectFunnelStep(index: number) {
+    setFunnelFilter((current) => current === index ? null : index);
+    setScanFilter('all');
     setPage(0);
   }
 
@@ -88,7 +97,7 @@ export default function ScanResultsPanel({ results }: { results: any }) {
       )}
       <div className="grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
         <ScanStat label="Scanned" value={results.total_scanned} filter="all" active={scanFilter === 'all'} onClick={() => selectFilter('all')} />
-        <ScanStat label="Passed Gap Filter" value={rows.length} filter="passed" active={scanFilter === 'passed'} onClick={() => selectFilter('passed')} />
+        <ScanStat label="Passed Gap Filter" value={rows.filter((row: any) => row.gap_passed !== false).length} filter="passed" active={scanFilter === 'passed'} onClick={() => selectFilter('passed')} />
         <ScanStat label="Buy" value={results.buy_candidates} filter="buy" active={scanFilter === 'buy'} onClick={() => selectFilter('buy')} />
         <ScanStat label="Sell" value={results.sell_candidates} filter="sell" active={scanFilter === 'sell'} onClick={() => selectFilter('sell')} />
         <ScanStat label="Selected" value={rows.filter((row: any) => row.selected_for_trade).length} filter="selected" active={scanFilter === 'selected'} onClick={() => selectFilter('selected')} />
@@ -103,15 +112,15 @@ export default function ScanResultsPanel({ results }: { results: any }) {
         </p>
         <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           {funnel.map((step, index) => (
-            <FunnelStep key={`${step.label}-${index}`} step={step} index={index} />
+            <FunnelStep key={`${step.label}-${index}`} step={step} index={index} active={funnelFilter === index} onClick={() => selectFunnelStep(index)} />
           ))}
         </div>
       </div>
 
       <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <div>
-          <h3 className="label">{scanFilter === 'all' ? 'All Candidates' : `${filterLabel(scanFilter)} Candidates`}</h3>
-          {scanFilter !== 'all' && <button onClick={() => selectFilter('all')} className="mt-1 text-xs text-[#60a5fa]">Show all candidates</button>}
+          <h3 className="label">{funnelFilter !== null ? `Passed: ${funnel[funnelFilter]?.label}` : scanFilter === 'all' ? 'All Candidates' : `${filterLabel(scanFilter)} Candidates`}</h3>
+          {(scanFilter !== 'all' || funnelFilter !== null) && <button onClick={() => { setScanFilter('all'); setFunnelFilter(null); setPage(0); }} className="mt-1 text-xs text-[#60a5fa]">Show all candidates</button>}
         </div>
         <input
           value={query}
@@ -255,13 +264,17 @@ function buildConditionFunnel(results: any, rows: any[]) {
 function FunnelStep({
   step,
   index,
+  active,
+  onClick,
 }: {
   step: FunnelStepData;
   index: number;
+  active: boolean;
+  onClick: () => void;
 }) {
   const pct = step.total > 0 ? step.passed / step.total * 100 : 0;
   return (
-    <div className="rounded border border-[#1f2937] bg-[#111827] p-2">
+    <button type="button" onClick={onClick} className={`rounded border p-2 text-left transition-colors ${active ? 'border-[#3b82f6] bg-[#172554]' : 'border-[#1f2937] bg-[#111827] hover:border-[#3b82f6]/70'}`}>
       <div className="flex items-start justify-between gap-2">
         <div>
           <div className="text-[10px] uppercase tracking-[0.16em] text-gray-500">Step {index + 1}</div>
@@ -279,8 +292,24 @@ function FunnelStep({
         <span>{formatNumber(pct)}% pass</span>
         {step.note && <span className="truncate">{step.note}</span>}
       </div>
-    </div>
+    </button>
   );
+}
+
+function matchesFunnelStep(row: any, step: FunnelStepData | undefined) {
+  const labelText = step?.label.toLowerCase() || '';
+  if (labelText.includes('scanned universe')) return true;
+  if (labelText.includes('candle received')) return row.candle_received !== false;
+  if (labelText.includes('open equals') || labelText.includes('opening range')) return row.shape_passed !== false;
+  if (labelText.includes('gap')) return row.gap_passed !== false;
+  if (labelText.includes('selected for trade')) return Boolean(row.selected_for_trade);
+
+  const indicatorKey = FUNNEL_INDICATORS.find(([key]) => labelText.includes(key))?.[0];
+  if (indicatorKey) {
+    const indicator = row.indicator_results?.[indicatorKey];
+    return !indicator?.enabled || Boolean(indicator.passed);
+  }
+  return true;
 }
 
 function IndicatorCell({ result }: { result: any }) {

@@ -142,46 +142,40 @@ class Algo1OpeningRange(Strategy):
 
         open_price, high, low = candle["open"], candle["high"], candle["low"]
         self.prev_close_ready_symbols.add(symbol)
+        buy_shape = open_price == low
+        sell_shape = open_price == high
+        gap_pct = abs(open_price - prev_close) / prev_close * 100
+        # Preserve every usable opening candle for the funnel audit, not only
+        # the rows that later pass the gap rule.
+        self.candidate_details[symbol] = {
+            "symbol": symbol,
+            "side": "WATCH",
+            "open": open_price,
+            "high": high,
+            "low": low,
+            "close": candle["close"],
+            "prev_close": prev_close,
+            "gap_pct": gap_pct,
+            "candle_received": True,
+            "shape_passed": buy_shape or sell_shape,
+            "gap_passed": False,
+            "passed_indicators": True,
+            "indicator_results": {},
+            "selected_for_trade": False,
+            "rejection_reason": "failed_opening_shape" if not (buy_shape or sell_shape) else "failed_gap_filter",
+        }
 
-        if open_price == low:
+        if buy_shape:
             self.open_extreme_symbols.add(symbol)
-            gap_pct = abs(open_price - prev_close) / prev_close * 100
             if gap_pct <= GAP_LIMIT_PCT:
                 self.buy_candidates.append(symbol)
-                self.candidate_details[symbol] = {
-                    "symbol": symbol,
-                    "side": "BUY",
-                    "open": open_price,
-                    "high": high,
-                    "low": low,
-                    "close": candle["close"],
-                    "prev_close": prev_close,
-                    "gap_pct": gap_pct,
-                    "passed_indicators": True,
-                    "indicator_results": {},
-                    "selected_for_trade": False,
-                    "rejection_reason": None,
-                }
+                self.candidate_details[symbol].update({"side": "BUY", "gap_passed": True, "rejection_reason": None})
 
-        if open_price == high:
+        if sell_shape:
             self.open_extreme_symbols.add(symbol)
-            gap_pct = abs(prev_close - open_price) / prev_close * 100
             if gap_pct <= GAP_LIMIT_PCT:
                 self.sell_candidates.append(symbol)
-                self.candidate_details[symbol] = {
-                    "symbol": symbol,
-                    "side": "SELL",
-                    "open": open_price,
-                    "high": high,
-                    "low": low,
-                    "close": candle["close"],
-                    "prev_close": prev_close,
-                    "gap_pct": gap_pct,
-                    "passed_indicators": True,
-                    "indicator_results": {},
-                    "selected_for_trade": False,
-                    "rejection_reason": None,
-                }
+                self.candidate_details[symbol].update({"side": "SELL", "gap_passed": True, "rejection_reason": None})
 
     def evaluate_entries(self, get_ltp_fn):
         """Called by the engine at 9:16. get_ltp_fn(symbol) -> current price."""
@@ -320,14 +314,14 @@ class Algo1OpeningRange(Strategy):
             "sell_selected": sum(1 for side in self.selected_sides.values() if side == "SELL"),
             "overflow_buy": max(0, len(buys) - self.settings["max_buy_trades"]),
             "overflow_sell": max(0, len(sells) - self.settings["max_sell_trades"]),
-            "total_filtered_out": max(0, len(self.watchlist) - len(rows)),
+            "total_filtered_out": max(0, len(self.watchlist) - sum(1 for row in rows if row.get("gap_passed"))),
             "scan_status": scan_status,
             "scan_message": scan_message,
             "condition_breakdown": [
                 {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
                 {"label": f"Condition 1: {self.scan_candle_time()} candle received", "passed": len(self.scan_seen_symbols), "total": len(self.watchlist)},
                 {"label": "Condition 2: open equals low/high", "passed": len(self.open_extreme_symbols), "total": len(self.scan_seen_symbols)},
-                {"label": "Condition 3: opening gap <= 2%", "passed": len(rows), "total": len(self.open_extreme_symbols)},
+                {"label": "Condition 3: opening gap <= 2%", "passed": sum(1 for row in rows if row.get("gap_passed")), "total": len(self.open_extreme_symbols)},
                 {"label": "Final: selected for trade", "passed": len(self.selected_symbols), "total": len(rows)},
             ],
         }
