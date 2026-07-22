@@ -43,6 +43,9 @@ class Algo1OpeningRange(Strategy):
         self.prev_close_ready_symbols: set[str] = set()
         self.open_extreme_symbols: set[str] = set()
         self.selected_symbols: set[str] = set()
+        # Keep the scan audit honest: a candidate selected for an entry slot can
+        # still fail to open if its live entry price is unavailable.
+        self.entry_failures: dict[str, str] = {}
         self.entries_evaluated_today = None
         self._previous_close_load_lock = threading.Lock()
         self._previous_close_loading = False
@@ -199,11 +202,13 @@ class Algo1OpeningRange(Strategy):
             elif symbol in self.sell_candidates and symbol not in sells:
                 sells.append(symbol)
 
+        self.entry_failures = {}
+        planned_symbols = set(buys + sells)
         for symbol in buys:
             self._enter(symbol, "BUY", get_ltp_fn(symbol))
         for symbol in sells:
             self._enter(symbol, "SELL", get_ltp_fn(symbol))
-        self._record_scan_results(buys, sells)
+        self._record_scan_results(buys, sells, planned_symbols=planned_symbols)
         return True
 
     def _opening_data_ready(self) -> bool:
@@ -225,19 +230,30 @@ class Algo1OpeningRange(Strategy):
         self._record_scan_results([], [], scan_status="missed_data", scan_message=self._opening_data_message())
 
     def _enter(self, symbol: str, side: str, entry_price: float):
-        if not entry_price or self.broker.already_traded_today(symbol):
-            return
+        if not entry_price:
+            self.entry_failures[symbol] = "entry_price_unavailable"
+            return False
+        if self.broker.already_traded_today(symbol):
+            self.entry_failures[symbol] = "already_traded_today"
+            return False
         qty = int(self.settings["capital_per_trade"] // entry_price)
         if qty < 1:
-            return
+            self.entry_failures[symbol] = "capital_per_trade_below_share_price"
+            return False
         if side == "BUY":
             sl_price = entry_price * (1 - self.settings["sl_pct"] / 100)
             target_price = entry_price * (1 + self.settings["target_pct"] / 100)
         else:
             sl_price = entry_price * (1 + self.settings["sl_pct"] / 100)
             target_price = entry_price * (1 - self.settings["target_pct"] / 100)
-        self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price, self._entry_trigger(symbol, side))
+        try:
+            self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price, self._entry_trigger(symbol, side))
+        except Exception as exc:
+            self.entry_failures[symbol] = "paper_broker_open_failed"
+            print(f"[algo1] paper entry failed for {symbol}: {exc}")
+            return False
         self.selected_symbols.add(symbol)
+        return True
 
     def _entry_trigger(self, symbol: str, side: str) -> str:
         details = self.candidate_details.get(symbol, {})
@@ -251,12 +267,29 @@ class Algo1OpeningRange(Strategy):
             f"entry during the following minute. Open {open_price}, prev close {prev_close}."
         )
 
-    def _record_scan_results(self, buys: list[str], sells: list[str], scan_status: str = "complete", scan_message: str | None = None):
+    def _record_scan_results(
+        self,
+        buys: list[str],
+        sells: list[str],
+        scan_status: str = "complete",
+        scan_message: str | None = None,
+        planned_symbols: set[str] | None = None,
+    ):
+        planned_symbols = planned_symbols or set()
         rows = []
         for symbol, details in self.candidate_details.items():
             row = dict(details)
             row["selected_for_trade"] = symbol in self.selected_symbols
-            row["rejection_reason"] = None if row["selected_for_trade"] else "slots_full"
+            if row["selected_for_trade"]:
+                row["rejection_reason"] = None
+            elif symbol in self.entry_failures:
+                row["rejection_reason"] = self.entry_failures[symbol]
+            elif symbol in planned_symbols:
+                row["rejection_reason"] = "entry_not_opened"
+            else:
+                # This candidate passed its conditions but was outside the
+                # configured total/side allocation for the opening scan.
+                row["rejection_reason"] = "slots_full"
             rows.append(row)
         result = {
             "algo_id": self.algo_id,
