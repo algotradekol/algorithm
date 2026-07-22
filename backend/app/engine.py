@@ -86,6 +86,16 @@ def _on_live_feed_status(status: dict):
             _live_feed_started = False
 
 
+def _on_candle_close(symbol: str, candle: dict, indicators: dict):
+    with _engine_lock:
+        _engine_status.update({
+            "last_candle_close_at": _utc_now(),
+            "closed_candle_count": int(_engine_status.get("closed_candle_count") or 0) + 1,
+        })
+    for strategy in STRATEGIES.values():
+        strategy.on_candle_close(symbol, candle, indicators)
+
+
 def _on_tick(message: dict):
     symbol = message.get("symbol")
     ltp = message.get("ltp")
@@ -122,16 +132,7 @@ def _on_tick(message: dict):
         broadcast_sync({"event": "price_update", "symbol": symbol, "ltp": ltp})
         last_price_broadcast[symbol] = now_ts
 
-    def on_candle_close(sym, candle, indicators):
-        with _engine_lock:
-            _engine_status.update({
-                "last_candle_close_at": _utc_now(),
-                "closed_candle_count": int(_engine_status.get("closed_candle_count") or 0) + 1,
-            })
-        for strategy in STRATEGIES.values():
-            strategy.on_candle_close(sym, candle, indicators)
-
-    aggregator.on_tick(symbol, ltp, day_volume, on_candle_close=on_candle_close)
+    aggregator.on_tick(symbol, ltp, day_volume, on_candle_close=_on_candle_close)
 
     for strategy in STRATEGIES.values():
         strategy.on_tick(symbol, ltp, now)
@@ -175,6 +176,9 @@ def _scheduler_loop():
 
         # Each opening strategy can opt into a one-off test schedule without
         # changing the production 09:15/09:16 defaults for the other strategy.
+        # Close the just-finished minute even for symbols that have not sent a
+        # follow-up tick yet. This must happen before the 9:16 entry check.
+        aggregator.flush_completed_candles(on_candle_close=_on_candle_close, now=now.replace(tzinfo=None))
         pending = []
         completed_any = False
         for strategy in STRATEGIES.values():

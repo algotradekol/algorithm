@@ -50,17 +50,7 @@ class CandleAggregator:
             state.open = state.high = state.low = state.close = ltp
             state.volume = incremental_volume
         elif minute_bucket > state.current_minute:
-            # close out the previous candle
-            closed = {
-                "time": state.current_minute, "open": state.open, "high": state.high,
-                "low": state.low, "close": state.close, "volume": state.volume,
-            }
-            state.closed_candles.append(closed)
-            state.cum_turnover += state.close * state.volume
-            state.cum_volume_traded += state.volume
-            self._update_ema(state, closed["close"])
-            if on_candle_close:
-                on_candle_close(symbol, closed, self.get_indicators(symbol))
+            self._close_current_candle(symbol, state, on_candle_close)
 
             # start the new candle
             state.current_minute = minute_bucket
@@ -71,6 +61,34 @@ class CandleAggregator:
             state.low = min(state.low, ltp)
             state.close = ltp
             state.volume += incremental_volume
+
+    def flush_completed_candles(self, on_candle_close=None, now: datetime.datetime | None = None):
+        """Finalize bars whose minute has ended even if no next tick arrived.
+
+        Waiting for a next tick from the same symbol means a 9:15 candle may
+        still be open at 9:16, which makes an opening strategy scan an empty
+        universe. The scheduler calls this before its entry evaluation.
+        """
+        current_minute = (now or datetime.datetime.now(MARKET_TZ).replace(tzinfo=None)).replace(second=0, microsecond=0)
+        for symbol, state in list(self.symbols.items()):
+            if state.current_minute is not None and state.current_minute < current_minute:
+                self._close_current_candle(symbol, state, on_candle_close)
+                state.current_minute = None
+
+    def _close_current_candle(self, symbol: str, state: SymbolState, on_candle_close=None):
+        """Store and publish one complete in-progress candle exactly once."""
+        if state.current_minute is None:
+            return
+        closed = {
+            "time": state.current_minute, "open": state.open, "high": state.high,
+            "low": state.low, "close": state.close, "volume": state.volume,
+        }
+        state.closed_candles.append(closed)
+        state.cum_turnover += state.close * state.volume
+        state.cum_volume_traded += state.volume
+        self._update_ema(state, closed["close"])
+        if on_candle_close:
+            on_candle_close(symbol, closed, self.get_indicators(symbol))
 
     def _update_ema(self, state: SymbolState, close_price: float, period: int = 20):
         k = 2 / (period + 1)
