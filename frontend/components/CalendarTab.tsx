@@ -267,6 +267,10 @@ function SnapshotModal({ snapshot, onClose, onDelete }: { snapshot: any; onClose
   const positions = snapshot.positions || [];
   const trades = snapshot.trades || [];
   const scanRows = snapshot.scan_results?.passed_opening_range || [];
+  const rankedScanRows = [...scanRows]
+    .filter((row: any) => Number.isFinite(Number(row.composite_score)))
+    .sort((left: any, right: any) => Number(left.rank || Infinity) - Number(right.rank || Infinity));
+  const ranking = snapshot.scan_results?.ranking;
   return (
     <div className="fixed inset-0 z-50 bg-black/70 p-2 sm:p-4">
       <div className="mx-auto flex h-full max-w-[1500px] flex-col rounded border border-[#1f2937] bg-[#0a0e14] shadow-2xl">
@@ -333,9 +337,25 @@ function SnapshotModal({ snapshot, onClose, onDelete }: { snapshot: any; onClose
               ]}
             />
             <FullTable
+              title="Ranking Archive"
+              rows={rankedScanRows}
+              columns={[
+                ['rank', 'Rank'],
+                ['composite_score', 'Composite Score'],
+                ['symbol', 'Symbol'],
+                ['side', 'Side'],
+                ['gap_pct', 'Gap %'],
+                ['selected_for_trade', 'Selected'],
+                ['rejection_reason', 'Reason'],
+              ]}
+              description={ranking?.method || 'No ranked candidates were saved for this snapshot.'}
+            />
+            <FullTable
               title="Full Scan Candidates"
               rows={scanRows}
               columns={[
+                ['rank', 'Rank'],
+                ['composite_score', 'Composite Score'],
                 ['symbol', 'Symbol'],
                 ['side', 'Side'],
                 ['open', 'Open'],
@@ -354,14 +374,17 @@ function SnapshotModal({ snapshot, onClose, onDelete }: { snapshot: any; onClose
   );
 }
 
-function FullTable({ title, rows, columns }: { title: string; rows: any[]; columns: [string, string][] }) {
+function FullTable({ title, rows, columns, description }: { title: string; rows: any[]; columns: [string, string][]; description?: string }) {
   const [page, setPage] = useState(0);
   const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
   const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
   return (
     <section className="rounded border border-[#1f2937] bg-[#0d1117]">
       <div className="flex items-center justify-between gap-3 border-b border-[#1f2937] p-3">
-        <div className="label">{title}</div>
+        <div>
+          <div className="label">{title}</div>
+          {description && <p className="mt-1 text-[11px] text-gray-500">{description}</p>}
+        </div>
         <div className="num text-xs text-gray-500">{rows.length} rows</div>
       </div>
       <div className="max-h-[55vh] overflow-auto">
@@ -487,7 +510,7 @@ function formatCell(value: unknown, key: string) {
   if (value === null || value === undefined || value === '') return '--';
   if (typeof value === 'boolean') return value ? 'Yes' : 'No';
   if (key === 'entry_time' || key === 'exit_time') return formatTradeTime(value);
-  if (key.includes('price') || key.includes('pnl') || key === 'ltp' || key === 'open' || key === 'high' || key === 'low' || key === 'prev_close' || key === 'gap_pct' || key === 'qty') {
+  if (key.includes('price') || key.includes('pnl') || key === 'ltp' || key === 'open' || key === 'high' || key === 'low' || key === 'prev_close' || key === 'gap_pct' || key === 'qty' || key === 'rank' || key === 'composite_score') {
     return formatNumber(value);
   }
   return String(value);
