@@ -53,12 +53,15 @@ STRATEGY_DEFAULT_OVERRIDES = {
         "rsi_buy_threshold": 50,
         "rsi_sell_threshold": 50,
         "adx_threshold": 20,
-        "filter_vwap": True,
-        "filter_rsi": True,
-        "filter_adx": True,
-        "filter_supertrend": True,
-        "filter_ema20": True,
-        "filter_ema50": True,
+        # The imported UN1 v14 rules only use liquidity, volume, and price.
+        # Keep the advanced controls available, but start them disabled so a
+        # reset produces the documented Tradetron-compatible filter profile.
+        "filter_vwap": False,
+        "filter_rsi": False,
+        "filter_adx": False,
+        "filter_supertrend": False,
+        "filter_ema20": False,
+        "filter_ema50": False,
         "filter_volume": True,
         "filter_liquidity": True,
         "filter_price_range": True,

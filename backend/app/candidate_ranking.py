@@ -79,7 +79,19 @@ def score_candidate(row: dict, settings: dict, profile: str) -> dict:
         "vwap_distance": vwap_distance,
         "supertrend_margin": supertrend_margin,
     }
-    score = sum(components[name] * FILTER_WEIGHTS[name] for name in FILTER_WEIGHTS)
+    indicator_results = row.get("indicator_results") or {}
+    enabled_weights = {
+        "gap_strength": FILTER_WEIGHTS["gap_strength"],
+        "volume_ratio": FILTER_WEIGHTS["volume_ratio"] if indicator_results.get("volume", {}).get("enabled") else 0.0,
+        "rsi_momentum": FILTER_WEIGHTS["rsi_momentum"] if indicator_results.get("rsi", {}).get("enabled") else 0.0,
+        "adx_strength": FILTER_WEIGHTS["adx_strength"] if indicator_results.get("adx", {}).get("enabled") else 0.0,
+        "vwap_distance": FILTER_WEIGHTS["vwap_distance"] if indicator_results.get("vwap", {}).get("enabled") else 0.0,
+        "supertrend_margin": FILTER_WEIGHTS["supertrend_margin"] if indicator_results.get("supertrend", {}).get("enabled") else 0.0,
+    }
+    active_weight = sum(enabled_weights.values())
+    # Disabled filters must not silently affect selection order. Normalize the
+    # remaining weights so a v14 scan ranks on its gap and volume evidence.
+    score = sum(components[name] * enabled_weights[name] for name in FILTER_WEIGHTS) / active_weight if active_weight else 0.0
     return {
         "score": round(score * 100, 2),
         "components": {name: round(value, 4) for name, value in components.items()},

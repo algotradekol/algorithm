@@ -290,6 +290,9 @@ class Algo4OpeningRangeIndicators(Strategy):
         adx14 = self._adx(candles, 14)
         supertrend = self._supertrend(candles, self.settings["supertrend_period"], self.settings["supertrend_multiplier"])
         is_buy = side == "BUY"
+        # The imported v14 Filter allows buys below Rs 3,000 and sells below
+        # Rs 4,000. ltp_max remains configurable for the sell-side ceiling.
+        price_max = min(float(self.settings["ltp_max"]), 3000.0) if is_buy else float(self.settings["ltp_max"])
 
         def item(value, passed, enabled):
             return {"value": value, "passed": bool(passed), "enabled": bool(enabled)}
@@ -303,7 +306,7 @@ class Algo4OpeningRangeIndicators(Strategy):
             "ema50": item(ema50, ema20 is not None and ema50 is not None and (ema20 > ema50 if is_buy else ema20 < ema50), self.settings.get("filter_ema50", False)),
             "volume": item(float(candle.get("volume") or 0), float(candle.get("volume") or 0) > self.settings["min_volume"], self.settings.get("filter_volume", True)),
             "liquidity": item(self.total_value[symbol], self.total_value[symbol] > self.settings["min_total_value"], self.settings.get("filter_liquidity", True)),
-            "price_range": item(ltp, self.settings["ltp_min"] < ltp < self.settings["ltp_max"], self.settings.get("filter_price_range", True)),
+            "price_range": item(ltp, self.settings["ltp_min"] < ltp < price_max, self.settings.get("filter_price_range", True)),
         }
 
     def active_filters(self) -> list[str]:

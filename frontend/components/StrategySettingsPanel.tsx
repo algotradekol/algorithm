@@ -27,7 +27,7 @@ const INDICATOR_FIELDS: Field[] = [
   ['min_volume', 'Min Volume', 'minimum 9:15 candle volume'],
   ['min_total_value', 'Min Total Value (Rs)', 'minimum traded value for the day'],
   ['ltp_min', 'LTP Min (Rs)', 'minimum allowed entry price'],
-  ['ltp_max', 'LTP Max (Rs)', 'maximum allowed entry price'],
+  ['ltp_max', 'Sell LTP Max (Rs)', 'v14 uses this sell-side ceiling; BUY is capped at Rs 3,000'],
   ['supertrend_period', 'Supertrend Period', 'ATR period used by Supertrend'],
   ['supertrend_multiplier', 'Supertrend Multiplier', 'ATR multiplier used by Supertrend'],
 ];

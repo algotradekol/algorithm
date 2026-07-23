@@ -631,6 +631,9 @@ def _evaluate_symbol(algo_id: str, symbol: str, target_date: datetime.date, hist
     supertrend = helper._supertrend(prior_and_opening, int(settings["supertrend_period"]), float(settings["supertrend_multiplier"]))
     ltp = float(opening["close"])
     buy = side == "BUY"
+    # Keep replay behavior identical to the active v14 Filter: Rs 3,000
+    # maximum for BUY and the configurable Rs 4,000 sell-side ceiling.
+    price_max = min(float(settings["ltp_max"]), 3000.0) if buy else float(settings["ltp_max"])
 
     def check(key, value, passed, enabled):
         return {"value": value, "passed": bool(passed), "enabled": bool(enabled)}
@@ -644,7 +647,7 @@ def _evaluate_symbol(algo_id: str, symbol: str, target_date: datetime.date, hist
         "ema50": check("ema50", ema50, ema20 is not None and ema50 is not None and (ema20 > ema50 if buy else ema20 < ema50), settings.get("filter_ema50", False)),
         "volume": check("volume", volume, volume > settings["min_volume"], settings.get("filter_volume", True)),
         "liquidity": check("liquidity", total_value, total_value > settings["min_total_value"], settings.get("filter_liquidity", True)),
-        "price_range": check("price_range", ltp, settings["ltp_min"] < ltp < settings["ltp_max"], settings.get("filter_price_range", True)),
+        "price_range": check("price_range", ltp, settings["ltp_min"] < ltp < price_max, settings.get("filter_price_range", True)),
     }
     base["indicator_results"] = results
     base["filters_passed"] = all(item["passed"] for item in results.values() if item["enabled"])
