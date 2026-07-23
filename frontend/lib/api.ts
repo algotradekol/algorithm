@@ -42,6 +42,8 @@ async function authedFetch(path: string, options: RequestInit = {}) {
 export const api = {
   summary: (algoId: string) => authedFetch(`/api/algo/${algoId}/summary`),
   positions: (algoId: string) => authedFetch(`/api/algo/${algoId}/positions`),
+  exitPosition: (algoId: string, positionId: string) =>
+    authedFetch(`/api/algo/${algoId}/positions/${encodeURIComponent(positionId)}/exit`, { method: 'POST' }),
   trades: (algoId: string) => authedFetch(`/api/algo/${algoId}/trades`),
   history: (algoId: string, days = 30) => authedFetch(`/api/algo/${algoId}/history?days=${days}`),
   scanResults: (algoId: string) => authedFetch(`/api/algo/${algoId}/scan-results`),

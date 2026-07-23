@@ -25,6 +25,7 @@ export default function AlgoTab({
   const [scanResults, setScanResults] = useState<any>(null);
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [exitingPositionId, setExitingPositionId] = useState<string | null>(null);
 
   const loadData = useCallback(async () => {
     const [summaryResult, positionsResult, tradesResult, scanResult] = await Promise.allSettled([
@@ -85,6 +86,26 @@ export default function AlgoTab({
   }, [algoId]);
 
   useWebSocket(handleWsMessage, true, onWebSocketStatus);
+
+  const exitPosition = useCallback(async (position: any) => {
+    if (!position.id) {
+      setError('This legacy position has no ID and cannot be exited from the dashboard.');
+      return;
+    }
+    const confirmed = window.confirm(`Exit ${position.symbol} now at the latest available Fyers price? This closes only this paper position.`);
+    if (!confirmed) return;
+
+    setExitingPositionId(String(position.id));
+    setError('');
+    try {
+      await api.exitPosition(algoId, String(position.id));
+      await loadData();
+    } catch (exitError: any) {
+      setError(exitError?.message || 'Could not exit the position.');
+    } finally {
+      setExitingPositionId(null);
+    }
+  }, [algoId, loadData]);
 
   if (!summary) {
     return (
@@ -159,7 +180,7 @@ export default function AlgoTab({
       <div className="grid gap-4">
         <section>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Open Positions</h3>
-          <PositionsTable rows={positions} />
+          <PositionsTable rows={positions} onExit={exitPosition} exitingPositionId={exitingPositionId} />
         </section>
 
         <section>
@@ -213,7 +234,15 @@ function MetricCard({
   );
 }
 
-function PositionsTable({ rows }: { rows: any[] }) {
+function PositionsTable({
+  rows,
+  onExit,
+  exitingPositionId,
+}: {
+  rows: any[];
+  onExit: (row: any) => void;
+  exitingPositionId: string | null;
+}) {
   const [page, setPage] = useState(0);
   const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
   const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
@@ -246,6 +275,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
                 <MobileField label="Trigger" value={formatTrigger(row.entry_trigger)} wide />
                 <MobileField label="Signal Audit" value={<SignalAudit row={row} />} wide />
               </div>
+              <ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} mobile />
             </div>
           );
         })}
@@ -254,7 +284,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
         <table className="w-full min-w-[1040px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['Symbol', 'Side', 'Qty', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Signal Audit', 'Trigger', 'Unreal P&L'].map((column) => (
+            {['Symbol', 'Side', 'Qty', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
               <th key={column} className="table-cell label">{column}</th>
             ))}
           </tr>
@@ -262,7 +292,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={12} className="table-cell text-gray-500">No open positions</td>
+              <td colSpan={13} className="table-cell text-gray-500">No open positions</td>
             </tr>
           ) : visibleRows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
@@ -290,6 +320,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
                 <td className="table-cell min-w-[190px] text-gray-400"><SignalAudit row={row} /></td>
                 <td className="table-cell max-w-[300px] text-gray-400">{formatTrigger(row.entry_trigger)}</td>
                 <td className={`table-cell num font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
+                <td className="table-cell"><ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} /></td>
               </tr>
             );
           })}
@@ -298,6 +329,32 @@ function PositionsTable({ rows }: { rows: any[] }) {
       </div>
       <PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} />
     </>
+  );
+}
+
+function ManualExitButton({
+  row,
+  onExit,
+  exitingPositionId,
+  mobile = false,
+}: {
+  row: any;
+  onExit: (row: any) => void;
+  exitingPositionId: string | null;
+  mobile?: boolean;
+}) {
+  const exiting = String(row.id) === exitingPositionId;
+  return (
+    <button
+      type="button"
+      onClick={() => onExit(row)}
+      disabled={!row.id || exiting}
+      className={`${mobile ? 'mt-3 w-full' : ''} min-h-9 rounded border border-[#ef4444]/70 px-2.5 py-1.5 text-xs font-semibold text-[#ef4444] transition hover:bg-[#ef4444]/10 disabled:cursor-not-allowed disabled:opacity-50`}
+      title="Close this paper position at the latest Fyers price"
+    >
+      <i className="ri-close-circle-fill mr-1 text-sm" />
+      {exiting ? 'Exiting...' : 'Exit'}
+    </button>
   );
 }
 

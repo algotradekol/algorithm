@@ -19,7 +19,7 @@ import jwt
 
 from .config import ALLOWED_ORIGINS
 from .auth import require_auth
-from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, restart_live_feed, start_engine, STRATEGIES
+from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, last_ltp, restart_live_feed, start_engine, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_connection_status, get_price_history
 from .fyers_auth import exchange_auth_code, store_broker_tokens
@@ -262,6 +262,35 @@ def algo_summary(algo_id: str, _user=Depends(require_auth)):
 def algo_positions(algo_id: str, _user=Depends(require_auth)):
     strategy = get_strategy_or_raise(algo_id)
     return attach_entry_triggers(algo_id, enrich_positions_with_ltp(strategy.broker.open_positions()))
+
+
+@app.post("/api/algo/{algo_id}/positions/{position_id}/exit")
+def exit_position(algo_id: str, position_id: str, _user=Depends(require_auth)):
+    """Manually close one open paper position at its latest live Fyers price."""
+    strategy = get_strategy_or_raise(algo_id)
+    position = next(
+        (row for row in strategy.broker.open_positions() if str(row.get("id")) == position_id),
+        None,
+    )
+    if position is None:
+        raise HTTPException(status_code=404, detail="Open position not found. It may already have closed.")
+
+    exit_price = last_ltp.get(position["symbol"])
+    if exit_price is None:
+        raise HTTPException(
+            status_code=409,
+            detail="No live Fyers price is available for this symbol, so it cannot be manually exited safely.",
+        )
+
+    strategy.broker.close_trade(position, float(exit_price), "MANUAL_EXIT")
+    return {
+        "status": "closed",
+        "algo_id": algo_id,
+        "position_id": position_id,
+        "symbol": position["symbol"],
+        "exit_price": float(exit_price),
+        "exit_reason": "MANUAL_EXIT",
+    }
 
 
 @app.get("/api/algo/{algo_id}/trades")
