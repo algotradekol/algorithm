@@ -175,6 +175,10 @@ class Algo1OpeningRange(Strategy):
             self.prev_close_ready_symbols.add(symbol)
             buy_shape = open_price == low
             sell_shape = open_price == high
+            # A flat opening window satisfies both shapes. It has no
+            # directional information, so never let BUY win merely because it
+            # is evaluated first.
+            flat_shape = buy_shape and sell_shape
             gap_pct = abs(open_price - prev_close) / prev_close * 100
             self.candidate_details[symbol] = {
                 "symbol": symbol,
@@ -187,14 +191,17 @@ class Algo1OpeningRange(Strategy):
                 "gap_pct": gap_pct,
                 "candle_received": True,
                 "window_candle_count": candle["window_candle_count"],
-                "shape_passed": buy_shape or sell_shape,
+                "shape_passed": (buy_shape or sell_shape) and not flat_shape,
+                "signal_shape": "flat_ambiguous" if flat_shape else ("open_equals_low" if buy_shape else "open_equals_high" if sell_shape else "neither"),
                 "gap_passed": False,
                 "passed_indicators": True,
                 "indicator_results": {},
                 "selected_for_trade": False,
-                "rejection_reason": "failed_opening_shape" if not (buy_shape or sell_shape) else "failed_gap_filter",
+                "rejection_reason": "flat_ambiguous_opening_window" if flat_shape else ("failed_opening_shape" if not (buy_shape or sell_shape) else "failed_gap_filter"),
             }
 
+            if flat_shape:
+                continue
             if buy_shape:
                 self.open_extreme_symbols.add(symbol)
                 if gap_pct <= GAP_LIMIT_PCT:
@@ -260,6 +267,13 @@ class Algo1OpeningRange(Strategy):
             return
         self._record_scan_results([], [], scan_status="missed_data", scan_message=self._opening_data_message())
 
+    def mark_opening_scan_failed(self, error: str):
+        """Expose a scheduler exception in the scan panel without placing trades."""
+        self._record_scan_results(
+            [], [], scan_status="error",
+            scan_message=f"Opening scan failed before any entry was placed: {error}",
+        )
+
     def _enter(self, symbol: str, side: str, entry_price: float):
         if not entry_price:
             self.entry_failures[symbol] = "entry_price_unavailable"
@@ -278,7 +292,10 @@ class Algo1OpeningRange(Strategy):
             sl_price = entry_price * (1 + self.settings["sl_pct"] / 100)
             target_price = entry_price * (1 - self.settings["target_pct"] / 100)
         try:
-            self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price, self._entry_trigger(symbol, side))
+            self.broker.open_trade(
+                symbol, side, qty, entry_price, sl_price, target_price,
+                self._entry_trigger(symbol, side), self._signal_snapshot(symbol, side, entry_price),
+            )
         except Exception as exc:
             self.entry_failures[symbol] = "paper_broker_open_failed"
             print(f"[algo1] paper entry failed for {symbol}: {exc}")
@@ -301,6 +318,25 @@ class Algo1OpeningRange(Strategy):
             f"{self.scan_candle_time()}-{self._schedule_time(2)} opening window {candle_shape}; gap {gap_text} within <= {GAP_LIMIT_PCT:.2f}%; "
             f"{ranking_text}; entered at {self._schedule_time(3)}. Open {open_price}, prev close {prev_close}."
         )
+
+    def _signal_snapshot(self, symbol: str, side: str, entry_price: float) -> dict:
+        """Immutable evidence for the candle that selected this paper trade."""
+        details = self.candidate_details.get(symbol, {})
+        return {
+            "window": f"{self.scan_candle_time()}-{self._schedule_time(2)} IST",
+            "side": side,
+            "shape": details.get("signal_shape"),
+            "open": details.get("open"),
+            "high": details.get("high"),
+            "low": details.get("low"),
+            "close": details.get("close"),
+            "volume": details.get("volume"),
+            "previous_close": details.get("prev_close"),
+            "gap_pct": details.get("gap_pct"),
+            "rank": details.get("rank"),
+            "composite_score": details.get("composite_score"),
+            "entry_ltp": entry_price,
+        }
 
     def _record_scan_results(
         self,
@@ -349,7 +385,7 @@ class Algo1OpeningRange(Strategy):
                 row["rejection_reason"] = self.entry_failures[symbol]
             elif symbol in planned_symbols:
                 row["rejection_reason"] = "entry_not_opened"
-            else:
+            elif row.get("gap_passed"):
                 # This candidate passed its conditions but was outside the
                 # configured total/side allocation for the opening scan.
                 row["rejection_reason"] = "slots_full"

@@ -216,22 +216,33 @@ class Algo4OpeningRangeIndicators(Strategy):
             return
         self._record_scan_results(scan_status="missed_data", scan_message=self._opening_data_message())
 
+    def mark_opening_scan_failed(self, error: str):
+        """Expose a scheduler exception in the scan panel without placing trades."""
+        self._record_scan_results(
+            scan_status="error",
+            scan_message=f"Opening scan failed before any entry was placed: {error}",
+        )
+
     def _signal_details(self, symbol: str, candle: dict, indicators: dict) -> tuple[str | None, dict | None]:
         prev_close = self.prev_close.get(symbol)
         if not prev_close:
             return None, None
 
         open_price = candle["open"]
+        ltp = float(indicators.get("last_ltp") or candle["close"])
         buy_gap = open_price - prev_close
         sell_gap = prev_close - open_price
         buy_shape = abs(open_price - candle["low"]) <= TICK_SIZE
         sell_shape = abs(open_price - candle["high"]) <= TICK_SIZE
+        # With tick tolerance a flat/near-flat range can satisfy both rules.
+        # Reject it rather than silently assigning BUY priority.
+        flat_shape = buy_shape and sell_shape
         buy_base = (
-            buy_shape and
+            buy_shape and not flat_shape and
             MIN_GAP_PCT / 100 * prev_close <= buy_gap <= MAX_GAP_PCT / 100 * prev_close
         )
         sell_base = (
-            sell_shape and
+            sell_shape and not flat_shape and
             MIN_GAP_PCT / 100 * prev_close <= sell_gap <= MAX_GAP_PCT / 100 * prev_close
         )
 
@@ -252,14 +263,15 @@ class Algo4OpeningRangeIndicators(Strategy):
             "prev_close": prev_close,
             "gap_pct": gap / prev_close * 100,
             "candle_received": True,
-            "shape_passed": buy_shape or sell_shape,
+            "shape_passed": (buy_shape or sell_shape) and not flat_shape,
+            "signal_shape": "flat_ambiguous" if flat_shape else ("open_equals_low" if buy_shape else "open_equals_high" if sell_shape else "neither"),
             "gap_passed": bool(side),
             "opening_range_gap_passed": bool(side),
             "passed_indicators": passed_indicators,
             "indicator_results": indicator_results,
             "warmup_candles": max(0, len(self.candles[symbol]) - 1),
             "selected_for_trade": False,
-            "rejection_reason": None if passed_indicators else ("failed_indicator_filter" if side else "failed_opening_range_gap"),
+            "rejection_reason": None if passed_indicators else ("flat_ambiguous_opening_window" if flat_shape else ("failed_indicator_filter" if side else "failed_opening_range_gap")),
         }
 
     def _passes_indicator_filters(self, symbol: str, candle: dict, indicators: dict, side: str) -> bool:
@@ -326,7 +338,10 @@ class Algo4OpeningRangeIndicators(Strategy):
         else:
             sl_price = entry_price * (1 + self.settings["sl_pct"] / 100)
             target_price = entry_price * (1 - self.settings["target_pct"] / 100)
-        self.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price, self._entry_trigger(symbol, side))
+        self.broker.open_trade(
+            symbol, side, qty, entry_price, sl_price, target_price,
+            self._entry_trigger(symbol, side), self._signal_snapshot(symbol, side, entry_price),
+        )
         self.selected_symbols.add(symbol)
 
     def _entry_trigger(self, symbol: str, side: str) -> str:
@@ -353,6 +368,25 @@ class Algo4OpeningRangeIndicators(Strategy):
             f"{self.scan_candle_time()}-{self._schedule_time(2)} opening window {candle_shape}; gap {gap_text} between {MIN_GAP_PCT:.2f}% and {MAX_GAP_PCT:.2f}%; "
             f"passed filters: {filter_text}; {ranking_text}; entered at {self._schedule_time(3)}."
         )
+
+    def _signal_snapshot(self, symbol: str, side: str, entry_price: float) -> dict:
+        """Immutable opening-window evidence, distinct from the live position range."""
+        details = self.candidate_details.get(symbol, {})
+        return {
+            "window": f"{self.scan_candle_time()}-{self._schedule_time(2)} IST",
+            "side": side,
+            "shape": details.get("signal_shape"),
+            "open": details.get("open"),
+            "high": details.get("high"),
+            "low": details.get("low"),
+            "close": details.get("close"),
+            "volume": details.get("volume"),
+            "previous_close": details.get("prev_close"),
+            "gap_pct": details.get("gap_pct"),
+            "rank": details.get("rank"),
+            "composite_score": details.get("composite_score"),
+            "entry_ltp": entry_price,
+        }
 
     def _record_scan_results(self, scan_status: str = "complete", scan_message: str | None = None):
         rows = []

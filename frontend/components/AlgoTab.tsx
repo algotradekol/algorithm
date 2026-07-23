@@ -239,11 +239,12 @@ function PositionsTable({ rows }: { rows: any[] }) {
                 <MobileField label="Qty" value={row.qty} />
                 <MobileField label="Entry" value={formatNumber(row.entry_price)} />
                 <MobileField label="LTP" value={Number.isFinite(ltp) ? formatNumber(ltp) : '--'} />
-                <MobileField label="High" value={formatNumber(row.high_price ?? row.highest_price)} />
-                <MobileField label="Low" value={formatNumber(row.low_price ?? row.lowest_price)} />
+                <MobileField label="Position High" value={formatNumber(row.high_price ?? row.highest_price)} />
+                <MobileField label="Position Low" value={formatNumber(row.low_price ?? row.lowest_price)} />
                 <MobileField label="SL" value={formatNumber(row.sl_price)} />
                 <MobileField label="Target" value={formatNumber(row.target_price)} />
                 <MobileField label="Trigger" value={formatTrigger(row.entry_trigger)} wide />
+                <MobileField label="Signal Audit" value={<SignalAudit row={row} />} wide />
               </div>
             </div>
           );
@@ -253,7 +254,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
         <table className="w-full min-w-[1040px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['Symbol', 'Side', 'Qty', 'Entry', 'LTP', 'High', 'Low', 'SL', 'Target', 'Trigger', 'Unreal P&L'].map((column) => (
+            {['Symbol', 'Side', 'Qty', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Signal Audit', 'Trigger', 'Unreal P&L'].map((column) => (
               <th key={column} className="table-cell label">{column}</th>
             ))}
           </tr>
@@ -261,7 +262,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={11} className="table-cell text-gray-500">No open positions</td>
+              <td colSpan={12} className="table-cell text-gray-500">No open positions</td>
             </tr>
           ) : visibleRows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
@@ -286,6 +287,7 @@ function PositionsTable({ rows }: { rows: any[] }) {
                 <td className="table-cell num text-gray-100">{formatNumber(row.low_price ?? row.lowest_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.sl_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.target_price)}</td>
+                <td className="table-cell min-w-[190px] text-gray-400"><SignalAudit row={row} /></td>
                 <td className="table-cell max-w-[300px] text-gray-400">{formatTrigger(row.entry_trigger)}</td>
                 <td className={`table-cell num font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
               </tr>
@@ -325,6 +327,7 @@ function TradesTable({ rows }: { rows: any[] }) {
               <MobileField label="Exit" value={formatNumber(row.exit_price)} />
               <MobileField label="Reason" value={formatReason(row.exit_reason)} />
               <MobileField label="Trigger" value={formatTrigger(row.entry_trigger)} wide />
+              <MobileField label="Signal Audit" value={<SignalAudit row={row} />} wide />
               <MobileField label="Gross" value={formatMoney(row.gross_pnl)} />
               <MobileField label="Charges" value={formatMoney(row.total_charges)} />
             </div>
@@ -335,7 +338,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <table className="w-full min-w-[1080px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['Symbol', 'Side', 'Entry', 'Exit', 'Reason', 'Trigger', 'Gross', 'Charges', 'Net'].map((column) => (
+            {['Symbol', 'Side', 'Entry', 'Exit', 'Reason', 'Signal Audit', 'Trigger', 'Gross', 'Charges', 'Net'].map((column) => (
               <th key={column} className="table-cell label">{column}</th>
             ))}
           </tr>
@@ -343,7 +346,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={9} className="table-cell text-gray-500">No closed trades yet</td>
+              <td colSpan={10} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
           ) : visibleRows.map((row, index) => (
             <tr key={row.id || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
@@ -358,6 +361,7 @@ function TradesTable({ rows }: { rows: any[] }) {
                 {reasonIcon(row.exit_reason)}
                 {formatReason(row.exit_reason)}
               </td>
+              <td className="table-cell min-w-[190px] text-gray-400"><SignalAudit row={row} /></td>
               <td className="table-cell max-w-[300px] text-gray-400">{formatTrigger(row.entry_trigger)}</td>
               <td className={`table-cell num ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
               <td className="table-cell num text-gray-100">{formatMoney(row.total_charges)}</td>
@@ -378,6 +382,28 @@ function MobileField({ label, value, wide = false }: { label: string; value: any
       <div className="label text-[10px]">{label}</div>
       <div className="num mt-0.5 text-gray-100">{value}</div>
     </div>
+  );
+}
+
+function SignalAudit({ row }: { row: any }) {
+  const signal = row.signal_snapshot;
+  if (!signal || typeof signal !== 'object') {
+    return <span className="text-xs text-gray-500">Not captured for this legacy trade</span>;
+  }
+  const shape = signal.shape === 'open_equals_low' ? 'BUY: signal open = low'
+    : signal.shape === 'open_equals_high' ? 'SELL: signal open = high'
+      : signal.shape === 'flat_ambiguous' ? 'Rejected: flat/ambiguous signal'
+        : 'Signal window audit';
+  return (
+    <details className="text-xs">
+      <summary className="cursor-pointer text-[#60a5fa]">View signal OHLC</summary>
+      <div className="mt-1 space-y-0.5 text-gray-400">
+        <div className="font-semibold text-gray-200">{shape}</div>
+        <div>{signal.window || 'Opening window'}: O {formatNumber(signal.open)} / H {formatNumber(signal.high)} / L {formatNumber(signal.low)} / C {formatNumber(signal.close)}</div>
+        <div>Prev close {formatNumber(signal.previous_close)} | Gap {Number.isFinite(Number(signal.gap_pct)) ? `${Number(signal.gap_pct).toFixed(2)}%` : '--'}</div>
+        <div>Entry LTP {formatNumber(signal.entry_ltp)}{signal.rank ? ` | Rank #${signal.rank}` : ''}{signal.composite_score !== undefined && signal.composite_score !== null ? ` | Score ${formatNumber(signal.composite_score)}` : ''}</div>
+      </div>
+    </details>
   );
 }
 

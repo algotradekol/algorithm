@@ -193,7 +193,22 @@ def _scheduler_loop():
             if entries_fired_date.get(strategy.algo_id) == today and entries_fired_schedule.get(strategy.algo_id) == schedule:
                 continue
             if strategy.entry_window(current_time):
-                completed = strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
+                try:
+                    completed = strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
+                except Exception as exc:
+                    # A single strategy must never terminate the scheduler thread.
+                    # Keep the failure visible in its scan panel and let the other
+                    # strategies continue their own scheduled evaluations.
+                    print(f"[engine] opening scan failed for {strategy.algo_id}: {exc}")
+                    mark_failed = getattr(strategy, "mark_opening_scan_failed", None)
+                    if callable(mark_failed):
+                        try:
+                            mark_failed(str(exc))
+                        except Exception as record_exc:
+                            print(f"[engine] could not record failed scan for {strategy.algo_id}: {record_exc}")
+                    entries_fired_date[strategy.algo_id] = today
+                    entries_fired_schedule[strategy.algo_id] = schedule
+                    continue
                 if completed is False:
                     pending.append(strategy.algo_id)
                 else:

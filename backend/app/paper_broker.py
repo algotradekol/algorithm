@@ -106,6 +106,7 @@ class PaperBroker:
         sl_price: float,
         target_price: float,
         entry_trigger: str | None = None,
+        signal_snapshot: dict | None = None,
     ):
         position_row = {
             "algo_id": self.algo_id, "symbol": symbol, "side": side, "qty": qty,
@@ -113,6 +114,7 @@ class PaperBroker:
             "highest_price": entry_price, "lowest_price": entry_price,
             "trailing_sl_active": False,
             "entry_trigger": entry_trigger or "Strategy entry conditions matched",
+            "signal_snapshot": signal_snapshot,
             "status": "open", "entry_time": datetime.datetime.now().isoformat(),
         }
         try:
@@ -120,10 +122,11 @@ class PaperBroker:
                 lambda supabase: supabase.table("positions").insert(position_row).execute()
             )
         except Exception as exc:
-            if "entry_trigger" not in str(exc):
+            if "entry_trigger" not in str(exc) and "signal_snapshot" not in str(exc):
                 raise
-            # Backward compatible until the Supabase migration is applied.
+            # Backward compatible until the Supabase audit migration is applied.
             position_row.pop("entry_trigger", None)
+            position_row.pop("signal_snapshot", None)
             run_with_supabase(
                 lambda supabase: supabase.table("positions").insert(position_row).execute()
             )
@@ -147,6 +150,7 @@ class PaperBroker:
             "high_price": entry_price,
             "low_price": entry_price,
             "entry_trigger": entry_trigger or "Strategy entry conditions matched",
+            "signal_snapshot": signal_snapshot,
         })
 
     def update_position_range(self, position: dict, ltp: float) -> dict:
@@ -245,6 +249,7 @@ class PaperBroker:
             "entry_price": entry_price, "exit_price": exit_price,
             "entry_time": position["entry_time"], "exit_time": datetime.datetime.now().isoformat(),
             "entry_trigger": position.get("entry_trigger"),
+            "signal_snapshot": position.get("signal_snapshot"),
             "exit_reason": exit_reason, **charges,
         }
         try:
@@ -252,9 +257,10 @@ class PaperBroker:
                 lambda supabase: supabase.table("trades").insert(trade_row).execute()
             )
         except Exception as exc:
-            if "entry_trigger" not in str(exc):
+            if "entry_trigger" not in str(exc) and "signal_snapshot" not in str(exc):
                 raise
             trade_row.pop("entry_trigger", None)
+            trade_row.pop("signal_snapshot", None)
             run_with_supabase(
                 lambda supabase: supabase.table("trades").insert(trade_row).execute()
             )
@@ -274,6 +280,7 @@ class PaperBroker:
             "exit_price": exit_price,
             "exit_reason": exit_reason,
             "entry_trigger": position.get("entry_trigger"),
+            "signal_snapshot": position.get("signal_snapshot"),
             "net_pnl": charges["net_pnl"],
             "gross_pnl": charges["gross_pnl"],
             "total_charges": charges["total_charges"],

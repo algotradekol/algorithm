@@ -172,6 +172,14 @@ ALTER TABLE positions
 ALTER TABLE trades
     ADD COLUMN IF NOT EXISTS entry_trigger text; 
 
+-- Immutable opening-window evidence for each paper entry. This is separate
+-- from highest_price/lowest_price, which track movement after entry.
+ALTER TABLE positions
+    ADD COLUMN IF NOT EXISTS signal_snapshot jsonb;
+
+ALTER TABLE trades
+    ADD COLUMN IF NOT EXISTS signal_snapshot jsonb;
+
 -- Calendar/audit snapshots: stores the dashboard state date-wise for review.
 CREATE TABLE IF NOT EXISTS calendar_snapshots (
     id bigserial PRIMARY KEY,
