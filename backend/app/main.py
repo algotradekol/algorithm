@@ -78,7 +78,12 @@ app.add_middleware(
 
 @app.get("/health")
 def health():
-    return {"status": "ok", **get_engine_status()}
+    # Intentionally lightweight: this endpoint is used for Railway's
+    # deployment healthcheck and must respond immediately, without waiting
+    # on the background trading engine's startup (NSE500 watchlist load,
+    # strategy init, Fyers connection). Detailed engine status is available
+    # via the authenticated /api/engine/status endpoint.
+    return {"status": "ok"}
 
 
 @app.get("/api/engine/status")
