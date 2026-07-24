@@ -147,12 +147,12 @@ def get_recent_intraday_candles(symbol: str, resolution: str = "1", days: int = 
     return normalized[-limit:]
 
 
-def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_date: datetime.date) -> list[dict]:
-    """Fetch normalized one-minute candles for an explicit historical range."""
+def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_date: datetime.date, resolution: str = "1") -> list[dict]:
+    """Fetch normalized intraday candles for an explicit historical range."""
     fyers = get_fyers_model()
     response = fyers.history({
         "symbol": symbol,
-        "resolution": "1",
+        "resolution": resolution,
         "date_format": "1",
         "range_from": start_date.isoformat(),
         "range_to": end_date.isoformat(),

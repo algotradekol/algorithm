@@ -754,11 +754,13 @@ def _run_silver_micro_job(
         replay_completed=0,
         replay_failed=0,
     )
-    history = get_intraday_candles_for_range(symbol, lookback_start, last_date)
+    history, history_resolution = _load_silver_micro_history(symbol, lookback_start, last_date)
     if history_cache.store(symbol, history):
         _increment(job_id, "cached_history_symbols")
     if not history:
-        raise ValueError("No Silver Micro history was returned for the chosen range.")
+        raise ValueError(
+            f"No Silver Micro history was returned for the chosen range after trying 1-minute and 5-minute candles."
+        )
 
     trading_days = [
         first_date + datetime.timedelta(days=offset)
@@ -792,6 +794,7 @@ def _run_silver_micro_job(
         "symbols_with_history": 1,
         "symbols_without_history": 0,
         "lookback_start": lookback_start.isoformat(),
+        "history_resolution": history_resolution,
     }
     result = _range_result(
         algo_id,
@@ -803,7 +806,8 @@ def _run_silver_micro_job(
         execution_assumption=(
             "Silver Micro replays closed 5-minute candles. A green candle closing above EMA20 with volume above volume EMA20 creates a BUY setup; "
             "a red candle closing below EMA20 with volume above volume EMA20 creates a SELL setup. The next candle must confirm the setup, "
-            "entry uses the following candle open, and stop-loss is assumed before target if both are touched inside the same candle."
+            "entry uses the following candle open, and stop-loss is assumed before target if both are touched inside the same candle. "
+            f"Historical data was loaded from {history_resolution}-minute candles."
         ),
     )
     _update(job_id, status="complete", phase="complete", message="Silver Micro backtest complete.", result=result)
@@ -831,6 +835,22 @@ def _new_silver_micro_day_result(symbol: str, day: datetime.date, bar_count: int
         "candidates": [],
         "trades": [],
     }
+
+
+def _load_silver_micro_history(
+    symbol: str,
+    start_date: datetime.date,
+    end_date: datetime.date,
+) -> tuple[list[dict], str]:
+    """Try the most granular MCX history first, then fall back to 5-minute candles."""
+    for resolution in ("1", "5"):
+        history = get_intraday_candles_for_range(symbol, start_date, end_date, resolution=resolution)
+        if history:
+            if resolution != "1":
+                print(f"[algo3] 1-minute history empty for {symbol}; using {resolution}-minute candles instead")
+            return history, resolution
+        print(f"[algo3] no {resolution}-minute history returned for {symbol}")
+    return [], "1"
 
 
 def _simulate_silver_micro_range(
