@@ -23,6 +23,8 @@ IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
 SUPPORTED_ALGOS = {"algo1", "algo2", "algo3"}
 MAX_WORKERS = 2
 MAX_BACKTEST_DAYS = 31
+EMA_PERIOD = 20
+WARMUP_LOOKBACK_DAYS = 10
 OPENING_WINDOW_START = "09:15"
 OPENING_WINDOW_END = "09:18"
 ENTRY_TIME = "09:18"
