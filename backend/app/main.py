@@ -293,6 +293,71 @@ def exit_position(algo_id: str, position_id: str, _user=Depends(require_auth)):
     }
 
 
+@app.post("/api/algo/{algo_id}/manual-trade")
+def manual_trade(algo_id: str, payload: dict, _user=Depends(require_auth)):
+    """Open a paper position directly from the dashboard, bypassing daily caps."""
+    strategy = get_strategy_or_raise(algo_id)
+    symbol = str(payload.get("symbol") or "").strip()
+    side = str(payload.get("side") or "").strip().upper()
+    if side not in {"BUY", "SELL"}:
+        raise HTTPException(status_code=400, detail="Side must be BUY or SELL.")
+    if not symbol:
+        raise HTTPException(status_code=400, detail="Symbol is required.")
+
+    open_positions = strategy.broker.open_positions()
+    if any(row.get("symbol") == symbol and str(row.get("status") or "").lower() == "open" for row in open_positions):
+        raise HTTPException(status_code=409, detail="This symbol already has an open paper position.")
+
+    price = payload.get("price")
+    if price is None:
+        price = last_ltp.get(symbol)
+    try:
+        entry_price = float(price)
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=409, detail="No live price is available for this symbol yet.")
+    if entry_price <= 0 or not math.isfinite(entry_price):
+        raise HTTPException(status_code=409, detail="No live price is available for this symbol yet.")
+
+    capital_per_trade = float(getattr(strategy, "settings", {}).get("capital_per_trade") or 0)
+    qty = int(capital_per_trade // entry_price)
+    if qty < 1:
+        raise HTTPException(status_code=400, detail="Capital per trade is below the current share price.")
+
+    settings = getattr(strategy, "settings", {}) or {}
+    if side == "BUY":
+        sl_price = entry_price * (1 - float(settings.get("sl_pct") or 0) / 100)
+        target_price = entry_price * (1 + float(settings.get("target_pct") or 0) / 100)
+    else:
+        sl_price = entry_price * (1 + float(settings.get("sl_pct") or 0) / 100)
+        target_price = entry_price * (1 - float(settings.get("target_pct") or 0) / 100)
+
+    trigger = payload.get("trigger") or "Manual dashboard override; bypassed automated trade caps."
+    signal_snapshot = {
+        "source": "manual_dashboard",
+        "symbol": symbol,
+        "side": side,
+        "entry_ltp": entry_price,
+        "trigger": trigger,
+    }
+    strategy.broker.open_trade(symbol, side, qty, entry_price, sl_price, target_price, trigger, signal_snapshot)
+    refreshed_positions = [
+        row for row in strategy.broker.open_positions()
+        if row.get("symbol") == symbol and row.get("side") == side and str(row.get("status") or "").lower() == "open"
+    ]
+    position = max(refreshed_positions, key=lambda row: str(row.get("entry_time") or "")) if refreshed_positions else None
+    return {
+        "status": "opened",
+        "algo_id": algo_id,
+        "symbol": symbol,
+        "side": side,
+        "qty": qty,
+        "entry_price": entry_price,
+        "sl_price": sl_price,
+        "target_price": target_price,
+        "position_id": position.get("id") if position else None,
+    }
+
+
 @app.get("/api/algo/{algo_id}/trades")
 def algo_trades(algo_id: str, _user=Depends(require_auth)):
     strategy = get_strategy_or_raise(algo_id)

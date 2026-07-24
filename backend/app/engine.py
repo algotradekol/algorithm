@@ -20,13 +20,11 @@ from .candle_aggregator import CandleAggregator
 from .fyers_client import connect_live_feed
 from .fyers_auth import get_stored_access_token, refresh_access_token_from_refresh_token
 from .strategies.algo1_opening_range import Algo1OpeningRange
-from .strategies.test_algo import TestAlgo
 from .strategies.un1_915_filtered import UN1915Filtered
 from .config import ENTRY_CHECK_TIME, SQUARE_OFF_TIME
 
 aggregator = CandleAggregator()
 last_ltp: dict[str, float] = {}
-last_price_broadcast: dict[str, float] = {}
 SCAN_RESULTS: dict[str, dict] = {}
 
 STRATEGIES = {}   # populated in start_engine() once the watchlist is known
@@ -120,7 +118,6 @@ def _on_tick(message: dict):
                 if set_previous_close:
                     set_previous_close(symbol, previous_close_value)
     now = datetime.datetime.now()
-    now_ts = time.time()
     with _engine_lock:
         _engine_status.update({
             "last_tick_at": _utc_now(),
@@ -128,9 +125,9 @@ def _on_tick(message: dict):
             "last_tick_ltp": ltp,
             "tick_count": int(_engine_status.get("tick_count") or 0) + 1,
         })
-    if now_ts - last_price_broadcast.get(symbol, 0) >= 1:
-        broadcast_sync({"event": "price_update", "symbol": symbol, "ltp": ltp})
-        last_price_broadcast[symbol] = now_ts
+    # Broadcast every market tick immediately so the dashboard and any live
+    # selected rows move in lockstep with the feed instead of a throttled view.
+    broadcast_sync({"event": "price_update", "symbol": symbol, "ltp": ltp})
 
     aggregator.on_tick(symbol, ltp, day_volume, on_candle_close=_on_candle_close)
 
@@ -413,11 +410,6 @@ def _infer_entry_trigger(algo_id: str, row: dict, scan_row: dict | None) -> str:
     if scan_row:
         if scan_row.get("entry_trigger"):
             return scan_row["entry_trigger"]
-        if algo_id == "test_algo":
-            move_pct = scan_row.get("gap_pct")
-            candle_time = str(scan_row.get("candle_time") or "")[11:16] or "live"
-            move_text = f"{float(move_pct):.3f}%" if move_pct is not None else "--"
-            return f"{candle_time} closed 1-minute candle moved {move_text}; test algo threshold matched for {side}."
         gap_pct = scan_row.get("gap_pct")
         gap_text = f"{float(gap_pct):.2f}%" if gap_pct is not None else "--"
         open_price = scan_row.get("open")
@@ -437,7 +429,6 @@ def _infer_entry_trigger(algo_id: str, row: dict, scan_row: dict | None) -> str:
     labels = {
         "algo1": "Legacy trade before trigger storage: likely 9:15 simple opening-range condition matched.",
         "algo2": "Legacy trade before trigger storage: likely 9:15 filtered opening-range conditions matched.",
-        "test_algo": "Legacy trade before trigger storage: likely live 1-minute test candle move matched.",
     }
     return labels.get(algo_id, "Legacy trade before trigger storage; exact trigger was not saved.")
 
@@ -474,7 +465,6 @@ def start_engine():
         strategies = {
             "algo1": Algo1OpeningRange(watchlist),
             "algo2": UN1915Filtered(watchlist),
-            "test_algo": TestAlgo(watchlist),
         }
         for algo_id, strategy in strategies.items():
             stale_count = strategy.broker.close_stale_open_positions()

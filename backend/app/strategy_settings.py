@@ -72,17 +72,6 @@ STRATEGY_DEFAULT_OVERRIDES = {
         "supertrend_period": 10,
         "supertrend_multiplier": 3,
     },
-    "test_algo": {
-        "starting_capital": 500000,
-        "capital_per_trade": 10000,
-        "target_pct": 0.15,
-        "sl_pct": 0.10,
-        "exit_mode": "fixed_target_sl",
-        "trailing_sl_enabled": False,
-        "max_trades_per_day": 6,
-        "max_buy_trades": 3,
-        "max_sell_trades": 3,
-    },
 }
 
 INT_FIELDS = {

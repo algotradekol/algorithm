@@ -124,7 +124,7 @@ export default function AlgoTab({
         </div>
         <SettingsDrawer open={settingsOpen} algoId={algoId} onClose={() => setSettingsOpen(false)} />
         <div className="mt-4">
-          <ScanResultsPanel results={scanResults} />
+          <ScanResultsPanel algoId={algoId} results={scanResults} onRefresh={loadData} />
         </div>
         <p className="mt-2 text-sm text-gray-500">{error || 'Loading strategy data...'}</p>
       </section>
@@ -175,7 +175,7 @@ export default function AlgoTab({
 
       <SettingsDrawer open={settingsOpen} algoId={algoId} onClose={() => setSettingsOpen(false)} />
 
-      <ScanResultsPanel results={scanResults} />
+      <ScanResultsPanel algoId={algoId} results={scanResults} onRefresh={loadData} />
 
       <div className="grid gap-4">
         <section>

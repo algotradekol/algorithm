@@ -97,7 +97,6 @@ export default function CompareTab() {
         <div className="space-y-1 text-xs text-gray-500">
           <p>algo1: UN1 9:15 v15 Simple - combined 9:15-9:17 opening range, ranked by gap, 9:18 entry</p>
           <p>algo2: UN1 9:15 v14 Filter - same ranked 9:15-9:17 opening range plus VWAP, EMA, RSI, ADX, Supertrend, volume, liquidity and price filters</p>
-          <p>test_algo: Test Algo - live paper-only feature check for scan rows, positions, exits, WebSocket and history</p>
         </div>
       </div>
     </section>

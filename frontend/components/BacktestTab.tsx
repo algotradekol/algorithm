@@ -104,6 +104,7 @@ function BacktestResult({ result }: { result: any }) {
   const coverage = result.data_coverage || {};
   const exits = summary.exit_counts || {};
   const daily = result.daily_results || [];
+  const sectorBreakdown = Array.isArray(result.sector_breakdown) ? result.sector_breakdown : [];
   return <>
     <section className="panel p-4">
       <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-semibold text-gray-100">{result.start_date} to {result.end_date}</h3><p className="mt-1 max-w-3xl text-xs text-gray-500">{result.execution_assumption}</p></div><div className="flex items-center gap-3"><div className="text-xs text-gray-500">History coverage: <span className="num text-gray-100">{coverage.symbols_with_history} / {coverage.requested_symbols}</span></div><button onClick={() => downloadBacktestCsv(result)} className="inline-flex min-h-10 items-center gap-2 rounded border border-[#22c55e] bg-[#22c55e]/10 px-3 py-2 text-xs font-semibold text-[#22c55e]"><i className="ri-file-download-fill text-sm" />Download CSV</button></div></div>
@@ -116,6 +117,28 @@ function BacktestResult({ result }: { result: any }) {
         <Card label="Net P&L" value={money(summary.net_pnl)} tone={Number(summary.net_pnl)} />
       </div>
     </section>
+    {sectorBreakdown.length > 0 && <section className="panel p-4">
+      <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-semibold text-gray-100">Sector Breakdown</h3><p className="text-xs text-gray-500">Shows how the replayed universe clustered by sector, so you can compare the stock ranking against the broader group trend.</p></div>
+      <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+        {sectorBreakdown.map((sector: any) => (
+          <div key={sector.sector} className="rounded border border-[#1f2937] bg-[#0d1117] p-3">
+            <div className="flex items-start justify-between gap-3">
+              <div>
+                <div className="font-semibold text-gray-100">{sector.sector}</div>
+                <div className="text-[11px] text-gray-500">{sector.direction} sector · {sector.rows} symbols</div>
+              </div>
+              <div className="num text-right text-sm font-semibold text-gray-100">{number(sector.avg_score)}</div>
+            </div>
+            <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-[#020617]">
+              <div className="h-full bg-[#22c55e]" style={{ width: `${Math.max(4, Math.min(100, Number(sector.alignment_strength || 0) * 100))}%` }} />
+            </div>
+            <div className="mt-1 text-[11px] text-gray-500">
+              {sector.buy} BUY · {sector.sell} SELL · {sector.selected} selected · avg move {number(sector.avg_move_pct)}%
+            </div>
+          </div>
+        ))}
+      </div>
+    </section>}
     <section className="grid gap-4 lg:grid-cols-2">
       <div className="panel p-4"><h3 className="text-sm font-semibold text-gray-100">Trade Quality</h3><div className="mt-3 grid grid-cols-2 gap-2 text-sm"><Metric label="Gross profit" value={money(summary.gross_profit)} positive /><Metric label="Gross loss" value={money(-Number(summary.gross_loss || 0))} negative /><Metric label="Average win" value={money(summary.average_win)} positive /><Metric label="Average loss" value={money(summary.average_loss)} negative /><Metric label="Average net / trade" value={money(summary.average_net_per_trade)} tone={Number(summary.average_net_per_trade)} /><Metric label="Max drawdown" value={money(summary.max_drawdown)} negative /></div></div>
       <div className="panel p-4"><h3 className="text-sm font-semibold text-gray-100">Execution And Range</h3><div className="mt-3 grid grid-cols-2 gap-2 text-sm"><Metric label="Gross P&L" value={money(summary.gross_pnl)} tone={Number(summary.gross_pnl)} /><Metric label="Charges" value={money(summary.total_charges)} /><Metric label="Capital deployed" value={money(summary.capital_deployed)} /><Metric label="Net return / deployed" value={`${number(summary.net_return_on_deployed_pct)}%`} tone={Number(summary.net_return_on_deployed_pct)} /><Metric label="Best day" value={result.best_day ? `${result.best_day.date}: ${money(result.best_day.net_pnl)}` : '-'} tone={Number(result.best_day?.net_pnl)} /><Metric label="Worst day" value={result.worst_day ? `${result.worst_day.date}: ${money(result.worst_day.net_pnl)}` : '-'} tone={Number(result.worst_day?.net_pnl)} /></div><p className="mt-3 text-xs text-gray-500">Exits: Target {exits.TARGET || 0}, SL {exits.SL || 0}, EOD {exits.EOD_SQUAREOFF || 0}.</p></div>
@@ -139,19 +162,112 @@ function BacktestCandidates({ days }: { days: any[] }) {
   const [showMissing, setShowMissing] = useState(false);
   const [sortKey, setSortKey] = useState('symbol');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+
   useEffect(() => {
     if (days.length && !days.some((day) => day.date === selectedDate)) setSelectedDate(days[0].date);
   }, [days, selectedDate]);
+
   const day = days.find((item) => item.date === selectedDate) || days[0];
   const candidates = (day?.candidates || [])
     .filter((row: any) => showMissing || row.has_opening_candle)
     .filter((row: any) => row.symbol?.toLowerCase().includes(query.toLowerCase()))
     .sort((left: any, right: any) => compareCandidates(left, right, sortKey, sortDirection));
-  const columns: [string, string][] = [['symbol', 'Symbol'], ['side', 'Side'], ['open', 'Open'], ['high', 'High'], ['low', 'Low'], ['close', 'Close'], ['volume', 'Volume'], ['prev_close', 'Prev Close'], ['gap_pct', 'Gap %'], ['shape_passed', 'Shape'], ['gap_passed', 'Gap'], ['filters_passed', 'Filters'], ['selected_for_trade', 'Selected'], ['rejection_reason', 'Reason'], ['vwap', 'VWAP'], ['rsi', 'RSI'], ['adx', 'ADX']];
-  function toggleSort(key: string) { if (key === sortKey) setSortDirection((direction) => direction === 'asc' ? 'desc' : 'asc'); else { setSortKey(key); setSortDirection('asc'); } }
-  return <section className="panel overflow-hidden"><div className="flex flex-col gap-3 border-b border-[#1f2937] p-4 sm:flex-row sm:items-end sm:justify-between"><div><h3 className="text-sm font-semibold text-gray-100">9:15 Candle Filtered List</h3><p className="mt-1 text-xs text-gray-500">{candidates.length} visible symbols. Missing 9:15 data is hidden by default, but remains available for audit.</p></div><div className="grid gap-2 sm:grid-cols-2"><select value={day?.date || ''} onChange={(e) => setSelectedDate(e.target.value)} className="control text-sm">{days.map((item) => <option key={item.date} value={item.date}>{item.date}</option>)}</select><input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter symbols..." className="control text-sm" /><label className="flex min-h-10 items-center gap-2 text-xs text-gray-400 sm:col-span-2"><input type="checkbox" checked={showMissing} onChange={(e) => setShowMissing(e.target.checked)} /> Show missing 9:15 candle data</label></div></div><div className="overflow-x-auto"><table className="w-full min-w-[1450px] text-xs"><thead className="bg-[#111827]"><tr>{columns.map(([key, name]) => <th key={key} className="table-cell label"><button onClick={() => toggleSort(key)} className="inline-flex items-center gap-1 whitespace-nowrap text-left hover:text-[#3b82f6]">{name}<span className={sortKey === key ? 'text-[#3b82f6]' : 'text-gray-600'}>{sortKey === key ? (sortDirection === 'asc' ? '▲' : '▼') : '↕'}</span></button></th>)}</tr></thead><tbody>{!candidates.length ? <tr><td colSpan={17} className="table-cell text-gray-500">No rows to show. This date may be a market holiday, or enable missing-candle data for an audit view.</td></tr> : candidates.map((row: any, index: number) => <tr key={row.symbol} className={`${index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'} ${row.selected_for_trade ? 'border-l-2 border-l-[#22c55e]' : row.filters_passed ? 'border-l-2 border-l-[#f59e0b]' : 'border-l-2 border-l-[#ef4444]'}`}><td className="table-cell font-mono text-gray-100">{row.symbol}</td><td className={row.side === 'BUY' ? 'table-cell text-[#22c55e]' : row.side === 'SELL' ? 'table-cell text-[#ef4444]' : 'table-cell text-gray-500'}>{row.side || 'WATCH'}</td><td className="table-cell num">{optionalNumber(row.open)}</td><td className="table-cell num">{optionalNumber(row.high)}</td><td className="table-cell num">{optionalNumber(row.low)}</td><td className="table-cell num">{optionalNumber(row.close)}</td><td className="table-cell num">{optionalNumber(row.volume)}</td><td className="table-cell num">{optionalNumber(row.prev_close)}</td><td className={`table-cell num ${Number(row.gap_pct) > 0 ? 'text-[#22c55e]' : Number(row.gap_pct) < 0 ? 'text-[#ef4444]' : ''}`}>{optionalNumber(row.gap_pct)}%</td><td className="table-cell">{flag(row.shape_passed)}</td><td className="table-cell">{flag(row.gap_passed)}</td><td className="table-cell">{flag(row.filters_passed)}</td><td className="table-cell">{flag(row.selected_for_trade)}</td><td className="table-cell text-gray-400">{row.rejection_reason || '--'}</td><td className="table-cell num">{indicatorValue(row, 'vwap')}</td><td className="table-cell num">{indicatorValue(row, 'rsi')}</td><td className="table-cell num">{indicatorValue(row, 'adx')}</td></tr>)}</tbody></table></div></section>;
-}
 
+  const columns: [string, string][] = [
+    ['symbol', 'Symbol'],
+    ['sector', 'Sector'],
+    ['side', 'Side'],
+    ['open', 'Open'],
+    ['high', 'High'],
+    ['low', 'Low'],
+    ['close', 'Close'],
+    ['volume', 'Volume'],
+    ['prev_close', 'Prev Close'],
+    ['gap_pct', 'Gap %'],
+    ['shape_passed', 'Shape'],
+    ['gap_passed', 'Gap'],
+    ['filters_passed', 'Filters'],
+    ['selected_for_trade', 'Selected'],
+    ['rejection_reason', 'Reason'],
+    ['vwap', 'VWAP'],
+    ['rsi', 'RSI'],
+    ['adx', 'ADX'],
+  ];
+
+  function toggleSort(key: string) {
+    if (key === sortKey) setSortDirection((direction) => direction === 'asc' ? 'desc' : 'asc');
+    else {
+      setSortKey(key);
+      setSortDirection('asc');
+    }
+  }
+
+  return (
+    <section className="panel overflow-hidden">
+      <div className="flex flex-col gap-3 border-b border-[#1f2937] p-4 sm:flex-row sm:items-end sm:justify-between">
+        <div>
+          <h3 className="text-sm font-semibold text-gray-100">9:15 Candle Filtered List</h3>
+          <p className="mt-1 text-xs text-gray-500">{candidates.length} visible symbols. Missing 9:15 data is hidden by default, but remains available for audit.</p>
+        </div>
+        <div className="grid gap-2 sm:grid-cols-2">
+          <select value={day?.date || ''} onChange={(e) => setSelectedDate(e.target.value)} className="control text-sm">
+            {days.map((item) => <option key={item.date} value={item.date}>{item.date}</option>)}
+          </select>
+          <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter symbols..." className="control text-sm" />
+          <label className="flex min-h-10 items-center gap-2 text-xs text-gray-400 sm:col-span-2">
+            <input type="checkbox" checked={showMissing} onChange={(e) => setShowMissing(e.target.checked)} /> Show missing 9:15 candle data
+          </label>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[1450px] text-xs">
+          <thead className="bg-[#111827]">
+            <tr>
+              {columns.map(([key, name]) => (
+                <th key={key} className="table-cell label">
+                  <button onClick={() => toggleSort(key)} className="inline-flex items-center gap-1 whitespace-nowrap text-left hover:text-[#3b82f6]">
+                    {name}
+                    <span className={sortKey === key ? 'text-[#3b82f6]' : 'text-gray-600'}>{sortKey === key ? (sortDirection === 'asc' ? '?' : '?') : '?'}</span>
+                  </button>
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {!candidates.length ? (
+              <tr>
+                <td colSpan={18} className="table-cell text-gray-500">No rows to show. This date may be a market holiday, or enable missing-candle data for an audit view.</td>
+              </tr>
+            ) : (
+              candidates.map((row: any, index: number) => (
+                <tr key={row.symbol} className={`${index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'} ${row.selected_for_trade ? 'border-l-2 border-l-[#22c55e]' : row.filters_passed ? 'border-l-2 border-l-[#f59e0b]' : 'border-l-2 border-l-[#ef4444]'}`}>
+                  <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
+                  <td className="table-cell text-gray-400">{row.sector || '-'}</td>
+                  <td className={row.side === 'BUY' ? 'table-cell text-[#22c55e]' : row.side === 'SELL' ? 'table-cell text-[#ef4444]' : 'table-cell text-gray-500'}>{row.side || 'WATCH'}</td>
+                  <td className="table-cell num">{optionalNumber(row.open)}</td>
+                  <td className="table-cell num">{optionalNumber(row.high)}</td>
+                  <td className="table-cell num">{optionalNumber(row.low)}</td>
+                  <td className="table-cell num">{optionalNumber(row.close)}</td>
+                  <td className="table-cell num">{optionalNumber(row.volume)}</td>
+                  <td className="table-cell num">{optionalNumber(row.prev_close)}</td>
+                  <td className={`table-cell num ${Number(row.gap_pct) > 0 ? 'text-[#22c55e]' : Number(row.gap_pct) < 0 ? 'text-[#ef4444]' : ''}`}>{optionalNumber(row.gap_pct)}%</td>
+                  <td className="table-cell">{flag(row.shape_passed)}</td>
+                  <td className="table-cell">{flag(row.gap_passed)}</td>
+                  <td className="table-cell">{flag(row.filters_passed)}</td>
+                  <td className="table-cell">{flag(row.selected_for_trade)}</td>
+                  <td className="table-cell text-gray-400">{row.rejection_reason || '--'}</td>
+                  <td className="table-cell num">{indicatorValue(row, 'vwap')}</td>
+                  <td className="table-cell num">{indicatorValue(row, 'rsi')}</td>
+                  <td className="table-cell num">{indicatorValue(row, 'adx')}</td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+    </section>
+  );
+}
 function BacktestTrades({ rows }: { rows: any[] }) {
   return <section className="panel overflow-hidden"><div className="border-b border-[#1f2937] p-4"><h3 className="text-sm font-semibold text-gray-100">Simulated Trades</h3><p className="mt-1 text-xs text-gray-500">Times are based on the historical one-minute candle used for simulated entry and exit.</p></div><div className="overflow-x-auto"><table className="w-full min-w-[1150px] text-xs"><thead className="bg-[#111827]"><tr>{['Date', 'Symbol', 'Side', 'Qty', 'Entry Time', 'Entry', 'Exit Time', 'Exit', 'Reason', 'Net'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr></thead><tbody>{!rows.length ? <tr><td colSpan={10} className="table-cell text-gray-500">No simulated trades in this range.</td></tr> : rows.map((trade, index) => <tr key={`${trade.session_date}-${trade.symbol}-${index}`} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}><td className="table-cell num">{trade.session_date}</td><td className="table-cell font-mono text-gray-100">{trade.symbol}</td><td className={`table-cell font-semibold ${trade.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{trade.side}</td><td className="table-cell num">{trade.qty}</td><td className="table-cell num">{formatTime(trade.entry_time)}</td><td className="table-cell num">{number(trade.entry_price)}</td><td className="table-cell num">{formatTime(trade.exit_time)}</td><td className="table-cell num">{number(trade.exit_price)}</td><td className="table-cell">{trade.exit_reason}</td><td className={`table-cell num font-semibold ${tone(trade.net_pnl)}`}>{money(trade.net_pnl)}</td></tr>)}</tbody></table></div></section>;
 }
@@ -179,14 +295,14 @@ function tone(value?: number) { return value && value > 0 ? 'text-[#22c55e]' : v
 function formatTime(value: unknown) { if (!value) return '--'; const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }); }
 
 function downloadBacktestCsv(result: any) {
-  const headers = ['Record Type', 'Date', 'Symbol', 'Side', 'Open', 'High', 'Low', 'Close', 'Volume', 'Previous Close', 'Gap %', 'Shape Passed', 'Gap Passed', 'Filters Passed', 'Selected For Trade', 'Rejection Reason', 'VWAP', 'RSI', 'ADX', 'Quantity', 'Entry Time IST', 'Entry Price', 'Exit Time IST', 'Exit Price', 'Exit Reason', 'Gross P&L', 'Charges', 'Net P&L', 'Metric', 'Value'];
+  const headers = ['Record Type', 'Date', 'Symbol', 'Sector', 'Side', 'Open', 'High', 'Low', 'Close', 'Volume', 'Previous Close', 'Gap %', 'Shape Passed', 'Gap Passed', 'Filters Passed', 'Selected For Trade', 'Rejection Reason', 'VWAP', 'RSI', 'ADX', 'Quantity', 'Entry Time IST', 'Entry Price', 'Exit Time IST', 'Exit Price', 'Exit Reason', 'Gross P&L', 'Charges', 'Net P&L', 'Metric', 'Value'];
   const rows: any[][] = [];
-  Object.entries(result.summary || {}).forEach(([metric, value]) => rows.push(['Summary', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', metric, typeof value === 'object' ? JSON.stringify(value) : value]));
+  Object.entries(result.summary || {}).forEach(([metric, value]) => rows.push(['Summary', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', metric, typeof value === 'object' ? JSON.stringify(value) : value]));
   (result.daily_results || []).forEach((day: any) => {
     const summary = day.summary || {};
-    rows.push(['Daily Result', day.date, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', summary.gross_pnl, summary.total_charges, summary.net_pnl, 'Trades / wins / losses', `${summary.trade_count || 0} / ${summary.win_count || 0} / ${summary.loss_count || 0}`]);
-    (day.trades || []).forEach((trade: any) => rows.push(['Trade', day.date, trade.symbol, trade.side, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', trade.qty, formatTime(trade.entry_time), trade.entry_price, formatTime(trade.exit_time), trade.exit_price, trade.exit_reason, trade.gross_pnl, trade.total_charges, trade.net_pnl, '', '']));
-    (day.candidates || []).forEach((row: any) => rows.push(['Candidate', day.date, row.symbol, row.side, row.open, row.high, row.low, row.close, row.volume, row.prev_close, row.gap_pct, row.shape_passed, row.gap_passed, row.filters_passed, row.selected_for_trade, row.rejection_reason, row.indicator_results?.vwap?.value, row.indicator_results?.rsi?.value, row.indicator_results?.adx?.value, '', '', '', '', '', '', '', '', '', '', '']));
+    rows.push(['Daily Result', day.date, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', summary.gross_pnl, summary.total_charges, summary.net_pnl, 'Trades / wins / losses', `${summary.trade_count || 0} / ${summary.win_count || 0} / ${summary.loss_count || 0}`]);
+    (day.trades || []).forEach((trade: any) => rows.push(['Trade', day.date, trade.symbol, trade.sector || '', trade.side, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', trade.qty, formatTime(trade.entry_time), trade.entry_price, formatTime(trade.exit_time), trade.exit_price, trade.exit_reason, trade.gross_pnl, trade.total_charges, trade.net_pnl, '', '']));
+    (day.candidates || []).forEach((row: any) => rows.push(['Candidate', day.date, row.symbol, row.sector || '', row.side, row.open, row.high, row.low, row.close, row.volume, row.prev_close, row.gap_pct, row.shape_passed, row.gap_passed, row.filters_passed, row.selected_for_trade, row.rejection_reason, row.indicator_results?.vwap?.value, row.indicator_results?.rsi?.value, row.indicator_results?.adx?.value, '', '', '', '', '', '', '', '', '', '', '']));
   });
   const csv = [headers, ...rows].map((row) => row.map(csvValue).join(',')).join('\r\n');
   const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });

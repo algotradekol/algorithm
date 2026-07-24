@@ -44,6 +44,8 @@ export const api = {
   positions: (algoId: string) => authedFetch(`/api/algo/${algoId}/positions`),
   exitPosition: (algoId: string, positionId: string) =>
     authedFetch(`/api/algo/${algoId}/positions/${encodeURIComponent(positionId)}/exit`, { method: 'POST' }),
+  manualTrade: (algoId: string, payload: { symbol: string; side: 'BUY' | 'SELL'; price?: number; trigger?: string }) =>
+    authedFetch(`/api/algo/${algoId}/manual-trade`, { method: 'POST', body: JSON.stringify(payload) }),
   trades: (algoId: string) => authedFetch(`/api/algo/${algoId}/trades`),
   history: (algoId: string, days = 30) => authedFetch(`/api/algo/${algoId}/history?days=${days}`),
   scanResults: (algoId: string) => authedFetch(`/api/algo/${algoId}/scan-results`),

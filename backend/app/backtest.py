@@ -15,8 +15,9 @@ from .charges import calculate_charges, get_charges_config
 from .fyers_client import get_intraday_candles_for_range
 from .strategy_settings import get_settings
 from .strategies.algo4_opening_range_indicators import Algo4OpeningRangeIndicators
-from .candidate_ranking import rank_candidates, select_ranked_candidates
+from .candidate_ranking import build_sector_breakdown, rank_candidates, select_ranked_candidates
 from .supabase_client import run_with_supabase
+from .symbols import get_nse500_sector_map
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
 SUPPORTED_ALGOS = {"algo1", "algo2"}
@@ -206,6 +207,7 @@ def _run_job(
             if (first_date + datetime.timedelta(days=offset)).weekday() < 5
         ]
         settings = get_settings(algo_id)
+        sector_map = get_nse500_sector_map()
         rows_by_day: dict[datetime.date, list[dict]] = {day: [] for day in trading_days}
         symbols_with_history = 0
 
@@ -214,7 +216,7 @@ def _run_job(
             # exhausted Railway, while discarding them forced duplicate Fyers
             # requests for every selected replay signal.
             history = get_intraday_candles_for_range(symbol, lookback_start, last_date)
-            rows = [_evaluate_symbol(algo_id, symbol, day, history, settings) for day in trading_days]
+            rows = [_evaluate_symbol(algo_id, symbol, day, history, settings, sector_map) for day in trading_days]
             return rows, bool(history), history_cache.store(symbol, history)
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
@@ -389,12 +391,12 @@ def _replay_cached_symbol(
     ]
 
 
-def _simulate(algo_id: str, target_date: datetime.date, watchlist: list[str], histories: dict[str, list[dict]], settings: dict) -> dict:
+def _simulate(algo_id: str, target_date: datetime.date, watchlist: list[str], histories: dict[str, list[dict]], settings: dict, sector_map: dict[str, str] | None = None) -> dict:
     rows: list[dict] = []
     condition = {"candle": 0, "shape": 0, "gap": 0, "filters": 0}
     for symbol in watchlist:
         history = histories.get(symbol) or []
-        row = _evaluate_symbol(algo_id, symbol, target_date, history, settings)
+        row = _evaluate_symbol(algo_id, symbol, target_date, history, settings, sector_map)
         if row["has_opening_candle"]:
             condition["candle"] += 1
         if row["shape_passed"]:
@@ -431,6 +433,7 @@ def _simulate(algo_id: str, target_date: datetime.date, watchlist: list[str], hi
         "mode": "historical_candle_replay",
         "execution_assumption": "Signal uses the combined 09:15-09:17 window; entry uses the 09:18 candle open. If a later candle touches both stop-loss and target, stop-loss is assumed first (conservative).",
         "summary": {**summary, "buy_count": buys, "sell_count": sells},
+        "sector_breakdown": build_sector_breakdown(rows),
         "condition_breakdown": [
             {"label": "Scanned universe", "passed": len(watchlist), "total": len(watchlist)},
             {"label": "Condition 1: 09:15-09:17 candles received", "passed": condition["candle"], "total": len(watchlist)},
@@ -470,6 +473,7 @@ def _prepare_daily_result(
         "mode": "historical_candle_replay",
         "execution_assumption": "Signal uses the combined 09:15-09:17 window; entry uses the 09:18 candle open. If a later candle touches both stop-loss and target, stop-loss is assumed first (conservative).",
         "summary": {},
+        "sector_breakdown": build_sector_breakdown(rows),
         "condition_breakdown": [
             {"label": "Scanned universe", "passed": watchlist_size, "total": watchlist_size},
             {"label": "Condition 1: 09:15-09:17 candles received", "passed": condition["candle"], "total": watchlist_size},
@@ -540,6 +544,7 @@ def _range_result(
             "date": day["date"],
             "summary": day_summary,
             "condition_breakdown": day["condition_breakdown"],
+            "sector_breakdown": day.get("sector_breakdown") or [],
             "data_available_symbols": next(
                 (step["passed"] for step in day["condition_breakdown"] if step["label"] == "Condition 1: 09:15-09:17 candles received"), 0,
             ),
@@ -558,16 +563,17 @@ def _range_result(
         "best_day": {"date": best_day["date"], "net_pnl": best_day["summary"]["net_pnl"]} if best_day else None,
         "worst_day": {"date": worst_day["date"], "net_pnl": worst_day["summary"]["net_pnl"]} if worst_day else None,
         "data_coverage": data_coverage,
+        "sector_breakdown": build_sector_breakdown([row for day in daily_results for row in day.get("candidates", [])]),
         "daily_results": daily_rows,
     }
 
 
-def _evaluate_symbol(algo_id: str, symbol: str, target_date: datetime.date, history: list[dict], settings: dict) -> dict:
+def _evaluate_symbol(algo_id: str, symbol: str, target_date: datetime.date, history: list[dict], settings: dict, sector_map: dict[str, str] | None = None) -> dict:
     opening_candles = [
         candle for candle in history
         if candle["time"].date() == target_date and OPENING_WINDOW_START <= candle["time"].strftime("%H:%M") < OPENING_WINDOW_END
     ]
-    base = {"symbol": symbol, "has_opening_candle": bool(opening_candles), "shape_passed": False, "gap_passed": False, "filters_passed": False, "selected_for_trade": False, "rejection_reason": "missing_09_15_09_17_window", "indicator_results": {}}
+    base = {"symbol": symbol, "sector": (sector_map or {}).get(symbol), "has_opening_candle": bool(opening_candles), "shape_passed": False, "gap_passed": False, "filters_passed": False, "selected_for_trade": False, "rejection_reason": "missing_09_15_09_17_window", "indicator_results": {}}
     if not opening_candles:
         return base
     opening = {

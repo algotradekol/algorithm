@@ -56,7 +56,7 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
   const [cashSaving, setCashSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
-  const defaultsLabel = algoId === 'test_algo' ? 'Reset to test defaults' : 'Reset to Tradetron defaults';
+  const defaultsLabel = 'Reset to Tradetron defaults';
 
   useEffect(() => {
     let cancelled = false;
@@ -133,7 +133,7 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
         <ExitModeSelect settings={settings} setSettings={setSettings} />
         <TrailingStopToggle settings={settings} setSettings={setSettings} />
         <FieldGroup title="Risk Settings" fields={RISK_FIELDS} settings={settings} setSettings={setSettings} />
-        {(algoId === 'algo1' || algoId === 'algo2') && <TestSchedule settings={settings} setSettings={setSettings} />}
+        {(algoId === 'algo1' || algoId === 'algo4') && <TestSchedule settings={settings} setSettings={setSettings} />}
         {algoId === 'algo2' && (
           <IndicatorFilterSettings settings={settings} setSettings={setSettings} />
         )}

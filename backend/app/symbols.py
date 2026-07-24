@@ -18,22 +18,27 @@ NIFTY500_CSV_URL = "https://www.niftyindices.com/IndexConstituent/ind_nifty500li
 FYERS_SYMBOL_MASTER_URL = "https://public.fyers.in/sym_details/NSE_CM.csv"
 FYERS_PROXIES = {"http": FYERS_PROXY_URL, "https": FYERS_PROXY_URL} if FYERS_PROXY_URL else None
 
-_cache = {"watchlist": None, "date": None}
+_cache = {"watchlist": None, "date": None, "universe": None, "sector_map": None}
 
 
-def get_nse500_watchlist(force_refresh: bool = False) -> list[str]:
-    """Returns Fyers-format symbols, e.g. ['NSE:RELIANCE-EQ', 'NSE:TCS-EQ', ...]"""
-    import datetime
-    today = datetime.date.today().isoformat()
-    if not force_refresh and _cache["watchlist"] and _cache["date"] == today:
-        return _cache["watchlist"]
-
+def _load_universe() -> list[dict]:
     headers = {"User-Agent": "Mozilla/5.0"}  # niftyindices.com blocks requests with no user-agent
 
     nifty500 = requests.get(NIFTY500_CSV_URL, headers=headers, timeout=15)
     nifty500.raise_for_status()
     reader = csv.DictReader(io.StringIO(nifty500.text))
-    nifty500_tradingsymbols = {row["Symbol"].strip() for row in reader}
+
+    nifty500_rows = [
+        {
+            "company_name": (row.get("Company Name") or "").strip(),
+            "industry": (row.get("Industry") or "").strip(),
+            "symbol": (row.get("Symbol") or "").strip(),
+            "series": (row.get("Series") or "").strip(),
+            "isin_code": (row.get("ISIN Code") or "").strip(),
+        }
+        for row in reader
+        if (row.get("Symbol") or "").strip()
+    ]
 
     fyers_symbols = {}
     try:
@@ -61,18 +66,60 @@ def get_nse500_watchlist(force_refresh: bool = False) -> list[str]:
     except requests.RequestException as exc:
         print(f"[symbols] Fyers symbol master unavailable, using NSE symbols directly: {exc}")
 
-    watchlist = []
+    universe = []
     skipped = []
-    for sym in nifty500_tradingsymbols:
-        fyers_symbol = fyers_symbols.get(f"{sym}-EQ") or fyers_symbols.get(sym) or f"NSE:{sym}-EQ"
+    for row in nifty500_rows:
+        symbol = row["symbol"]
+        fyers_symbol = fyers_symbols.get(f"{symbol}-EQ") or fyers_symbols.get(symbol) or f"NSE:{symbol}-EQ"
         if fyers_symbol:
-            watchlist.append(fyers_symbol)
+            universe.append({
+                **row,
+                "fyers_symbol": fyers_symbol,
+            })
         else:
-            skipped.append(sym)
+            skipped.append(symbol)
 
     if skipped:
         print(f"[symbols] {len(skipped)} NSE500 symbols had no Fyers match, skipped: {skipped[:10]}...")
 
-    _cache["watchlist"] = sorted(watchlist)
+    universe.sort(key=lambda row: row["fyers_symbol"])
+    return universe
+
+
+def get_nse500_watchlist(force_refresh: bool = False) -> list[str]:
+    """Returns Fyers-format symbols, e.g. ['NSE:RELIANCE-EQ', 'NSE:TCS-EQ', ...]"""
+    import datetime
+    today = datetime.date.today().isoformat()
+    if not force_refresh and _cache["watchlist"] and _cache["date"] == today:
+        return _cache["watchlist"]
+
+    universe = get_nse500_universe(force_refresh=force_refresh)
+    watchlist = [row["fyers_symbol"] for row in universe]
+    _cache["watchlist"] = watchlist
     _cache["date"] = today
     return _cache["watchlist"]
+
+
+def get_nse500_universe(force_refresh: bool = False) -> list[dict]:
+    import datetime
+    today = datetime.date.today().isoformat()
+    if not force_refresh and _cache["universe"] and _cache["date"] == today:
+        return _cache["universe"]
+    universe = _load_universe()
+    _cache["universe"] = universe
+    _cache["date"] = today
+    _cache["watchlist"] = [row["fyers_symbol"] for row in universe]
+    _cache["sector_map"] = {row["fyers_symbol"]: row["industry"] for row in universe if row.get("industry")}
+    return universe
+
+
+def get_nse500_sector_map(force_refresh: bool = False) -> dict[str, str]:
+    import datetime
+    today = datetime.date.today().isoformat()
+    if not force_refresh and _cache["sector_map"] and _cache["date"] == today:
+        return _cache["sector_map"]
+    universe = get_nse500_universe(force_refresh=force_refresh)
+    sector_map = {row["fyers_symbol"]: row["industry"] for row in universe if row.get("industry")}
+    _cache["sector_map"] = sector_map
+    _cache["date"] = today
+    return sector_map

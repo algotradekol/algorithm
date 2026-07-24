@@ -14,7 +14,7 @@ import { clearPinToken } from '../../lib/pinAuth';
 import { api } from '../../lib/api';
 import { WebSocketState } from '../../lib/useWebSocket';
 
-const TABS = ['Simple', 'Filter', 'Test Algo', 'Backtest', 'Compare', 'History', 'Calendar', 'Charges'] as const;
+const TABS = ['Simple', 'Filter', 'Backtest', 'Compare', 'History', 'Calendar', 'Charges'] as const;
 
 function formatIstTime() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -239,14 +239,6 @@ function DashboardContent() {
                 algoId="algo2"
                 displayName="UN1 9:15 v14 - Filter"
                 description="Ranks the combined 9:15-9:17 opening window, then applies the UN1 v14 liquidity, volume, and price-range checks before the 9:18 entry. Advanced indicator filters remain optional in Settings."
-                onWebSocketStatus={setWsStatus}
-              />
-            )}
-            {tab === 'Test Algo' && (
-              <AlgoTab
-                algoId="test_algo"
-                displayName="Test Algo - Live Feature Check"
-                description="Testing-only paper strategy. After 9:20 AM, a closed 1-minute candle above +0.03% becomes BUY and below -0.03% becomes SELL, with small target/SL to verify scan, positions, trades, WebSocket, and history."
                 onWebSocketStatus={setWsStatus}
               />
             )}

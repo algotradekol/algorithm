@@ -1,8 +1,9 @@
 'use client';
 import { useEffect, useMemo, useState } from 'react';
 import { PAGE_SIZE, PaginationControls } from './PaginationControls';
+import { api } from '../lib/api';
 
-const COLUMNS = ['rank', 'composite_score', 'symbol', 'side', 'open', 'high', 'low', 'prev_close', 'gap_pct', 'vwap', 'rsi', 'adx', 'supertrend', 'volume', 'selected_for_trade', 'rejection_reason'];
+const COLUMNS = ['rank', 'composite_score', 'symbol', 'sector', 'side', 'open', 'high', 'low', 'prev_close', 'gap_pct', 'vwap', 'rsi', 'adx', 'supertrend', 'volume', 'selected_for_trade', 'rejection_reason', 'manual_action'];
 const FUNNEL_INDICATORS = [
   ['vwap', 'VWAP condition'],
   ['rsi', 'RSI / move condition'],
@@ -24,13 +25,15 @@ type FunnelStepData = {
 
 type ScanFilter = 'all' | 'passed' | 'buy' | 'sell' | 'selected' | 'filtered';
 
-export default function ScanResultsPanel({ results }: { results: any }) {
+export default function ScanResultsPanel({ results, algoId, onRefresh }: { results: any; algoId?: string; onRefresh?: () => void }) {
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState('gap_pct');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
   const [page, setPage] = useState(0);
   const [scanFilter, setScanFilter] = useState<ScanFilter>('all');
   const [funnelFilter, setFunnelFilter] = useState<number | null>(null);
+  const [busyTrade, setBusyTrade] = useState<string | null>(null);
+  const [tradeError, setTradeError] = useState('');
   const rows = results?.passed_opening_range || [];
 
   useEffect(() => {
@@ -44,6 +47,8 @@ export default function ScanResultsPanel({ results }: { results: any }) {
     .filter((row: any) => Number.isFinite(Number(row.composite_score)))
     .sort((left: any, right: any) => Number(left.rank || Infinity) - Number(right.rank || Infinity))
     .slice(0, 4);
+  const sectorBreakdown = Array.isArray(results?.sector_breakdown) ? results.sector_breakdown : [];
+  const schedule = results?.schedule;
   const filtered = useMemo(() => {
     const q = query.trim().toLowerCase();
     return rows
@@ -63,7 +68,13 @@ export default function ScanResultsPanel({ results }: { results: any }) {
   if (!results || results.message) {
     return (
       <section className="rounded border border-[#1f2937] bg-[#111827] p-3 text-sm text-gray-500">
-        {results?.message || 'Scan results will appear here at 9:16 AM when the market opens.'}
+        {schedule?.enabled && <TestScheduleStatus schedule={schedule} />}
+        <div>{results?.message || 'Scan results will appear here at 9:16 AM when the market opens.'}</div>
+        {schedule?.enabled && (
+          <p className="mt-2 text-xs text-[#93c5fd]">
+            Scheduled test is turned on, so the scanner is waiting for the configured candle window instead of the default 09:15-09:17 opening range.
+          </p>
+        )}
       </section>
     );
   }
@@ -90,6 +101,35 @@ export default function ScanResultsPanel({ results }: { results: any }) {
     setPage(0);
   }
 
+  async function manualTrade(row: any, side: 'BUY' | 'SELL') {
+    if (!algoId) {
+      setTradeError('Manual trading is unavailable for this panel.');
+      return;
+    }
+    const symbol = String(row.symbol || '').trim();
+    if (!symbol) return;
+    const price = Number(row.ltp ?? row.close ?? row.open);
+    if (!Number.isFinite(price) || price <= 0) {
+      setTradeError(`No usable price is available for ${symbol}.`);
+      return;
+    }
+    setTradeError('');
+    setBusyTrade(`${symbol}:${side}`);
+    try {
+      await api.manualTrade(algoId, {
+        symbol,
+        side,
+        price,
+        trigger: `Manual ${side} from scan panel at rank ${row.rank || 'n/a'}`,
+      });
+      onRefresh?.();
+    } catch (error: any) {
+      setTradeError(error?.message || 'Could not place the manual trade.');
+    } finally {
+      setBusyTrade(null);
+    }
+  }
+
   return (
     <section className="rounded border border-[#1f2937] bg-[#111827] p-3">
       {results.schedule?.enabled && <TestScheduleStatus schedule={results.schedule} />}
@@ -113,6 +153,32 @@ export default function ScanResultsPanel({ results }: { results: any }) {
         <div className="flex flex-wrap items-baseline justify-between gap-2"><div className="label">Best Matches</div><p className="text-[11px] text-gray-500">{results.ranking?.method || 'Highest composite score is selected first within your configured trade limits.'}</p></div>
         <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{bestMatches.map((row: any) => <BestMatchCard key={row.symbol} row={row} />)}</div>
       </div>}
+
+      {sectorBreakdown.length > 0 && <div className="mt-4 rounded border border-[#1f2937] bg-[#0d1117] p-3">
+        <div className="label">Sector Breakdown</div>
+        <p className="mt-1 text-xs text-gray-500">We keep the current ranking, but add a sector context bonus so strong symbols can be viewed alongside their sector trend.</p>
+        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {sectorBreakdown.map((sector: any) => (
+            <div key={sector.sector} className="rounded border border-[#1f2937] bg-[#111827] p-2">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-semibold text-gray-100">{sector.sector}</div>
+                  <div className="text-[11px] text-gray-500">{sector.direction} sector · {sector.rows} symbols</div>
+                </div>
+                <div className="num text-right text-sm font-semibold text-gray-100">{formatScore(sector.avg_score)}</div>
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-[#020617]">
+                <div className="h-full bg-[#22c55e]" style={{ width: `${Math.max(4, Math.min(100, Number(sector.alignment_strength || 0) * 100))}%` }} />
+              </div>
+              <div className="mt-1 text-[11px] text-gray-500">
+                {sector.buy} BUY · {sector.sell} SELL · {sector.selected} selected · avg move {formatNumber(sector.avg_move_pct)}%
+              </div>
+            </div>
+          ))}
+        </div>
+      </div>}
+
+      {tradeError && <div className="mt-4 rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-xs text-[#ef4444]">{tradeError}</div>}
 
       <div className="mt-4 rounded border border-[#1f2937] bg-[#0d1117] p-3">
         <div className="label">Condition Funnel</div>
@@ -156,6 +222,7 @@ export default function ScanResultsPanel({ results }: { results: any }) {
                 <td className="table-cell num font-semibold text-[#60a5fa]">{row.rank ? `#${row.rank}` : '-'}</td>
                 <td className="table-cell num font-semibold text-gray-100">{formatScore(row.composite_score)}</td>
                 <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
+                <td className="table-cell text-gray-400">{row.sector || '-'}</td>
                 <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>{row.side}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.open)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.high)}</td>
@@ -167,6 +234,26 @@ export default function ScanResultsPanel({ results }: { results: any }) {
                 ))}
                 <td className="table-cell text-gray-100">{row.selected_for_trade ? 'Yes' : 'No'}</td>
                 <td className="table-cell text-gray-500">{row.rejection_reason || '-'}</td>
+                <td className="table-cell">
+                  <div className="flex flex-wrap gap-1.5">
+                    <button
+                      type="button"
+                      onClick={() => manualTrade(row, 'BUY')}
+                      disabled={busyTrade === `${row.symbol}:BUY`}
+                      className="min-h-8 rounded border border-[#22c55e]/50 px-2 py-1 text-[11px] font-semibold text-[#22c55e] disabled:opacity-40"
+                    >
+                      BUY
+                    </button>
+                    <button
+                      type="button"
+                      onClick={() => manualTrade(row, 'SELL')}
+                      disabled={busyTrade === `${row.symbol}:SELL`}
+                      className="min-h-8 rounded border border-[#ef4444]/50 px-2 py-1 text-[11px] font-semibold text-[#ef4444] disabled:opacity-40"
+                    >
+                      SELL
+                    </button>
+                  </div>
+                </td>
               </tr>
             ))}
           </tbody>
@@ -196,6 +283,7 @@ function BestMatchCard({ row }: { row: any }) {
   return <div className={`border-l-2 border border-[#1f2937] bg-[#111827] p-2 ${row.side === 'BUY' ? 'border-l-[#22c55e]' : 'border-l-[#ef4444]'}`}>
     <div className="flex items-center justify-between gap-2"><span className="num text-[#60a5fa]">#{row.rank}</span><span className={`text-xs font-semibold ${row.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{row.side}</span></div>
     <div className="mt-1 truncate font-mono text-sm font-semibold text-gray-100">{row.symbol}</div>
+    <div className="mt-1 truncate text-[10px] uppercase tracking-[0.18em] text-gray-500">{row.sector || 'Unclassified sector'}</div>
     <div className="num mt-1 text-lg font-semibold text-gray-100">{formatScore(row.composite_score)}</div>
     <div className="text-[10px] uppercase tracking-wide text-gray-500">Composite score / 100</div>
     <div className="mt-1 line-clamp-2 text-[10px] text-gray-500" title={componentText}>{componentText || 'Gap-strength ranking'}</div>
