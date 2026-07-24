@@ -20,7 +20,7 @@ from .supabase_client import run_with_supabase
 from .symbols import get_nse500_sector_map
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
-SUPPORTED_ALGOS = {"algo1", "algo2"}
+SUPPORTED_ALGOS = {"algo1", "algo2", "algo3"}
 MAX_WORKERS = 2
 MAX_BACKTEST_DAYS = 31
 OPENING_WINDOW_START = "09:15"
@@ -64,7 +64,7 @@ def start_backtest(
     watchlist: list[str],
 ) -> dict:
     if algo_id not in SUPPORTED_ALGOS:
-        raise ValueError("Backtesting is currently available for Simple and Filter only.")
+        raise ValueError("Backtesting is currently available for Simple, Filter, and Silver Micro only.")
     first_date = datetime.date.fromisoformat(start_date)
     last_date = datetime.date.fromisoformat(end_date)
     today = datetime.datetime.now(IST).date()
@@ -194,6 +194,12 @@ def _run_job(
 ):
     history_cache = BacktestHistoryCache()
     try:
+        settings = get_settings(algo_id)
+        if algo_id == "algo3":
+            if not watchlist:
+                raise ValueError("The Silver Micro contract could not be resolved for backtesting.")
+            _run_silver_micro_job(job_id, algo_id, first_date, last_date, watchlist[0], settings, history_cache)
+            return
         _update(
             job_id,
             status="running",
@@ -206,7 +212,6 @@ def _run_job(
             for offset in range((last_date - first_date).days + 1)
             if (first_date + datetime.timedelta(days=offset)).weekday() < 5
         ]
-        settings = get_settings(algo_id)
         sector_map = get_nse500_sector_map()
         rows_by_day: dict[datetime.date, list[dict]] = {day: [] for day in trading_days}
         symbols_with_history = 0
@@ -528,6 +533,9 @@ def _range_result(
     last_date: datetime.date,
     daily_results: list[dict],
     data_coverage: dict,
+    *,
+    mode: str = "historical_candle_replay",
+    execution_assumption: str = "Signal uses the combined 09:15-09:17 window; entry uses the 09:18 candle open. If a later candle touches both stop-loss and target, stop-loss is assumed first (conservative).",
 ) -> dict:
     all_trades = [trade for day in daily_results for trade in day["trades"]]
     summary = _performance_summary(all_trades)
@@ -545,9 +553,9 @@ def _range_result(
             "summary": day_summary,
             "condition_breakdown": day["condition_breakdown"],
             "sector_breakdown": day.get("sector_breakdown") or [],
-            "data_available_symbols": next(
+            "data_available_symbols": day.get("data_available_symbols", next(
                 (step["passed"] for step in day["condition_breakdown"] if step["label"] == "Condition 1: 09:15-09:17 candles received"), 0,
-            ),
+            )),
             "trades": day["trades"],
             "candidates": day["candidates"],
         })
@@ -557,8 +565,8 @@ def _range_result(
         "algo_id": algo_id,
         "start_date": first_date.isoformat(),
         "end_date": last_date.isoformat(),
-        "mode": "historical_candle_replay",
-        "execution_assumption": "Signal uses the combined 09:15-09:17 window; entry uses the 09:18 candle open. If a later candle touches both stop-loss and target, stop-loss is assumed first (conservative).",
+        "mode": mode,
+        "execution_assumption": execution_assumption,
         "summary": {**summary, "trading_days_replayed": len(daily_results), "max_drawdown": round(max_drawdown, 2)},
         "best_day": {"date": best_day["date"], "net_pnl": best_day["summary"]["net_pnl"]} if best_day else None,
         "worst_day": {"date": worst_day["date"], "net_pnl": worst_day["summary"]["net_pnl"]} if worst_day else None,
@@ -723,4 +731,436 @@ def _simulate_trade(row: dict, history: list[dict], target_date: datetime.date, 
         "target_price": round(target, 2), "sl_price": round(sl, 2),
         "entry_trigger": f"Historical {target_date.isoformat()} 09:15-09:17 opening-window replay.",
         **charges,
+    }
+
+
+def _run_silver_micro_job(
+    job_id: str,
+    algo_id: str,
+    first_date: datetime.date,
+    last_date: datetime.date,
+    symbol: str,
+    settings: dict,
+    history_cache: BacktestHistoryCache,
+) -> None:
+    lookback_start = first_date - datetime.timedelta(days=WARMUP_LOOKBACK_DAYS)
+    charges_config = get_charges_config()
+    _update(
+        job_id,
+        status="running",
+        phase="screening",
+        message=f"Loading Silver Micro history for {symbol}.",
+        replay_total=0,
+        replay_completed=0,
+        replay_failed=0,
+    )
+    history = get_intraday_candles_for_range(symbol, lookback_start, last_date)
+    if history_cache.store(symbol, history):
+        _increment(job_id, "cached_history_symbols")
+    if not history:
+        raise ValueError("No Silver Micro history was returned for the chosen range.")
+
+    trading_days = [
+        first_date + datetime.timedelta(days=offset)
+        for offset in range((last_date - first_date).days + 1)
+        if (first_date + datetime.timedelta(days=offset)).weekday() < 5
+    ]
+    _update(
+        job_id,
+        completed_symbols=1,
+        failed_symbols=0,
+        phase="replaying",
+        replay_total=len(trading_days),
+        replay_completed=0,
+        replay_failed=0,
+        message=f"Replaying 0 / {len(trading_days)} trading days for Silver Micro from the local candle cache.",
+    )
+
+    daily_results = _simulate_silver_micro_range(
+        job_id,
+        algo_id,
+        first_date,
+        last_date,
+        symbol,
+        history,
+        trading_days,
+        settings,
+        charges_config,
+    )
+    data_coverage = {
+        "requested_symbols": 1,
+        "symbols_with_history": 1,
+        "symbols_without_history": 0,
+        "lookback_start": lookback_start.isoformat(),
+    }
+    result = _range_result(
+        algo_id,
+        first_date,
+        last_date,
+        daily_results,
+        data_coverage,
+        mode="historical_mcx_replay",
+        execution_assumption=(
+            "Silver Micro replays closed 5-minute candles. A green candle closing above EMA20 with volume above volume EMA20 creates a BUY setup; "
+            "a red candle closing below EMA20 with volume above volume EMA20 creates a SELL setup. The next candle must confirm the setup, "
+            "entry uses the following candle open, and stop-loss is assumed before target if both are touched inside the same candle."
+        ),
+    )
+    _update(job_id, status="complete", phase="complete", message="Silver Micro backtest complete.", result=result)
+
+
+def _new_silver_micro_day_result(symbol: str, day: datetime.date, bar_count: int) -> dict:
+    return {
+        "algo_id": "algo3",
+        "date": day.isoformat(),
+        "mode": "historical_mcx_replay",
+        "execution_assumption": (
+            "Silver Micro replays closed 5-minute candles. A green candle closing above EMA20 with volume above volume EMA20 creates a BUY setup; "
+            "a red candle closing below EMA20 with volume above volume EMA20 creates a SELL setup. The next candle must confirm the setup, entry uses "
+            "the following candle open, and stop-loss is assumed before target if both are touched inside the same candle."
+        ),
+        "data_available_symbols": 1 if bar_count else 0,
+        "summary": {},
+        "sector_breakdown": [],
+        "condition_breakdown": [
+            {"label": "Scanned universe", "passed": 1 if bar_count else 0, "total": 1},
+            {"label": "Condition 1: 5m bars processed", "passed": 0, "total": bar_count},
+            {"label": "Condition 2: confirmation candle", "passed": 0, "total": 0},
+            {"label": "Final: selected for trade", "passed": 0, "total": 0},
+        ],
+        "candidates": [],
+        "trades": [],
+    }
+
+
+def _simulate_silver_micro_range(
+    job_id: str,
+    algo_id: str,
+    first_date: datetime.date,
+    last_date: datetime.date,
+    symbol: str,
+    history: list[dict],
+    trading_days: list[datetime.date],
+    settings: dict,
+    charges_config: dict,
+) -> list[dict]:
+    bars = _build_five_minute_bars(history)
+    bars_by_day: dict[datetime.date, int] = defaultdict(int)
+    for bar in bars:
+        if first_date <= bar["time"].date() <= last_date:
+            bars_by_day[bar["time"].date()] += 1
+
+    daily_results = {
+        day: _new_silver_micro_day_result(symbol, day, bars_by_day.get(day, 0))
+        for day in trading_days
+    }
+
+    ema_price: float | None = None
+    ema_volume: float | None = None
+    processed_bars = 0
+    current_day: datetime.date | None = None
+    pending_setup: dict | None = None
+    pending_entry: dict | None = None
+    position: dict | None = None
+    position_candidate: dict | None = None
+    last_bar: dict | None = None
+
+    def finalize_pending_setup(reason: str):
+        nonlocal pending_setup
+        if pending_setup and pending_setup.get("candidate"):
+            candidate = pending_setup["candidate"]
+            if not candidate.get("selected_for_trade"):
+                candidate["signal_stage"] = "rejected"
+                candidate["rejection_reason"] = reason
+        pending_setup = None
+
+    def close_position(exit_price: float, exit_time: datetime.datetime, exit_reason: str, day: datetime.date):
+        nonlocal position, position_candidate
+        if not position:
+            return
+        trade = _close_silver_micro_position(position, exit_price, exit_time, exit_reason, settings, charges_config)
+        daily_results[day]["trades"].append(trade)
+        if position_candidate:
+            position_candidate["exit_time"] = trade["exit_time"]
+            position_candidate["exit_price"] = trade["exit_price"]
+            position_candidate["exit_reason"] = trade["exit_reason"]
+            position_candidate["net_pnl"] = trade["net_pnl"]
+            position_candidate["gross_pnl"] = trade["gross_pnl"]
+            position_candidate["total_charges"] = trade["total_charges"]
+            position_candidate["selected_for_trade"] = True
+            position_candidate["signal_stage"] = "exited"
+        position = None
+        position_candidate = None
+
+    def open_position(side: str, entry_price: float, entry_time: datetime.datetime, candidate: dict):
+        nonlocal position, position_candidate
+        qty = int(float(settings["capital_per_trade"]) // float(entry_price))
+        if qty < 1:
+            return
+        if side == "BUY":
+            sl_price = float(entry_price) * (1 - float(settings["sl_pct"]) / 100)
+            target_price = float(entry_price) * (1 + float(settings["target_pct"]) / 100)
+        else:
+            sl_price = float(entry_price) * (1 + float(settings["sl_pct"]) / 100)
+            target_price = float(entry_price) * (1 - float(settings["target_pct"]) / 100)
+        position = {
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "entry_price": float(entry_price),
+            "entry_time": entry_time,
+            "sl_price": sl_price,
+            "target_price": target_price,
+            "highest": float(entry_price),
+            "lowest": float(entry_price),
+            "last_ltp": float(entry_price),
+        }
+        position_candidate = candidate
+        candidate["selected_for_trade"] = True
+        candidate["signal_stage"] = "entered"
+        candidate["entry_time"] = entry_time.isoformat()
+        candidate["entry_price"] = round(float(entry_price), 2)
+        candidate["sl_price"] = round(float(sl_price), 2)
+        candidate["target_price"] = round(float(target_price), 2)
+
+    for bar in bars:
+        bar_day = bar["time"].date()
+        if bar_day < first_date:
+            ema_price = _ema_step(ema_price, bar["close"])
+            ema_volume = _ema_step(ema_volume, bar["volume"])
+            last_bar = bar
+            continue
+        if bar_day > last_date:
+            break
+
+        if current_day is None:
+            current_day = bar_day
+        if bar_day != current_day:
+            if position and last_bar:
+                close_position(float(last_bar["close"]), last_bar["time"], "EOD_SQUAREOFF", current_day)
+            finalize_pending_setup("confirmation_timeout")
+            pending_entry = None
+            current_day = bar_day
+
+        day_result = daily_results[bar_day]
+        day_result["condition_breakdown"][0]["passed"] = 1
+
+        if pending_entry and pending_entry.get("entry_bucket") == bar["time"]:
+            if position and position["side"] != pending_entry["side"]:
+                close_position(float(bar["open"]), bar["time"], "REVERSAL_CONTRA_SIGNAL", bar_day)
+            if not position:
+                open_position(pending_entry["side"], float(bar["open"]), bar["time"], pending_entry["candidate"])
+            pending_entry = None
+
+        if position:
+            position["highest"] = max(float(position["highest"]), float(bar["high"]))
+            position["lowest"] = min(float(position["lowest"]), float(bar["low"]))
+            side = position["side"]
+            sl = float(position["sl_price"])
+            target = float(position["target_price"])
+            stop_hit = float(bar["low"]) <= sl if side == "BUY" else float(bar["high"]) >= sl
+            target_hit = float(bar["high"]) >= target if side == "BUY" else float(bar["low"]) <= target
+            if stop_hit:
+                close_position(sl, bar["time"], "SL", bar_day)
+            elif target_hit and settings.get("exit_mode") != "trailing_sl_only":
+                close_position(target, bar["time"], "TARGET", bar_day)
+            else:
+                trigger = float(settings.get("trailing_sl_trigger_pct") or 0)
+                distance = float(settings.get("trailing_sl_distance_pct") or 0)
+                if (settings.get("trailing_sl_enabled") or settings.get("exit_mode") in {"trailing_sl_only", "fixed_target_trailing_sl"}) and trigger > 0 and distance > 0:
+                    if side == "BUY" and (float(position["highest"]) - float(position["entry_price"])) / float(position["entry_price"]) * 100 >= trigger:
+                        position["sl_price"] = max(float(position["sl_price"]), float(position["highest"]) * (1 - distance / 100))
+                    elif side == "SELL" and (float(position["entry_price"]) - float(position["lowest"])) / float(position["entry_price"]) * 100 >= trigger:
+                        position["sl_price"] = min(float(position["sl_price"]), float(position["lowest"]) * (1 + distance / 100))
+
+        ema_price = _ema_step(ema_price, bar["close"])
+        ema_volume = _ema_step(ema_volume, bar["volume"])
+        processed_bars += 1
+        if processed_bars < EMA_PERIOD:
+            last_bar = bar
+            continue
+
+        if pending_setup and pending_setup.get("confirmation_bucket") == bar["time"]:
+            candidate = pending_setup["candidate"]
+            if _silver_micro_confirmation_passed(bar, pending_setup):
+                candidate["signal_stage"] = "confirmed"
+                candidate["confirmation_time"] = bar["time"].isoformat()
+                candidate["confirmation_close"] = round(float(bar["close"]), 2)
+                pending_entry = {
+                    "side": pending_setup["side"],
+                    "entry_bucket": bar["time"] + datetime.timedelta(minutes=5),
+                    "candidate": candidate,
+                }
+                day_result["condition_breakdown"][2]["passed"] += 1
+            else:
+                candidate["signal_stage"] = "rejected"
+                candidate["rejection_reason"] = "confirmation_failed"
+            pending_setup = None
+
+        if bar["time"].strftime("%H:%M") >= "15:15":
+            if position:
+                close_position(float(bar["close"]), bar["time"], "EOD_SQUAREOFF", bar_day)
+            last_bar = bar
+            continue
+
+        side = _silver_micro_signal_side(bar, ema_price, ema_volume)
+        if side:
+            day_result["condition_breakdown"][1]["passed"] += 1
+            candidate = {
+                "symbol": symbol,
+                "sector": "MCX",
+                "side": side,
+                "open": round(float(bar["open"]), 2),
+                "high": round(float(bar["high"]), 2),
+                "low": round(float(bar["low"]), 2),
+                "close": round(float(bar["close"]), 2),
+                "volume": round(float(bar["volume"]), 2),
+                "setup_time": bar["time"].isoformat(),
+                "setup_close": round(float(bar["close"]), 2),
+                "ema20_price": round(float(ema_price), 2) if ema_price is not None else None,
+                "ema20_volume": round(float(ema_volume), 2) if ema_volume is not None else None,
+                "signal_stage": "setup",
+                "selected_for_trade": False,
+                "rejection_reason": None,
+                "entry_time": None,
+                "entry_price": None,
+                "exit_time": None,
+                "exit_price": None,
+                "exit_reason": None,
+                "net_pnl": None,
+                "gross_pnl": None,
+                "total_charges": None,
+                "composite_score": None,
+                "rank": None,
+            }
+            day_result["candidates"].append(candidate)
+            if position and position["side"] != side:
+                close_position(float(bar["close"]), bar["time"], "REVERSAL_CONTRA_SIGNAL", bar_day)
+            pending_setup = {
+                "side": side,
+                "setup_close": float(bar["close"]),
+                "confirmation_bucket": bar["time"] + datetime.timedelta(minutes=5),
+                "candidate": candidate,
+            }
+
+        last_bar = bar
+
+    if current_day and position and last_bar:
+        close_position(float(last_bar["close"]), last_bar["time"], "EOD_SQUAREOFF", current_day)
+    if current_day and pending_setup:
+        finalize_pending_setup("confirmation_timeout")
+
+    for day in trading_days:
+        day_result = daily_results[day]
+        trades = day_result["trades"]
+        day_result["summary"] = {
+            **_performance_summary(trades),
+            "buy_count": len([trade for trade in trades if trade["side"] == "BUY"]),
+            "sell_count": len([trade for trade in trades if trade["side"] == "SELL"]),
+        }
+        day_result["condition_breakdown"][3]["passed"] = len(trades)
+        day_result["condition_breakdown"][2]["total"] = day_result["condition_breakdown"][1]["passed"]
+        day_result["condition_breakdown"][3]["total"] = day_result["condition_breakdown"][2]["passed"]
+        day_result["sector_breakdown"] = build_sector_breakdown(day_result["candidates"])
+
+    return [daily_results[day] for day in trading_days]
+
+
+def _build_five_minute_bars(history: list[dict]) -> list[dict]:
+    bars: list[dict] = []
+    current_bucket: datetime.datetime | None = None
+    buffer: list[dict] = []
+
+    def flush():
+        nonlocal buffer, current_bucket
+        if not buffer or current_bucket is None:
+            return
+        bars.append({
+            "time": current_bucket,
+            "open": float(buffer[0]["open"]),
+            "high": max(float(candle["high"]) for candle in buffer),
+            "low": min(float(candle["low"]) for candle in buffer),
+            "close": float(buffer[-1]["close"]),
+            "volume": sum(float(candle.get("volume") or 0) for candle in buffer),
+            "minute_count": len(buffer),
+        })
+        buffer = []
+
+    for candle in sorted(history, key=lambda item: item["time"]):
+        candle_time = candle["time"]
+        if candle_time.tzinfo is not None:
+            candle_time = candle_time.astimezone(IST).replace(tzinfo=None)
+        minute_bucket = candle_time.replace(minute=(candle_time.minute // 5) * 5, second=0, microsecond=0)
+        if current_bucket is None:
+            current_bucket = minute_bucket
+        if minute_bucket != current_bucket:
+            flush()
+            current_bucket = minute_bucket
+        buffer.append({
+            "time": candle_time,
+            "open": float(candle["open"]),
+            "high": float(candle["high"]),
+            "low": float(candle["low"]),
+            "close": float(candle["close"]),
+            "volume": float(candle.get("volume") or 0),
+        })
+    flush()
+    return bars
+
+
+def _silver_micro_signal_side(bar: dict, ema_price: float | None, ema_volume: float | None) -> str | None:
+    if ema_price is None or ema_volume is None:
+        return None
+    is_green = float(bar["close"]) > float(bar["open"])
+    is_red = float(bar["close"]) < float(bar["open"])
+    above_ema = float(bar["close"]) > float(ema_price)
+    below_ema = float(bar["close"]) < float(ema_price)
+    strong_volume = float(bar["volume"]) > float(ema_volume)
+    if is_green and above_ema and strong_volume:
+        return "BUY"
+    if is_red and below_ema and strong_volume:
+        return "SELL"
+    return None
+
+
+def _silver_micro_confirmation_passed(bar: dict, pending_setup: dict) -> bool:
+    side = pending_setup["side"]
+    setup_close = float(pending_setup["setup_close"])
+    if side == "BUY":
+        return float(bar["close"]) > float(bar["open"]) and float(bar["close"]) > setup_close
+    return float(bar["close"]) < float(bar["open"]) and float(bar["close"]) < setup_close
+
+
+def _close_silver_micro_position(
+    position: dict,
+    exit_price: float,
+    exit_time: datetime.datetime,
+    exit_reason: str,
+    settings: dict,
+    charges_config: dict,
+) -> dict:
+    side = position["side"]
+    qty = int(position["qty"])
+    entry = float(position["entry_price"])
+    sl = float(position["sl_price"])
+    target = float(position["target_price"])
+    buy_value = entry * qty if side == "BUY" else exit_price * qty
+    sell_value = exit_price * qty if side == "BUY" else entry * qty
+    charges = calculate_charges(buy_value, sell_value, charges_config)
+    gross_pnl = (exit_price - entry) * qty if side == "BUY" else (entry - exit_price) * qty
+    return {
+        "symbol": position["symbol"],
+        "side": side,
+        "qty": qty,
+        "entry_price": round(entry, 2),
+        "entry_time": position["entry_time"].isoformat(),
+        "exit_price": round(float(exit_price), 2),
+        "exit_time": exit_time.isoformat(),
+        "exit_reason": exit_reason,
+        "target_price": round(target, 2),
+        "sl_price": round(sl, 2),
+        "entry_trigger": f"Historical {position['entry_time'].date().isoformat()} Silver Micro 5m replay.",
+        **charges,
+        "gross_pnl": round(gross_pnl, 2),
+        "net_pnl": round(float(charges["net_pnl"]), 2),
     }

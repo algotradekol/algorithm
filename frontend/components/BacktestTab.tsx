@@ -61,18 +61,29 @@ export default function BacktestTab() {
   const progressTotal = replaying ? Number(job.replay_total || 0) : Number(job?.total_symbols || 0);
   const progress = job ? Math.round((progressCompleted / Math.max(1, progressTotal)) * 100) : 0;
   const result = job?.result;
+  const introCopy = algoId === 'algo3'
+    ? {
+        title: 'Historical Silver Micro Backtest',
+        body: 'Replays the active Silver Micro MCX contract on 5-minute candles with EMA20 and volume-EMA20 setup / confirmation logic. It stays read-only and does not touch the live engine.',
+        note: 'The replay uses the same Silver Micro rules as the live tab: a green or red setup candle must be confirmed by the next 5-minute candle, then the trade enters on the following candle open.',
+      }
+    : {
+        title: 'Historical Backtest',
+        body: 'Downloads each NSE 500 symbol once, then replays every weekday in your chosen range. It cannot create live paper trades or alter the live engine.',
+        note: 'Maximum 31 calendar days. Signal uses the combined 09:15-09:17 window; entry uses the 09:18 candle open. If a later candle touches both SL and target, SL is assumed first.',
+      };
   return (
     <section className="space-y-4">
       <div className="panel p-4">
-        <h2 className="text-base font-semibold text-gray-100">Historical Backtest</h2>
-        <p className="mt-1 max-w-3xl text-sm text-gray-500">Downloads each NSE 500 symbol once, then replays every weekday in your chosen range. It cannot create live paper trades or alter the live engine.</p>
+        <h2 className="text-base font-semibold text-gray-100">{introCopy.title}</h2>
+        <p className="mt-1 max-w-3xl text-sm text-gray-500">{introCopy.body}</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option></select></label>
+          <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option><option value="algo3">Silver Micro</option></select></label>
           <label><span className="label">Start date</span><input value={startDate} onChange={(e) => setStartDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <label><span className="label">End date</span><input value={endDate} onChange={(e) => setEndDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <div className="flex items-end"><button onClick={run} disabled={['queued', 'running'].includes(job?.status)} className="min-h-10 w-full rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"><i className="ri-play-circle-fill mr-2" />Run range backtest</button></div>
         </div>
-        <p className="mt-3 text-xs text-[#f59e0b]"><i className="ri-error-warning-fill mr-1" />Maximum 31 calendar days. Signal uses the combined 09:15-09:17 window; entry uses the 09:18 candle open. If a later candle touches both SL and target, SL is assumed first.</p>
+        <p className="mt-3 text-xs text-[#f59e0b]"><i className="ri-error-warning-fill mr-1" />{introCopy.note}</p>
       </div>
 
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
