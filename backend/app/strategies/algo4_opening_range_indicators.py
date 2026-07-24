@@ -5,9 +5,10 @@ from collections import defaultdict
 
 from .base import Strategy
 from ..fyers_auth import get_stored_access_token
-from ..fyers_client import get_previous_close, get_recent_intraday_candles
+from ..fyers_client import get_previous_close, get_recent_intraday_candles, get_intraday_candles_for_range
 from ..paper_broker import PaperBroker
-from ..candidate_ranking import FILTER_WEIGHTS, rank_candidates, select_ranked_candidates
+from ..candidate_ranking import FILTER_WEIGHTS, build_sector_breakdown, rank_candidates, select_ranked_candidates
+from ..symbols import get_nse500_sector_map
 
 MIN_GAP_PCT = 0.5
 MAX_GAP_PCT = 2.0
@@ -24,6 +25,7 @@ class Algo4OpeningRangeIndicators(Strategy):
 
     def __init__(self, watchlist: list[str]):
         self.watchlist = watchlist
+        self.sector_map = get_nse500_sector_map()
         from app.strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
         self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
@@ -164,14 +166,102 @@ class Algo4OpeningRangeIndicators(Strategy):
             if not details:
                 continue
             details["window_candle_count"] = candle["window_candle_count"]
+            details["sector"] = self.sector_map.get(symbol)
             self.candidate_details[symbol] = details
             if side and details["passed_indicators"]:
                 self.candidates[symbol] = (side, candle["close"])
+
+    def _merge_opening_history(self, symbol: str, history: list[dict]) -> int:
+        """Merge any missing candles from the history API into the local day cache.
+
+        This protects the opening scan from a websocket reconnect that drops the
+        first minute or two of the 09:15-09:17 window. We keep the combined live
+        candles when they exist, but fill gaps from history before the entry check.
+        """
+        today = datetime.date.today()
+        existing = {candle["time"]: candle for candle in self.candles[symbol] if candle["time"].date() == today}
+        merged = 0
+        for candle in history:
+            if candle["time"].date() != today:
+                continue
+            if candle["time"] not in existing:
+                self.candles[symbol].append(candle)
+                existing[candle["time"]] = candle
+                merged += 1
+        if merged:
+            self.candles[symbol].sort(key=lambda candle: candle["time"])
+            self.candles[symbol] = self.candles[symbol][-120:]
+            self.total_value[symbol] = sum(
+                float(candle["close"]) * float(candle.get("volume") or 0)
+                for candle in self.candles[symbol]
+                if candle["time"].date() == today
+            )
+        return merged
+
+    def _backfill_opening_window_from_history(self) -> int:
+        if not get_stored_access_token():
+            return 0
+
+        today = datetime.date.today()
+        start_time = self.scan_candle_time()
+        end_time = self._schedule_time(3)
+        missing_symbols = [
+            symbol for symbol in self.watchlist
+            if len(self.opening_candles.get(symbol, [])) < 3
+        ]
+        if not missing_symbols:
+            return 0
+
+        filled = 0
+
+        def load_symbol(symbol: str):
+            try:
+                history = get_intraday_candles_for_range(symbol, today, today)
+            except Exception as exc:
+                print(f"[{self.algo_id}] could not backfill opening candles for {symbol}: {exc}")
+                return symbol, [], []
+            window = [
+                candle for candle in history
+                if candle["time"].date() == today
+                and start_time <= candle["time"].strftime("%H:%M") < end_time
+            ]
+            return symbol, history, window
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = {pool.submit(load_symbol, symbol): symbol for symbol in missing_symbols}
+            for future in as_completed(futures):
+                symbol, history, window = future.result()
+                if not self.prev_close.get(symbol):
+                    try:
+                        previous_close = get_previous_close(symbol)
+                        if previous_close:
+                            self.prev_close[symbol] = previous_close
+                    except Exception as exc:
+                        print(f"[{self.algo_id}] could not backfill previous close for {symbol}: {exc}")
+                if not window:
+                    continue
+                self._merge_opening_history(symbol, history)
+                if len(window) > len(self.opening_candles.get(symbol, [])):
+                    self.opening_candles[symbol] = window
+                    self.scan_seen_symbols.add(symbol)
+                    latest = window[-1]
+                    day_candles = [candle for candle in self.candles[symbol] if candle["time"].date() == today]
+                    total_volume = sum(float(candle.get("volume") or 0) for candle in day_candles)
+                    total_value = sum(float(candle["close"]) * float(candle.get("volume") or 0) for candle in day_candles)
+                    self.opening_indicators[symbol] = {
+                        "last_ltp": float(latest["close"]),
+                        "vwap": total_value / total_volume if total_volume else None,
+                    }
+                    filled += 1
+        if filled:
+            print(f"[{self.algo_id}] backfilled opening candles for {filled}/{len(missing_symbols)} symbols from intraday history")
+        return filled
 
     def evaluate_entries(self, get_ltp_fn):
         today = datetime.date.today()
         if self.entries_evaluated_today == today:
             return True
+        self._backfill_opening_window_from_history()
         self._build_candidates_from_collection()
         if not self._opening_data_ready():
             self._record_scan_results(scan_status="incomplete", scan_message=self._opening_data_message())
@@ -447,6 +537,7 @@ class Algo4OpeningRangeIndicators(Strategy):
             "overflow_buy": 0,
             "overflow_sell": 0,
             "total_filtered_out": max(0, len(self.watchlist) - sum(1 for row in rows if row.get("opening_range_gap_passed"))),
+            "sector_breakdown": build_sector_breakdown(rows),
             "scan_status": scan_status,
             "scan_message": scan_message,
             "ranking": {

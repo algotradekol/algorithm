@@ -22,9 +22,10 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from .base import Strategy
 from ..paper_broker import PaperBroker
-from ..fyers_client import get_previous_close
+from ..fyers_client import get_previous_close, get_intraday_candles_for_range
 from ..fyers_auth import get_stored_access_token
-from ..candidate_ranking import rank_candidates, select_ranked_candidates
+from ..candidate_ranking import build_sector_breakdown, rank_candidates, select_ranked_candidates
+from ..symbols import get_nse500_sector_map
 GAP_LIMIT_PCT = 2.0
 # A one-minute candle only exists for a symbol that traded during that minute.
 # This floor detects a dead/broken feed without requiring every NSE 500 symbol
@@ -38,6 +39,7 @@ class Algo1OpeningRange(Strategy):
 
     def __init__(self, watchlist: list[str]):
         self.watchlist = watchlist
+        self.sector_map = get_nse500_sector_map()
         from app.strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
         self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
@@ -182,6 +184,7 @@ class Algo1OpeningRange(Strategy):
             gap_pct = abs(open_price - prev_close) / prev_close * 100
             self.candidate_details[symbol] = {
                 "symbol": symbol,
+                "sector": self.sector_map.get(symbol),
                 "side": "WATCH",
                 "open": open_price,
                 "high": high,
@@ -213,11 +216,67 @@ class Algo1OpeningRange(Strategy):
                     self.sell_candidates.append(symbol)
                     self.candidate_details[symbol].update({"side": "SELL", "gap_passed": True, "rejection_reason": None})
 
+    def _backfill_opening_window_from_history(self) -> int:
+        """Use the day-session history API to recover symbols whose live feed
+        missed part of the opening window.
+
+        A websocket restart at the bell can leave the live candle collector with
+        only a partial opening universe.  The opening scan is still supposed to
+        use the same 09:15-09:17 window, so we backfill missing symbols from the
+        intraday history endpoint before evaluating entries.
+        """
+        if not get_stored_access_token():
+            return 0
+
+        today = datetime.date.today()
+        filled = 0
+        start_time = self.scan_candle_time()
+        end_time = self._schedule_time(3)
+        missing_symbols = [
+            symbol for symbol in self.watchlist
+            if len(self.opening_candles.get(symbol, [])) < 3
+        ]
+        if not missing_symbols:
+            return 0
+
+        def load_symbol(symbol: str):
+            try:
+                history = get_intraday_candles_for_range(symbol, today, today)
+            except Exception as exc:
+                print(f"[algo1] could not backfill opening candles for {symbol}: {exc}")
+                return symbol, []
+            window = [
+                candle for candle in history
+                if candle["time"].date() == today
+                and start_time <= candle["time"].strftime("%H:%M") < end_time
+            ]
+            return symbol, window
+
+        with ThreadPoolExecutor(max_workers=6) as pool:
+            futures = {pool.submit(load_symbol, symbol): symbol for symbol in missing_symbols}
+            for future in as_completed(futures):
+                symbol, window = future.result()
+                if not self.prev_close.get(symbol):
+                    try:
+                        previous_close = get_previous_close(symbol)
+                        if previous_close:
+                            self.prev_close[symbol] = previous_close
+                    except Exception as exc:
+                        print(f"[algo1] could not backfill previous close for {symbol}: {exc}")
+                if window and len(window) > len(self.opening_candles.get(symbol, [])):
+                    self.opening_candles[symbol] = window
+                    self.scan_seen_symbols.add(symbol)
+                    filled += 1
+        if filled:
+            print(f"[algo1] backfilled opening candles for {filled}/{len(missing_symbols)} symbols from intraday history")
+        return filled
+
     def evaluate_entries(self, get_ltp_fn):
         """Called at 9:18 after the three-minute opening collection window."""
         today = datetime.date.today()
         if self.entries_evaluated_today == today:
             return True
+        self._backfill_opening_window_from_history()
         self._build_candidates_from_collection()
         if not self._opening_data_ready():
             self._record_scan_results([], [], scan_status="incomplete", scan_message=self._opening_data_message())
@@ -325,6 +384,7 @@ class Algo1OpeningRange(Strategy):
         return {
             "window": f"{self.scan_candle_time()}-{self._schedule_time(2)} IST",
             "side": side,
+            "sector": self.sector_map.get(symbol),
             "shape": details.get("signal_shape"),
             "open": details.get("open"),
             "high": details.get("high"),
@@ -404,6 +464,7 @@ class Algo1OpeningRange(Strategy):
             "total_filtered_out": max(0, len(self.watchlist) - sum(1 for row in rows if row.get("gap_passed"))),
             "scan_status": scan_status,
             "scan_message": scan_message,
+            "sector_breakdown": build_sector_breakdown(rows),
             "ranking": {
                 "method": "Gap strength only: closer to the 2% gap limit ranks higher.",
                 "weights": {"gap_strength": 1.0},
