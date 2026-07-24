@@ -25,7 +25,17 @@ type FunnelStepData = {
 
 type ScanFilter = 'all' | 'passed' | 'buy' | 'sell' | 'selected' | 'filtered';
 
-export default function ScanResultsPanel({ results, algoId, onRefresh }: { results: any; algoId?: string; onRefresh?: () => void }) {
+export default function ScanResultsPanel({
+  results,
+  algoId,
+  openPositions = [],
+  onRefresh,
+}: {
+  results: any;
+  algoId?: string;
+  openPositions?: any[];
+  onRefresh?: () => void;
+}) {
   const [query, setQuery] = useState('');
   const [sortKey, setSortKey] = useState('gap_pct');
   const [sortDir, setSortDir] = useState<'asc' | 'desc'>('desc');
@@ -35,6 +45,11 @@ export default function ScanResultsPanel({ results, algoId, onRefresh }: { resul
   const [busyTrade, setBusyTrade] = useState<string | null>(null);
   const [tradeError, setTradeError] = useState('');
   const rows = results?.passed_opening_range || [];
+  const openSymbols = new Set(
+    (openPositions || [])
+      .map((position: any) => String(position.symbol || '').trim().toUpperCase())
+      .filter(Boolean),
+  );
 
   useEffect(() => {
     setScanFilter('all');
@@ -108,6 +123,10 @@ export default function ScanResultsPanel({ results, algoId, onRefresh }: { resul
     }
     const symbol = String(row.symbol || '').trim();
     if (!symbol) return;
+    if (openSymbols.has(symbol.toUpperCase())) {
+      setTradeError(`${symbol} already has an open paper position. Exit it first before opening a new trade.`);
+      return;
+    }
     const price = Number(row.ltp ?? row.close ?? row.open);
     if (!Number.isFinite(price) || price <= 0) {
       setTradeError(`No usable price is available for ${symbol}.`);
@@ -239,16 +258,18 @@ export default function ScanResultsPanel({ results, algoId, onRefresh }: { resul
                     <button
                       type="button"
                       onClick={() => manualTrade(row, 'BUY')}
-                      disabled={busyTrade === `${row.symbol}:BUY`}
-                      className="min-h-8 rounded border border-[#22c55e]/50 px-2 py-1 text-[11px] font-semibold text-[#22c55e] disabled:opacity-40"
+                      disabled={busyTrade === `${row.symbol}:BUY` || openSymbols.has(String(row.symbol || '').trim().toUpperCase())}
+                      title={openSymbols.has(String(row.symbol || '').trim().toUpperCase()) ? 'This symbol already has an open paper position. Exit it first.' : 'Open a manual BUY position'}
+                      className="min-h-8 rounded border border-[#22c55e]/50 px-2 py-1 text-[11px] font-semibold text-[#22c55e] disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       BUY
                     </button>
                     <button
                       type="button"
                       onClick={() => manualTrade(row, 'SELL')}
-                      disabled={busyTrade === `${row.symbol}:SELL`}
-                      className="min-h-8 rounded border border-[#ef4444]/50 px-2 py-1 text-[11px] font-semibold text-[#ef4444] disabled:opacity-40"
+                      disabled={busyTrade === `${row.symbol}:SELL` || openSymbols.has(String(row.symbol || '').trim().toUpperCase())}
+                      title={openSymbols.has(String(row.symbol || '').trim().toUpperCase()) ? 'This symbol already has an open paper position. Exit it first.' : 'Open a manual SELL position'}
+                      className="min-h-8 rounded border border-[#ef4444]/50 px-2 py-1 text-[11px] font-semibold text-[#ef4444] disabled:cursor-not-allowed disabled:opacity-40"
                     >
                       SELL
                     </button>
