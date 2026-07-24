@@ -14,7 +14,7 @@ import { clearPinToken } from '../../lib/pinAuth';
 import { api } from '../../lib/api';
 import { WebSocketState } from '../../lib/useWebSocket';
 
-const TABS = ['Simple', 'Filter', 'Backtest', 'Compare', 'History', 'Calendar', 'Charges'] as const;
+const TABS = ['Simple', 'Filter', 'Silver Micro', 'Backtest', 'Compare', 'History', 'Calendar', 'Charges'] as const;
 
 function formatIstTime() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -40,6 +40,7 @@ function DashboardContent() {
     state: string;
     error?: string | null;
     watchlist_count: number;
+    live_feed_symbol_count?: number;
     strategies_running: string[];
     live_feed_started?: boolean;
     fyers_ws_connected?: boolean;
@@ -242,6 +243,14 @@ function DashboardContent() {
                 onWebSocketStatus={setWsStatus}
               />
             )}
+            {tab === 'Silver Micro' && (
+              <AlgoTab
+                algoId="algo3"
+                displayName="Silver Micro - 5m EMA/Volume"
+                description="Tracks the active MCX Silver Micro contract on 5-minute candles. BUY when a green 5m candle closes above EMA20 with volume above volume EMA20, confirm on the next green candle, and enter on the next candle open. SELL mirrors the same logic. Reversal happens when the opposite side confirms."
+                onWebSocketStatus={setWsStatus}
+              />
+            )}
             {tab === 'Backtest' && <BacktestTab />}
             {tab === 'Compare' && <CompareTab />}
             {tab === 'History' && <HistoryTab />}
@@ -295,7 +304,7 @@ function LiveDiagnostics({ engineStatus }: { engineStatus: any }) {
       />
       <DiagnosticItem
         label="Tick Coverage"
-        value={`${engineStatus?.symbols_with_ticks || 0} / ${engineStatus?.watchlist_count || 0} symbols`}
+        value={`${engineStatus?.symbols_with_ticks || 0} / ${engineStatus?.live_feed_symbol_count || engineStatus?.watchlist_count || 0} symbols`}
       />
       <DiagnosticItem
         label="Closed Candles"

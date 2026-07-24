@@ -126,9 +126,13 @@ CREATE TABLE IF NOT EXISTS strategy_settings (
 INSERT INTO strategy_settings (algo_id, display_name) VALUES
     ('algo1', 'Algo 1 — Opening Range Gap'),
     ('algo2', 'Algo 2 — VWAP/EMA/Volume Momentum'),
-    ('algo3', 'Algo 3 — Opening Range Gap (Basic)'),
+    ('algo3', 'Silver Micro - 5m EMA/Volume'),
     ('algo4', 'Algo 4 — Opening Range Gap (With Indicators)')
 ON CONFLICT (algo_id) DO NOTHING;
+
+UPDATE strategy_settings
+SET display_name = 'Silver Micro - 5m EMA/Volume'
+WHERE algo_id = 'algo3';
 
 -- Algo 4 toggleable filter settings addition.
 ALTER TABLE strategy_settings

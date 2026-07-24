@@ -20,6 +20,7 @@ from .candle_aggregator import CandleAggregator
 from .fyers_client import connect_live_feed
 from .fyers_auth import get_stored_access_token, refresh_access_token_from_refresh_token
 from .strategies.algo1_opening_range import Algo1OpeningRange
+from .strategies.algo3_silver_micro import Algo3SilverMicro
 from .strategies.un1_915_filtered import UN1915Filtered
 from .config import ENTRY_CHECK_TIME, SQUARE_OFF_TIME
 
@@ -29,6 +30,7 @@ SCAN_RESULTS: dict[str, dict] = {}
 
 STRATEGIES = {}   # populated in start_engine() once the watchlist is known
 WATCHLIST: list[str] = []
+LIVE_FEED_SYMBOLS: list[str] = []
 _scheduler_started = False
 _live_feed_started = False
 _live_feed_socket = None
@@ -91,6 +93,9 @@ def _on_candle_close(symbol: str, candle: dict, indicators: dict):
             "closed_candle_count": int(_engine_status.get("closed_candle_count") or 0) + 1,
         })
     for strategy in STRATEGIES.values():
+        watchlist = getattr(strategy, "watchlist", [])
+        if watchlist and symbol not in watchlist:
+            continue
         strategy.on_candle_close(symbol, candle, indicators)
 
 
@@ -117,7 +122,7 @@ def _on_tick(message: dict):
                 set_previous_close = getattr(strategy, "set_previous_close", None)
                 if set_previous_close:
                     set_previous_close(symbol, previous_close_value)
-    now = datetime.datetime.now()
+    now = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
     with _engine_lock:
         _engine_status.update({
             "last_tick_at": _utc_now(),
@@ -132,6 +137,9 @@ def _on_tick(message: dict):
     aggregator.on_tick(symbol, ltp, day_volume, on_candle_close=_on_candle_close)
 
     for strategy in STRATEGIES.values():
+        watchlist = getattr(strategy, "watchlist", [])
+        if watchlist and symbol not in watchlist:
+            continue
         strategy.on_tick(symbol, ltp, now)
         for position in strategy.broker.open_positions():
             if position["symbol"] == symbol:
@@ -276,7 +284,8 @@ def _live_feed_watchdog_loop():
 def start_live_feed_if_ready(force: bool = False) -> bool:
     global _live_feed_started, _live_feed_socket, _feed_watchdog_last_restart_at
 
-    if not WATCHLIST:
+    feed_symbols = LIVE_FEED_SYMBOLS or WATCHLIST
+    if not feed_symbols:
         print("[engine] watchlist not initialized yet, cannot start live feed")
         return False
 
@@ -306,7 +315,7 @@ def start_live_feed_if_ready(force: bool = False) -> bool:
         def run_live_feed():
             global _live_feed_socket, _live_feed_started
             try:
-                socket = connect_live_feed(WATCHLIST, _on_tick, _on_live_feed_status)
+                socket = connect_live_feed(feed_symbols, _on_tick, _on_live_feed_status)
                 with _live_feed_lock:
                     _live_feed_socket = socket
             except Exception as exc:
@@ -332,7 +341,7 @@ def start_live_feed_if_ready(force: bool = False) -> bool:
                 "fyers_ws_subscribed_symbols": 0,
                 "fyers_ws_first_tick_at": None,
             })
-        print(f"[engine] live feed start requested for {len(WATCHLIST)} symbols")
+        print(f"[engine] live feed start requested for {len(feed_symbols)} symbols")
         for strategy in STRATEGIES.values():
             refresh_market_data = getattr(strategy, "refresh_market_data", None)
             if refresh_market_data:
@@ -365,6 +374,7 @@ def get_engine_status() -> dict:
         "last_candle_close_at": _engine_status.get("last_candle_close_at"),
         "closed_candle_count": _engine_status.get("closed_candle_count"),
         "watchlist_count": len(WATCHLIST),
+        "live_feed_symbol_count": len(LIVE_FEED_SYMBOLS or WATCHLIST),
         "strategies_running": list(STRATEGIES.keys()),
     }
 
@@ -453,7 +463,7 @@ def try_refresh_access_token(reason: str = "manual_or_startup") -> bool:
 
 def start_engine():
     """Called once from main.py's FastAPI startup event."""
-    global WATCHLIST, _scheduler_started, _feed_watchdog_started
+    global WATCHLIST, LIVE_FEED_SYMBOLS, _scheduler_started, _feed_watchdog_started
 
     with _engine_lock:
         if _engine_status["state"] in {"starting", "running"}:
@@ -465,7 +475,14 @@ def start_engine():
         strategies = {
             "algo1": Algo1OpeningRange(watchlist),
             "algo2": UN1915Filtered(watchlist),
+            "algo3": Algo3SilverMicro(),
         }
+        live_feed_symbols = sorted({
+            symbol
+            for strategy in strategies.values()
+            for symbol in getattr(strategy, "watchlist", [])
+            if symbol
+        })
         for algo_id, strategy in strategies.items():
             stale_count = strategy.broker.close_stale_open_positions()
             if stale_count:
@@ -473,6 +490,7 @@ def start_engine():
 
         with _engine_lock:
             WATCHLIST = watchlist
+            LIVE_FEED_SYMBOLS = live_feed_symbols
             STRATEGIES.clear()
             STRATEGIES.update(strategies)
             _engine_status.update({"state": "running", "error": None})
@@ -487,7 +505,7 @@ def start_engine():
         try_refresh_access_token(reason="startup")
         if not start_live_feed_if_ready():
             print("[engine] started without live feed; complete manual Fyers login to enable it")
-        print(f"[engine] started with {len(WATCHLIST)} symbols, {len(STRATEGIES)} strategies")
+        print(f"[engine] started with {len(LIVE_FEED_SYMBOLS)} live symbols, {len(STRATEGIES)} strategies")
     except Exception as exc:
         with _engine_lock:
             _engine_status.update({"state": "failed", "error": str(exc)})

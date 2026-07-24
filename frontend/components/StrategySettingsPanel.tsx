@@ -133,6 +133,11 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
         <ExitModeSelect settings={settings} setSettings={setSettings} />
         <TrailingStopToggle settings={settings} setSettings={setSettings} />
         <FieldGroup title="Risk Settings" fields={RISK_FIELDS} settings={settings} setSettings={setSettings} />
+        {algoId === 'algo3' && (
+          <div className="mt-5 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
+            Silver Micro auto-resolves the active MCX contract and runs on 5-minute candles. Capital, exit mode, and trailing stop settings still apply here.
+          </div>
+        )}
         {(algoId === 'algo1' || algoId === 'algo4') && <TestSchedule settings={settings} setSettings={setSettings} />}
         {algoId === 'algo2' && (
           <IndicatorFilterSettings settings={settings} setSettings={setSettings} />
