@@ -34,6 +34,11 @@ _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
 
 
+def _ema_step(previous: float | None, value: float, period: int = EMA_PERIOD) -> float:
+    k = 2 / (period + 1)
+    return float(value) if previous is None else float(value) * k + previous * (1 - k)
+
+
 class BacktestHistoryCache:
     """Compressed, job-local candle cache used to avoid replay re-downloads."""
 
