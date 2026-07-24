@@ -849,15 +849,30 @@ def _load_silver_micro_history(
     start_date: datetime.date,
     end_date: datetime.date,
 ) -> tuple[list[dict], str]:
-    """Try the most granular MCX history first, then fall back to 5-minute candles."""
-    for resolution in ("1", "5"):
-        history = get_intraday_candles_for_range(symbol, start_date, end_date, resolution=resolution)
-        if history:
-            if resolution != "1":
-                print(f"[algo3] 1-minute history empty for {symbol}; using {resolution}-minute candles instead")
-            return history, resolution
-        print(f"[algo3] no {resolution}-minute history returned for {symbol}")
-    return [], "1"
+    """Fetch MCX history day-by-day so a single bad range does not zero out replay data."""
+    history: list[dict] = []
+    one_minute_days = 0
+    five_minute_days = 0
+    current = start_date
+    while current <= end_date:
+        if current.weekday() < 5:
+            day_history = get_intraday_candles_for_range(symbol, current, current, resolution="1")
+            resolution = "1"
+            if not day_history:
+                day_history = get_intraday_candles_for_range(symbol, current, current, resolution="5")
+                resolution = "5"
+            if day_history:
+                if resolution == "1":
+                    one_minute_days += 1
+                else:
+                    five_minute_days += 1
+                history.extend(day_history)
+            else:
+                print(f"[algo3] no intraday history returned for {symbol} on {current.isoformat()}")
+        current += datetime.timedelta(days=1)
+    history.sort(key=lambda item: item["time"])
+    resolution_label = f"{one_minute_days}d@1m/{five_minute_days}d@5m"
+    return history, resolution_label
 
 
 def _simulate_silver_micro_range(
