@@ -60,8 +60,11 @@ def get_runtime_trading_mode(force_refresh: bool = False) -> str:
         )
         row = (result.data or [{}])[0] if result.data else None
         mode = normalize_trading_mode((row or {}).get("setting_value") or default_mode)
-    except Exception:
-        mode = default_mode
+    except Exception as exc:
+        if "PGRST205" in str(exc) or RUNTIME_MODE_TABLE in str(exc):
+            mode = default_mode
+        else:
+            mode = default_mode
 
     _runtime_mode_cache = mode
     return mode
@@ -70,15 +73,20 @@ def get_runtime_trading_mode(force_refresh: bool = False) -> str:
 def set_runtime_trading_mode(mode: str) -> str:
     normalized = normalize_trading_mode(mode)
     now = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    run_with_supabase(
-        lambda supabase: supabase.table(RUNTIME_MODE_TABLE).upsert(
-            {
-                "setting_key": RUNTIME_MODE_KEY,
-                "setting_value": normalized,
-                "updated_at": now,
-            }
-        ).execute()
-    )
+    try:
+        run_with_supabase(
+            lambda supabase: supabase.table(RUNTIME_MODE_TABLE).upsert(
+                {
+                    "setting_key": RUNTIME_MODE_KEY,
+                    "setting_value": normalized,
+                    "updated_at": now,
+                }
+            ).execute()
+        )
+    except Exception as exc:
+        if "PGRST205" not in str(exc) and RUNTIME_MODE_TABLE not in str(exc):
+            raise
+        print(f"[runtime_mode] {RUNTIME_MODE_TABLE} missing; keeping mode in memory only until SQL migration is applied.")
     global _runtime_mode_cache
     _runtime_mode_cache = normalized
     return normalized
