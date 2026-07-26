@@ -1,11 +1,11 @@
 import datetime
-from zoneinfo import ZoneInfo
 from uuid import uuid4
 
 import requests
 
-from app.config import ENTRY_CHECK_TIME, GEMINI_API_KEY, GEMINI_MODEL, MARKET_OPEN_TIME, SQUARE_OFF_TIME
-from app.supabase_client import supabase
+from .config import ENTRY_CHECK_TIME, GEMINI_API_KEY, GEMINI_MODEL, MARKET_OPEN_TIME, SQUARE_OFF_TIME
+from .timezone import IST
+from .supabase_client import supabase
 
 
 SYSTEM_PROMPT = """You are the in-app AI copilot for an algo paper trading dashboard.
@@ -91,10 +91,10 @@ def send_message(user_id: str, session_id: str | None, message: str, page_contex
 
 
 def build_app_context(page_context: dict) -> dict:
-    from app.engine import SCAN_RESULTS, STRATEGIES, get_engine_status
-    from app.fyers_client import get_connection_status
-    from app.charges import get_charges_config
-    from app.strategy_settings import get_settings
+    from .engine import SCAN_RESULTS, STRATEGIES, get_engine_status
+    from .fyers_client import get_connection_status
+    from .charges import get_charges_config
+    from .strategy_settings import get_settings
 
     market_clock = _market_clock()
     algos = {}
@@ -183,7 +183,7 @@ def _now() -> str:
 
 
 def _market_clock() -> dict:
-    now = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
+    now = datetime.datetime.now(IST)
     current_time = now.strftime("%H:%M")
     market_open = current_time >= MARKET_OPEN_TIME
     entry_scan_due = current_time >= ENTRY_CHECK_TIME

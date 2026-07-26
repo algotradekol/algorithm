@@ -40,7 +40,7 @@ class Algo1OpeningRange(Strategy):
     def __init__(self, watchlist: list[str]):
         self.watchlist = watchlist
         self.sector_map = get_nse500_sector_map()
-        from app.strategy_settings import get_settings
+        from ..strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
         self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
         self.prev_close: dict[str, float] = {}
@@ -63,7 +63,7 @@ class Algo1OpeningRange(Strategy):
         self.refresh_market_data()
 
     def reload_settings(self):
-        from app.strategy_settings import get_settings
+        from ..strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
 
@@ -481,8 +481,8 @@ class Algo1OpeningRange(Strategy):
                 {"label": "Final: selected for trade", "passed": len(self.selected_symbols), "total": len(rows)},
             ],
         }
-        from app.engine import SCAN_RESULTS
-        from app.broadcaster import broadcast_sync
+        from ..engine import SCAN_RESULTS
+        from ..broadcaster import broadcast_sync
         SCAN_RESULTS[self.algo_id] = result
         broadcast_sync({"event": "scan_complete", "algo_id": self.algo_id, "results": result})
 

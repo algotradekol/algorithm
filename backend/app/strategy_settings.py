@@ -147,7 +147,7 @@ def _normalize(settings: dict, algo_id: str) -> dict:
 
 def get_settings(algo_id: str) -> dict:
     """Read settings for this algo from Supabase. Fall back to hardcoded defaults if missing."""
-    from app.supabase_client import supabase
+    from .supabase_client import supabase
 
     result = supabase.table("strategy_settings").select("*").eq("algo_id", algo_id).execute()
     if result.data:
@@ -157,7 +157,7 @@ def get_settings(algo_id: str) -> dict:
 
 def update_settings(algo_id: str, settings: dict):
     """Write updated settings back to Supabase."""
-    from app.supabase_client import supabase
+    from .supabase_client import supabase
 
     settings = _normalize(settings, algo_id)
     supabase.table("strategy_settings").upsert({
@@ -169,7 +169,7 @@ def update_settings(algo_id: str, settings: dict):
 
 def reset_settings(algo_id: str) -> dict:
     """Restore the strategy to its default Tradetron-style settings."""
-    from app.supabase_client import supabase
+    from .supabase_client import supabase
 
     settings = _normalize({}, algo_id)
     supabase.table("strategy_settings").upsert({

@@ -3,7 +3,7 @@ import json
 from decimal import Decimal
 from typing import Any
 
-from app.supabase_client import run_with_supabase
+from .supabase_client import run_with_supabase
 
 
 def _jsonable(value: Any) -> Any:
@@ -23,8 +23,8 @@ def _today_ist() -> str:
 
 
 def save_dashboard_snapshot(algo_id: str | None = None, note: str = "manual") -> list[dict]:
-    from app.engine import SCAN_RESULTS, STRATEGIES, attach_entry_triggers, enrich_positions_with_ltp, get_engine_status
-    from app.fyers_client import get_connection_status
+    from .engine import SCAN_RESULTS, STRATEGIES, attach_entry_triggers, enrich_positions_with_ltp, get_engine_status
+    from .fyers_client import get_connection_status
 
     strategy_items = STRATEGIES.items()
     if algo_id:

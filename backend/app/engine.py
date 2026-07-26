@@ -12,9 +12,9 @@ below. Nothing else in this file changes.
 import datetime
 import threading
 import time
-from zoneinfo import ZoneInfo
 
-from app.broadcaster import broadcast_sync
+from .broadcaster import broadcast_sync
+from .timezone import IST
 from .symbols import get_nse500_watchlist
 from .candle_aggregator import CandleAggregator
 from .broker_factory import create_broker
@@ -124,7 +124,7 @@ def _on_tick(message: dict):
                 set_previous_close = getattr(strategy, "set_previous_close", None)
                 if set_previous_close:
                     set_previous_close(symbol, previous_close_value)
-    now = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
+    now = datetime.datetime.now(IST)
     with _engine_lock:
         _engine_status.update({
             "last_tick_at": _utc_now(),
@@ -160,7 +160,7 @@ def _scheduler_loop():
     global _feed_retry_schedules
 
     while True:
-        now = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
+        now = datetime.datetime.now(IST)
         today = now.date()
         current_time = now.strftime("%H:%M")
 
@@ -231,7 +231,7 @@ def _scheduler_loop():
             print(f"[engine] opening scan waiting for complete market data: {', '.join(pending)}")
         if completed_any:
             try:
-                from app.calendar_store import save_dashboard_snapshot
+                from .calendar_store import save_dashboard_snapshot
                 save_dashboard_snapshot(note="entry_scan")
             except Exception as exc:
                 print(f"[engine] entry-scan calendar snapshot failed: {exc}")
@@ -240,7 +240,7 @@ def _scheduler_loop():
             for strategy in STRATEGIES.values():
                 strategy.square_off_all()
             try:
-                from app.calendar_store import save_dashboard_snapshot
+                from .calendar_store import save_dashboard_snapshot
                 save_dashboard_snapshot(note="eod_squareoff")
             except Exception as exc:
                 print(f"[engine] EOD calendar snapshot failed: {exc}")
@@ -260,7 +260,7 @@ def _live_feed_watchdog_loop():
 
     while True:
         try:
-            now = datetime.datetime.now(ZoneInfo("Asia/Kolkata"))
+            now = datetime.datetime.now(IST)
             market_open = "09:15" <= now.strftime("%H:%M") < "15:30"
             last_tick_at = _engine_status.get("last_tick_at")
             tick_is_fresh = False

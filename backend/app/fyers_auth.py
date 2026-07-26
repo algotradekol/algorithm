@@ -15,7 +15,6 @@ import sys
 import base64
 import datetime
 import hashlib
-import pyotp
 import requests
 
 from .runtime_mode import get_active_broker_key, get_fyers_config
@@ -91,6 +90,8 @@ def exchange_auth_code(auth_code: str) -> dict:
 
 
 def refresh_access_token() -> str:
+    import pyotp
+
     fyers_config = _fyers_config()
     session = requests.Session()
     fyers_proxies = _fyers_proxies()

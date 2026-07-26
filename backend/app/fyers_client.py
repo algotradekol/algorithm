@@ -5,17 +5,27 @@ historical candle REST API, used by engine.py.
 import datetime
 import threading
 import time
-from zoneinfo import ZoneInfo
-from fyers_apiv3 import fyersModel
-from fyers_apiv3.FyersWebsocket import data_ws
+
+try:
+    from fyers_apiv3 import fyersModel
+    from fyers_apiv3.FyersWebsocket import data_ws
+except ImportError:  # pragma: no cover - keeps /health alive if SDK is missing
+    fyersModel = None
+    data_ws = None
 
 from .runtime_mode import get_active_broker_key, get_fyers_config, get_runtime_trading_mode
+from .timezone import IST
 from .fyers_auth import get_stored_access_token, get_stored_token_row
 
 RECENT_LOGIN_GRACE_SECONDS = 180
 
 
 def get_fyers_model():
+    if fyersModel is None:
+        raise RuntimeError(
+            "Fyers SDK is not installed in this environment. "
+            "Install the backend requirements before using live Fyers features."
+        )
     token = get_stored_access_token()
     if not token:
         raise RuntimeError("No Fyers access token in Supabase yet. Use the Login to Fyers button first.")
@@ -189,10 +199,9 @@ def get_recent_intraday_candles(symbol: str, resolution: str = "1", days: int = 
     }
     response = fyers.history(data)
     candles = response.get("candles", [])
-    ist = ZoneInfo("Asia/Kolkata")
     normalized = [
         {
-            "time": datetime.datetime.fromtimestamp(candle[0], tz=ist).replace(tzinfo=None),
+            "time": datetime.datetime.fromtimestamp(candle[0], tz=IST).replace(tzinfo=None),
             "open": candle[1],
             "high": candle[2],
             "low": candle[3],
@@ -216,10 +225,9 @@ def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_d
         "cont_flag": "1",
     })
     candles = response.get("candles", [])
-    ist = ZoneInfo("Asia/Kolkata")
     return [
         {
-            "time": datetime.datetime.fromtimestamp(candle[0], tz=ist).replace(tzinfo=None),
+            "time": datetime.datetime.fromtimestamp(candle[0], tz=IST).replace(tzinfo=None),
             "open": float(candle[1]),
             "high": float(candle[2]),
             "low": float(candle[3]),
@@ -231,6 +239,11 @@ def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_d
 
 
 def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=None):
+    if data_ws is None:
+        raise RuntimeError(
+            "Fyers websocket SDK is not installed in this environment. "
+            "Install the backend requirements before using live feed features."
+        )
     token = get_stored_access_token()
     if not token:
         raise RuntimeError("No Fyers access token in Supabase yet")

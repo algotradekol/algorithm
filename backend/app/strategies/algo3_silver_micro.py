@@ -18,15 +18,14 @@ from __future__ import annotations
 import datetime
 import threading
 from collections import deque
-from zoneinfo import ZoneInfo
 
 from .base import Strategy
 from ..fyers_client import get_intraday_candles_for_range
 from ..mcx_symbols import get_active_mcx_contract
 from ..broker_factory import create_broker
 from ..strategy_settings import get_settings
+from ..timezone import IST
 
-IST = ZoneInfo("Asia/Kolkata")
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
 

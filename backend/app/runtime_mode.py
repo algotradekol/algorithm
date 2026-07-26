@@ -18,8 +18,12 @@ from .config import (
     PAPER_FYERS_SECRET_KEY,
     PAPER_FYERS_TOTP_KEY,
     FYERS_PROXY_URL,
-    LIVE_FYERS_CLIENT_ID,
-    LIVE_FYERS_SECRET_KEY,
+    FYERS_CLIENT_ID,
+    FYERS_SECRET_KEY,
+    FYERS_REDIRECT_URI,
+    FYERS_FY_ID,
+    FYERS_PIN,
+    FYERS_TOTP_KEY,
 )
 from .supabase_client import run_with_supabase
 
@@ -88,12 +92,12 @@ def get_fyers_config(mode: str | None = None) -> dict[str, str]:
     active_mode = normalize_trading_mode(mode or get_runtime_trading_mode())
     if active_mode == "live":
         config = {
-            "client_id": LIVE_FYERS_CLIENT_ID,
-            "secret_key": LIVE_FYERS_SECRET_KEY,
-            "redirect_uri": PAPER_FYERS_REDIRECT_URI,
-            "fy_id": PAPER_FYERS_FY_ID,
-            "pin": PAPER_FYERS_PIN,
-            "totp_key": PAPER_FYERS_TOTP_KEY,
+            "client_id": FYERS_CLIENT_ID,
+            "secret_key": FYERS_SECRET_KEY,
+            "redirect_uri": FYERS_REDIRECT_URI,
+            "fy_id": FYERS_FY_ID,
+            "pin": FYERS_PIN,
+            "totp_key": FYERS_TOTP_KEY,
             "proxy_url": FYERS_PROXY_URL,
         }
     else:

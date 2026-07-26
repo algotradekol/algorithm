@@ -32,12 +32,12 @@ class Algo2Momentum(Strategy):
 
     def __init__(self, watchlist: list[str]):
         self.watchlist = watchlist
-        from app.strategy_settings import get_settings
+        from ..strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
         self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
 
     def reload_settings(self):
-        from app.strategy_settings import get_settings
+        from ..strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
 
@@ -56,8 +56,8 @@ class Algo2Momentum(Strategy):
             "total_filtered_out": len(self.watchlist),
             "message": "Algo 2 is momentum-based and does not use the 9:16 opening-range scan.",
         }
-        from app.engine import SCAN_RESULTS
-        from app.broadcaster import broadcast_sync
+        from ..engine import SCAN_RESULTS
+        from ..broadcaster import broadcast_sync
         SCAN_RESULTS[self.algo_id] = result
         broadcast_sync({"event": "scan_complete", "algo_id": self.algo_id, "results": result})
 

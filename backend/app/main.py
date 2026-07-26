@@ -10,22 +10,25 @@ import json
 import math
 import threading
 from contextlib import asynccontextmanager
-from zoneinfo import ZoneInfo
 from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
-from fyers_apiv3 import fyersModel
 import jwt
 
-from .config import ALLOWED_ORIGINS
+try:
+    from fyers_apiv3 import fyersModel
+except ImportError:  # pragma: no cover - keeps /health alive if SDK is missing
+    fyersModel = None
+
+from .config import ALLOWED_ORIGINS, APP_PIN, FRONTEND_URL, SUPABASE_JWT_SECRET
 from .auth import require_auth
 from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, last_ltp, restart_live_feed, start_engine, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_connection_status, get_price_history
 from .fyers_auth import exchange_auth_code, store_broker_tokens
-from app.config import APP_PIN, FRONTEND_URL, SUPABASE_JWT_SECRET
-from app.runtime_mode import get_active_broker_key, get_fyers_config, get_runtime_trading_mode
-from app.supabase_client import supabase
+from .runtime_mode import get_active_broker_key, get_fyers_config, get_runtime_trading_mode
+from .supabase_client import supabase
+from .timezone import IST
 
 
 class ConnectionManager:
@@ -58,7 +61,7 @@ manager = ConnectionManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from app.broadcaster import set_manager
+    from .broadcaster import set_manager
     set_manager(manager)
     # Start engine in a background thread so it doesn't block FastAPI startup
     engine_thread = threading.Thread(target=start_engine, daemon=True)
@@ -158,6 +161,8 @@ def pin_login(payload: dict):
 
 @app.get("/api/fyers/login-url")
 def fyers_login_url(_user=Depends(require_auth)):
+    if fyersModel is None:
+        raise HTTPException(status_code=503, detail="Fyers SDK is not installed in this environment.")
     fyers_config = get_fyers_config()
     session = fyersModel.SessionModel(
         client_id=fyers_config["client_id"],
@@ -176,7 +181,7 @@ def fyers_status(_user=Depends(require_auth)):
 
 @app.post("/api/fyers/refresh-token")
 def fyers_refresh_token(_user=Depends(require_auth)):
-    from app.engine import try_refresh_access_token
+    from .engine import try_refresh_access_token
     if not try_refresh_access_token(reason="api_manual"):
         raise HTTPException(status_code=400, detail=get_engine_status().get("last_token_refresh_error") or "Fyers token refresh failed")
     return {"status": "ok", "message": "Fyers access token refreshed from refresh token."}
@@ -184,7 +189,7 @@ def fyers_refresh_token(_user=Depends(require_auth)):
 
 @app.get("/api/fyers/token-status")
 def fyers_token_status(_user=Depends(require_auth)):
-    from app.fyers_auth import get_token_status
+    from .fyers_auth import get_token_status
     return get_token_status()
 
 
@@ -198,7 +203,7 @@ def runtime_trading_mode(_user=Depends(require_auth)):
 
 @app.put("/api/runtime/trading-mode")
 def update_runtime_trading_mode(payload: dict, _user=Depends(require_auth)):
-    from app.engine import apply_trading_mode
+    from .engine import apply_trading_mode
 
     requested_mode = payload.get("trading_mode") or payload.get("mode")
     if not requested_mode:
@@ -213,31 +218,31 @@ def update_runtime_trading_mode(payload: dict, _user=Depends(require_auth)):
 
 @app.get("/api/ai/sessions")
 def ai_sessions(_user=Depends(require_auth)):
-    from app.ai_assistant import list_sessions
+    from .ai_assistant import list_sessions
     return list_sessions(_user.get("sub", "unknown"))
 
 
 @app.post("/api/ai/sessions")
 def ai_create_session(payload: dict, _user=Depends(require_auth)):
-    from app.ai_assistant import create_session
+    from .ai_assistant import create_session
     return create_session(_user.get("sub", "unknown"), payload.get("title") or "New chat")
 
 
 @app.get("/api/ai/sessions/{session_id}/messages")
 def ai_messages(session_id: str, _user=Depends(require_auth)):
-    from app.ai_assistant import get_messages
+    from .ai_assistant import get_messages
     return get_messages(session_id)
 
 
 @app.delete("/api/ai/sessions/{session_id}")
 def ai_delete_session(session_id: str, _user=Depends(require_auth)):
-    from app.ai_assistant import delete_session
+    from .ai_assistant import delete_session
     return delete_session(_user.get("sub", "unknown"), session_id)
 
 
 @app.post("/api/ai/chat")
 def ai_chat(payload: dict, _user=Depends(require_auth)):
-    from app.ai_assistant import AIProviderError, AIProviderRateLimitError, send_message
+    from .ai_assistant import AIProviderError, AIProviderRateLimitError, send_message
     try:
         return send_message(
             _user.get("sub", "unknown"),
@@ -257,6 +262,9 @@ def ai_chat(payload: dict, _user=Depends(require_auth)):
 def fyers_callback(auth_code: str = None, code: str = None):
     received_code = auth_code or code
     if not received_code:
+        return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
+    if fyersModel is None:
+        print("[fyers] OAuth callback received, but fyers_apiv3 is not installed.")
         return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
     try:
         response = exchange_auth_code(received_code)
@@ -395,13 +403,13 @@ def algo_history(algo_id: str, days: int = Query(default=30, ge=1, le=180), _use
 
 @app.get("/api/algo/{algo_id}/settings")
 def get_algo_settings(algo_id: str, _user=Depends(require_auth)):
-    from app.strategy_settings import get_settings
+    from .strategy_settings import get_settings
     return get_settings(algo_id)
 
 
 @app.put("/api/algo/{algo_id}/settings")
 def update_algo_settings(algo_id: str, settings: dict, _user=Depends(require_auth)):
-    from app.strategy_settings import update_settings
+    from .strategy_settings import update_settings
     update_settings(algo_id, settings)
     strategy = STRATEGIES.get(algo_id)
     if strategy and hasattr(strategy, "reload_settings"):
@@ -423,7 +431,7 @@ def update_available_cash(algo_id: str, payload: dict, _user=Depends(require_aut
 
 @app.post("/api/algo/{algo_id}/settings/reset")
 def reset_algo_settings(algo_id: str, _user=Depends(require_auth)):
-    from app.strategy_settings import reset_settings
+    from .strategy_settings import reset_settings
     settings = reset_settings(algo_id)
     strategy = STRATEGIES.get(algo_id)
     if strategy and hasattr(strategy, "reload_settings"):
@@ -433,7 +441,7 @@ def reset_algo_settings(algo_id: str, _user=Depends(require_auth)):
 
 @app.get("/api/algo/{algo_id}/scan-results")
 def get_scan_results(algo_id: str, _user=Depends(require_auth)):
-    from app.engine import SCAN_RESULTS
+    from .engine import SCAN_RESULTS
     strategy = get_strategy_or_raise(algo_id)
     result = SCAN_RESULTS.get(algo_id, {
         "algo_id": algo_id,
@@ -441,7 +449,7 @@ def get_scan_results(algo_id: str, _user=Depends(require_auth)):
     })
     schedule_status = getattr(strategy, "schedule_status", None)
     if schedule_status:
-        result = {**result, "schedule": schedule_status(datetime.datetime.now(ZoneInfo("Asia/Kolkata")))}
+        result = {**result, "schedule": schedule_status(datetime.datetime.now(IST))}
     return result
 
 
@@ -452,31 +460,31 @@ def compare_algos(_user=Depends(require_auth)):
 
 @app.get("/api/calendar")
 def calendar_days(days: int = Query(default=60, ge=1, le=365), _user=Depends(require_auth)):
-    from app.calendar_store import list_calendar_days
+    from .calendar_store import list_calendar_days
     return list_calendar_days(days)
 
 
 @app.get("/api/calendar/{snapshot_date}")
 def calendar_day(snapshot_date: str, _user=Depends(require_auth)):
-    from app.calendar_store import get_calendar_day
+    from .calendar_store import get_calendar_day
     return get_calendar_day(snapshot_date)
 
 
 @app.delete("/api/calendar/{snapshot_date}")
 def delete_calendar_date(snapshot_date: str, _user=Depends(require_auth)):
-    from app.calendar_store import delete_calendar_day
+    from .calendar_store import delete_calendar_day
     return delete_calendar_day(snapshot_date)
 
 
 @app.delete("/api/calendar/{snapshot_date}/{algo_id}")
 def delete_calendar_algo_snapshot(snapshot_date: str, algo_id: str, _user=Depends(require_auth)):
-    from app.calendar_store import delete_calendar_snapshot
+    from .calendar_store import delete_calendar_snapshot
     return delete_calendar_snapshot(snapshot_date, algo_id)
 
 
 @app.post("/api/calendar/snapshot")
 def calendar_snapshot(payload: dict | None = None, _user=Depends(require_auth)):
-    from app.calendar_store import save_dashboard_snapshot
+    from .calendar_store import save_dashboard_snapshot
     algo_id = (payload or {}).get("algo_id")
     return save_dashboard_snapshot(algo_id=algo_id, note=(payload or {}).get("note") or "manual")
 
@@ -511,7 +519,7 @@ def market_history(
         candles = history["candles"]
         warning = history["warning"]
         try:
-            from app.calendar_store import store_market_candles
+            from .calendar_store import store_market_candles
             store_market_candles(symbol, resolution, candles)
         except Exception as store_exc:
             warning = warning or f"History loaded but candle persistence failed: {store_exc}"
@@ -533,8 +541,8 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
     # replaces this list after symbol loading, so a module-level imported alias
     # would remain the initial empty list.
     from app import engine
-    from app.backtest import start_backtest
-    from app.mcx_symbols import get_active_mcx_contract
+    from .backtest import start_backtest
+    from .mcx_symbols import get_active_mcx_contract
     algo_id = str(payload.get("algo_id") or "")
     # Accept date for existing clients while range-aware clients send both fields.
     start_date = str(payload.get("start_date") or payload.get("date") or "")
@@ -552,7 +560,7 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
 
 @app.get("/api/backtests/{job_id}")
 def backtest_status(job_id: str, _user=Depends(require_auth)):
-    from app.backtest import get_backtest_job
+    from .backtest import get_backtest_job
     job = get_backtest_job(job_id)
     if not job:
         raise HTTPException(status_code=404, detail="Backtest job not found. It may predate durable job storage or have been removed.")
