@@ -17,6 +17,7 @@ from .config import (
     PAPER_FYERS_REDIRECT_URI,
     PAPER_FYERS_SECRET_KEY,
     PAPER_FYERS_TOTP_KEY,
+    FYERS_PROXY_URL,
     LIVE_FYERS_CLIENT_ID,
     LIVE_FYERS_SECRET_KEY,
 )
@@ -93,6 +94,7 @@ def get_fyers_config(mode: str | None = None) -> dict[str, str]:
             "fy_id": PAPER_FYERS_FY_ID,
             "pin": PAPER_FYERS_PIN,
             "totp_key": PAPER_FYERS_TOTP_KEY,
+            "proxy_url": FYERS_PROXY_URL,
         }
     else:
         config = {
@@ -102,6 +104,7 @@ def get_fyers_config(mode: str | None = None) -> dict[str, str]:
             "fy_id": PAPER_FYERS_FY_ID,
             "pin": PAPER_FYERS_PIN,
             "totp_key": PAPER_FYERS_TOTP_KEY,
+            "proxy_url": FYERS_PROXY_URL,
         }
 
     missing = [name for name, value in config.items() if not value]

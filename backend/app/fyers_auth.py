@@ -31,6 +31,11 @@ def _fyers_config() -> dict[str, str]:
     return get_fyers_config()
 
 
+def _fyers_proxies() -> dict[str, str] | None:
+    proxy_url = _fyers_config().get("proxy_url")
+    return {"http": proxy_url, "https": proxy_url} if proxy_url else None
+
+
 def _b64(value: str) -> str:
     return base64.b64encode(value.encode("ascii")).decode("ascii")
 
@@ -65,6 +70,7 @@ def exchange_auth_code(auth_code: str) -> dict:
             "appIdHash": app_id_hash,
             "code": auth_code,
         },
+        proxies=_fyers_proxies(),
         timeout=30,
     )
     try:
@@ -87,6 +93,9 @@ def exchange_auth_code(auth_code: str) -> dict:
 def refresh_access_token() -> str:
     fyers_config = _fyers_config()
     session = requests.Session()
+    fyers_proxies = _fyers_proxies()
+    if fyers_proxies:
+        session.proxies.update(fyers_proxies)
 
     r1 = session.post(f"{BASE}/send_login_otp_v2", json={"fy_id": _b64(fyers_config["fy_id"]), "app_id": "2"})
     _raise_for_fyers_step(r1, "send_login_otp_v2")
@@ -167,6 +176,7 @@ def refresh_access_token_from_refresh_token() -> str:
                 "refresh_token": refresh_token,
                 "pin": fyers_config["pin"],
             },
+            proxies=_fyers_proxies(),
             timeout=30,
         )
         try:

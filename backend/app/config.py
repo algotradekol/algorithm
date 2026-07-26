@@ -29,6 +29,7 @@ PAPER_FYERS_REDIRECT_URI = os.environ.get("FYERS_REDIRECT_URI", "https://www.goo
 PAPER_FYERS_FY_ID = os.environ.get("FYERS_FY_ID", "")
 PAPER_FYERS_PIN = os.environ.get("FYERS_PIN", "")
 PAPER_FYERS_TOTP_KEY = os.environ.get("FYERS_TOTP_KEY", "")
+FYERS_PROXY_URL = os.environ.get("FYERS_PROXY_URL", "")
 # We keep a single FYERS credential set for both modes. The runtime
 # trading-mode switch decides whether those credentials are used by the
 # paper broker or the live broker; there is no separate live PIN or
