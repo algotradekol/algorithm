@@ -12,11 +12,8 @@ import csv
 import io
 import requests
 
-from .config import FYERS_PROXY_URL
-
 NIFTY500_CSV_URL = "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
 FYERS_SYMBOL_MASTER_URL = "https://public.fyers.in/sym_details/NSE_CM.csv"
-FYERS_PROXIES = {"http": FYERS_PROXY_URL, "https": FYERS_PROXY_URL} if FYERS_PROXY_URL else None
 
 _cache = {"watchlist": None, "date": None, "universe": None, "sector_map": None}
 
@@ -42,15 +39,8 @@ def _load_universe() -> list[dict]:
 
     fyers_symbols = {}
     try:
-        try:
-            fyers_master = requests.get(FYERS_SYMBOL_MASTER_URL, timeout=10, proxies=FYERS_PROXIES)
-            fyers_master.raise_for_status()
-        except requests.RequestException as proxy_error:
-            if not FYERS_PROXIES:
-                raise
-            print(f"[symbols] Fyers symbol master proxy fetch failed, retrying direct: {proxy_error}")
-            fyers_master = requests.get(FYERS_SYMBOL_MASTER_URL, timeout=10)
-            fyers_master.raise_for_status()
+        fyers_master = requests.get(FYERS_SYMBOL_MASTER_URL, timeout=10)
+        fyers_master.raise_for_status()
 
         # Fyers symbol master has no header row; columns per their docs, symbol ticker is index 9,
         # trading symbol without exchange prefix is index 13 (verify against current file if this

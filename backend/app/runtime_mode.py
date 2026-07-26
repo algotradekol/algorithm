@@ -14,14 +14,11 @@ from .config import (
     PAPER_FYERS_CLIENT_ID,
     PAPER_FYERS_FY_ID,
     PAPER_FYERS_PIN,
-    PAPER_FYERS_PROXY_URL,
     PAPER_FYERS_REDIRECT_URI,
     PAPER_FYERS_SECRET_KEY,
     PAPER_FYERS_TOTP_KEY,
     LIVE_FYERS_CLIENT_ID,
     LIVE_FYERS_FY_ID,
-    LIVE_FYERS_PIN,
-    LIVE_FYERS_PROXY_URL,
     LIVE_FYERS_REDIRECT_URI,
     LIVE_FYERS_SECRET_KEY,
     LIVE_FYERS_TOTP_KEY,
@@ -97,9 +94,8 @@ def get_fyers_config(mode: str | None = None) -> dict[str, str]:
             "secret_key": LIVE_FYERS_SECRET_KEY,
             "redirect_uri": LIVE_FYERS_REDIRECT_URI,
             "fy_id": LIVE_FYERS_FY_ID,
-            "pin": LIVE_FYERS_PIN,
+            "pin": PAPER_FYERS_PIN,
             "totp_key": LIVE_FYERS_TOTP_KEY,
-            "proxy_url": LIVE_FYERS_PROXY_URL,
         }
     else:
         config = {
@@ -109,11 +105,9 @@ def get_fyers_config(mode: str | None = None) -> dict[str, str]:
             "fy_id": PAPER_FYERS_FY_ID,
             "pin": PAPER_FYERS_PIN,
             "totp_key": PAPER_FYERS_TOTP_KEY,
-            "proxy_url": PAPER_FYERS_PROXY_URL,
         }
 
     missing = [name for name, value in config.items() if not value]
     if missing:
         raise RuntimeError(f"Missing Fyers configuration for {active_mode} mode: {', '.join(sorted(missing))}")
     return config
-

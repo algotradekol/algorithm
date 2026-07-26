@@ -13,10 +13,7 @@ import csv
 
 import requests
 
-from .config import FYERS_PROXY_URL
-
 MCX_SYMBOL_MASTER_URL = "https://public.fyers.in/sym_details/MCX_COM.csv"
-MCX_PROXIES = {"http": FYERS_PROXY_URL, "https": FYERS_PROXY_URL} if FYERS_PROXY_URL else None
 
 _cache: dict[str, dict[str, str]] = {"date": None, "symbols": {}}
 
@@ -24,15 +21,8 @@ _cache: dict[str, dict[str, str]] = {"date": None, "symbols": {}}
 def _download_symbol_master() -> str:
     headers = {"User-Agent": "Mozilla/5.0"}
     try:
-        try:
-            response = requests.get(MCX_SYMBOL_MASTER_URL, headers=headers, timeout=15, proxies=MCX_PROXIES)
-            response.raise_for_status()
-        except requests.RequestException as proxy_error:
-            if not MCX_PROXIES:
-                raise
-            print(f"[mcx_symbols] MCX symbol master proxy fetch failed, retrying direct: {proxy_error}")
-            response = requests.get(MCX_SYMBOL_MASTER_URL, headers=headers, timeout=15)
-            response.raise_for_status()
+        response = requests.get(MCX_SYMBOL_MASTER_URL, headers=headers, timeout=15)
+        response.raise_for_status()
         return response.text
     except requests.RequestException as exc:
         raise RuntimeError(f"Unable to load MCX symbol master: {exc}") from exc

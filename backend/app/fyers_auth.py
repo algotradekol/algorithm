@@ -17,7 +17,6 @@ import datetime
 import hashlib
 import pyotp
 import requests
-from fyers_apiv3 import fyersModel
 
 from .runtime_mode import get_active_broker_key, get_fyers_config
 from .supabase_client import run_with_supabase
@@ -30,11 +29,6 @@ AUTH_CODE_EXCHANGE_URL = "https://api-t1.fyers.in/api/v3/validate-authcode"
 
 def _fyers_config() -> dict[str, str]:
     return get_fyers_config()
-
-
-def _fyers_proxies() -> dict[str, str] | None:
-    proxy_url = _fyers_config()["proxy_url"]
-    return {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
 
 def _b64(value: str) -> str:
@@ -60,14 +54,7 @@ def _raise_for_fyers_step(response: requests.Response, step: str):
 
 
 def exchange_auth_code(auth_code: str) -> dict:
-    """Exchange an OAuth callback code without bypassing FYERS_PROXY_URL.
-
-    The SDK's SessionModel.generate_token() always performs a direct request.
-    On Railway that can return an HTML gateway/proxy response, which the SDK
-    then crashes while parsing as JSON. Keeping this request here makes OAuth,
-    refresh-token validation, and legacy auth use the same outbound network
-    configuration and gives the caller a diagnosable error.
-    """
+    """Exchange an OAuth callback code directly with FYERS."""
     fyers_config = _fyers_config()
     app_id_hash = hashlib.sha256(f"{fyers_config['client_id']}:{fyers_config['secret_key']}".encode()).hexdigest()
     response = requests.post(
@@ -78,7 +65,6 @@ def exchange_auth_code(auth_code: str) -> dict:
             "appIdHash": app_id_hash,
             "code": auth_code,
         },
-        proxies=_fyers_proxies(),
         timeout=30,
     )
     try:
@@ -88,7 +74,7 @@ def exchange_auth_code(auth_code: str) -> dict:
         raise RuntimeError(
             "Fyers auth-code exchange returned a non-JSON response "
             f"(HTTP {response.status_code}, content-type {content_type}). "
-            "Check FYERS_PROXY_URL or the Railway outbound connection."
+            "Check the FYERS OAuth callback URL or the Railway outbound connection."
         ) from exc
     if not response.ok or not data.get("access_token"):
         raise RuntimeError(
@@ -101,9 +87,6 @@ def exchange_auth_code(auth_code: str) -> dict:
 def refresh_access_token() -> str:
     fyers_config = _fyers_config()
     session = requests.Session()
-    fyers_proxies = _fyers_proxies()
-    if fyers_proxies:
-        session.proxies.update(fyers_proxies)
 
     r1 = session.post(f"{BASE}/send_login_otp_v2", json={"fy_id": _b64(fyers_config["fy_id"]), "app_id": "2"})
     _raise_for_fyers_step(r1, "send_login_otp_v2")
@@ -171,7 +154,7 @@ def refresh_access_token_from_refresh_token() -> str:
     if not refresh_token:
         raise RuntimeError("No Fyers refresh token in Supabase. Complete manual Fyers login first.")
     if not fyers_config["pin"]:
-        raise RuntimeError("FYERS_PIN is not configured. It is required for Fyers refresh-token validation.")
+        raise RuntimeError("FYERS_PIN is not configured. It is required for Fyers login and refresh-token validation.")
 
     last_error = None
     for app_id_hash in _candidate_app_id_hashes():
@@ -184,7 +167,6 @@ def refresh_access_token_from_refresh_token() -> str:
                 "refresh_token": refresh_token,
                 "pin": fyers_config["pin"],
             },
-            proxies=_fyers_proxies(),
             timeout=30,
         )
         try:
