@@ -19,14 +19,22 @@ import pyotp
 import requests
 from fyers_apiv3 import fyersModel
 
-from .config import ACTIVE_BROKER_KEY, FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI, FYERS_FY_ID, FYERS_PIN, FYERS_TOTP_KEY, FYERS_PROXY_URL
+from .runtime_mode import get_active_broker_key, get_fyers_config
 from .supabase_client import run_with_supabase
 
 BASE = "https://api-t2.fyers.in/vagator/v2"
 TOKEN_URL = "https://api.fyers.in/api/v2/token"
 REFRESH_TOKEN_URL = "https://api-t1.fyers.in/api/v3/validate-refresh-token"
 AUTH_CODE_EXCHANGE_URL = "https://api-t1.fyers.in/api/v3/validate-authcode"
-FYERS_PROXIES = {"http": FYERS_PROXY_URL, "https": FYERS_PROXY_URL} if FYERS_PROXY_URL else None
+
+
+def _fyers_config() -> dict[str, str]:
+    return get_fyers_config()
+
+
+def _fyers_proxies() -> dict[str, str] | None:
+    proxy_url = _fyers_config()["proxy_url"]
+    return {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
 
 def _b64(value: str) -> str:
@@ -60,7 +68,8 @@ def exchange_auth_code(auth_code: str) -> dict:
     refresh-token validation, and legacy auth use the same outbound network
     configuration and gives the caller a diagnosable error.
     """
-    app_id_hash = hashlib.sha256(f"{FYERS_CLIENT_ID}:{FYERS_SECRET_KEY}".encode()).hexdigest()
+    fyers_config = _fyers_config()
+    app_id_hash = hashlib.sha256(f"{fyers_config['client_id']}:{fyers_config['secret_key']}".encode()).hexdigest()
     response = requests.post(
         AUTH_CODE_EXCHANGE_URL,
         headers={"Content-Type": "application/json; charset=utf-8"},
@@ -69,7 +78,7 @@ def exchange_auth_code(auth_code: str) -> dict:
             "appIdHash": app_id_hash,
             "code": auth_code,
         },
-        proxies=FYERS_PROXIES,
+        proxies=_fyers_proxies(),
         timeout=30,
     )
     try:
@@ -90,30 +99,32 @@ def exchange_auth_code(auth_code: str) -> dict:
 
 
 def refresh_access_token() -> str:
+    fyers_config = _fyers_config()
     session = requests.Session()
-    if FYERS_PROXIES:
-        session.proxies.update(FYERS_PROXIES)
+    fyers_proxies = _fyers_proxies()
+    if fyers_proxies:
+        session.proxies.update(fyers_proxies)
 
-    r1 = session.post(f"{BASE}/send_login_otp_v2", json={"fy_id": _b64(FYERS_FY_ID), "app_id": "2"})
+    r1 = session.post(f"{BASE}/send_login_otp_v2", json={"fy_id": _b64(fyers_config["fy_id"]), "app_id": "2"})
     _raise_for_fyers_step(r1, "send_login_otp_v2")
     request_key = r1.json()["request_key"]
 
-    totp_code = pyotp.TOTP(FYERS_TOTP_KEY).now()
+    totp_code = pyotp.TOTP(fyers_config["totp_key"]).now()
     r2 = session.post(f"{BASE}/verify_otp", json={"request_key": request_key, "otp": totp_code})
     _raise_for_fyers_step(r2, "verify_otp")
     request_key = r2.json()["request_key"]
 
     r3 = session.post(f"{BASE}/verify_pin_v2", json={
-        "request_key": request_key, "identity_type": "pin", "identifier": _b64(FYERS_PIN)
+        "request_key": request_key, "identity_type": "pin", "identifier": _b64(fyers_config["pin"])
     })
     _raise_for_fyers_step(r3, "verify_pin_v2")
     access_token_temp = r3.json()["data"]["access_token"]
 
     headers = {"authorization": f"Bearer {access_token_temp}"}
     payload = {
-        "fyers_id": FYERS_FY_ID,
-        "app_id": FYERS_CLIENT_ID.split("-")[0],
-        "redirect_uri": FYERS_REDIRECT_URI,
+        "fyers_id": fyers_config["fy_id"],
+        "app_id": fyers_config["client_id"].split("-")[0],
+        "redirect_uri": fyers_config["redirect_uri"],
         "appType": "100",
         "code_challenge": "",
         "state": "sample",
@@ -139,7 +150,7 @@ def refresh_access_token() -> str:
 def store_broker_tokens(response: dict) -> None:
     now = _now()
     payload = {
-        "broker": ACTIVE_BROKER_KEY,
+        "broker": get_active_broker_key(),
         "access_token": response["access_token"],
         "access_token_updated_at": now,
         "last_refresh_attempt_at": now,
@@ -154,11 +165,12 @@ def store_broker_tokens(response: dict) -> None:
 
 
 def refresh_access_token_from_refresh_token() -> str:
+    fyers_config = _fyers_config()
     stored = get_stored_token_row()
     refresh_token = stored.get("refresh_token") if stored else None
     if not refresh_token:
         raise RuntimeError("No Fyers refresh token in Supabase. Complete manual Fyers login first.")
-    if not FYERS_PIN:
+    if not fyers_config["pin"]:
         raise RuntimeError("FYERS_PIN is not configured. It is required for Fyers refresh-token validation.")
 
     last_error = None
@@ -170,9 +182,9 @@ def refresh_access_token_from_refresh_token() -> str:
                 "grant_type": "refresh_token",
                 "appIdHash": app_id_hash,
                 "refresh_token": refresh_token,
-                "pin": FYERS_PIN,
+                "pin": fyers_config["pin"],
             },
-            proxies=FYERS_PROXIES,
+            proxies=_fyers_proxies(),
             timeout=30,
         )
         try:
@@ -198,7 +210,7 @@ def get_stored_access_token() -> str | None:
 
 def get_stored_token_row() -> dict | None:
     result = run_with_supabase(
-        lambda supabase: supabase.table("broker_tokens").select("*").eq("broker", ACTIVE_BROKER_KEY).execute()
+        lambda supabase: supabase.table("broker_tokens").select("*").eq("broker", get_active_broker_key()).execute()
     )
     if result.data:
         return result.data[0]
@@ -215,7 +227,7 @@ def get_token_status() -> dict:
             lambda supabase: (
                 supabase.table("fyers_token_refresh_logs")
                 .select("*")
-                .eq("broker", ACTIVE_BROKER_KEY)
+                .eq("broker", get_active_broker_key())
                 .order("attempted_at", desc=True)
                 .limit(20)
                 .execute()
@@ -244,15 +256,16 @@ def get_token_status() -> dict:
 
 
 def _candidate_app_id_hashes() -> list[str]:
+    fyers_config = _fyers_config()
     values = [
-        f"{FYERS_CLIENT_ID}:{FYERS_SECRET_KEY}",
-        f"{FYERS_CLIENT_ID}{FYERS_SECRET_KEY}",
+        f"{fyers_config['client_id']}:{fyers_config['secret_key']}",
+        f"{fyers_config['client_id']}{fyers_config['secret_key']}",
     ]
-    app_id_without_type = FYERS_CLIENT_ID.split("-")[0]
-    if app_id_without_type and app_id_without_type != FYERS_CLIENT_ID:
+    app_id_without_type = fyers_config["client_id"].split("-")[0]
+    if app_id_without_type and app_id_without_type != fyers_config["client_id"]:
         values.extend([
-            f"{app_id_without_type}:{FYERS_SECRET_KEY}",
-            f"{app_id_without_type}{FYERS_SECRET_KEY}",
+            f"{app_id_without_type}:{fyers_config['secret_key']}",
+            f"{app_id_without_type}{fyers_config['secret_key']}",
         ])
     seen = set()
     hashes = []
@@ -268,13 +281,13 @@ def _record_refresh_error(message: str) -> None:
         "last_refresh_attempt_at": _now(),
         "last_refresh_error": message,
         "updated_at": _now(),
-    }).eq("broker", ACTIVE_BROKER_KEY).execute())
+    }).eq("broker", get_active_broker_key()).execute())
 
 
 def _record_refresh_log(status: str, error: str | None) -> None:
     try:
         run_with_supabase(lambda supabase: supabase.table("fyers_token_refresh_logs").insert({
-            "broker": ACTIVE_BROKER_KEY,
+            "broker": get_active_broker_key(),
             "status": status,
             "error": error,
             "attempted_at": _now(),

@@ -66,6 +66,9 @@ export const api = {
     authedFetch('/api/calendar/snapshot', { method: 'POST', body: JSON.stringify(payload) }),
   engineStatus: () => authedFetch('/api/engine/status'),
   fyersStatus: () => authedFetch('/api/fyers/status'),
+  tradingMode: () => authedFetch('/api/runtime/trading-mode'),
+  updateTradingMode: (mode: 'paper' | 'live') =>
+    authedFetch('/api/runtime/trading-mode', { method: 'PUT', body: JSON.stringify({ trading_mode: mode }) }),
   fyersRefreshToken: () => authedFetch('/api/fyers/refresh-token', { method: 'POST' }),
   fyersTokenStatus: () => authedFetch('/api/fyers/token-status'),
   aiSessions: () => authedFetch('/api/ai/sessions'),

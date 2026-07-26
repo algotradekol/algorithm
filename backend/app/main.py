@@ -23,7 +23,8 @@ from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_connection_status, get_price_history
 from .fyers_auth import exchange_auth_code, store_broker_tokens
-from app.config import APP_PIN, FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI, FRONTEND_URL, SUPABASE_JWT_SECRET
+from app.config import APP_PIN, FRONTEND_URL, SUPABASE_JWT_SECRET
+from app.runtime_mode import get_active_broker_key, get_fyers_config, get_runtime_trading_mode
 from app.supabase_client import supabase
 
 
@@ -157,10 +158,11 @@ def pin_login(payload: dict):
 
 @app.get("/api/fyers/login-url")
 def fyers_login_url(_user=Depends(require_auth)):
+    fyers_config = get_fyers_config()
     session = fyersModel.SessionModel(
-        client_id=FYERS_CLIENT_ID,
-        secret_key=FYERS_SECRET_KEY,
-        redirect_uri=FYERS_REDIRECT_URI,
+        client_id=fyers_config["client_id"],
+        secret_key=fyers_config["secret_key"],
+        redirect_uri=fyers_config["redirect_uri"],
         response_type="code",
         grant_type="authorization_code",
     )
@@ -184,6 +186,29 @@ def fyers_refresh_token(_user=Depends(require_auth)):
 def fyers_token_status(_user=Depends(require_auth)):
     from app.fyers_auth import get_token_status
     return get_token_status()
+
+
+@app.get("/api/runtime/trading-mode")
+def runtime_trading_mode(_user=Depends(require_auth)):
+    return {
+        "trading_mode": get_runtime_trading_mode(),
+        "broker": get_active_broker_key(),
+    }
+
+
+@app.put("/api/runtime/trading-mode")
+def update_runtime_trading_mode(payload: dict, _user=Depends(require_auth)):
+    from app.engine import apply_trading_mode
+
+    requested_mode = payload.get("trading_mode") or payload.get("mode")
+    if not requested_mode:
+        raise HTTPException(status_code=400, detail="trading_mode is required")
+    try:
+        return apply_trading_mode(str(requested_mode))
+    except RuntimeError as exc:
+        message = str(exc)
+        status_code = 409 if "Close all open positions" in message else 400
+        raise HTTPException(status_code=status_code, detail=message)
 
 
 @app.get("/api/ai/sessions")
@@ -233,13 +258,6 @@ def fyers_callback(auth_code: str = None, code: str = None):
     received_code = auth_code or code
     if not received_code:
         return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
-    session = fyersModel.SessionModel(
-        client_id=FYERS_CLIENT_ID,
-        secret_key=FYERS_SECRET_KEY,
-        redirect_uri=FYERS_REDIRECT_URI,
-        response_type="code",
-        grant_type="authorization_code",
-    )
     try:
         response = exchange_auth_code(received_code)
     except Exception as exc:

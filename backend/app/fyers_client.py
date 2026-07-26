@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fyers_apiv3 import fyersModel
 from fyers_apiv3.FyersWebsocket import data_ws
 
-from .config import ACTIVE_BROKER_KEY, FYERS_CLIENT_ID, TRADING_MODE
+from .runtime_mode import get_active_broker_key, get_fyers_config, get_runtime_trading_mode
 from .fyers_auth import get_stored_access_token, get_stored_token_row
 
 RECENT_LOGIN_GRACE_SECONDS = 180
@@ -19,7 +19,8 @@ def get_fyers_model():
     token = get_stored_access_token()
     if not token:
         raise RuntimeError("No Fyers access token in Supabase yet. Use the Login to Fyers button first.")
-    return fyersModel.FyersModel(token=token, is_async=False, client_id=FYERS_CLIENT_ID, log_path="")
+    client_id = get_fyers_config()["client_id"]
+    return fyersModel.FyersModel(token=token, is_async=False, client_id=client_id, log_path="")
 
 
 def get_connection_status() -> dict:
@@ -32,8 +33,8 @@ def get_connection_status() -> dict:
             "status": "disconnected",
             "message": "No Fyers access token found. Login to Fyers before trading.",
             "refresh_token_present": refresh_token_present,
-            "broker": ACTIVE_BROKER_KEY,
-            "trading_mode": TRADING_MODE,
+            "broker": get_active_broker_key(),
+            "trading_mode": get_runtime_trading_mode(),
         }
 
     try:
@@ -47,8 +48,8 @@ def get_connection_status() -> dict:
                 "refresh_token_present": refresh_token_present,
                 "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
                 "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
-                "broker": ACTIVE_BROKER_KEY,
-                "trading_mode": TRADING_MODE,
+                "broker": get_active_broker_key(),
+                "trading_mode": get_runtime_trading_mode(),
             }
         return {
             "connected": False,
@@ -57,8 +58,8 @@ def get_connection_status() -> dict:
             "refresh_token_present": refresh_token_present,
             "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
             "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
-            "broker": ACTIVE_BROKER_KEY,
-            "trading_mode": TRADING_MODE,
+            "broker": get_active_broker_key(),
+            "trading_mode": get_runtime_trading_mode(),
         }
 
     if response.get("s") == "ok":
@@ -69,8 +70,8 @@ def get_connection_status() -> dict:
             "refresh_token_present": refresh_token_present,
             "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
             "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
-            "broker": ACTIVE_BROKER_KEY,
-            "trading_mode": TRADING_MODE,
+            "broker": get_active_broker_key(),
+            "trading_mode": get_runtime_trading_mode(),
         }
 
     if _is_recent_token_row(token_row, RECENT_LOGIN_GRACE_SECONDS):
@@ -81,8 +82,8 @@ def get_connection_status() -> dict:
             "refresh_token_present": refresh_token_present,
             "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
             "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
-            "broker": ACTIVE_BROKER_KEY,
-            "trading_mode": TRADING_MODE,
+            "broker": get_active_broker_key(),
+            "trading_mode": get_runtime_trading_mode(),
         }
 
     return {
@@ -92,8 +93,8 @@ def get_connection_status() -> dict:
         "refresh_token_present": refresh_token_present,
         "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
         "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
-        "broker": ACTIVE_BROKER_KEY,
-        "trading_mode": TRADING_MODE,
+        "broker": get_active_broker_key(),
+        "trading_mode": get_runtime_trading_mode(),
     }
 
 
@@ -309,7 +310,7 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
         report_status(connected=False, error=str(message), message="Fyers websocket closed")
 
     socket = data_ws.FyersDataSocket(
-        access_token=f"{FYERS_CLIENT_ID}:{token}",
+        access_token=f"{get_fyers_config()['client_id']}:{token}",
         log_path="",
         litemode=False,
         reconnect=True,

@@ -9,6 +9,7 @@ import ChargesPanel from '../../components/ChargesPanel';
 import HistoryTab from '../../components/HistoryTab';
 import BacktestTab from '../../components/BacktestTab';
 import FyersLoginButton from '../../components/FyersLoginButton';
+import TradingModeToggle from '../../components/TradingModeToggle';
 import { getAuthToken } from '../../lib/authToken';
 import { clearPinToken } from '../../lib/pinAuth';
 import { api } from '../../lib/api';
@@ -64,7 +65,6 @@ function DashboardContent() {
   const tradingReady = Boolean(fyersStatus?.connected && engineStatus?.state === 'running');
   const statusText = fyersStatus?.connected ? 'LIVE' : fyersStatus?.status === 'disconnected' ? 'TOKEN MISSING' : 'STOPPED';
   const wsText = wsStatus === 'connected' ? 'Live' : wsStatus === 'reconnecting' ? 'Reconnecting' : 'Offline';
-  const modeText = engineStatus?.trading_mode === 'live' ? 'LIVE MODE' : 'PAPER MODE';
   const statusIconTone = fyersStatus?.connected ? 'text-[#22c55e]' : fyersStatus?.status === 'disconnected' ? 'text-[#f59e0b]' : 'text-[#ef4444]';
   const wsIconTone = wsStatus === 'connected' ? 'text-[#22c55e]' : wsStatus === 'reconnecting' ? 'text-[#f59e0b]' : 'text-[#ef4444]';
 
@@ -163,10 +163,6 @@ function DashboardContent() {
               <span>WS {wsText}</span>
             </div>
             <div className="font-mono text-xs tabular-nums text-gray-300 sm:text-sm">{istTime} IST</div>
-            <div className={`flex items-center gap-2 text-xs uppercase tracking-wider ${engineStatus?.trading_mode === 'live' ? 'text-[#22c55e]' : 'text-[#3b82f6]'}`}>
-              <i className={`ri-checkbox-blank-circle-fill text-[8px] ${engineStatus?.trading_mode === 'live' ? 'text-[#22c55e]' : 'text-[#3b82f6]'}`} />
-              <span>{modeText}</span>
-            </div>
             <div
               title={engineStatus?.error || `${engineStatus?.watchlist_count || 0} symbols loaded`}
               className="flex items-center gap-2 text-xs uppercase tracking-wider text-gray-400"
@@ -177,6 +173,7 @@ function DashboardContent() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            <TradingModeToggle mode={engineStatus?.trading_mode} />
             <FyersLoginButton connected={Boolean(fyersStatus?.connected)} />
             <button
               onClick={async () => { clearPinToken(); await supabase.auth.signOut(); router.replace('/login'); }}

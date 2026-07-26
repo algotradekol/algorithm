@@ -17,12 +17,14 @@ from zoneinfo import ZoneInfo
 from app.broadcaster import broadcast_sync
 from .symbols import get_nse500_watchlist
 from .candle_aggregator import CandleAggregator
+from .broker_factory import create_broker
 from .fyers_client import connect_live_feed
 from .fyers_auth import get_stored_access_token, refresh_access_token_from_refresh_token
 from .strategies.algo1_opening_range import Algo1OpeningRange
 from .strategies.algo3_silver_micro import Algo3SilverMicro
 from .strategies.un1_915_filtered import UN1915Filtered
-from .config import ENTRY_CHECK_TIME, SQUARE_OFF_TIME, TRADING_MODE
+from .config import ENTRY_CHECK_TIME, SQUARE_OFF_TIME
+from .runtime_mode import get_runtime_trading_mode, normalize_trading_mode, set_runtime_trading_mode
 
 aggregator = CandleAggregator()
 last_ltp: dict[str, float] = {}
@@ -358,7 +360,7 @@ def get_engine_status() -> dict:
     return {
         "state": _engine_status["state"],
         "error": _engine_status["error"],
-        "trading_mode": TRADING_MODE,
+        "trading_mode": get_runtime_trading_mode(),
         "last_token_refresh": _engine_status.get("last_token_refresh"),
         "last_token_refresh_error": _engine_status.get("last_token_refresh_error"),
         "live_feed_started": _engine_status.get("live_feed_started"),
@@ -462,6 +464,53 @@ def try_refresh_access_token(reason: str = "manual_or_startup") -> bool:
         return False
 
 
+def apply_trading_mode(mode: str) -> dict:
+    """Switch the active broker mode without restarting the process."""
+    normalized_mode = normalize_trading_mode(mode)
+    current_mode = get_runtime_trading_mode()
+    if normalized_mode == current_mode:
+        return {
+            "trading_mode": current_mode,
+            "message": f"Trading mode already set to {current_mode}.",
+        }
+
+    open_positions: dict[str, int] = {}
+    for algo_id, strategy in STRATEGIES.items():
+        try:
+            positions = strategy.broker.open_positions()
+        except Exception as exc:
+            raise RuntimeError(f"Unable to inspect open positions for {algo_id}: {exc}") from exc
+        if positions:
+            open_positions[algo_id] = len(positions)
+
+    if open_positions:
+        raise RuntimeError(
+            "Close all open positions before switching trading mode. "
+            f"Open positions remain for: {', '.join(f'{algo_id} ({count})' for algo_id, count in open_positions.items())}."
+        )
+
+    set_runtime_trading_mode(normalized_mode)
+
+    for strategy in STRATEGIES.values():
+        refresh_settings = getattr(strategy, "reload_settings", None)
+        if callable(refresh_settings):
+            refresh_settings()
+        starting_capital = float(getattr(strategy, "settings", {}).get("starting_capital") or 500000)
+        strategy.broker = create_broker(algo_id=strategy.algo_id, starting_capital=starting_capital)
+        refresh_market_data = getattr(strategy, "refresh_market_data", None)
+        if callable(refresh_market_data):
+            refresh_market_data()
+
+    with _engine_lock:
+        _engine_status["trading_mode"] = normalized_mode
+
+    restart_live_feed(reason=f"trading_mode_{normalized_mode}")
+    return {
+        "trading_mode": normalized_mode,
+        "message": f"Trading mode switched to {normalized_mode}.",
+    }
+
+
 def start_engine():
     """Called once from main.py's FastAPI startup event."""
     global WATCHLIST, LIVE_FEED_SYMBOLS, _scheduler_started, _feed_watchdog_started
@@ -506,7 +555,7 @@ def start_engine():
         try_refresh_access_token(reason="startup")
         if not start_live_feed_if_ready():
             print("[engine] started without live feed; complete manual Fyers login to enable it")
-        print(f"[engine] started in {TRADING_MODE} mode with {len(LIVE_FEED_SYMBOLS)} live symbols, {len(STRATEGIES)} strategies")
+        print(f"[engine] started in {get_runtime_trading_mode()} mode with {len(LIVE_FEED_SYMBOLS)} live symbols, {len(STRATEGIES)} strategies")
     except Exception as exc:
         with _engine_lock:
             _engine_status.update({"state": "failed", "error": str(exc)})

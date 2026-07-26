@@ -28,6 +28,12 @@ create table if not exists fyers_token_refresh_logs (
 create index if not exists idx_fyers_token_refresh_logs_attempted_at on fyers_token_refresh_logs (attempted_at desc);
 create index if not exists idx_fyers_token_refresh_logs_broker_attempted_at on fyers_token_refresh_logs (broker, attempted_at desc);
 
+create table if not exists app_runtime_settings (
+    setting_key text primary key,
+    setting_value text not null,
+    updated_at timestamptz default now()
+);
+
 create table if not exists charges_config (
     id int primary key default 1,
     brokerage_flat numeric default 20.0,
