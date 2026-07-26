@@ -74,6 +74,7 @@ app = FastAPI(title="Algo Paper Trading API", lifespan=lifespan)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=ALLOWED_ORIGINS,
+    allow_origin_regex=r"https://.*\.kolkatalgo\.in|https://.*\.vercel\.app|http://localhost(:\d+)?",
     allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
