@@ -61,32 +61,73 @@ def _raise_for_fyers_step(response: requests.Response, step: str):
 def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
     """Exchange an OAuth callback code directly with FYERS."""
     fyers_config = _fyers_config(mode)
-    audit_log("fyers", "auth-code exchange started", mode=mode or "runtime", broker=get_active_broker_key(mode))
-    app_id_hash = hashlib.sha256(f"{fyers_config['client_id']}:{fyers_config['secret_key']}".encode()).hexdigest()
-    response = requests.post(
-        AUTH_CODE_EXCHANGE_URL,
-        headers={"Content-Type": "application/json; charset=utf-8"},
-        json={
-            "grant_type": "authorization_code",
-            "appIdHash": app_id_hash,
-            "code": auth_code,
-        },
-        proxies=_fyers_proxies(mode),
-        timeout=30,
+    fyers_proxies = _fyers_proxies(mode)
+    audit_log(
+        "fyers",
+        "auth-code exchange started",
+        mode=mode or "runtime",
+        broker=get_active_broker_key(mode),
+        proxy_enabled=bool(fyers_proxies),
     )
+    app_id_hash = hashlib.sha256(f"{fyers_config['client_id']}:{fyers_config['secret_key']}".encode()).hexdigest()
+    try:
+        response = requests.post(
+            AUTH_CODE_EXCHANGE_URL,
+            headers={"Content-Type": "application/json; charset=utf-8"},
+            json={
+                "grant_type": "authorization_code",
+                "appIdHash": app_id_hash,
+                "code": auth_code,
+            },
+            proxies=fyers_proxies,
+            timeout=30,
+        )
+    except requests.RequestException as exc:
+        audit_log(
+            "fyers",
+            "auth-code exchange request failed",
+            mode=mode or "runtime",
+            broker=get_active_broker_key(mode),
+            proxy_enabled=bool(fyers_proxies),
+            error=str(exc),
+        )
+        raise RuntimeError(
+            "Fyers auth-code exchange request failed. "
+            f"proxy_enabled={bool(fyers_proxies)} error={exc}"
+        ) from exc
     try:
         data = response.json()
     except ValueError as exc:
         content_type = response.headers.get("content-type", "unknown")
+        audit_log(
+            "fyers",
+            "auth-code exchange returned non-json response",
+            mode=mode or "runtime",
+            broker=get_active_broker_key(mode),
+            proxy_enabled=bool(fyers_proxies),
+            status_code=response.status_code,
+            content_type=content_type,
+            body=response.text[:500],
+        )
         raise RuntimeError(
             "Fyers auth-code exchange returned a non-JSON response "
             f"(HTTP {response.status_code}, content-type {content_type}). "
             "Check the FYERS OAuth callback URL or the Railway outbound connection."
         ) from exc
     if not response.ok or not data.get("access_token"):
+        error_body = data.get("message") or data.get("error") or response.text[:500]
+        audit_log(
+            "fyers",
+            "auth-code exchange rejected",
+            mode=mode or "runtime",
+            broker=get_active_broker_key(mode),
+            status_code=response.status_code,
+            proxy_enabled=bool(fyers_proxies),
+            error=error_body,
+        )
         raise RuntimeError(
             "Fyers auth-code exchange failed: "
-            f"{data.get('message') or data.get('error') or data}"
+            f"{error_body}"
         )
     return data
 
@@ -173,18 +214,31 @@ def refresh_access_token_from_refresh_token(mode: str | None = None) -> str:
     last_error = None
     audit_log("fyers", "refresh-token validation started", mode=mode or "runtime", broker=get_active_broker_key(mode))
     for app_id_hash in _candidate_app_id_hashes(mode):
-        response = requests.post(
-            REFRESH_TOKEN_URL,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            json={
-                "grant_type": "refresh_token",
-                "appIdHash": app_id_hash,
-                "refresh_token": refresh_token,
-                "pin": fyers_config["pin"],
-            },
-            proxies=_fyers_proxies(mode),
-            timeout=30,
-        )
+        fyers_proxies = _fyers_proxies(mode)
+        try:
+            response = requests.post(
+                REFRESH_TOKEN_URL,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                json={
+                    "grant_type": "refresh_token",
+                    "appIdHash": app_id_hash,
+                    "refresh_token": refresh_token,
+                    "pin": fyers_config["pin"],
+                },
+                proxies=fyers_proxies,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            audit_log(
+                "fyers",
+                "refresh-token validation request failed",
+                mode=mode or "runtime",
+                broker=get_active_broker_key(mode),
+                proxy_enabled=bool(fyers_proxies),
+                error=str(exc),
+            )
+            last_error = {"message": str(exc), "app_id_hash": app_id_hash[:12], "request": "request_exception"}
+            continue
         try:
             data = response.json()
         except ValueError:
@@ -194,6 +248,15 @@ def refresh_access_token_from_refresh_token(mode: str | None = None) -> str:
             audit_log("fyers", "refresh-token validation succeeded", mode=mode or "runtime", broker=get_active_broker_key(mode))
             return data["access_token"]
         last_error = data
+        audit_log(
+            "fyers",
+            "refresh-token validation rejected",
+            mode=mode or "runtime",
+            broker=get_active_broker_key(mode),
+            proxy_enabled=bool(fyers_proxies),
+            status_code=response.status_code,
+            error=data.get("message") or data.get("error") or response.text[:500],
+        )
         if data.get("code") != -371:
             break
     message = f"Fyers refresh-token validation failed: {last_error}"

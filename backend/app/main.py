@@ -189,7 +189,14 @@ def fyers_login_url(mode: str | None = None, _user=Depends(require_auth)):
     query["state"] = requested_mode
     auth_url = urlunsplit(parts._replace(query=urlencode(query)))
     set_pending_fyers_login_mode(requested_mode)
-    audit_log("fyers", "login-url generated", mode=requested_mode, broker=get_active_broker_key(requested_mode))
+    audit_log(
+        "fyers",
+        "login-url generated",
+        mode=requested_mode,
+        broker=get_active_broker_key(requested_mode),
+        client_id=fyers_config["client_id"],
+        redirect_uri=fyers_config["redirect_uri"],
+    )
     return {"url": auth_url}
 
 
@@ -288,12 +295,15 @@ def fyers_callback(auth_code: str = None, code: str = None, state: str | None = 
         print("[fyers] OAuth callback received, but fyers_apiv3 is not installed.")
         return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
     callback_mode = normalize_trading_mode(state or mode or get_pending_fyers_login_mode() or get_runtime_trading_mode())
+    fyers_config = get_fyers_config(callback_mode)
     audit_log(
         "fyers",
         "oauth callback received",
         callback_mode=callback_mode,
         runtime_mode=get_runtime_trading_mode(),
         broker=get_active_broker_key(callback_mode),
+        client_id=fyers_config["client_id"],
+        redirect_uri=fyers_config["redirect_uri"],
     )
     try:
         response = exchange_auth_code(received_code, mode=callback_mode)
