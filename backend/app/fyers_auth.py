@@ -67,6 +67,8 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
         "auth-code exchange started",
         mode=mode or "runtime",
         broker=get_active_broker_key(mode),
+        client_id=fyers_config["client_id"],
+        redirect_uri=fyers_config["redirect_uri"],
         proxy_enabled=bool(fyers_proxies),
     )
     app_id_hash = hashlib.sha256(f"{fyers_config['client_id']}:{fyers_config['secret_key']}".encode()).hexdigest()
@@ -122,6 +124,7 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
             mode=mode or "runtime",
             broker=get_active_broker_key(mode),
             status_code=response.status_code,
+            app_id_hash_prefix=app_id_hash[:12],
             proxy_enabled=bool(fyers_proxies),
             error=error_body,
         )
