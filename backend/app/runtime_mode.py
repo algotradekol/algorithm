@@ -30,6 +30,7 @@ from .supabase_client import run_with_supabase
 
 RUNTIME_MODE_TABLE = "app_runtime_settings"
 RUNTIME_MODE_KEY = "trading_mode"
+FYERS_LOGIN_MODE_KEY = "pending_fyers_login_mode"
 VALID_TRADING_MODES = {"paper", "live"}
 _runtime_mode_cache: str | None = None
 
@@ -91,6 +92,55 @@ def set_runtime_trading_mode(mode: str) -> str:
     global _runtime_mode_cache
     _runtime_mode_cache = normalized
     return normalized
+
+
+def set_pending_fyers_login_mode(mode: str | None) -> str:
+    normalized = normalize_trading_mode(mode)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    try:
+        run_with_supabase(
+            lambda supabase: supabase.table(RUNTIME_MODE_TABLE).upsert(
+                {
+                    "setting_key": FYERS_LOGIN_MODE_KEY,
+                    "setting_value": normalized,
+                    "updated_at": now,
+                }
+            ).execute()
+        )
+    except Exception as exc:
+        if "PGRST205" not in str(exc) and RUNTIME_MODE_TABLE not in str(exc):
+            raise
+        print(f"[runtime_mode] {RUNTIME_MODE_TABLE} missing; pending FYERS login mode kept in memory only until SQL migration is applied.")
+    return normalized
+
+
+def get_pending_fyers_login_mode() -> str | None:
+    try:
+        result = run_with_supabase(
+            lambda supabase: (
+                supabase.table(RUNTIME_MODE_TABLE)
+                .select("setting_value")
+                .eq("setting_key", FYERS_LOGIN_MODE_KEY)
+                .limit(1)
+                .execute()
+            )
+        )
+        row = (result.data or [{}])[0] if result.data else None
+        return normalize_trading_mode((row or {}).get("setting_value")) if row else None
+    except Exception:
+        return None
+
+
+def clear_pending_fyers_login_mode() -> None:
+    try:
+        run_with_supabase(
+            lambda supabase: supabase.table(RUNTIME_MODE_TABLE)
+            .delete()
+            .eq("setting_key", FYERS_LOGIN_MODE_KEY)
+            .execute()
+        )
+    except Exception:
+        pass
 
 
 def get_active_broker_key(mode: str | None = None) -> str:
