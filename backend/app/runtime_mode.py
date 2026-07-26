@@ -150,19 +150,13 @@ def get_active_broker_key(mode: str | None = None) -> str:
 def get_fyers_config(mode: str | None = None) -> dict[str, str]:
     active_mode = normalize_trading_mode(mode or get_runtime_trading_mode())
     if active_mode == "live":
-        live_client_id = LIVE_FYERS_CLIENT_ID or PAPER_FYERS_CLIENT_ID
-        live_secret_key = LIVE_FYERS_SECRET_KEY or PAPER_FYERS_SECRET_KEY
-        live_redirect_uri = LIVE_FYERS_REDIRECT_URI or PAPER_FYERS_REDIRECT_URI
-        live_fy_id = LIVE_FYERS_FY_ID or PAPER_FYERS_FY_ID
-        live_pin = LIVE_FYERS_PIN or PAPER_FYERS_PIN
-        live_totp_key = LIVE_FYERS_TOTP_KEY or PAPER_FYERS_TOTP_KEY
         config = {
-            "client_id": live_client_id,
-            "secret_key": live_secret_key,
-            "redirect_uri": live_redirect_uri,
-            "fy_id": live_fy_id,
-            "pin": live_pin,
-            "totp_key": live_totp_key,
+            "client_id": LIVE_FYERS_CLIENT_ID,
+            "secret_key": LIVE_FYERS_SECRET_KEY,
+            "redirect_uri": LIVE_FYERS_REDIRECT_URI or PAPER_FYERS_REDIRECT_URI,
+            "fy_id": LIVE_FYERS_FY_ID or PAPER_FYERS_FY_ID,
+            "pin": LIVE_FYERS_PIN or PAPER_FYERS_PIN,
+            "totp_key": LIVE_FYERS_TOTP_KEY or PAPER_FYERS_TOTP_KEY,
             "proxy_url": LIVE_FYERS_PROXY_URL,
         }
     else:
