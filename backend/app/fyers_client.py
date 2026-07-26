@@ -12,6 +12,8 @@ from fyers_apiv3.FyersWebsocket import data_ws
 from .config import ACTIVE_BROKER_KEY, FYERS_CLIENT_ID, TRADING_MODE
 from .fyers_auth import get_stored_access_token, get_stored_token_row
 
+RECENT_LOGIN_GRACE_SECONDS = 180
+
 
 def get_fyers_model():
     token = get_stored_access_token()
@@ -37,6 +39,17 @@ def get_connection_status() -> dict:
     try:
         response = get_fyers_model().get_profile()
     except Exception as exc:
+        if _is_recent_token_row(token_row, RECENT_LOGIN_GRACE_SECONDS):
+            return {
+                "connected": True,
+                "status": "rechecking",
+                "message": f"Fyers login is still settling after a fresh login; retrying verification ({exc}).",
+                "refresh_token_present": refresh_token_present,
+                "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
+                "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
+                "broker": ACTIVE_BROKER_KEY,
+                "trading_mode": TRADING_MODE,
+            }
         return {
             "connected": False,
             "status": "error",
@@ -60,6 +73,18 @@ def get_connection_status() -> dict:
             "trading_mode": TRADING_MODE,
         }
 
+    if _is_recent_token_row(token_row, RECENT_LOGIN_GRACE_SECONDS):
+        return {
+            "connected": True,
+            "status": "rechecking",
+            "message": response.get("message") or "Fyers login is still settling after a fresh login; verification will retry.",
+            "refresh_token_present": refresh_token_present,
+            "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
+            "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
+            "broker": ACTIVE_BROKER_KEY,
+            "trading_mode": TRADING_MODE,
+        }
+
     return {
         "connected": False,
         "status": "expired",
@@ -70,6 +95,29 @@ def get_connection_status() -> dict:
         "broker": ACTIVE_BROKER_KEY,
         "trading_mode": TRADING_MODE,
     }
+
+
+def _is_recent_token_row(token_row: dict | None, max_age_seconds: int) -> bool:
+    if not token_row:
+        return False
+    candidates = [
+        token_row.get("access_token_updated_at"),
+        token_row.get("refresh_token_updated_at"),
+        token_row.get("updated_at"),
+    ]
+    now = datetime.datetime.now(datetime.timezone.utc)
+    for value in candidates:
+        if not value:
+            continue
+        try:
+            parsed = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+        except ValueError:
+            continue
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+        if (now - parsed).total_seconds() <= max_age_seconds:
+            return True
+    return False
 
 
 def get_previous_close(symbol: str) -> float | None:

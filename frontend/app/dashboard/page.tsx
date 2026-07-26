@@ -233,30 +233,30 @@ function DashboardContent() {
           </section>
         ) : (
           <>
-            {tab === 'Simple' && (
+            <div className={tab === 'Simple' ? '' : 'hidden'}>
               <AlgoTab
                 algoId="algo1"
                 displayName="UN1 9:15 v15 - Simple"
                 description="Ranks the combined 9:15-9:17 opening window. Open=low gives BUY, open=high gives SELL, max 2% opening gap, 9:18 entry, 2% target, 1% stop loss."
                 onWebSocketStatus={setWsStatus}
               />
-            )}
-            {tab === 'Filter' && (
+            </div>
+            <div className={tab === 'Filter' ? '' : 'hidden'}>
               <AlgoTab
                 algoId="algo2"
                 displayName="UN1 9:15 v14 - Filter"
                 description="Ranks the combined 9:15-9:17 opening window, then applies the UN1 v14 liquidity, volume, and price-range checks before the 9:18 entry. Advanced indicator filters remain optional in Settings."
                 onWebSocketStatus={setWsStatus}
               />
-            )}
-            {tab === 'Silver Micro' && (
+            </div>
+            <div className={tab === 'Silver Micro' ? '' : 'hidden'}>
               <AlgoTab
                 algoId="algo3"
                 displayName="Silver Micro - 5m EMA/Volume"
                 description="Tracks the active MCX Silver Micro contract on 5-minute candles. BUY when a green 5m candle closes above EMA20 with volume above volume EMA20, confirm on the next green candle, and enter on the next candle open. SELL mirrors the same logic. Reversal happens when the opposite side confirms."
                 onWebSocketStatus={setWsStatus}
               />
-            )}
+            </div>
             {tab === 'Backtest' && <BacktestTab />}
             {tab === 'Compare' && <CompareTab />}
             {tab === 'History' && <HistoryTab />}
