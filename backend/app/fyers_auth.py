@@ -36,6 +36,19 @@ def _fyers_proxies(mode: str | None = None) -> dict[str, str] | None:
     return {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
 
+def _is_proxy_connectivity_error(exc: Exception) -> bool:
+    message = str(exc).lower()
+    return any(
+        marker in message
+        for marker in (
+            "proxyerror",
+            "connecttimeout",
+            "connection refused",
+            "proxy",
+        )
+    )
+
+
 def _b64(value: str) -> str:
     return base64.b64encode(value.encode("ascii")).decode("ascii")
 
@@ -83,17 +96,20 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
             proxy_enabled=bool(fyers_proxies),
             app_id_hash_prefix=app_id_hash[:12],
         )
+        request_kwargs = {
+            "headers": {"Content-Type": "application/json; charset=utf-8"},
+            "json": {
+                "grant_type": "authorization_code",
+                "appIdHash": app_id_hash,
+                "code": auth_code,
+            },
+            "timeout": 30,
+        }
         try:
             response = requests.post(
                 AUTH_CODE_EXCHANGE_URL,
-                headers={"Content-Type": "application/json; charset=utf-8"},
-                json={
-                    "grant_type": "authorization_code",
-                    "appIdHash": app_id_hash,
-                    "code": auth_code,
-                },
                 proxies=fyers_proxies,
-                timeout=30,
+                **request_kwargs,
             )
         except requests.RequestException as exc:
             last_error = str(exc)
@@ -106,7 +122,34 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
                 app_id_hash_prefix=app_id_hash[:12],
                 error=str(exc),
             )
-            continue
+            if fyers_proxies and _is_proxy_connectivity_error(exc):
+                audit_log(
+                    "fyers",
+                    "auth-code exchange retrying without proxy",
+                    mode=mode or "runtime",
+                    broker=get_active_broker_key(mode),
+                    app_id_hash_prefix=app_id_hash[:12],
+                    reason="proxy connectivity failure",
+                )
+                try:
+                    response = requests.post(
+                        AUTH_CODE_EXCHANGE_URL,
+                        **request_kwargs,
+                    )
+                except requests.RequestException as direct_exc:
+                    last_error = str(direct_exc)
+                    audit_log(
+                        "fyers",
+                        "auth-code exchange direct retry failed",
+                        mode=mode or "runtime",
+                        broker=get_active_broker_key(mode),
+                        proxy_enabled=False,
+                        app_id_hash_prefix=app_id_hash[:12],
+                        error=str(direct_exc),
+                    )
+                    continue
+            else:
+                continue
         try:
             data = response.json()
         except ValueError as exc:
@@ -229,18 +272,21 @@ def refresh_access_token_from_refresh_token(mode: str | None = None) -> str:
     audit_log("fyers", "refresh-token validation started", mode=mode or "runtime", broker=get_active_broker_key(mode))
     for app_id_hash in _candidate_app_id_hashes(mode):
         fyers_proxies = _fyers_proxies(mode)
+        request_kwargs = {
+            "headers": {"Content-Type": "application/json; charset=utf-8"},
+            "json": {
+                "grant_type": "refresh_token",
+                "appIdHash": app_id_hash,
+                "refresh_token": refresh_token,
+                "pin": fyers_config["pin"],
+            },
+            "timeout": 30,
+        }
         try:
             response = requests.post(
                 REFRESH_TOKEN_URL,
-                headers={"Content-Type": "application/json; charset=utf-8"},
-                json={
-                    "grant_type": "refresh_token",
-                    "appIdHash": app_id_hash,
-                    "refresh_token": refresh_token,
-                    "pin": fyers_config["pin"],
-                },
                 proxies=fyers_proxies,
-                timeout=30,
+                **request_kwargs,
             )
         except requests.RequestException as exc:
             audit_log(
@@ -252,7 +298,34 @@ def refresh_access_token_from_refresh_token(mode: str | None = None) -> str:
                 error=str(exc),
             )
             last_error = {"message": str(exc), "app_id_hash": app_id_hash[:12], "request": "request_exception"}
-            continue
+            if fyers_proxies and _is_proxy_connectivity_error(exc):
+                audit_log(
+                    "fyers",
+                    "refresh-token validation retrying without proxy",
+                    mode=mode or "runtime",
+                    broker=get_active_broker_key(mode),
+                    app_id_hash_prefix=app_id_hash[:12],
+                    reason="proxy connectivity failure",
+                )
+                try:
+                    response = requests.post(
+                        REFRESH_TOKEN_URL,
+                        **request_kwargs,
+                    )
+                except requests.RequestException as direct_exc:
+                    audit_log(
+                        "fyers",
+                        "refresh-token validation direct retry failed",
+                        mode=mode or "runtime",
+                        broker=get_active_broker_key(mode),
+                        proxy_enabled=False,
+                        app_id_hash_prefix=app_id_hash[:12],
+                        error=str(direct_exc),
+                    )
+                    last_error = {"message": str(direct_exc), "app_id_hash": app_id_hash[:12], "request": "direct_request_exception"}
+                    continue
+            else:
+                continue
         try:
             data = response.json()
         except ValueError:
