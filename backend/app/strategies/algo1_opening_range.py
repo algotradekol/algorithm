@@ -21,7 +21,7 @@ import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from .base import Strategy
-from ..paper_broker import PaperBroker
+from ..broker_factory import create_broker
 from ..fyers_client import get_previous_close, get_intraday_candles_for_range
 from ..fyers_auth import get_stored_access_token
 from ..candidate_ranking import build_sector_breakdown, rank_candidates, select_ranked_candidates
@@ -42,7 +42,7 @@ class Algo1OpeningRange(Strategy):
         self.sector_map = get_nse500_sector_map()
         from app.strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
-        self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
+        self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
         self.prev_close: dict[str, float] = {}
         self.buy_candidates: list[str] = []
         self.sell_candidates: list[str] = []

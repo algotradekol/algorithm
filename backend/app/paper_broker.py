@@ -4,9 +4,12 @@ reads/writes Supabase so the frontend can see live state from any
 device, and both algos get their own isolated capital pool + trade
 log (keyed by algo_id).
 """
+from __future__ import annotations
+
 import datetime
-from .supabase_client import run_with_supabase
+
 from .charges import calculate_charges, get_charges_config
+from .supabase_client import run_with_supabase
 
 
 class PaperBroker:
@@ -15,30 +18,44 @@ class PaperBroker:
         self.starting_capital = starting_capital
         self._ensure_state_row()
 
+    def state_table_name(self) -> str:
+        return "algo_state"
+
+    def positions_table_name(self) -> str:
+        return "positions"
+
+    def trades_table_name(self) -> str:
+        return "trades"
+
     def _ensure_state_row(self):
         existing = run_with_supabase(
-            lambda supabase: supabase.table("algo_state").select("*").eq("algo_id", self.algo_id).execute()
+            lambda supabase: supabase.table(self.state_table_name()).select("*").eq("algo_id", self.algo_id).execute()
         )
         if not existing.data:
             run_with_supabase(
-                lambda supabase: supabase.table("algo_state").insert({
-                    "algo_id": self.algo_id, "cash": self.starting_capital,
-                    "trade_count_today": 0, "buy_count_today": 0, "sell_count_today": 0,
+                lambda supabase: supabase.table(self.state_table_name()).insert({
+                    "algo_id": self.algo_id,
+                    "cash": self.starting_capital,
+                    "trade_count_today": 0,
+                    "buy_count_today": 0,
+                    "sell_count_today": 0,
                     "trading_date": datetime.date.today().isoformat(),
                 }).execute()
             )
 
     def _get_state(self) -> dict:
         row = run_with_supabase(
-            lambda supabase: supabase.table("algo_state").select("*").eq("algo_id", self.algo_id).execute()
+            lambda supabase: supabase.table(self.state_table_name()).select("*").eq("algo_id", self.algo_id).execute()
         ).data[0]
         today = datetime.date.today().isoformat()
         if row["trading_date"] != today:
             # new trading day -- reset daily counters, keep cumulative cash/pnl
             run_with_supabase(
-                lambda supabase: supabase.table("algo_state").update({
-                    "trading_date": today, "trade_count_today": 0,
-                    "buy_count_today": 0, "sell_count_today": 0,
+                lambda supabase: supabase.table(self.state_table_name()).update({
+                    "trading_date": today,
+                    "trade_count_today": 0,
+                    "buy_count_today": 0,
+                    "sell_count_today": 0,
                 }).eq("algo_id", self.algo_id).execute()
             )
             row.update({"trading_date": today, "trade_count_today": 0, "buy_count_today": 0, "sell_count_today": 0})
@@ -48,7 +65,7 @@ class PaperBroker:
         query_date = datetime.date.today().isoformat()
 
         def query(supabase):
-            request = supabase.table("positions").select("*").eq("algo_id", self.algo_id).eq("status", "open")
+            request = supabase.table(self.positions_table_name()).select("*").eq("algo_id", self.algo_id).eq("status", "open")
             if not include_stale:
                 request = request.gte("entry_time", query_date)
             return request.execute()
@@ -70,7 +87,7 @@ class PaperBroker:
         query_date = datetime.date.today().isoformat()
 
         def query(supabase):
-            request = supabase.table("trades").select("*").eq("algo_id", self.algo_id)
+            request = supabase.table(self.trades_table_name()).select("*").eq("algo_id", self.algo_id)
             if today_only:
                 request = request.gte("entry_time", query_date)
             return request.order("exit_time", desc=True).limit(limit).execute()
@@ -81,7 +98,7 @@ class PaperBroker:
     def already_traded_today(self, symbol: str) -> bool:
         today = datetime.date.today().isoformat()
         result = run_with_supabase(
-            lambda supabase: supabase.table("trades").select("id").eq("algo_id", self.algo_id)
+            lambda supabase: supabase.table(self.trades_table_name()).select("id").eq("algo_id", self.algo_id)
             .eq("symbol", symbol).gte("entry_time", today).execute()
         )
         return len(result.data) > 0
@@ -109,17 +126,24 @@ class PaperBroker:
         signal_snapshot: dict | None = None,
     ):
         position_row = {
-            "algo_id": self.algo_id, "symbol": symbol, "side": side, "qty": qty,
-            "entry_price": entry_price, "sl_price": sl_price, "target_price": target_price,
-            "highest_price": entry_price, "lowest_price": entry_price,
+            "algo_id": self.algo_id,
+            "symbol": symbol,
+            "side": side,
+            "qty": qty,
+            "entry_price": entry_price,
+            "sl_price": sl_price,
+            "target_price": target_price,
+            "highest_price": entry_price,
+            "lowest_price": entry_price,
             "trailing_sl_active": False,
             "entry_trigger": entry_trigger or "Strategy entry conditions matched",
             "signal_snapshot": signal_snapshot,
-            "status": "open", "entry_time": datetime.datetime.now().isoformat(),
+            "status": "open",
+            "entry_time": datetime.datetime.now().isoformat(),
         }
         try:
             run_with_supabase(
-                lambda supabase: supabase.table("positions").insert(position_row).execute()
+                lambda supabase: supabase.table(self.positions_table_name()).insert(position_row).execute()
             )
         except Exception as exc:
             if "entry_trigger" not in str(exc) and "signal_snapshot" not in str(exc):
@@ -128,14 +152,14 @@ class PaperBroker:
             position_row.pop("entry_trigger", None)
             position_row.pop("signal_snapshot", None)
             run_with_supabase(
-                lambda supabase: supabase.table("positions").insert(position_row).execute()
+                lambda supabase: supabase.table(self.positions_table_name()).insert(position_row).execute()
             )
         state = self._get_state()
         updates = {"trade_count_today": state["trade_count_today"] + 1}
         updates["buy_count_today" if side == "BUY" else "sell_count_today"] = \
             state["buy_count_today" if side == "BUY" else "sell_count_today"] + 1
         run_with_supabase(
-            lambda supabase: supabase.table("algo_state").update(updates).eq("algo_id", self.algo_id).execute()
+            lambda supabase: supabase.table(self.state_table_name()).update(updates).eq("algo_id", self.algo_id).execute()
         )
         from .broadcaster import broadcast_sync
         broadcast_sync({
@@ -164,7 +188,7 @@ class PaperBroker:
             updates["lowest_price"] = lowest
         if updates:
             run_with_supabase(
-                lambda supabase: supabase.table("positions").update(updates).eq("id", position["id"]).execute()
+                lambda supabase: supabase.table(self.positions_table_name()).update(updates).eq("id", position["id"]).execute()
             )
         return {**position, **updates}
 
@@ -204,7 +228,7 @@ class PaperBroker:
 
         updates["trailing_sl_active"] = active
         run_with_supabase(
-            lambda supabase: supabase.table("positions").update(updates).eq("id", position["id"]).execute()
+            lambda supabase: supabase.table(self.positions_table_name()).update(updates).eq("id", position["id"]).execute()
         )
         return {**position, **updates, "sl_price": current_sl}
 
@@ -214,11 +238,11 @@ class PaperBroker:
     def today_counts(self) -> dict:
         today = datetime.date.today().isoformat()
         trades = run_with_supabase(
-            lambda supabase: supabase.table("trades").select("side").eq("algo_id", self.algo_id)
+            lambda supabase: supabase.table(self.trades_table_name()).select("side").eq("algo_id", self.algo_id)
             .gte("entry_time", today).execute()
         ).data
         positions = run_with_supabase(
-            lambda supabase: supabase.table("positions").select("side").eq("algo_id", self.algo_id)
+            lambda supabase: supabase.table(self.positions_table_name()).select("side").eq("algo_id", self.algo_id)
             .eq("status", "open").gte("entry_time", today).execute()
         ).data
         rows = trades + positions
@@ -242,19 +266,25 @@ class PaperBroker:
         charges = calculate_charges(buy_value, sell_value, config)
 
         run_with_supabase(
-            lambda supabase: supabase.table("positions").update({"status": "closed"}).eq("id", position["id"]).execute()
+            lambda supabase: supabase.table(self.positions_table_name()).update({"status": "closed"}).eq("id", position["id"]).execute()
         )
         trade_row = {
-            "algo_id": self.algo_id, "symbol": position["symbol"], "side": side, "qty": qty,
-            "entry_price": entry_price, "exit_price": exit_price,
-            "entry_time": position["entry_time"], "exit_time": datetime.datetime.now().isoformat(),
+            "algo_id": self.algo_id,
+            "symbol": position["symbol"],
+            "side": side,
+            "qty": qty,
+            "entry_price": entry_price,
+            "exit_price": exit_price,
+            "entry_time": position["entry_time"],
+            "exit_time": datetime.datetime.now().isoformat(),
             "entry_trigger": position.get("entry_trigger"),
             "signal_snapshot": position.get("signal_snapshot"),
-            "exit_reason": exit_reason, **charges,
+            "exit_reason": exit_reason,
+            **charges,
         }
         try:
             run_with_supabase(
-                lambda supabase: supabase.table("trades").insert(trade_row).execute()
+                lambda supabase: supabase.table(self.trades_table_name()).insert(trade_row).execute()
             )
         except Exception as exc:
             if "entry_trigger" not in str(exc) and "signal_snapshot" not in str(exc):
@@ -262,12 +292,12 @@ class PaperBroker:
             trade_row.pop("entry_trigger", None)
             trade_row.pop("signal_snapshot", None)
             run_with_supabase(
-                lambda supabase: supabase.table("trades").insert(trade_row).execute()
+                lambda supabase: supabase.table(self.trades_table_name()).insert(trade_row).execute()
             )
 
         state = self._get_state()
         run_with_supabase(
-            lambda supabase: supabase.table("algo_state").update({"cash": state["cash"] + charges["net_pnl"]}).eq("algo_id", self.algo_id).execute()
+            lambda supabase: supabase.table(self.state_table_name()).update({"cash": state["cash"] + charges["net_pnl"]}).eq("algo_id", self.algo_id).execute()
         )
         from .broadcaster import broadcast_sync
         broadcast_sync({
@@ -290,7 +320,7 @@ class PaperBroker:
         state = self._get_state()
         counts = self.today_counts()
         trades_today = run_with_supabase(
-            lambda supabase: supabase.table("trades").select("net_pnl,gross_pnl,total_charges")
+            lambda supabase: supabase.table(self.trades_table_name()).select("net_pnl,gross_pnl,total_charges")
             .eq("algo_id", self.algo_id).gte("entry_time", datetime.date.today().isoformat()).execute()
         ).data
         realized_net = sum(t["net_pnl"] for t in trades_today)
@@ -313,7 +343,7 @@ class PaperBroker:
         if cash < 0:
             raise ValueError("Available cash cannot be negative.")
         run_with_supabase(
-            lambda supabase: supabase.table("algo_state").update({"cash": cash}).eq("algo_id", self.algo_id).execute()
+            lambda supabase: supabase.table(self.state_table_name()).update({"cash": cash}).eq("algo_id", self.algo_id).execute()
         )
         return cash
 
@@ -321,7 +351,7 @@ class PaperBroker:
         start_date = datetime.date.today() - datetime.timedelta(days=max(days - 1, 0))
         try:
             trades = run_with_supabase(
-                lambda supabase: supabase.table("trades").select(
+                lambda supabase: supabase.table(self.trades_table_name()).select(
                     "entry_time,exit_time,symbol,side,qty,entry_price,exit_price,entry_trigger,gross_pnl,total_charges,net_pnl"
                 ).eq("algo_id", self.algo_id).gte("exit_time", start_date.isoformat()).order("exit_time").execute()
             ).data
@@ -329,7 +359,7 @@ class PaperBroker:
             if "entry_trigger" not in str(exc):
                 raise
             trades = run_with_supabase(
-                lambda supabase: supabase.table("trades").select(
+                lambda supabase: supabase.table(self.trades_table_name()).select(
                     "entry_time,exit_time,symbol,side,qty,entry_price,exit_price,gross_pnl,total_charges,net_pnl"
                 ).eq("algo_id", self.algo_id).gte("exit_time", start_date.isoformat()).order("exit_time").execute()
             ).data

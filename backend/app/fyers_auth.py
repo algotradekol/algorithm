@@ -19,7 +19,7 @@ import pyotp
 import requests
 from fyers_apiv3 import fyersModel
 
-from .config import FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI, FYERS_FY_ID, FYERS_PIN, FYERS_TOTP_KEY, FYERS_PROXY_URL
+from .config import ACTIVE_BROKER_KEY, FYERS_CLIENT_ID, FYERS_SECRET_KEY, FYERS_REDIRECT_URI, FYERS_FY_ID, FYERS_PIN, FYERS_TOTP_KEY, FYERS_PROXY_URL
 from .supabase_client import run_with_supabase
 
 BASE = "https://api-t2.fyers.in/vagator/v2"
@@ -139,7 +139,7 @@ def refresh_access_token() -> str:
 def store_broker_tokens(response: dict) -> None:
     now = _now()
     payload = {
-        "broker": "fyers",
+        "broker": ACTIVE_BROKER_KEY,
         "access_token": response["access_token"],
         "access_token_updated_at": now,
         "last_refresh_attempt_at": now,
@@ -198,7 +198,7 @@ def get_stored_access_token() -> str | None:
 
 def get_stored_token_row() -> dict | None:
     result = run_with_supabase(
-        lambda supabase: supabase.table("broker_tokens").select("*").eq("broker", "fyers").execute()
+        lambda supabase: supabase.table("broker_tokens").select("*").eq("broker", ACTIVE_BROKER_KEY).execute()
     )
     if result.data:
         return result.data[0]
@@ -210,13 +210,27 @@ def get_token_status() -> dict:
     refresh_updated_at = row.get("refresh_token_updated_at")
     refresh_expires_at = _add_days(refresh_updated_at, 15) if refresh_updated_at else None
     days_left = _days_until(refresh_expires_at) if refresh_expires_at else None
-    logs = run_with_supabase(
-        lambda supabase: supabase.table("fyers_token_refresh_logs")
-        .select("*")
-        .order("attempted_at", desc=True)
-        .limit(20)
-        .execute()
-    )
+    try:
+        logs = run_with_supabase(
+            lambda supabase: (
+                supabase.table("fyers_token_refresh_logs")
+                .select("*")
+                .eq("broker", ACTIVE_BROKER_KEY)
+                .order("attempted_at", desc=True)
+                .limit(20)
+                .execute()
+            )
+        )
+    except Exception:
+        logs = run_with_supabase(
+            lambda supabase: (
+                supabase.table("fyers_token_refresh_logs")
+                .select("*")
+                .order("attempted_at", desc=True)
+                .limit(20)
+                .execute()
+            )
+        )
     return {
         "refresh_token_present": bool(row.get("refresh_token")),
         "access_token_updated_at": row.get("access_token_updated_at") or row.get("updated_at"),
@@ -254,18 +268,26 @@ def _record_refresh_error(message: str) -> None:
         "last_refresh_attempt_at": _now(),
         "last_refresh_error": message,
         "updated_at": _now(),
-    }).eq("broker", "fyers").execute())
+    }).eq("broker", ACTIVE_BROKER_KEY).execute())
 
 
 def _record_refresh_log(status: str, error: str | None) -> None:
     try:
         run_with_supabase(lambda supabase: supabase.table("fyers_token_refresh_logs").insert({
+            "broker": ACTIVE_BROKER_KEY,
             "status": status,
             "error": error,
             "attempted_at": _now(),
         }).execute())
     except Exception as exc:
-        print(f"[fyers_auth] refresh log insert skipped: {exc}")
+        try:
+            run_with_supabase(lambda supabase: supabase.table("fyers_token_refresh_logs").insert({
+                "status": status,
+                "error": error,
+                "attempted_at": _now(),
+            }).execute())
+        except Exception as fallback_exc:
+            print(f"[fyers_auth] refresh log insert skipped: {exc}; fallback also failed: {fallback_exc}")
 
 
 def _now() -> str:

@@ -23,7 +23,7 @@ from zoneinfo import ZoneInfo
 from .base import Strategy
 from ..fyers_client import get_intraday_candles_for_range
 from ..mcx_symbols import get_active_mcx_contract
-from ..paper_broker import PaperBroker
+from ..broker_factory import create_broker
 from ..strategy_settings import get_settings
 
 IST = ZoneInfo("Asia/Kolkata")
@@ -58,7 +58,7 @@ class Algo3SilverMicro(Strategy):
         self.symbol = (watchlist or [None])[0] if watchlist else get_active_mcx_contract("SILVERMIC")
         self.watchlist = [self.symbol] if self.symbol else []
         self.settings = get_settings(self.algo_id)
-        self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
+        self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
 
         self._history_lock = threading.Lock()
         self._history_loading = False

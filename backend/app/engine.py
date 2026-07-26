@@ -22,7 +22,7 @@ from .fyers_auth import get_stored_access_token, refresh_access_token_from_refre
 from .strategies.algo1_opening_range import Algo1OpeningRange
 from .strategies.algo3_silver_micro import Algo3SilverMicro
 from .strategies.un1_915_filtered import UN1915Filtered
-from .config import ENTRY_CHECK_TIME, SQUARE_OFF_TIME
+from .config import ENTRY_CHECK_TIME, SQUARE_OFF_TIME, TRADING_MODE
 
 aggregator = CandleAggregator()
 last_ltp: dict[str, float] = {}
@@ -358,6 +358,7 @@ def get_engine_status() -> dict:
     return {
         "state": _engine_status["state"],
         "error": _engine_status["error"],
+        "trading_mode": TRADING_MODE,
         "last_token_refresh": _engine_status.get("last_token_refresh"),
         "last_token_refresh_error": _engine_status.get("last_token_refresh_error"),
         "live_feed_started": _engine_status.get("live_feed_started"),
@@ -505,7 +506,7 @@ def start_engine():
         try_refresh_access_token(reason="startup")
         if not start_live_feed_if_ready():
             print("[engine] started without live feed; complete manual Fyers login to enable it")
-        print(f"[engine] started with {len(LIVE_FEED_SYMBOLS)} live symbols, {len(STRATEGIES)} strategies")
+        print(f"[engine] started in {TRADING_MODE} mode with {len(LIVE_FEED_SYMBOLS)} live symbols, {len(STRATEGIES)} strategies")
     except Exception as exc:
         with _engine_lock:
             _engine_status.update({"state": "failed", "error": str(exc)})

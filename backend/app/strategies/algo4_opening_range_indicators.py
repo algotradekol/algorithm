@@ -6,7 +6,7 @@ from collections import defaultdict
 from .base import Strategy
 from ..fyers_auth import get_stored_access_token
 from ..fyers_client import get_previous_close, get_recent_intraday_candles, get_intraday_candles_for_range
-from ..paper_broker import PaperBroker
+from ..broker_factory import create_broker
 from ..candidate_ranking import FILTER_WEIGHTS, build_sector_breakdown, rank_candidates, select_ranked_candidates
 from ..symbols import get_nse500_sector_map
 
@@ -28,7 +28,7 @@ class Algo4OpeningRangeIndicators(Strategy):
         self.sector_map = get_nse500_sector_map()
         from app.strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
-        self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
+        self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
         self.prev_close: dict[str, float] = {}
         self.candles: dict[str, list[dict]] = defaultdict(list)
         self.total_value: dict[str, float] = defaultdict(float)
@@ -431,10 +431,14 @@ class Algo4OpeningRangeIndicators(Strategy):
         else:
             sl_price = entry_price * (1 + self.settings["sl_pct"] / 100)
             target_price = entry_price * (1 - self.settings["target_pct"] / 100)
-        self.broker.open_trade(
-            symbol, side, qty, entry_price, sl_price, target_price,
-            self._entry_trigger(symbol, side), self._signal_snapshot(symbol, side, entry_price),
-        )
+        try:
+            self.broker.open_trade(
+                symbol, side, qty, entry_price, sl_price, target_price,
+                self._entry_trigger(symbol, side), self._signal_snapshot(symbol, side, entry_price),
+            )
+        except Exception as exc:
+            print(f"[{self.algo_id}] entry failed for {symbol}: {exc}")
+            return
         self.selected_symbols.add(symbol)
 
     def _entry_trigger(self, symbol: str, side: str) -> str:

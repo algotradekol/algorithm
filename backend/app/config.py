@@ -11,14 +11,42 @@ from dotenv import load_dotenv
 ENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 load_dotenv(ENV_PATH)
 
+TRADING_MODE = os.environ.get("TRADING_MODE", "paper").strip().lower()
+IS_LIVE_TRADING = TRADING_MODE == "live"
+
+
+def _mode_value(paper_value: str, live_value: str, env_name: str) -> str:
+    value = live_value if IS_LIVE_TRADING else paper_value
+    if IS_LIVE_TRADING and not value:
+        raise RuntimeError(f"{env_name} is required when TRADING_MODE=live")
+    return value
+
+
 # Fyers
-FYERS_CLIENT_ID = os.environ.get("FYERS_CLIENT_ID", "")
-FYERS_SECRET_KEY = os.environ.get("FYERS_SECRET_KEY", "")
-FYERS_REDIRECT_URI = os.environ.get("FYERS_REDIRECT_URI", "https://www.google.com")
-FYERS_FY_ID = os.environ.get("FYERS_FY_ID", "")
-FYERS_PIN = os.environ.get("FYERS_PIN", "")
-FYERS_TOTP_KEY = os.environ.get("FYERS_TOTP_KEY", "")
-FYERS_PROXY_URL = os.environ.get("FYERS_PROXY_URL", "")
+PAPER_FYERS_CLIENT_ID = os.environ.get("FYERS_CLIENT_ID", "")
+PAPER_FYERS_SECRET_KEY = os.environ.get("FYERS_SECRET_KEY", "")
+PAPER_FYERS_REDIRECT_URI = os.environ.get("FYERS_REDIRECT_URI", "https://www.google.com")
+PAPER_FYERS_FY_ID = os.environ.get("FYERS_FY_ID", "")
+PAPER_FYERS_PIN = os.environ.get("FYERS_PIN", "")
+PAPER_FYERS_TOTP_KEY = os.environ.get("FYERS_TOTP_KEY", "")
+PAPER_FYERS_PROXY_URL = os.environ.get("FYERS_PROXY_URL", "")
+
+LIVE_FYERS_CLIENT_ID = os.environ.get("LIVE_FYERS_CLIENT_ID", "")
+LIVE_FYERS_SECRET_KEY = os.environ.get("LIVE_FYERS_SECRET_KEY", "")
+LIVE_FYERS_REDIRECT_URI = os.environ.get("LIVE_FYERS_REDIRECT_URI", PAPER_FYERS_REDIRECT_URI)
+LIVE_FYERS_FY_ID = os.environ.get("LIVE_FYERS_FY_ID", "")
+LIVE_FYERS_PIN = os.environ.get("LIVE_FYERS_PIN", "")
+LIVE_FYERS_TOTP_KEY = os.environ.get("LIVE_FYERS_TOTP_KEY", "")
+LIVE_FYERS_PROXY_URL = os.environ.get("LIVE_FYERS_PROXY_URL", PAPER_FYERS_PROXY_URL)
+
+FYERS_CLIENT_ID = _mode_value(PAPER_FYERS_CLIENT_ID, LIVE_FYERS_CLIENT_ID, "LIVE_FYERS_CLIENT_ID")
+FYERS_SECRET_KEY = _mode_value(PAPER_FYERS_SECRET_KEY, LIVE_FYERS_SECRET_KEY, "LIVE_FYERS_SECRET_KEY")
+FYERS_REDIRECT_URI = _mode_value(PAPER_FYERS_REDIRECT_URI, LIVE_FYERS_REDIRECT_URI, "LIVE_FYERS_REDIRECT_URI")
+FYERS_FY_ID = _mode_value(PAPER_FYERS_FY_ID, LIVE_FYERS_FY_ID, "LIVE_FYERS_FY_ID")
+FYERS_PIN = _mode_value(PAPER_FYERS_PIN, LIVE_FYERS_PIN, "LIVE_FYERS_PIN")
+FYERS_TOTP_KEY = _mode_value(PAPER_FYERS_TOTP_KEY, LIVE_FYERS_TOTP_KEY, "LIVE_FYERS_TOTP_KEY")
+FYERS_PROXY_URL = _mode_value(PAPER_FYERS_PROXY_URL, LIVE_FYERS_PROXY_URL, "LIVE_FYERS_PROXY_URL")
+ACTIVE_BROKER_KEY = "fyers_live" if IS_LIVE_TRADING else "fyers"
 
 # Supabase
 SUPABASE_URL = os.environ.get("SUPABASE_URL", "")

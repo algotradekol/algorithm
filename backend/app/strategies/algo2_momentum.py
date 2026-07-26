@@ -21,7 +21,7 @@ candle_aggregator.py if you want a different definition (e.g. a
 """
 import datetime
 from .base import Strategy
-from ..paper_broker import PaperBroker
+from ..broker_factory import create_broker
 
 VOLUME_MULTIPLIER = 1.5
 
@@ -34,7 +34,7 @@ class Algo2Momentum(Strategy):
         self.watchlist = watchlist
         from app.strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
-        self.broker = PaperBroker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
+        self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
 
     def reload_settings(self):
         from app.strategy_settings import get_settings

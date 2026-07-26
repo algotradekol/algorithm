@@ -9,7 +9,7 @@ from zoneinfo import ZoneInfo
 from fyers_apiv3 import fyersModel
 from fyers_apiv3.FyersWebsocket import data_ws
 
-from .config import FYERS_CLIENT_ID
+from .config import ACTIVE_BROKER_KEY, FYERS_CLIENT_ID, TRADING_MODE
 from .fyers_auth import get_stored_access_token, get_stored_token_row
 
 
@@ -30,6 +30,8 @@ def get_connection_status() -> dict:
             "status": "disconnected",
             "message": "No Fyers access token found. Login to Fyers before trading.",
             "refresh_token_present": refresh_token_present,
+            "broker": ACTIVE_BROKER_KEY,
+            "trading_mode": TRADING_MODE,
         }
 
     try:
@@ -42,6 +44,8 @@ def get_connection_status() -> dict:
             "refresh_token_present": refresh_token_present,
             "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
             "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
+            "broker": ACTIVE_BROKER_KEY,
+            "trading_mode": TRADING_MODE,
         }
 
     if response.get("s") == "ok":
@@ -52,6 +56,8 @@ def get_connection_status() -> dict:
             "refresh_token_present": refresh_token_present,
             "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
             "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
+            "broker": ACTIVE_BROKER_KEY,
+            "trading_mode": TRADING_MODE,
         }
 
     return {
@@ -61,6 +67,8 @@ def get_connection_status() -> dict:
         "refresh_token_present": refresh_token_present,
         "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
         "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
+        "broker": ACTIVE_BROKER_KEY,
+        "trading_mode": TRADING_MODE,
     }
 
 

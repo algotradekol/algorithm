@@ -21,10 +21,12 @@ alter table broker_tokens
 create table if not exists fyers_token_refresh_logs (
     id bigserial primary key,
     attempted_at timestamptz default now(),
+    broker text default 'fyers',
     status text not null check (status in ('success', 'failed')),
     error text
 );
 create index if not exists idx_fyers_token_refresh_logs_attempted_at on fyers_token_refresh_logs (attempted_at desc);
+create index if not exists idx_fyers_token_refresh_logs_broker_attempted_at on fyers_token_refresh_logs (broker, attempted_at desc);
 
 create table if not exists charges_config (
     id int primary key default 1,
@@ -86,6 +88,57 @@ create table if not exists trades (
     net_pnl numeric
 );
 create index if not exists idx_trades_algo_time on trades (algo_id, exit_time desc);
+
+-- Live broker state is isolated from paper trading so you can switch modes
+-- without touching the existing paper tables.
+create table if not exists live_algo_state (
+    algo_id text primary key,
+    cash numeric not null,
+    trade_count_today int default 0,
+    buy_count_today int default 0,
+    sell_count_today int default 0,
+    trading_date date default current_date
+);
+
+create table if not exists live_positions (
+    id bigserial primary key,
+    algo_id text not null,
+    symbol text not null,
+    side text not null,
+    qty int not null,
+    entry_price numeric not null,
+    sl_price numeric not null,
+    target_price numeric not null,
+    highest_price numeric,
+    lowest_price numeric,
+    trailing_sl_active boolean default false,
+    status text not null default 'open',
+    entry_time timestamptz not null
+);
+create index if not exists idx_live_positions_algo_status on live_positions (algo_id, status);
+
+create table if not exists live_trades (
+    id bigserial primary key,
+    algo_id text not null,
+    symbol text not null,
+    side text not null,
+    qty int not null,
+    entry_price numeric not null,
+    exit_price numeric not null,
+    entry_time timestamptz not null,
+    exit_time timestamptz not null,
+    exit_reason text,
+    brokerage numeric,
+    stt numeric,
+    exchange_charges numeric,
+    sebi_charges numeric,
+    gst numeric,
+    stamp_duty numeric,
+    total_charges numeric,
+    gross_pnl numeric,
+    net_pnl numeric
+);
+create index if not exists idx_live_trades_algo_time on live_trades (algo_id, exit_time desc);
 
 -- Strategy settings addition: run this manually in Supabase SQL Editor before using strategy settings UI.
 CREATE TABLE IF NOT EXISTS strategy_settings (
