@@ -123,10 +123,16 @@ def get_fyers_config(mode: str | None = None) -> dict[str, str]:
             "fy_id": PAPER_FYERS_FY_ID,
             "pin": PAPER_FYERS_PIN,
             "totp_key": PAPER_FYERS_TOTP_KEY,
+            # Paper mode does not require a proxy. Keep it optional so the
+            # paper login and history routes still work when only the original
+            # legacy FYERS_PROXY_URL or no proxy at all is configured.
             "proxy_url": PAPER_FYERS_PROXY_URL,
         }
 
-    missing = [name for name, value in config.items() if not value]
+    required_missing = [name for name, value in config.items() if not value and name != "proxy_url"]
+    if active_mode == "live" and not config.get("proxy_url"):
+        required_missing.append("proxy_url")
+    missing = required_missing
     if missing:
         raise RuntimeError(f"Missing Fyers configuration for {active_mode} mode: {', '.join(sorted(missing))}")
     return config
