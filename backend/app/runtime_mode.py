@@ -15,6 +15,7 @@ from .config import (
     LIVE_FYERS_FY_ID,
     LIVE_FYERS_PIN,
     LIVE_FYERS_REDIRECT_URI,
+    LIVE_FYERS_PROXY_URL,
     LIVE_FYERS_SECRET_KEY,
     LIVE_FYERS_TOTP_KEY,
     PAPER_FYERS_CLIENT_ID,
@@ -23,8 +24,8 @@ from .config import (
     PAPER_FYERS_REDIRECT_URI,
     PAPER_FYERS_SECRET_KEY,
     PAPER_FYERS_TOTP_KEY,
-    FYERS_PROXY_URL,
-)
+    PAPER_FYERS_PROXY_URL,
+    )
 from .supabase_client import run_with_supabase
 
 RUNTIME_MODE_TABLE = "app_runtime_settings"
@@ -112,7 +113,7 @@ def get_fyers_config(mode: str | None = None) -> dict[str, str]:
             "fy_id": live_fy_id,
             "pin": live_pin,
             "totp_key": live_totp_key,
-            "proxy_url": FYERS_PROXY_URL,
+            "proxy_url": LIVE_FYERS_PROXY_URL,
         }
     else:
         config = {
@@ -122,7 +123,7 @@ def get_fyers_config(mode: str | None = None) -> dict[str, str]:
             "fy_id": PAPER_FYERS_FY_ID,
             "pin": PAPER_FYERS_PIN,
             "totp_key": PAPER_FYERS_TOTP_KEY,
-            "proxy_url": FYERS_PROXY_URL,
+            "proxy_url": PAPER_FYERS_PROXY_URL,
         }
 
     missing = [name for name, value in config.items() if not value]

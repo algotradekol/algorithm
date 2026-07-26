@@ -30,7 +30,7 @@ PAPER_FYERS_REDIRECT_URI = os.environ.get("FYERS_REDIRECT_URI", "https://www.goo
 PAPER_FYERS_FY_ID = os.environ.get("FYERS_FY_ID", "")
 PAPER_FYERS_PIN = os.environ.get("FYERS_PIN", "")
 PAPER_FYERS_TOTP_KEY = os.environ.get("FYERS_TOTP_KEY", "")
-FYERS_PROXY_URL = os.environ.get("FYERS_PROXY_URL", "")
+PAPER_FYERS_PROXY_URL = os.environ.get("PAPER_FYERS_PROXY_URL", "")
 
 # Live trading can use the real trading FYERS app credentials.
 # If you leave fy_id / pin / totp / redirect empty here, the backend can
@@ -41,6 +41,7 @@ LIVE_FYERS_REDIRECT_URI = os.environ.get("LIVE_FYERS_REDIRECT_URI", PAPER_FYERS_
 LIVE_FYERS_FY_ID = os.environ.get("LIVE_FYERS_FY_ID", PAPER_FYERS_FY_ID)
 LIVE_FYERS_PIN = os.environ.get("LIVE_FYERS_PIN", PAPER_FYERS_PIN)
 LIVE_FYERS_TOTP_KEY = os.environ.get("LIVE_FYERS_TOTP_KEY", PAPER_FYERS_TOTP_KEY)
+LIVE_FYERS_PROXY_URL = os.environ.get("LIVE_FYERS_PROXY_URL", os.environ.get("FYERS_PROXY_URL", ""))
 
 # Backward-compatible aliases for older imports. These still point at the
 # paper-trading app credentials; mode-aware code should use runtime_mode.py.
@@ -50,6 +51,7 @@ FYERS_REDIRECT_URI = PAPER_FYERS_REDIRECT_URI
 FYERS_FY_ID = PAPER_FYERS_FY_ID
 FYERS_PIN = PAPER_FYERS_PIN
 FYERS_TOTP_KEY = PAPER_FYERS_TOTP_KEY
+FYERS_PROXY_URL = os.environ.get("FYERS_PROXY_URL", "")
 ACTIVE_BROKER_KEY = "fyers_live" if IS_LIVE_TRADING else "fyers"
 
 # Supabase
