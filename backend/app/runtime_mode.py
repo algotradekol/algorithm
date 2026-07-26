@@ -18,10 +18,7 @@ from .config import (
     PAPER_FYERS_SECRET_KEY,
     PAPER_FYERS_TOTP_KEY,
     LIVE_FYERS_CLIENT_ID,
-    LIVE_FYERS_FY_ID,
-    LIVE_FYERS_REDIRECT_URI,
     LIVE_FYERS_SECRET_KEY,
-    LIVE_FYERS_TOTP_KEY,
 )
 from .supabase_client import run_with_supabase
 
@@ -92,10 +89,10 @@ def get_fyers_config(mode: str | None = None) -> dict[str, str]:
         config = {
             "client_id": LIVE_FYERS_CLIENT_ID,
             "secret_key": LIVE_FYERS_SECRET_KEY,
-            "redirect_uri": LIVE_FYERS_REDIRECT_URI,
-            "fy_id": LIVE_FYERS_FY_ID,
+            "redirect_uri": PAPER_FYERS_REDIRECT_URI,
+            "fy_id": PAPER_FYERS_FY_ID,
             "pin": PAPER_FYERS_PIN,
-            "totp_key": LIVE_FYERS_TOTP_KEY,
+            "totp_key": PAPER_FYERS_TOTP_KEY,
         }
     else:
         config = {
