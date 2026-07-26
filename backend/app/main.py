@@ -26,7 +26,7 @@ from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine
 from .charges import get_charges_config, set_charges_config
 from .fyers_client import get_connection_status, get_price_history
 from .fyers_auth import exchange_auth_code, store_broker_tokens
-from .runtime_mode import get_active_broker_key, get_fyers_config, get_runtime_trading_mode
+from .runtime_mode import get_active_broker_key, get_fyers_config, get_runtime_trading_mode, normalize_trading_mode
 from .supabase_client import supabase
 from .timezone import IST
 
@@ -161,10 +161,11 @@ def pin_login(payload: dict):
 
 
 @app.get("/api/fyers/login-url")
-def fyers_login_url(_user=Depends(require_auth)):
+def fyers_login_url(mode: str | None = None, _user=Depends(require_auth)):
     if fyersModel is None:
         raise HTTPException(status_code=503, detail="Fyers SDK is not installed in this environment.")
-    fyers_config = get_fyers_config()
+    requested_mode = normalize_trading_mode(mode or get_runtime_trading_mode())
+    fyers_config = get_fyers_config(requested_mode)
     session = fyersModel.SessionModel(
         client_id=fyers_config["client_id"],
         secret_key=fyers_config["secret_key"],
