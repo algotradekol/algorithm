@@ -10,6 +10,7 @@ import json
 import math
 import threading
 from contextlib import asynccontextmanager
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
@@ -24,6 +25,7 @@ from .config import ALLOWED_ORIGINS, APP_PIN, FRONTEND_URL, SUPABASE_JWT_SECRET
 from .auth import require_auth
 from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, last_ltp, restart_live_feed, start_engine, STRATEGIES
 from .charges import get_charges_config, set_charges_config
+from .audit_log import audit_log
 from .fyers_client import get_connection_status, get_price_history
 from .fyers_auth import exchange_auth_code, store_broker_tokens
 from .runtime_mode import get_active_broker_key, get_fyers_config, get_runtime_trading_mode, normalize_trading_mode
@@ -173,7 +175,13 @@ def fyers_login_url(mode: str | None = None, _user=Depends(require_auth)):
         response_type="code",
         grant_type="authorization_code",
     )
-    return {"url": session.generate_authcode()}
+    auth_url = session.generate_authcode()
+    parts = urlsplit(auth_url)
+    query = dict(parse_qsl(parts.query, keep_blank_values=True))
+    query["state"] = requested_mode
+    auth_url = urlunsplit(parts._replace(query=urlencode(query)))
+    audit_log("fyers", "login-url generated", mode=requested_mode, broker=get_active_broker_key(requested_mode))
+    return {"url": auth_url}
 
 
 @app.get("/api/fyers/status")
@@ -211,7 +219,9 @@ def update_runtime_trading_mode(payload: dict, _user=Depends(require_auth)):
     if not requested_mode:
         raise HTTPException(status_code=400, detail="trading_mode is required")
     try:
-        return apply_trading_mode(str(requested_mode))
+        result = apply_trading_mode(str(requested_mode))
+        audit_log("runtime", "trading mode updated", requested_mode=str(requested_mode), result=result)
+        return result
     except RuntimeError as exc:
         message = str(exc)
         status_code = 409 if "Close all open positions" in message else 400
@@ -261,20 +271,29 @@ def ai_chat(payload: dict, _user=Depends(require_auth)):
 
 
 @app.get("/api/fyers/callback")
-def fyers_callback(auth_code: str = None, code: str = None):
+def fyers_callback(auth_code: str = None, code: str = None, state: str | None = None, mode: str | None = None):
     received_code = auth_code or code
     if not received_code:
         return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
     if fyersModel is None:
         print("[fyers] OAuth callback received, but fyers_apiv3 is not installed.")
         return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
+    callback_mode = normalize_trading_mode(state or mode or get_runtime_trading_mode())
+    audit_log(
+        "fyers",
+        "oauth callback received",
+        callback_mode=callback_mode,
+        runtime_mode=get_runtime_trading_mode(),
+        broker=get_active_broker_key(callback_mode),
+    )
     try:
-        response = exchange_auth_code(received_code)
+        response = exchange_auth_code(received_code, mode=callback_mode)
     except Exception as exc:
-        print(f"[fyers] OAuth callback exchange failed: {exc}")
+        audit_log("fyers", "oauth callback exchange failed", mode=callback_mode, error=str(exc))
         return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
-    store_broker_tokens(response)
-    restart_live_feed(reason="fyers_oauth_callback")
+    store_broker_tokens(response, mode=callback_mode)
+    restart_live_feed(reason=f"fyers_oauth_callback:{callback_mode}")
+    audit_log("fyers", "oauth callback completed", mode=callback_mode)
     return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=success")
 
 

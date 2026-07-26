@@ -17,6 +17,7 @@ import datetime
 import hashlib
 import requests
 
+from .audit_log import audit_log
 from .runtime_mode import get_active_broker_key, get_fyers_config
 from .supabase_client import run_with_supabase
 
@@ -26,12 +27,12 @@ REFRESH_TOKEN_URL = "https://api-t1.fyers.in/api/v3/validate-refresh-token"
 AUTH_CODE_EXCHANGE_URL = "https://api-t1.fyers.in/api/v3/validate-authcode"
 
 
-def _fyers_config() -> dict[str, str]:
-    return get_fyers_config()
+def _fyers_config(mode: str | None = None) -> dict[str, str]:
+    return get_fyers_config(mode)
 
 
-def _fyers_proxies() -> dict[str, str] | None:
-    proxy_url = _fyers_config().get("proxy_url")
+def _fyers_proxies(mode: str | None = None) -> dict[str, str] | None:
+    proxy_url = _fyers_config(mode).get("proxy_url")
     return {"http": proxy_url, "https": proxy_url} if proxy_url else None
 
 
@@ -57,9 +58,10 @@ def _raise_for_fyers_step(response: requests.Response, step: str):
     raise RuntimeError(f"Fyers login failed at {step}: {message}")
 
 
-def exchange_auth_code(auth_code: str) -> dict:
+def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
     """Exchange an OAuth callback code directly with FYERS."""
-    fyers_config = _fyers_config()
+    fyers_config = _fyers_config(mode)
+    audit_log("fyers", "auth-code exchange started", mode=mode or "runtime", broker=get_active_broker_key(mode))
     app_id_hash = hashlib.sha256(f"{fyers_config['client_id']}:{fyers_config['secret_key']}".encode()).hexdigest()
     response = requests.post(
         AUTH_CODE_EXCHANGE_URL,
@@ -69,7 +71,7 @@ def exchange_auth_code(auth_code: str) -> dict:
             "appIdHash": app_id_hash,
             "code": auth_code,
         },
-        proxies=_fyers_proxies(),
+        proxies=_fyers_proxies(mode),
         timeout=30,
     )
     try:
@@ -89,12 +91,12 @@ def exchange_auth_code(auth_code: str) -> dict:
     return data
 
 
-def refresh_access_token() -> str:
+def refresh_access_token(mode: str | None = None) -> str:
     import pyotp
 
-    fyers_config = _fyers_config()
+    fyers_config = _fyers_config(mode)
     session = requests.Session()
-    fyers_proxies = _fyers_proxies()
+    fyers_proxies = _fyers_proxies(mode)
     if fyers_proxies:
         session.proxies.update(fyers_proxies)
 
@@ -133,17 +135,18 @@ def refresh_access_token() -> str:
         raise RuntimeError(f"Auth code redirect missing: status={r4.status_code}, body={r4.text}")
     auth_code = redirect_location.split("auth_code=")[1].split("&")[0]
 
-    response = exchange_auth_code(auth_code)
+    response = exchange_auth_code(auth_code, mode=mode)
 
     token = response["access_token"]
-    store_broker_tokens(response)
+    store_broker_tokens(response, mode=mode)
     return token
 
 
-def store_broker_tokens(response: dict) -> None:
+def store_broker_tokens(response: dict, mode: str | None = None) -> None:
+    broker_key = get_active_broker_key(mode)
     now = _now()
     payload = {
-        "broker": get_active_broker_key(),
+        "broker": broker_key,
         "access_token": response["access_token"],
         "access_token_updated_at": now,
         "last_refresh_attempt_at": now,
@@ -154,12 +157,13 @@ def store_broker_tokens(response: dict) -> None:
         payload["refresh_token"] = response["refresh_token"]
         payload["refresh_token_updated_at"] = now
     run_with_supabase(lambda supabase: supabase.table("broker_tokens").upsert(payload).execute())
-    _record_refresh_log("success", None)
+    _record_refresh_log("success", None, mode=mode)
+    audit_log("fyers", "stored broker tokens", mode=mode or "runtime", broker=broker_key, has_refresh_token=bool(response.get("refresh_token")))
 
 
-def refresh_access_token_from_refresh_token() -> str:
-    fyers_config = _fyers_config()
-    stored = get_stored_token_row()
+def refresh_access_token_from_refresh_token(mode: str | None = None) -> str:
+    fyers_config = _fyers_config(mode)
+    stored = get_stored_token_row(mode)
     refresh_token = stored.get("refresh_token") if stored else None
     if not refresh_token:
         raise RuntimeError("No Fyers refresh token in Supabase. Complete manual Fyers login first.")
@@ -167,7 +171,8 @@ def refresh_access_token_from_refresh_token() -> str:
         raise RuntimeError("FYERS_PIN is not configured. It is required for Fyers login and refresh-token validation.")
 
     last_error = None
-    for app_id_hash in _candidate_app_id_hashes():
+    audit_log("fyers", "refresh-token validation started", mode=mode or "runtime", broker=get_active_broker_key(mode))
+    for app_id_hash in _candidate_app_id_hashes(mode):
         response = requests.post(
             REFRESH_TOKEN_URL,
             headers={"Content-Type": "application/json; charset=utf-8"},
@@ -177,7 +182,7 @@ def refresh_access_token_from_refresh_token() -> str:
                 "refresh_token": refresh_token,
                 "pin": fyers_config["pin"],
             },
-            proxies=_fyers_proxies(),
+            proxies=_fyers_proxies(mode),
             timeout=30,
         )
         try:
@@ -185,33 +190,37 @@ def refresh_access_token_from_refresh_token() -> str:
         except ValueError:
             data = {"s": "error", "message": response.text}
         if response.ok and data.get("access_token"):
-            store_broker_tokens(data)
+            store_broker_tokens(data, mode=mode)
+            audit_log("fyers", "refresh-token validation succeeded", mode=mode or "runtime", broker=get_active_broker_key(mode))
             return data["access_token"]
         last_error = data
         if data.get("code") != -371:
             break
     message = f"Fyers refresh-token validation failed: {last_error}"
-    _record_refresh_error(message)
-    _record_refresh_log("failed", message)
+    _record_refresh_error(message, mode=mode)
+    _record_refresh_log("failed", message, mode=mode)
+    audit_log("fyers", "refresh-token validation failed", mode=mode or "runtime", broker=get_active_broker_key(mode), error=message)
     raise RuntimeError(message)
 
 
-def get_stored_access_token() -> str | None:
-    row = get_stored_token_row()
+def get_stored_access_token(mode: str | None = None) -> str | None:
+    row = get_stored_token_row(mode)
     return row.get("access_token") if row else None
 
 
-def get_stored_token_row() -> dict | None:
+def get_stored_token_row(mode: str | None = None) -> dict | None:
+    broker_key = get_active_broker_key(mode)
     result = run_with_supabase(
-        lambda supabase: supabase.table("broker_tokens").select("*").eq("broker", get_active_broker_key()).execute()
+        lambda supabase: supabase.table("broker_tokens").select("*").eq("broker", broker_key).execute()
     )
     if result.data:
         return result.data[0]
     return None
 
 
-def get_token_status() -> dict:
-    row = get_stored_token_row() or {}
+def get_token_status(mode: str | None = None) -> dict:
+    broker_key = get_active_broker_key(mode)
+    row = get_stored_token_row(mode) or {}
     refresh_updated_at = row.get("refresh_token_updated_at")
     refresh_expires_at = _add_days(refresh_updated_at, 15) if refresh_updated_at else None
     days_left = _days_until(refresh_expires_at) if refresh_expires_at else None
@@ -220,7 +229,7 @@ def get_token_status() -> dict:
             lambda supabase: (
                 supabase.table("fyers_token_refresh_logs")
                 .select("*")
-                .eq("broker", get_active_broker_key())
+                .eq("broker", broker_key)
                 .order("attempted_at", desc=True)
                 .limit(20)
                 .execute()
@@ -236,7 +245,7 @@ def get_token_status() -> dict:
                 .execute()
             )
         )
-    return {
+    status = {
         "refresh_token_present": bool(row.get("refresh_token")),
         "access_token_updated_at": row.get("access_token_updated_at") or row.get("updated_at"),
         "refresh_token_updated_at": refresh_updated_at,
@@ -246,10 +255,12 @@ def get_token_status() -> dict:
         "last_refresh_error": row.get("last_refresh_error"),
         "logs": logs.data or [],
     }
+    audit_log("fyers", "token status requested", mode=mode or "runtime", broker=broker_key, refresh_present=status["refresh_token_present"], days_left=days_left)
+    return status
 
 
-def _candidate_app_id_hashes() -> list[str]:
-    fyers_config = _fyers_config()
+def _candidate_app_id_hashes(mode: str | None = None) -> list[str]:
+    fyers_config = _fyers_config(mode)
     values = [
         f"{fyers_config['client_id']}:{fyers_config['secret_key']}",
         f"{fyers_config['client_id']}{fyers_config['secret_key']}",
@@ -269,18 +280,18 @@ def _candidate_app_id_hashes() -> list[str]:
     return hashes
 
 
-def _record_refresh_error(message: str) -> None:
+def _record_refresh_error(message: str, mode: str | None = None) -> None:
     run_with_supabase(lambda supabase: supabase.table("broker_tokens").update({
         "last_refresh_attempt_at": _now(),
         "last_refresh_error": message,
         "updated_at": _now(),
-    }).eq("broker", get_active_broker_key()).execute())
+    }).eq("broker", get_active_broker_key(mode)).execute())
 
 
-def _record_refresh_log(status: str, error: str | None) -> None:
+def _record_refresh_log(status: str, error: str | None, mode: str | None = None) -> None:
     try:
         run_with_supabase(lambda supabase: supabase.table("fyers_token_refresh_logs").insert({
-            "broker": get_active_broker_key(),
+            "broker": get_active_broker_key(mode),
             "status": status,
             "error": error,
             "attempted_at": _now(),

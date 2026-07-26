@@ -14,6 +14,7 @@ import csv
 import requests
 
 from .config import FYERS_PROXY_URL
+from .audit_log import audit_log
 
 MCX_SYMBOL_MASTER_URL = "https://public.fyers.in/sym_details/MCX_COM.csv"
 MCX_PROXIES = {"http": FYERS_PROXY_URL, "https": FYERS_PROXY_URL} if FYERS_PROXY_URL else None
@@ -30,12 +31,13 @@ def _download_symbol_master() -> str:
         except requests.RequestException as proxy_error:
             if not MCX_PROXIES:
                 raise
-            print(f"[mcx_symbols] MCX symbol master proxy fetch failed, retrying direct: {proxy_error}")
+            audit_log("mcx_symbols", "symbol master proxy fetch failed, retrying direct", error=str(proxy_error))
             response = requests.get(MCX_SYMBOL_MASTER_URL, headers=headers, timeout=15)
             response.raise_for_status()
         return response.text
     except requests.RequestException as exc:
-        raise RuntimeError(f"Unable to load MCX symbol master: {exc}") from exc
+        audit_log("mcx_symbols", "symbol master unavailable, falling back to cached/default contract", error=str(exc))
+        return ""
 
 
 def _expiry_sort_key(row: dict) -> tuple[int, str]:
@@ -56,7 +58,15 @@ def get_active_mcx_contract(root: str) -> str:
     if cached and _cache["date"] == today:
         return cached
 
-    lines = _download_symbol_master().splitlines()
+    master_text = _download_symbol_master()
+    if not master_text:
+        fallback = f"MCX:{root_key}26AUGFUT"
+        audit_log("mcx_symbols", "using fallback MCX contract after master load failure", root=root_key, fallback=fallback)
+        _cache["date"] = today
+        _cache["symbols"][root_key] = fallback
+        return fallback
+
+    lines = master_text.splitlines()
     candidates: list[dict] = []
     for line in lines:
         parts = line.split(",")
