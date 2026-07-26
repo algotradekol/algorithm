@@ -23,6 +23,7 @@ def _mode_value(paper_value: str, live_value: str, env_name: str) -> str:
 
 
 # Fyers
+# Paper trading uses the non-trading FYERS app credentials.
 PAPER_FYERS_CLIENT_ID = os.environ.get("FYERS_CLIENT_ID", "")
 PAPER_FYERS_SECRET_KEY = os.environ.get("FYERS_SECRET_KEY", "")
 PAPER_FYERS_REDIRECT_URI = os.environ.get("FYERS_REDIRECT_URI", "https://www.google.com")
@@ -30,10 +31,19 @@ PAPER_FYERS_FY_ID = os.environ.get("FYERS_FY_ID", "")
 PAPER_FYERS_PIN = os.environ.get("FYERS_PIN", "")
 PAPER_FYERS_TOTP_KEY = os.environ.get("FYERS_TOTP_KEY", "")
 FYERS_PROXY_URL = os.environ.get("FYERS_PROXY_URL", "")
-# We keep a single FYERS credential set for both modes. The runtime
-# trading-mode switch decides whether those credentials are used by the
-# paper broker or the live broker; there is no separate live PIN or
-# proxy variable anymore.
+
+# Live trading can use the real trading FYERS app credentials.
+# If you leave fy_id / pin / totp / redirect empty here, the backend can
+# fall back to the paper values for those shared personal-login fields.
+LIVE_FYERS_CLIENT_ID = os.environ.get("LIVE_FYERS_CLIENT_ID", "")
+LIVE_FYERS_SECRET_KEY = os.environ.get("LIVE_FYERS_SECRET_KEY", "")
+LIVE_FYERS_REDIRECT_URI = os.environ.get("LIVE_FYERS_REDIRECT_URI", PAPER_FYERS_REDIRECT_URI)
+LIVE_FYERS_FY_ID = os.environ.get("LIVE_FYERS_FY_ID", PAPER_FYERS_FY_ID)
+LIVE_FYERS_PIN = os.environ.get("LIVE_FYERS_PIN", PAPER_FYERS_PIN)
+LIVE_FYERS_TOTP_KEY = os.environ.get("LIVE_FYERS_TOTP_KEY", PAPER_FYERS_TOTP_KEY)
+
+# Backward-compatible aliases for older imports. These still point at the
+# paper-trading app credentials; mode-aware code should use runtime_mode.py.
 FYERS_CLIENT_ID = PAPER_FYERS_CLIENT_ID
 FYERS_SECRET_KEY = PAPER_FYERS_SECRET_KEY
 FYERS_REDIRECT_URI = PAPER_FYERS_REDIRECT_URI

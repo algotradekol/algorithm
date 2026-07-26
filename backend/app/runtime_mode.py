@@ -11,6 +11,12 @@ import datetime
 import os
 
 from .config import (
+    LIVE_FYERS_CLIENT_ID,
+    LIVE_FYERS_FY_ID,
+    LIVE_FYERS_PIN,
+    LIVE_FYERS_REDIRECT_URI,
+    LIVE_FYERS_SECRET_KEY,
+    LIVE_FYERS_TOTP_KEY,
     PAPER_FYERS_CLIENT_ID,
     PAPER_FYERS_FY_ID,
     PAPER_FYERS_PIN,
@@ -18,12 +24,6 @@ from .config import (
     PAPER_FYERS_SECRET_KEY,
     PAPER_FYERS_TOTP_KEY,
     FYERS_PROXY_URL,
-    FYERS_CLIENT_ID,
-    FYERS_SECRET_KEY,
-    FYERS_REDIRECT_URI,
-    FYERS_FY_ID,
-    FYERS_PIN,
-    FYERS_TOTP_KEY,
 )
 from .supabase_client import run_with_supabase
 
@@ -99,13 +99,19 @@ def get_active_broker_key(mode: str | None = None) -> str:
 def get_fyers_config(mode: str | None = None) -> dict[str, str]:
     active_mode = normalize_trading_mode(mode or get_runtime_trading_mode())
     if active_mode == "live":
+        live_client_id = LIVE_FYERS_CLIENT_ID or PAPER_FYERS_CLIENT_ID
+        live_secret_key = LIVE_FYERS_SECRET_KEY or PAPER_FYERS_SECRET_KEY
+        live_redirect_uri = LIVE_FYERS_REDIRECT_URI or PAPER_FYERS_REDIRECT_URI
+        live_fy_id = LIVE_FYERS_FY_ID or PAPER_FYERS_FY_ID
+        live_pin = LIVE_FYERS_PIN or PAPER_FYERS_PIN
+        live_totp_key = LIVE_FYERS_TOTP_KEY or PAPER_FYERS_TOTP_KEY
         config = {
-            "client_id": FYERS_CLIENT_ID,
-            "secret_key": FYERS_SECRET_KEY,
-            "redirect_uri": FYERS_REDIRECT_URI,
-            "fy_id": FYERS_FY_ID,
-            "pin": FYERS_PIN,
-            "totp_key": FYERS_TOTP_KEY,
+            "client_id": live_client_id,
+            "secret_key": live_secret_key,
+            "redirect_uri": live_redirect_uri,
+            "fy_id": live_fy_id,
+            "pin": live_pin,
+            "totp_key": live_totp_key,
             "proxy_url": FYERS_PROXY_URL,
         }
     else:
