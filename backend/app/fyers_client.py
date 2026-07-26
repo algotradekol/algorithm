@@ -20,7 +20,7 @@ from .fyers_auth import get_stored_access_token, get_stored_token_row
 RECENT_LOGIN_GRACE_SECONDS = 180
 
 
-def get_fyers_model():
+def get_fyers_model(mode: str | None = None):
     if fyersModel is None:
         raise RuntimeError(
             "Fyers SDK is not installed in this environment. "
@@ -29,7 +29,7 @@ def get_fyers_model():
     token = get_stored_access_token()
     if not token:
         raise RuntimeError("No Fyers access token in Supabase yet. Use the Login to Fyers button first.")
-    client_id = get_fyers_config()["client_id"]
+    client_id = get_fyers_config(mode)["client_id"]
     return fyersModel.FyersModel(token=token, is_async=False, client_id=client_id, log_path="")
 
 
@@ -234,8 +234,60 @@ def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_d
             "close": float(candle[4]),
             "volume": float(candle[5] or 0),
         }
-        for candle in candles
+    for candle in candles
     ]
+
+
+def get_wallet_balance(mode: str | None = None) -> dict:
+    """Return FYERS funds information with a best-effort wallet summary."""
+    fyers = get_fyers_model(mode)
+    response = fyers.funds()
+    return {
+        "raw": response,
+        "summary": _summarize_funds_response(response),
+    }
+
+
+def _summarize_funds_response(response: dict) -> dict:
+    candidates: list[tuple[str, float]] = []
+
+    def collect(value, path: str = ""):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                key_text = str(key).lower()
+                child_path = f"{path}.{key}" if path else str(key)
+                if isinstance(child, (int, float)):
+                    if any(marker in key_text for marker in ("available", "balance", "cash", "margin", "fund")):
+                        candidates.append((child_path, float(child)))
+                elif isinstance(child, str):
+                    if any(marker in key_text for marker in ("available", "balance", "cash", "margin", "fund")):
+                        try:
+                            candidates.append((child_path, float(child.replace(",", "").strip())))
+                        except ValueError:
+                            pass
+                else:
+                    collect(child, child_path)
+        elif isinstance(value, list):
+            for index, child in enumerate(value):
+                collect(child, f"{path}[{index}]")
+
+    collect(response)
+
+    def pick(markers: tuple[str, ...]) -> tuple[str | None, float | None]:
+        for path, amount in candidates:
+            path_lower = path.lower()
+            if any(marker in path_lower for marker in markers):
+                return path, amount
+        return None, None
+
+    wallet_path, wallet_value = pick(("available", "balance", "cash"))
+    margin_path, margin_value = pick(("margin",))
+    return {
+        "wallet_balance": wallet_value,
+        "wallet_balance_source": wallet_path,
+        "available_margin": margin_value,
+        "available_margin_source": margin_path,
+    }
 
 
 def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=None):

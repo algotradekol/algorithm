@@ -259,6 +259,13 @@ def store_broker_tokens(response: dict, mode: str | None = None) -> None:
     audit_log("fyers", "stored broker tokens", mode=mode or "runtime", broker=broker_key, has_refresh_token=bool(response.get("refresh_token")))
 
 
+def disconnect_broker_tokens(mode: str | None = None) -> None:
+    """Forget the stored FYERS tokens for the selected broker mode."""
+    broker_key = get_active_broker_key(mode)
+    run_with_supabase(lambda supabase: supabase.table("broker_tokens").delete().eq("broker", broker_key).execute())
+    audit_log("fyers", "broker tokens disconnected", mode=mode or "runtime", broker=broker_key)
+
+
 def refresh_access_token_from_refresh_token(mode: str | None = None) -> str:
     fyers_config = _fyers_config(mode)
     stored = get_stored_token_row(mode)

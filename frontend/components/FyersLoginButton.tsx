@@ -6,7 +6,7 @@ import { getAuthToken } from '../lib/authToken';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
-export default function FyersLoginButton({ connected = false }: { connected?: boolean }) {
+export default function FyersLoginButton({ connected = false, mode = 'paper' }: { connected?: boolean; mode?: 'paper' | 'live' }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const searchParams = useSearchParams();
@@ -25,7 +25,7 @@ export default function FyersLoginButton({ connected = false }: { connected?: bo
       const token = await getAuthToken();
       if (!token) throw new Error('Not logged in');
 
-      const res = await fetch(`${API_URL}/api/fyers/login-url`, {
+      const res = await fetch(`${API_URL}/api/fyers/login-url?mode=${encodeURIComponent(mode)}`, {
         headers: {
           Authorization: `Bearer ${token}`,
         },

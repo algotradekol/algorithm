@@ -356,6 +356,35 @@ def restart_live_feed(reason: str = "manual") -> bool:
     return start_live_feed_if_ready(force=True)
 
 
+def stop_live_feed(reason: str = "manual") -> bool:
+    """Stop the active FYERS live feed and close any open websocket."""
+    global _live_feed_started, _live_feed_socket
+
+    socket_to_close = None
+    with _live_feed_lock:
+        socket_to_close = _live_feed_socket
+        _live_feed_socket = None
+        _live_feed_started = False
+
+    if socket_to_close is not None:
+        close_connection = getattr(socket_to_close, "close_connection", None)
+        if callable(close_connection):
+            try:
+                close_connection()
+            except Exception as exc:
+                print(f"[engine] live feed stop close failed ({reason}): {exc}")
+
+    with _engine_lock:
+        _engine_status.update({
+            "live_feed_started": False,
+            "fyers_ws_connected": False,
+            "fyers_ws_error": f"Stopped ({reason})",
+        })
+
+    print(f"[engine] stopped Fyers live feed ({reason})")
+    return True
+
+
 def get_engine_status() -> dict:
     return {
         "state": _engine_status["state"],

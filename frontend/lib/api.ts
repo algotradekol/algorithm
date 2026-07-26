@@ -70,7 +70,9 @@ export const api = {
   updateTradingMode: (mode: 'paper' | 'live') =>
     authedFetch('/api/runtime/trading-mode', { method: 'PUT', body: JSON.stringify({ trading_mode: mode }) }),
   fyersRefreshToken: () => authedFetch('/api/fyers/refresh-token', { method: 'POST' }),
+  fyersDisconnect: () => authedFetch('/api/fyers/disconnect', { method: 'POST' }),
   fyersTokenStatus: () => authedFetch('/api/fyers/token-status'),
+  fyersFunds: () => authedFetch('/api/fyers/funds'),
   aiSessions: () => authedFetch('/api/ai/sessions'),
   aiCreateSession: (title = 'New chat') => authedFetch('/api/ai/sessions', { method: 'POST', body: JSON.stringify({ title }) }),
   aiMessages: (sessionId: string) => authedFetch(`/api/ai/sessions/${sessionId}/messages`),

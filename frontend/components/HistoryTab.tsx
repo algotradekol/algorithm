@@ -1,5 +1,5 @@
 'use client';
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import { Table } from './AlgoTab';
 
@@ -19,6 +19,32 @@ export default function HistoryTab() {
   const [marketLoading, setMarketLoading] = useState(false);
   const [tokenStatus, setTokenStatus] = useState<any>(null);
   const [tokenStatusError, setTokenStatusError] = useState('');
+  const [walletStatus, setWalletStatus] = useState<any>(null);
+  const [walletStatusError, setWalletStatusError] = useState('');
+  const [disconnecting, setDisconnecting] = useState(false);
+
+  const loadTokenStatus = useCallback(async () => {
+    try {
+      const result = await api.fyersTokenStatus();
+      setTokenStatus(result);
+      setTokenStatusError('');
+      return result;
+    } catch (e: any) {
+      setTokenStatusError(e?.message || 'Failed to load token refresh status');
+      return null;
+    }
+  }, []);
+
+  const loadWalletStatus = useCallback(async () => {
+    try {
+      const result = await api.fyersFunds();
+      setWalletStatus(result);
+      setWalletStatusError('');
+    } catch (e: any) {
+      setWalletStatus(null);
+      setWalletStatusError(e?.message || 'Failed to load wallet balance');
+    }
+  }, []);
 
   useEffect(() => {
     api.watchlist().then((result) => {
@@ -68,24 +94,38 @@ export default function HistoryTab() {
 
   useEffect(() => {
     let cancelled = false;
-    async function loadTokenStatus() {
-      try {
-        const result = await api.fyersTokenStatus();
-        if (!cancelled) {
-          setTokenStatus(result);
-          setTokenStatusError('');
-        }
-      } catch (e: any) {
-        if (!cancelled) setTokenStatusError(e?.message || 'Failed to load token refresh status');
+    async function refresh() {
+      const result = await loadTokenStatus();
+      if (!cancelled && result?.refresh_token_present) {
+        await loadWalletStatus();
+      }
+      if (!cancelled && !result?.refresh_token_present) {
+        setWalletStatus(null);
+        setWalletStatusError('');
       }
     }
-    loadTokenStatus();
-    const interval = window.setInterval(loadTokenStatus, 60_000);
+    refresh();
+    const interval = window.setInterval(refresh, 60_000);
     return () => {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, []);
+  }, [loadTokenStatus, loadWalletStatus]);
+
+  async function handleDisconnectFyers() {
+    if (!window.confirm('Disconnect FYERS and clear the stored token for this mode?')) return;
+    try {
+      setDisconnecting(true);
+      await api.fyersDisconnect();
+      await loadTokenStatus();
+      setWalletStatus(null);
+      setWalletStatusError('');
+    } catch (e: any) {
+      setTokenStatusError(e?.message || 'Failed to disconnect FYERS');
+    } finally {
+      setDisconnecting(false);
+    }
+  }
 
   return (
     <section
@@ -99,7 +139,14 @@ export default function HistoryTab() {
     >
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
 
-      <TokenRefreshPanel status={tokenStatus} error={tokenStatusError} />
+      <TokenRefreshPanel
+        status={tokenStatus}
+        error={tokenStatusError}
+        walletStatus={walletStatus}
+        walletStatusError={walletStatusError}
+        disconnecting={disconnecting}
+        onDisconnect={handleDisconnectFyers}
+      />
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         <label>
@@ -156,10 +203,25 @@ export default function HistoryTab() {
   );
 }
 
-function TokenRefreshPanel({ status, error }: { status: any; error: string }) {
+function TokenRefreshPanel({
+  status,
+  error,
+  walletStatus,
+  walletStatusError,
+  disconnecting,
+  onDisconnect,
+}: {
+  status: any;
+  error: string;
+  walletStatus: any;
+  walletStatusError: string;
+  disconnecting: boolean;
+  onDisconnect: () => void;
+}) {
   const daysLeft = Number(status?.refresh_token_days_left);
   const hasRefreshToken = Boolean(status?.refresh_token_present);
   const lastError = status?.last_refresh_error;
+  const walletSummary = walletStatus?.summary || {};
   return (
     <section className="rounded border border-[#1f2937] bg-[#111827] p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -167,22 +229,46 @@ function TokenRefreshPanel({ status, error }: { status: any; error: string }) {
           <h3 className="label">Fyers Token Refresh Tracker</h3>
           <p className="mt-1 text-xs text-gray-500">Auto-refresh runs daily after 08:30 IST while the refresh token is valid.</p>
         </div>
-        <div className={`inline-flex items-center gap-2 rounded border px-2 py-1 text-xs font-semibold ${
-          hasRefreshToken ? 'border-[#22c55e]/40 text-[#22c55e]' : 'border-[#f59e0b]/40 text-[#f59e0b]'
-        }`}>
-          <i className={hasRefreshToken ? 'ri-shield-check-fill text-sm' : 'ri-error-warning-fill text-sm'} />
-          {hasRefreshToken ? 'Refresh token saved' : 'Manual login needed'}
+        <div className="flex flex-wrap items-center gap-2">
+          <div className={`inline-flex items-center gap-2 rounded border px-2 py-1 text-xs font-semibold ${
+            hasRefreshToken ? 'border-[#22c55e]/40 text-[#22c55e]' : 'border-[#f59e0b]/40 text-[#f59e0b]'
+          }`}>
+            <i className={hasRefreshToken ? 'ri-shield-check-fill text-sm' : 'ri-error-warning-fill text-sm'} />
+            {hasRefreshToken ? 'Refresh token saved' : 'Manual login needed'}
+          </div>
+          <button
+            type="button"
+            onClick={onDisconnect}
+            disabled={!hasRefreshToken || disconnecting}
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded border border-[#ef4444]/60 bg-[#ef4444]/10 px-3 py-2 text-xs font-semibold text-[#ef4444] transition hover:bg-[#ef4444]/20 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <i className="ri-logout-box-fill text-sm" />
+            {disconnecting ? 'Disconnecting...' : 'Disconnect FYERS'}
+          </button>
         </div>
       </div>
 
       {error && <p className="mt-3 text-xs text-[#ef4444]">{error}</p>}
 
-      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+      <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-5">
         <TokenStat label="Days left" value={Number.isFinite(daysLeft) ? `${daysLeft} days` : '--'} tone={daysLeft <= 2 ? 'text-[#f59e0b]' : 'text-gray-100'} />
+        <TokenStat
+          label="Wallet balance"
+          value={formatMoney(walletSummary.wallet_balance)}
+          tone={Number.isFinite(Number(walletSummary.wallet_balance)) ? 'text-gray-100' : 'text-gray-500'}
+          helper={walletSummary.wallet_balance_source ? `source: ${walletSummary.wallet_balance_source}` : 'Live FYERS funds summary'}
+        />
         <TokenStat label="Refresh token expires" value={formatDateTime(status?.refresh_token_estimated_expires_at)} />
         <TokenStat label="Last access token" value={formatDateTime(status?.access_token_updated_at)} />
         <TokenStat label="Last attempt" value={formatDateTime(status?.last_refresh_attempt_at)} />
       </div>
+
+      {walletStatusError && hasRefreshToken && (
+        <div className="mt-3 rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-xs text-[#f59e0b]">
+          <i className="ri-error-warning-fill mr-1" />
+          {walletStatusError}
+        </div>
+      )}
 
       {lastError && (
         <div className="mt-3 rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-xs text-[#ef4444]">
@@ -223,11 +309,12 @@ function TokenRefreshPanel({ status, error }: { status: any; error: string }) {
   );
 }
 
-function TokenStat({ label, value, tone = 'text-gray-100' }: { label: string; value: string; tone?: string }) {
+function TokenStat({ label, value, tone = 'text-gray-100', helper }: { label: string; value: string; tone?: string; helper?: string }) {
   return (
     <div className="rounded border border-[#1f2937] bg-[#0d1117] p-2">
       <div className="label text-[10px]">{label}</div>
       <div className={`num mt-1 text-xs ${tone}`}>{value}</div>
+      {helper && <div className="mt-1 text-[10px] text-gray-500">{helper}</div>}
     </div>
   );
 }
@@ -523,6 +610,12 @@ function Stat({ label, value, tone = 'text-gray-100' }: { label: string; value: 
 
 function formatNumber(value: number) {
   return value.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+}
+
+function formatMoney(value: unknown) {
+  const amount = Number(value);
+  if (!Number.isFinite(amount)) return '--';
+  return `Rs ${amount.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
 }
 
 function formatDateTime(value: string | null | undefined) {

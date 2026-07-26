@@ -23,11 +23,11 @@ except ImportError:  # pragma: no cover - keeps /health alive if SDK is missing
 
 from .config import ALLOWED_ORIGINS, APP_PIN, FRONTEND_URL, SUPABASE_JWT_SECRET
 from .auth import require_auth
-from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, last_ltp, restart_live_feed, start_engine, STRATEGIES
+from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, last_ltp, restart_live_feed, start_engine, stop_live_feed, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .audit_log import audit_log
-from .fyers_client import get_connection_status, get_price_history
-from .fyers_auth import exchange_auth_code, store_broker_tokens
+from .fyers_client import get_connection_status, get_price_history, get_wallet_balance
+from .fyers_auth import disconnect_broker_tokens, exchange_auth_code, store_broker_tokens
 from .runtime_mode import (
     clear_pending_fyers_login_mode,
     get_active_broker_key,
@@ -217,6 +217,23 @@ def fyers_refresh_token(_user=Depends(require_auth)):
 def fyers_token_status(_user=Depends(require_auth)):
     from .fyers_auth import get_token_status
     return get_token_status()
+
+
+@app.get("/api/fyers/funds")
+def fyers_funds(_user=Depends(require_auth)):
+    try:
+        return get_wallet_balance()
+    except Exception as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+
+@app.post("/api/fyers/disconnect")
+def fyers_disconnect(_user=Depends(require_auth)):
+    disconnect_broker_tokens()
+    clear_pending_fyers_login_mode()
+    stop_live_feed(reason="fyers_disconnect")
+    audit_log("fyers", "disconnect requested")
+    return {"status": "ok", "message": "FYERS disconnected."}
 
 
 @app.get("/api/runtime/trading-mode")
