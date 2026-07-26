@@ -71,53 +71,63 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
         redirect_uri=fyers_config["redirect_uri"],
         proxy_enabled=bool(fyers_proxies),
     )
-    app_id_hash = hashlib.sha256(f"{fyers_config['client_id']}:{fyers_config['secret_key']}".encode()).hexdigest()
-    try:
-        response = requests.post(
-            AUTH_CODE_EXCHANGE_URL,
-            headers={"Content-Type": "application/json; charset=utf-8"},
-            json={
-                "grant_type": "authorization_code",
-                "appIdHash": app_id_hash,
-                "code": auth_code,
-            },
-            proxies=fyers_proxies,
-            timeout=30,
-        )
-    except requests.RequestException as exc:
+    last_error: str | None = None
+    for app_id_hash in _candidate_app_id_hashes(mode):
         audit_log(
             "fyers",
-            "auth-code exchange request failed",
+            "auth-code exchange attempt",
             mode=mode or "runtime",
             broker=get_active_broker_key(mode),
+            client_id=fyers_config["client_id"],
+            redirect_uri=fyers_config["redirect_uri"],
             proxy_enabled=bool(fyers_proxies),
-            error=str(exc),
+            app_id_hash_prefix=app_id_hash[:12],
         )
-        raise RuntimeError(
-            "Fyers auth-code exchange request failed. "
-            f"proxy_enabled={bool(fyers_proxies)} error={exc}"
-        ) from exc
-    try:
-        data = response.json()
-    except ValueError as exc:
-        content_type = response.headers.get("content-type", "unknown")
-        audit_log(
-            "fyers",
-            "auth-code exchange returned non-json response",
-            mode=mode or "runtime",
-            broker=get_active_broker_key(mode),
-            proxy_enabled=bool(fyers_proxies),
-            status_code=response.status_code,
-            content_type=content_type,
-            body=response.text[:500],
-        )
-        raise RuntimeError(
-            "Fyers auth-code exchange returned a non-JSON response "
-            f"(HTTP {response.status_code}, content-type {content_type}). "
-            "Check the FYERS OAuth callback URL or the Railway outbound connection."
-        ) from exc
-    if not response.ok or not data.get("access_token"):
+        try:
+            response = requests.post(
+                AUTH_CODE_EXCHANGE_URL,
+                headers={"Content-Type": "application/json; charset=utf-8"},
+                json={
+                    "grant_type": "authorization_code",
+                    "appIdHash": app_id_hash,
+                    "code": auth_code,
+                },
+                proxies=fyers_proxies,
+                timeout=30,
+            )
+        except requests.RequestException as exc:
+            last_error = str(exc)
+            audit_log(
+                "fyers",
+                "auth-code exchange request failed",
+                mode=mode or "runtime",
+                broker=get_active_broker_key(mode),
+                proxy_enabled=bool(fyers_proxies),
+                app_id_hash_prefix=app_id_hash[:12],
+                error=str(exc),
+            )
+            continue
+        try:
+            data = response.json()
+        except ValueError as exc:
+            content_type = response.headers.get("content-type", "unknown")
+            last_error = f"non-json response (HTTP {response.status_code}, content-type {content_type})"
+            audit_log(
+                "fyers",
+                "auth-code exchange returned non-json response",
+                mode=mode or "runtime",
+                broker=get_active_broker_key(mode),
+                proxy_enabled=bool(fyers_proxies),
+                app_id_hash_prefix=app_id_hash[:12],
+                status_code=response.status_code,
+                content_type=content_type,
+                body=response.text[:500],
+            )
+            continue
+        if response.ok and data.get("access_token"):
+            return data
         error_body = data.get("message") or data.get("error") or response.text[:500]
+        last_error = str(error_body)
         audit_log(
             "fyers",
             "auth-code exchange rejected",
@@ -128,11 +138,12 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
             proxy_enabled=bool(fyers_proxies),
             error=error_body,
         )
-        raise RuntimeError(
-            "Fyers auth-code exchange failed: "
-            f"{error_body}"
-        )
-    return data
+        if response.status_code not in {200, 201, 202, 204, 308}:
+            continue
+    raise RuntimeError(
+        "Fyers auth-code exchange failed: "
+        f"{last_error or 'all appIdHash candidates were rejected'}"
+    )
 
 
 def refresh_access_token(mode: str | None = None) -> str:
@@ -328,14 +339,14 @@ def get_token_status(mode: str | None = None) -> dict:
 def _candidate_app_id_hashes(mode: str | None = None) -> list[str]:
     fyers_config = _fyers_config(mode)
     values = [
-        f"{fyers_config['client_id']}:{fyers_config['secret_key']}",
         f"{fyers_config['client_id']}{fyers_config['secret_key']}",
+        f"{fyers_config['client_id']}:{fyers_config['secret_key']}",
     ]
     app_id_without_type = fyers_config["client_id"].split("-")[0]
     if app_id_without_type and app_id_without_type != fyers_config["client_id"]:
         values.extend([
-            f"{app_id_without_type}:{fyers_config['secret_key']}",
             f"{app_id_without_type}{fyers_config['secret_key']}",
+            f"{app_id_without_type}:{fyers_config['secret_key']}",
         ])
     seen = set()
     hashes = []
