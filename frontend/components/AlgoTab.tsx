@@ -12,17 +12,21 @@ export default function AlgoTab({
   algoId,
   displayName,
   description,
+  tradingMode,
   onWebSocketStatus,
 }: {
   algoId: string;
   displayName: string;
   description?: string;
+  tradingMode?: 'paper' | 'live';
   onWebSocketStatus?: (status: WebSocketState) => void;
 }) {
   const [summary, setSummary] = useState<any>(null);
   const [positions, setPositions] = useState<any[]>([]);
   const [trades, setTrades] = useState<any[]>([]);
   const [scanResults, setScanResults] = useState<any>(null);
+  const [walletStatus, setWalletStatus] = useState<any>(null);
+  const [walletStatusError, setWalletStatusError] = useState('');
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exitingPositionId, setExitingPositionId] = useState<string | null>(null);
@@ -49,6 +53,22 @@ export default function AlgoTab({
     setError(failures[0] || '');
   }, [algoId]);
 
+  const loadWalletStatus = useCallback(async () => {
+    if (tradingMode !== 'live') {
+      setWalletStatus(null);
+      setWalletStatusError('');
+      return;
+    }
+    try {
+      const result = await api.fyersFunds();
+      setWalletStatus(result);
+      setWalletStatusError('');
+    } catch (e: any) {
+      setWalletStatus(null);
+      setWalletStatusError(e?.message || 'Failed to load FYERS wallet balance');
+    }
+  }, [tradingMode]);
+
   useEffect(() => {
     let cancelled = false;
     loadData();
@@ -57,6 +77,22 @@ export default function AlgoTab({
     }, FALLBACK_POLL_MS);
     return () => { cancelled = true; clearInterval(interval); };
   }, [loadData]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshWallet() {
+      await loadWalletStatus();
+      if (cancelled) return;
+    }
+    refreshWallet();
+    const interval = setInterval(() => {
+      if (!document.hidden && !cancelled) refreshWallet();
+    }, 60_000);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [loadWalletStatus]);
 
   const handleWsMessage = useCallback((message: any) => {
     if (message.event === 'price_update') {
@@ -135,6 +171,9 @@ export default function AlgoTab({
   const cash = Number(summary.cash || 0);
   const netPnl = Number(summary.realized_net_pnl || 0);
   const grossPnl = Number(summary.realized_gross_pnl || 0);
+  const walletSummary = walletStatus?.summary || {};
+  const liveWalletBalance = Number(walletSummary.wallet_balance ?? walletSummary.available_margin);
+  const showLiveWallet = tradingMode === 'live' && Number.isFinite(liveWalletBalance);
   const openUnrealizedPnl = positions.reduce((total, position) => {
     const ltp = Number(position.ltp ?? position.last_ltp ?? position._last_ltp ?? position.entry_price);
     const entry = Number(position.entry_price || 0);
@@ -163,9 +202,22 @@ export default function AlgoTab({
         </button>
       </div>
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
+      {walletStatusError && tradingMode === 'live' && (
+        <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
+          {walletStatusError}
+        </p>
+      )}
 
       <div className="grid grid-cols-3 gap-1.5 sm:gap-2 lg:grid-cols-6">
-        <MetricCard label="Total Capital" value={formatMoney(totalCapital)} delta={formatSignedMoney(totalCapital - startingCapital)} pnl={totalCapital - startingCapital} />
+        {showLiveWallet ? (
+          <MetricCard
+            label="Wallet Balance"
+            value={formatMoney(liveWalletBalance)}
+            helper={walletSummary.wallet_balance_source ? `source: ${walletSummary.wallet_balance_source}` : 'Live FYERS funds'}
+          />
+        ) : (
+          <MetricCard label="Total Capital" value={formatMoney(totalCapital)} delta={formatSignedMoney(totalCapital - startingCapital)} pnl={totalCapital - startingCapital} />
+        )}
         <MetricCard label="Capital Used" value={formatMoney(capitalUsed)} />
         <MetricCard label="Trades Today" value={`${summary.trade_count_today} / ${summary.max_trades_per_day || 10}`} />
         <MetricCard label="Buy / Sell" value={`${summary.buy_count_today}B ${summary.sell_count_today}S`} />
@@ -213,12 +265,14 @@ function MetricCard({
   delta,
   pnl,
   important,
+  helper,
 }: {
   label: string;
   value: string;
   delta?: string;
   pnl?: number;
   important?: boolean;
+  helper?: string;
 }) {
   return (
     <div className="min-w-0 rounded border border-[#1f2937] bg-[#111827] p-2 sm:p-3">
@@ -230,6 +284,7 @@ function MetricCard({
         <span className="min-w-0 overflow-hidden text-ellipsis">{value}</span>
       </div>
       {delta && <div className={`num mt-1 truncate text-xs ${pnlColor(pnl)}`}>{delta} vs start</div>}
+      {helper && <div className="mt-1 truncate text-[10px] text-gray-500">{helper}</div>}
     </div>
   );
 }
