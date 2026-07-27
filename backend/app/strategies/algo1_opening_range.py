@@ -27,6 +27,7 @@ from ..fyers_auth import get_stored_access_token
 from ..candidate_ranking import build_sector_breakdown, rank_candidates, select_ranked_candidates
 from ..symbols import get_nse500_sector_map
 GAP_LIMIT_PCT = 2.0
+TICK_SIZE = 0.05
 # A one-minute candle only exists for a symbol that traded during that minute.
 # This floor detects a dead/broken feed without requiring every NSE 500 symbol
 # to trade at the opening bell.
@@ -132,12 +133,14 @@ class Algo1OpeningRange(Strategy):
         entry_time = self._schedule_time(3)
         current_time = now.strftime("%H:%M")
         state = "waiting"
-        if self._schedule_time(-1) <= current_time < entry_time:
-            state = "collecting_candle"
-        elif entry_time <= current_time < (datetime.datetime.strptime(entry_time, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M"):
-            state = "evaluating_entries"
-        elif current_time >= (datetime.datetime.strptime(entry_time, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M"):
+        if self.entries_evaluated_today == now.date():
             state = "finished"
+        elif current_time < candle_time:
+            state = "waiting"
+        elif current_time < entry_time:
+            state = "collecting_candle"
+        else:
+            state = "evaluating_entries"
         return {"enabled": True, "candle_time": candle_time, "entry_time": entry_time, "state": state}
 
     def on_tick(self, symbol: str, ltp: float, timestamp):
@@ -175,8 +178,12 @@ class Algo1OpeningRange(Strategy):
             candle = self._combined_opening_candle(candles)
             open_price, high, low = candle["open"], candle["high"], candle["low"]
             self.prev_close_ready_symbols.add(symbol)
-            buy_shape = open_price == low
-            sell_shape = open_price == high
+            # Use tick tolerance instead of exact float equality. Fyers history
+            # often returns prices rounded to the instrument tick, and the live
+            # feed can differ by tiny floating-point noise even when the candle
+            # clearly printed at the low/high.
+            buy_shape = abs(open_price - low) <= TICK_SIZE
+            sell_shape = abs(open_price - high) <= TICK_SIZE
             # A flat opening window satisfies both shapes. It has no
             # directional information, so never let BUY win merely because it
             # is evaluated first.

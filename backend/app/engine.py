@@ -155,6 +155,7 @@ def _scheduler_loop():
     9:16 entry trigger (algo1) and 3:15 square-off (both algos)."""
     entries_fired_date: dict[str, datetime.date] = {}
     entries_fired_schedule: dict[str, tuple[bool, str]] = {}
+    test_schedule_attempt_minute: dict[str, tuple[datetime.date, str]] = {}
     squareoff_fired_date = None
     token_refresh_fired_date = None
     global _feed_retry_schedules
@@ -195,9 +196,44 @@ def _scheduler_loop():
                 bool(strategy.settings.get("test_schedule_enabled")),
                 strategy.scan_candle_time(),
             )
+            test_schedule_enabled = bool(strategy.settings.get("test_schedule_enabled"))
+            scan_time = getattr(strategy, "scan_candle_time", lambda: None)()
+            entry_time = None
+            if scan_time:
+                try:
+                    entry_time = (
+                        datetime.datetime.strptime(scan_time, "%H:%M")
+                        + datetime.timedelta(minutes=3)
+                    ).strftime("%H:%M")
+                except ValueError:
+                    entry_time = None
             # A later UI change from the production schedule to a test time is
             # a new run. Do not let the already-missed 09:16 window suppress it.
             if entries_fired_date.get(strategy.algo_id) == today and entries_fired_schedule.get(strategy.algo_id) == schedule:
+                continue
+            if test_schedule_enabled:
+                if entry_time and current_time >= entry_time:
+                    attempt_key = (today, current_time)
+                    if test_schedule_attempt_minute.get(strategy.algo_id) == attempt_key:
+                        continue
+                    test_schedule_attempt_minute[strategy.algo_id] = attempt_key
+                    try:
+                        completed = strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
+                    except Exception as exc:
+                        print(f"[engine] opening scan failed for {strategy.algo_id}: {exc}")
+                        mark_failed = getattr(strategy, "mark_opening_scan_failed", None)
+                        if callable(mark_failed):
+                            try:
+                                mark_failed(str(exc))
+                            except Exception as record_exc:
+                                print(f"[engine] could not record failed scan for {strategy.algo_id}: {record_exc}")
+                        continue
+                    if completed is False:
+                        pending.append(strategy.algo_id)
+                    else:
+                        entries_fired_date[strategy.algo_id] = today
+                        entries_fired_schedule[strategy.algo_id] = schedule
+                        completed_any = True
                 continue
             if strategy.entry_window(current_time):
                 try:
@@ -512,10 +548,16 @@ def apply_trading_mode(mode: str) -> dict:
         if positions:
             open_positions[algo_id] = len(positions)
 
+    # Paper and live state already live in separate broker tables. That means
+    # switching modes does not need to close positions first; the positions stay
+    # preserved in the mode they were opened in and the opposite mode gets its
+    # own broker instance. Keep the information as a warning instead of blocking
+    # the user's request with a 409.
+    warning = None
     if open_positions:
-        raise RuntimeError(
-            "Close all open positions before switching trading mode. "
-            f"Open positions remain for: {', '.join(f'{algo_id} ({count})' for algo_id, count in open_positions.items())}."
+        warning = (
+            "Existing positions stay preserved in the previous mode: "
+            f"{', '.join(f'{algo_id} ({count})' for algo_id, count in open_positions.items())}."
         )
 
     set_runtime_trading_mode(normalized_mode)
@@ -534,10 +576,14 @@ def apply_trading_mode(mode: str) -> dict:
         _engine_status["trading_mode"] = normalized_mode
 
     restart_live_feed(reason=f"trading_mode_{normalized_mode}")
-    return {
+    result = {
         "trading_mode": normalized_mode,
         "message": f"Trading mode switched to {normalized_mode}.",
     }
+    if warning:
+        result["warning"] = warning
+        result["preserved_open_positions"] = open_positions
+    return result
 
 
 def start_engine():

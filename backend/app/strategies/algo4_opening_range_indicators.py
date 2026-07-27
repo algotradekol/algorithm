@@ -121,12 +121,14 @@ class Algo4OpeningRangeIndicators(Strategy):
         entry_time = self._schedule_time(3)
         current_time = now.strftime("%H:%M")
         state = "waiting"
-        if self._schedule_time(-1) <= current_time < entry_time:
-            state = "collecting_candle"
-        elif entry_time <= current_time < (datetime.datetime.strptime(entry_time, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M"):
-            state = "evaluating_entries"
-        elif current_time >= (datetime.datetime.strptime(entry_time, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M"):
+        if self.entries_evaluated_today == now.date():
             state = "finished"
+        elif current_time < candle_time:
+            state = "waiting"
+        elif current_time < entry_time:
+            state = "collecting_candle"
+        else:
+            state = "evaluating_entries"
         return {"enabled": True, "candle_time": candle_time, "entry_time": entry_time, "state": state}
 
     def on_tick(self, symbol: str, ltp: float, timestamp):

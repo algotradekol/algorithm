@@ -25,7 +25,7 @@ export default function TradingModeToggle({
       return;
     }
     const confirmed = window.confirm(
-      `Switch trading mode to ${nextMode.toUpperCase()}? Make sure there are no open positions before changing modes.`,
+      `Switch trading mode to ${nextMode.toUpperCase()}? Open positions stay preserved in their current mode and the other mode gets its own broker state.`,
     );
     if (!confirmed) {
       return;
@@ -33,9 +33,12 @@ export default function TradingModeToggle({
 
     setLoading(true);
     try {
-      const response = await api.updateTradingMode(nextMode) as { trading_mode?: TradingMode };
+      const response = await api.updateTradingMode(nextMode) as { trading_mode?: TradingMode; warning?: string };
       const activeMode = normalizeMode(response.trading_mode ?? nextMode);
       onModeChanged?.(activeMode);
+      if (response.warning) {
+        window.setTimeout(() => window.alert(response.warning as string), 50);
+      }
       window.location.reload();
     } catch (error) {
       alert(error instanceof Error ? error.message : 'Unable to switch trading mode');
@@ -75,4 +78,3 @@ export default function TradingModeToggle({
     </div>
   );
 }
-

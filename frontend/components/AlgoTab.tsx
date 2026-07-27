@@ -502,8 +502,8 @@ function SignalAudit({ row }: { row: any }) {
   if (!signal || typeof signal !== 'object') {
     return <span className="text-xs text-gray-500">Not captured for this legacy trade</span>;
   }
-  const shape = signal.shape === 'open_equals_low' ? 'BUY: signal open = low'
-    : signal.shape === 'open_equals_high' ? 'SELL: signal open = high'
+  const shape = signal.shape === 'open_equals_low' ? 'BUY: signal open ≈ low (tick tolerance)'
+    : signal.shape === 'open_equals_high' ? 'SELL: signal open ≈ high (tick tolerance)'
       : signal.shape === 'flat_ambiguous' ? 'Rejected: flat/ambiguous signal'
         : 'Signal window audit';
   return (
