@@ -173,7 +173,12 @@ function DashboardContent() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            <TradingModeToggle mode={engineStatus?.trading_mode} />
+            <TradingModeToggle
+              mode={engineStatus?.trading_mode}
+              onModeChanged={(mode) => setEngineStatus((current) => (
+                current ? { ...current, trading_mode: mode } : current
+              ))}
+            />
             <FyersLoginButton connected={Boolean(fyersStatus?.connected)} mode={(engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper'} />
             <button
               onClick={async () => { clearPinToken(); await supabase.auth.signOut(); router.replace('/login'); }}

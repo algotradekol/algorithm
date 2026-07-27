@@ -1,6 +1,6 @@
 'use client';
 
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 
 import { api } from '../lib/api';
 
@@ -18,7 +18,13 @@ export default function TradingModeToggle({
   onModeChanged?: (mode: TradingMode) => void;
 }) {
   const [loading, setLoading] = useState(false);
-  const currentMode = normalizeMode(mode);
+  const [displayMode, setDisplayMode] = useState<TradingMode>(normalizeMode(mode));
+
+  useEffect(() => {
+    setDisplayMode(normalizeMode(mode));
+  }, [mode]);
+
+  const currentMode = displayMode;
 
   async function switchMode(nextMode: TradingMode) {
     if (loading || nextMode === currentMode) {
@@ -32,15 +38,17 @@ export default function TradingModeToggle({
     }
 
     setLoading(true);
+    setDisplayMode(nextMode);
     try {
       const response = await api.updateTradingMode(nextMode) as { trading_mode?: TradingMode; warning?: string };
       const activeMode = normalizeMode(response.trading_mode ?? nextMode);
+      setDisplayMode(activeMode);
       onModeChanged?.(activeMode);
       if (response.warning) {
         window.setTimeout(() => window.alert(response.warning as string), 50);
       }
-      window.location.reload();
     } catch (error) {
+      setDisplayMode(currentMode);
       alert(error instanceof Error ? error.message : 'Unable to switch trading mode');
     } finally {
       setLoading(false);

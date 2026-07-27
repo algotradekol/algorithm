@@ -64,7 +64,7 @@ export function useWebSocket(
       if (!shouldReconnect.current) return;
       retryCount.current += 1;
       onStatus?.(retryCount.current > 3 ? 'offline' : 'reconnecting');
-      reconnectTimer.current = setTimeout(connect, 3000);
+      reconnectTimer.current = setTimeout(connect, 1000);
     };
 
     ws.current.onerror = () => {

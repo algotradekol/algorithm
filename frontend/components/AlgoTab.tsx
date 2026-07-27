@@ -31,6 +31,37 @@ export default function AlgoTab({
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exitingPositionId, setExitingPositionId] = useState<string | null>(null);
 
+  const refreshSummary = useCallback(async () => {
+    try {
+      const nextSummary = await api.summary(algoId);
+      setSummary(nextSummary);
+    } catch {
+      // Keep the current summary if the lightweight refresh fails.
+    }
+  }, [algoId]);
+
+  const refreshPositions = useCallback(async () => {
+    try {
+      const nextPositions = await api.positions(algoId);
+      setPositions(nextPositions.map((position: any) => ({
+        ...position,
+        ltp: position.ltp ?? position.last_ltp ?? position._last_ltp ?? position.entry_price,
+        unrealized_pnl: position.unrealized_pnl ?? 0,
+      })));
+    } catch {
+      // Keep the current open-position list if the lightweight refresh fails.
+    }
+  }, [algoId]);
+
+  const refreshTrades = useCallback(async () => {
+    try {
+      const nextTrades = await api.trades(algoId);
+      setTrades(nextTrades);
+    } catch {
+      // Keep the current trade list if the lightweight refresh fails.
+    }
+  }, [algoId]);
+
   const loadData = useCallback(async () => {
     const [summaryResult, positionsResult, tradesResult, scanResult] = await Promise.allSettled([
       api.summary(algoId), api.positions(algoId), api.trades(algoId), api.scanResults(algoId),
@@ -112,14 +143,15 @@ export default function AlgoTab({
 
     if (message.event === 'position_opened') {
       setPositions((current) => [{ ...message, ltp: message.ltp ?? message.entry_price, status: 'open' }, ...current]);
+      refreshSummary();
     } else if (message.event === 'position_closed') {
       setPositions((current) => current.filter((position) => position.symbol !== message.symbol));
       setTrades((current) => [message, ...current]);
-      api.summary(algoId).then(setSummary).catch(() => {});
+      refreshSummary();
     } else if (message.event === 'scan_complete') {
       setScanResults(message.results);
     }
-  }, [algoId]);
+  }, [algoId, refreshSummary]);
 
   useWebSocket(handleWsMessage, true, onWebSocketStatus);
 
@@ -135,13 +167,14 @@ export default function AlgoTab({
     setError('');
     try {
       await api.exitPosition(algoId, String(position.id));
-      await loadData();
+      setPositions((current) => current.filter((row) => String(row.id) !== String(position.id)));
+      await Promise.all([refreshSummary(), refreshTrades()]);
     } catch (exitError: any) {
       setError(exitError?.message || 'Could not exit the position.');
     } finally {
       setExitingPositionId(null);
     }
-  }, [algoId, loadData]);
+  }, [algoId, refreshSummary, refreshTrades]);
 
   if (!summary) {
     return (
@@ -160,7 +193,14 @@ export default function AlgoTab({
         </div>
         <SettingsDrawer open={settingsOpen} algoId={algoId} onClose={() => setSettingsOpen(false)} />
         <div className="mt-4">
-        <ScanResultsPanel algoId={algoId} results={scanResults} openPositions={positions} onRefresh={loadData} />
+        <ScanResultsPanel
+          algoId={algoId}
+          results={scanResults}
+          openPositions={positions}
+          onRefresh={async () => {
+            await Promise.allSettled([refreshSummary(), refreshPositions()]);
+          }}
+        />
         </div>
         <p className="mt-2 text-sm text-gray-500">{error || 'Loading strategy data...'}</p>
       </section>
