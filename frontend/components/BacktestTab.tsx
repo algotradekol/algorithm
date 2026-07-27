@@ -65,7 +65,7 @@ export default function BacktestTab() {
     ? {
         title: 'Historical Silver Micro Backtest',
         body: 'Replays the active Silver Micro MCX contract on 5-minute candles with EMA20 and volume-EMA20 setup / confirmation logic. It stays read-only and does not touch the live engine.',
-        note: 'The replay uses the same Silver Micro rules as the live tab: a green or red setup candle must be confirmed by the next 5-minute candle, then the trade enters on the following candle open.',
+        note: 'The replay uses the same Silver Micro rules as the live tab: a green or red setup candle must be confirmed by one of the subsequent 5-minute candles within the confirmation window, then the trade enters on the following candle open.',
       }
     : {
         title: 'Historical Backtest',

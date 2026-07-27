@@ -25,6 +25,7 @@ MAX_WORKERS = 2
 MAX_BACKTEST_DAYS = 31
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
+SILVER_MICRO_CONFIRMATION_WINDOW_MINUTES = 15
 OPENING_WINDOW_START = "09:15"
 OPENING_WINDOW_END = "09:18"
 ENTRY_TIME = "09:18"
@@ -812,7 +813,7 @@ def _run_silver_micro_job(
         mode="historical_mcx_replay",
         execution_assumption=(
             "Silver Micro replays closed 5-minute candles. A green candle closing above EMA20 with volume above volume EMA20 creates a BUY setup; "
-            "a red candle closing below EMA20 with volume above volume EMA20 creates a SELL setup. The next candle must confirm the setup, "
+            "a red candle closing below EMA20 with volume above volume EMA20 creates a SELL setup. One of the subsequent 5-minute candles within the confirmation window must confirm the setup, "
             "entry uses the following candle open, and stop-loss is assumed before target if both are touched inside the same candle. "
             f"Historical data was loaded from {history_resolution}-minute candles."
         ),
@@ -827,7 +828,7 @@ def _new_silver_micro_day_result(symbol: str, day: datetime.date, bar_count: int
         "mode": "historical_mcx_replay",
         "execution_assumption": (
             "Silver Micro replays closed 5-minute candles. A green candle closing above EMA20 with volume above volume EMA20 creates a BUY setup; "
-            "a red candle closing below EMA20 with volume above volume EMA20 creates a SELL setup. The next candle must confirm the setup, entry uses "
+            "a red candle closing below EMA20 with volume above volume EMA20 creates a SELL setup. One of the subsequent 5-minute candles within the confirmation window must confirm the setup, entry uses "
             "the following candle open, and stop-loss is assumed before target if both are touched inside the same candle."
         ),
         "data_available_symbols": 1 if bar_count else 0,
@@ -1022,9 +1023,13 @@ def _simulate_silver_micro_range(
             last_bar = bar
             continue
 
-        if pending_setup and pending_setup.get("confirmation_bucket") == bar["time"]:
-            candidate = pending_setup["candidate"]
-            if _silver_micro_confirmation_passed(bar, pending_setup):
+        if pending_setup:
+            setup_bucket = pending_setup["setup_bucket"]
+            confirmation_deadline = pending_setup["confirmation_deadline"]
+            if bar["time"] > confirmation_deadline:
+                finalize_pending_setup("confirmation_timeout")
+            elif bar["time"] > setup_bucket and _silver_micro_confirmation_passed(bar, pending_setup):
+                candidate = pending_setup["candidate"]
                 candidate["signal_stage"] = "confirmed"
                 candidate["confirmation_time"] = bar["time"].isoformat()
                 candidate["confirmation_close"] = round(float(bar["close"]), 2)
@@ -1034,10 +1039,7 @@ def _simulate_silver_micro_range(
                     "candidate": candidate,
                 }
                 day_result["condition_breakdown"][2]["passed"] += 1
-            else:
-                candidate["signal_stage"] = "rejected"
-                candidate["rejection_reason"] = "confirmation_failed"
-            pending_setup = None
+                pending_setup = None
 
         if bar["time"].strftime("%H:%M") >= "15:15":
             if position:
@@ -1081,7 +1083,8 @@ def _simulate_silver_micro_range(
             pending_setup = {
                 "side": side,
                 "setup_close": float(bar["close"]),
-                "confirmation_bucket": bar["time"] + datetime.timedelta(minutes=5),
+                "setup_bucket": bar["time"],
+                "confirmation_deadline": bar["time"] + datetime.timedelta(minutes=SILVER_MICRO_CONFIRMATION_WINDOW_MINUTES),
                 "candidate": candidate,
             }
 

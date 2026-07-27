@@ -7,8 +7,9 @@ Rules:
 - 5-minute candles
 - Buy setup: green candle closes above EMA20 and volume is above volume EMA20
 - Sell setup: red candle closes below EMA20 and volume is above volume EMA20
-- Confirmation: the very next 5-minute candle must continue in the same
-  direction and close beyond the setup candle close
+- Confirmation: one of the subsequent 5-minute candles within the
+  confirmation window must continue in the same direction and close beyond
+  the setup candle close
 - Entry: next candle open (first live tick in the next 5-minute bucket)
 - Reversal: if the opposite side confirms while a position is open, close the
   current position and flip on the next candle open
@@ -28,6 +29,7 @@ from ..timezone import IST
 
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
+CONFIRMATION_WINDOW_MINUTES = 15
 
 
 def _ema_step(previous: float | None, value: float, period: int = EMA_PERIOD) -> float:
@@ -166,17 +168,17 @@ class Algo3SilverMicro(Strategy):
         current_bucket = bar["time"]
 
         if self._pending_setup:
-            expected_bucket = self._pending_setup["confirmation_bucket"]
-            if current_bucket == expected_bucket:
-                if self._confirmation_passed(bar, self._pending_setup):
-                    self._pending_entry = {
-                        "side": self._pending_setup["side"],
-                        "entry_bucket": current_bucket + datetime.timedelta(minutes=5),
-                        "setup_candle": self._pending_setup["setup_candle"],
-                        "confirmation_candle": bar,
-                    }
+            setup_bucket = self._pending_setup["setup_bucket"]
+            confirmation_deadline = self._pending_setup["confirmation_deadline"]
+            if current_bucket > confirmation_deadline:
                 self._pending_setup = None
-            elif current_bucket > expected_bucket:
+            elif current_bucket > setup_bucket and self._confirmation_passed(bar, self._pending_setup):
+                self._pending_entry = {
+                    "side": self._pending_setup["side"],
+                    "entry_bucket": current_bucket + datetime.timedelta(minutes=5),
+                    "setup_candle": self._pending_setup["setup_candle"],
+                    "confirmation_candle": bar,
+                }
                 self._pending_setup = None
 
         if len(self._five_minute_candles) < EMA_PERIOD:
@@ -197,7 +199,8 @@ class Algo3SilverMicro(Strategy):
             "side": side,
             "setup_candle": bar,
             "setup_close": bar["close"],
-            "confirmation_bucket": current_bucket + datetime.timedelta(minutes=5),
+            "setup_bucket": current_bucket,
+            "confirmation_deadline": current_bucket + datetime.timedelta(minutes=CONFIRMATION_WINDOW_MINUTES),
         }
 
     def _condition_one_side(self, bar: dict) -> str | None:
