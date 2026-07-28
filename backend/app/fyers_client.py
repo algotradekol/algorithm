@@ -29,8 +29,15 @@ def get_fyers_model(mode: str | None = None):
     token = get_stored_access_token()
     if not token:
         raise RuntimeError("No Fyers access token in Supabase yet. Use the Login to Fyers button first.")
-    client_id = get_fyers_config(mode)["client_id"]
-    return fyersModel.FyersModel(token=token, is_async=False, client_id=client_id, log_path="")
+    config = get_fyers_config(mode)
+    client_id = config["client_id"]
+    fyers = fyersModel.FyersModel(token=token, is_async=False, client_id=client_id, log_path="")
+    proxy_url = config.get("proxy_url")
+    if proxy_url and hasattr(fyers, "service") and getattr(fyers.service, "session", None) is not None:
+        proxies = {"http": proxy_url, "https": proxy_url}
+        fyers.service.session.proxies.update(proxies)
+        fyers.service.session.trust_env = False
+    return fyers
 
 
 def get_connection_status() -> dict:
