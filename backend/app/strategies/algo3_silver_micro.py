@@ -30,7 +30,7 @@ from ..timezone import IST
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
 CONFIRMATION_WINDOW_MINUTES = 15
-SILVER_MICRO_SYMBOL = "MCX:SILVER26SEPFUT"
+SILVER_MICRO_SYMBOL = "MCX:SILVERMIC26AUGFUT"
 
 
 def _ema_step(previous: float | None, value: float, period: int = EMA_PERIOD) -> float:

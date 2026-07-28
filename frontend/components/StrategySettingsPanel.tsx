@@ -144,7 +144,7 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
         <FieldGroup title="Risk Settings" fields={RISK_FIELDS} settings={settings} setSettings={setSettings} />
           {algoId === 'algo3' && (
             <div className="mt-5 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
-            Silver Micro now runs on MCX:SILVER26SEPFUT and uses 5-minute candles. Capital, exit mode, and trailing stop settings still apply here.
+            Silver Micro now runs on MCX:SILVERMIC26AUGFUT and uses 5-minute candles. Capital, exit mode, and trailing stop settings still apply here.
             </div>
           )}
         {(algoId === 'algo1' || algoId === 'algo4') && <TestSchedule settings={settings} setSettings={setSettings} />}

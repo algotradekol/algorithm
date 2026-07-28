@@ -64,8 +64,8 @@ export default function BacktestTab() {
   const introCopy = algoId === 'algo3'
     ? {
         title: 'Historical Silver Micro Backtest',
-        body: 'Replays MCX:SILVER26SEPFUT on 5-minute candles with EMA20 and volume-EMA20 setup / confirmation logic. It stays read-only and does not touch the live engine.',
-        note: 'The replay uses the same Silver Micro rules as the live tab: a green or red setup candle on MCX:SILVER26SEPFUT must be confirmed by one of the subsequent 5-minute candles within the confirmation window, then the trade enters on the following candle open.',
+        body: 'Replays MCX:SILVERMIC26AUGFUT on 5-minute candles with EMA20 and volume-EMA20 setup / confirmation logic. It stays read-only and does not touch the live engine.',
+        note: 'The replay uses the same Silver Micro rules as the live tab: a green or red setup candle on MCX:SILVERMIC26AUGFUT must be confirmed by one of the subsequent 5-minute candles within the confirmation window, then the trade enters on the following candle open.',
       }
     : {
         title: 'Historical Backtest',
@@ -78,7 +78,7 @@ export default function BacktestTab() {
         <h2 className="text-base font-semibold text-gray-100">{introCopy.title}</h2>
         <p className="mt-1 max-w-3xl text-sm text-gray-500">{introCopy.body}</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
-          <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option><option value="algo3">Silver Micro (MCX:SILVER26SEPFUT)</option></select></label>
+          <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option><option value="algo3">Silver Micro (MCX:SILVERMIC26AUGFUT)</option></select></label>
           <label><span className="label">Start date</span><input value={startDate} onChange={(e) => setStartDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <label><span className="label">End date</span><input value={endDate} onChange={(e) => setEndDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <div className="flex items-end"><button onClick={run} disabled={['queued', 'running'].includes(job?.status)} className="min-h-10 w-full rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"><i className="ri-play-circle-fill mr-2" />Run range backtest</button></div>
