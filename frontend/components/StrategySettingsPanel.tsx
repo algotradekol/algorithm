@@ -122,22 +122,31 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
 
   return (
     <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(340px,0.8fr)]">
-      <div className="panel p-4">
-        <div className="mb-4 rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
+      <div className="panel space-y-4 p-4">
+        <div className="rounded border border-[#1f2937] bg-[#0d1117] px-3 py-3">
+          <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
+            <div>
+              <div className="text-sm font-semibold text-gray-100">Strategy Settings</div>
+              <p className="mt-1 text-xs text-gray-500">Adjust the algo rules, capital, and risk controls from one dashboard-styled panel.</p>
+            </div>
+            <div className="label text-[10px] text-gray-500">Changes save to paper or live based on the active trading mode.</div>
+          </div>
+        </div>
+        <div className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
           Changes apply to new trades only. Open positions keep their original entry prices, SL, and targets.
         </div>
-        {error && <p className="mb-4 rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
+        {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
 
         <CashControl value={availableCash} setValue={setAvailableCash} onSave={saveAvailableCash} saving={cashSaving} />
         <FieldGroup title="Capital Settings" fields={CAPITAL_FIELDS} settings={settings} setSettings={setSettings} />
         <ExitModeSelect settings={settings} setSettings={setSettings} />
         <TrailingStopToggle settings={settings} setSettings={setSettings} />
         <FieldGroup title="Risk Settings" fields={RISK_FIELDS} settings={settings} setSettings={setSettings} />
-        {algoId === 'algo3' && (
-          <div className="mt-5 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
-            Silver Micro auto-resolves the active MCX contract and runs on 5-minute candles. Capital, exit mode, and trailing stop settings still apply here.
-          </div>
-        )}
+          {algoId === 'algo3' && (
+            <div className="mt-5 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
+            Silver Micro now runs on MCX:SILVER26SEPFUT and uses 5-minute candles. Capital, exit mode, and trailing stop settings still apply here.
+            </div>
+          )}
         {(algoId === 'algo1' || algoId === 'algo4') && <TestSchedule settings={settings} setSettings={setSettings} />}
         {algoId === 'algo2' && (
           <IndicatorFilterSettings settings={settings} setSettings={setSettings} />
@@ -178,7 +187,7 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
 function TestSchedule({ settings, setSettings }: { settings: Record<string, any>; setSettings: (settings: Record<string, any>) => void }) {
   const enabled = Boolean(settings.test_schedule_enabled);
   return (
-    <div className="mt-5 rounded border border-[#f59e0b]/40 bg-[#f59e0b]/5 p-3">
+    <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3">
       <label className="flex gap-3">
         <input type="checkbox" checked={enabled} onChange={(e) => setSettings({ ...settings, test_schedule_enabled: e.target.checked })} className="peer sr-only" />
         <span className="mt-1 h-5 w-9 shrink-0 rounded-full border border-[#1f2937] bg-gray-700 after:block after:h-4 after:w-4 after:translate-x-0.5 after:translate-y-0.5 after:rounded-full after:bg-gray-400 after:transition peer-checked:bg-[#f59e0b] peer-checked:after:translate-x-4 peer-checked:after:bg-white" />
@@ -197,8 +206,8 @@ function ExitModeSelect({
   setSettings: (settings: Record<string, any>) => void;
 }) {
   return (
-    <div className="mt-5">
-      <div className="label mb-2">Exit Mode</div>
+    <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3">
+      <div className="label mb-3">Exit Mode</div>
       <div className="grid gap-2">
         {EXIT_MODES.map(([value, label, helper]) => (
           <label key={value} className={`rounded border p-3 ${
@@ -233,7 +242,7 @@ function TrailingStopToggle({
 }) {
   const modeUsesTrailing = settings.exit_mode === 'trailing_sl_only' || settings.exit_mode === 'fixed_target_trailing_sl';
   return (
-    <label className={`mt-5 flex gap-3 rounded border p-3 ${modeUsesTrailing ? 'border-[#1f2937] bg-[#0d1117]' : 'border-[#1f2937] bg-[#0d1117] opacity-60'}`}>
+    <label className={`mt-5 flex gap-3 rounded border border-[#1f2937] bg-[#111827] p-3 ${modeUsesTrailing ? '' : 'opacity-60'}`}>
       <input
         type="checkbox"
         checked={Boolean(settings.trailing_sl_enabled)}
@@ -266,7 +275,7 @@ function CashControl({
   saving: boolean;
 }) {
   return (
-    <div className="mt-5 rounded border border-[#22c55e]/40 bg-[#22c55e]/5 p-3 first:mt-0">
+    <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3 first:mt-0">
       <div className="flex flex-col gap-3 sm:flex-row sm:items-end">
         <label className="flex-1">
           <div className="label">Available Cash (Rs)</div>
@@ -306,7 +315,7 @@ function IndicatorFilterSettings({
     filter_price_range: INDICATOR_FIELDS.filter(([key]) => key === 'ltp_min' || key === 'ltp_max'),
   };
   return (
-    <div className="mt-5">
+    <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3">
       <div className="label mb-3">Indicator Filters</div>
       <div className="space-y-2">
         {FILTERS.map(([key, label, helper, meta]) => (
@@ -343,7 +352,7 @@ function FieldGroup({
   setSettings: (settings: Record<string, any>) => void;
 }) {
   return (
-    <div className="mt-5 first:mt-0">
+    <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3 first:mt-0">
       <div className="label mb-3">{title}</div>
       <div className="grid gap-3 md:grid-cols-2">
         {fields.map(([key, label, helper]) => (

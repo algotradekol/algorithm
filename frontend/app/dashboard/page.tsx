@@ -256,8 +256,8 @@ function DashboardContent() {
             <div className={tab === 'Silver Micro' ? '' : 'hidden'}>
               <AlgoTab
                 algoId="algo3"
-                displayName="Silver Micro - 5m EMA/Volume"
-                description="Tracks the active MCX Silver Micro contract on 5-minute candles. BUY when a green 5m candle closes above EMA20 with volume above volume EMA20, confirm on one of the subsequent green candles within the confirmation window, and enter on the next candle open. SELL mirrors the same logic. Reversal happens when the opposite side confirms."
+                displayName="Silver Micro - MCX:SILVER26SEPFUT - 5m EMA/Volume"
+                description="Tracks MCX:SILVER26SEPFUT on 5-minute candles. BUY when a green 5m candle closes above EMA20 with volume above volume EMA20, confirm on one of the subsequent green candles within the confirmation window, and enter on the next candle open. SELL mirrors the same logic. Reversal happens when the opposite side confirms."
                 tradingMode={(engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper'}
                 onWebSocketStatus={setWsStatus}
               />
