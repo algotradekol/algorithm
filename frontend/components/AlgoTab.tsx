@@ -25,6 +25,7 @@ export default function AlgoTab({
   const [positions, setPositions] = useState<any[]>([]);
   const [trades, setTrades] = useState<any[]>([]);
   const [scanResults, setScanResults] = useState<any>(null);
+  const [feedStatus, setFeedStatus] = useState<any>(null);
   const [walletStatus, setWalletStatus] = useState<any>(null);
   const [walletStatusError, setWalletStatusError] = useState('');
   const [error, setError] = useState('');
@@ -63,8 +64,9 @@ export default function AlgoTab({
   }, [algoId]);
 
   const loadData = useCallback(async () => {
-    const [summaryResult, positionsResult, tradesResult, scanResult] = await Promise.allSettled([
+    const [summaryResult, positionsResult, tradesResult, scanResult, feedResult] = await Promise.allSettled([
       api.summary(algoId), api.positions(algoId), api.trades(algoId), api.scanResults(algoId),
+      algoId === 'algo3' ? api.feedStatus(algoId) : Promise.resolve(null),
     ]);
 
     if (summaryResult.status === 'fulfilled') setSummary(summaryResult.value);
@@ -77,6 +79,7 @@ export default function AlgoTab({
     }
     if (tradesResult.status === 'fulfilled') setTrades(tradesResult.value);
     if (scanResult.status === 'fulfilled') setScanResults(scanResult.value);
+    if (feedResult.status === 'fulfilled') setFeedStatus(feedResult.value);
 
     const failures = [summaryResult, positionsResult, tradesResult]
       .filter((result) => result.status === 'rejected')
@@ -247,6 +250,7 @@ export default function AlgoTab({
           {walletStatusError}
         </p>
       )}
+      {algoId === 'algo3' && <SilverFeedPanel status={feedStatus} />}
 
       <div className="grid grid-cols-3 gap-1.5 sm:gap-2 lg:grid-cols-6">
         {showLiveWallet ? (
@@ -282,6 +286,53 @@ export default function AlgoTab({
       </div>
       {description && <div className="rounded border border-[#1f2937] bg-[#111827] px-3 py-2 text-xs text-gray-500">{description}</div>}
     </section>
+  );
+}
+
+function SilverFeedPanel({ status }: { status: any }) {
+  const lastTick = formatDateTime(status?.last_tick_at);
+  const lastMinuteCandle = formatDateTime(status?.last_minute_candle_at);
+  const lastFiveMinuteBar = formatDateTime(status?.last_five_minute_bar_at);
+  const historyBadge = status?.history_loading
+    ? 'loading history'
+    : status?.history_ready
+    ? 'history ready'
+    : status?.history_error
+    ? 'history error'
+    : 'history pending';
+  return (
+    <div className="rounded border border-[#3b82f6]/30 bg-[#0b1220] p-3 text-xs text-gray-300">
+      <div className="flex items-center justify-between gap-3">
+        <div className="label text-[10px]">Silver feed diagnostics</div>
+        <div className={`rounded px-2 py-0.5 font-semibold ${status?.last_tick_at ? 'bg-[#22c55e]/15 text-[#22c55e]' : 'bg-[#f59e0b]/15 text-[#f59e0b]'}`}>
+          {status?.last_tick_at ? 'tick seen' : 'waiting for tick'}
+        </div>
+      </div>
+      <div className="mt-2 grid grid-cols-2 gap-2 sm:grid-cols-4">
+        <FeedStat label="Symbol" value={status?.symbol || '--'} />
+        <FeedStat label="State" value={historyBadge} />
+        <FeedStat label="Last tick" value={lastTick || '--'} />
+        <FeedStat label="Last price" value={formatNumber(status?.last_tick_ltp)} />
+        <FeedStat label="Last 1m candle" value={lastMinuteCandle || '--'} />
+        <FeedStat label="Last 5m bar" value={lastFiveMinuteBar || '--'} />
+        <FeedStat label="5m bars" value={status?.five_minute_bars ?? 0} />
+        <FeedStat label="Warmup candles" value={status?.warmup_minute_candles ?? 0} />
+      </div>
+      <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-gray-500">
+        <span>History load: {status?.history_error || status?.history_loading ? 'check logs' : 'ok'}</span>
+        <span>Pending setup: {status?.pending_setup ? 'yes' : 'no'}</span>
+        <span>Pending entry: {status?.pending_entry ? 'yes' : 'no'}</span>
+      </div>
+    </div>
+  );
+}
+
+function FeedStat({ label, value }: { label: string; value: any }) {
+  return (
+    <div className="rounded border border-[#1f2937] bg-[#111827] p-2">
+      <div className="label text-[10px]">{label}</div>
+      <div className="num mt-1 truncate text-xs font-semibold text-gray-100">{String(value ?? '--')}</div>
+    </div>
   );
 }
 
@@ -605,6 +656,16 @@ function calculateUnrealized(position: any, ltpValue: unknown) {
 function formatSignedMoney(value: number) {
   const sign = value > 0 ? '+' : '';
   return `${sign}${formatMoney(value)}`;
+}
+
+function formatDateTime(value: unknown) {
+  if (!value) return '--';
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('en-IN', {
+    dateStyle: 'medium',
+    timeStyle: 'medium',
+  });
 }
 
 function formatNumber(value: unknown) {

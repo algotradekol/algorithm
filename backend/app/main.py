@@ -340,12 +340,30 @@ def algo_summary(algo_id: str, _user=Depends(require_auth)):
     strategy = get_strategy_or_raise(algo_id)
     summary = strategy.broker.summary()
     settings = getattr(strategy, "settings", None) or {}
+    feed_status = getattr(strategy, "feed_status", None)
+    if callable(feed_status):
+        try:
+            summary = {**summary, "feed_status": feed_status()}
+        except Exception as exc:
+            summary = {**summary, "feed_status_error": str(exc)}
     return {
         **summary,
         "max_trades_per_day": settings.get("max_trades_per_day", 10),
         "max_buy_trades": settings.get("max_buy_trades", 5),
         "max_sell_trades": settings.get("max_sell_trades", 5),
     }
+
+
+@app.get("/api/algo/{algo_id}/feed-status")
+def algo_feed_status(algo_id: str, _user=Depends(require_auth)):
+    strategy = get_strategy_or_raise(algo_id)
+    feed_status = getattr(strategy, "feed_status", None)
+    if not callable(feed_status):
+        raise HTTPException(status_code=404, detail="Feed diagnostics are not available for this strategy.")
+    try:
+        return feed_status()
+    except Exception as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
 
 
 @app.get("/api/algo/{algo_id}/positions")

@@ -64,12 +64,19 @@ class Algo3SilverMicro(Strategy):
         self._history_lock = threading.Lock()
         self._history_loading = False
         self._history_ready = False
+        self._history_error: str | None = None
+        self._warmup_minute_candles = 0
 
         self._minute_buffer: list[dict] = []
         self._current_bucket: datetime.datetime | None = None
         self._five_minute_candles: deque[dict] = deque(maxlen=300)
         self._ema20_price: float | None = None
         self._ema20_volume: float | None = None
+        self._last_tick_at: str | None = None
+        self._last_tick_ltp: float | None = None
+        self._last_minute_candle_at: str | None = None
+        self._last_five_minute_bar_at: str | None = None
+        self._last_five_minute_bar_minute_count: int | None = None
 
         self._pending_setup: dict | None = None
         self._pending_entry: dict | None = None
@@ -94,12 +101,15 @@ class Algo3SilverMicro(Strategy):
             end_date = datetime.date.today() - datetime.timedelta(days=1)
             start_date = end_date - datetime.timedelta(days=WARMUP_LOOKBACK_DAYS)
             history = get_intraday_candles_for_range(self.symbol, start_date, end_date)
+            self._warmup_minute_candles = len(history)
             for candle in history:
                 self._ingest_minute_candle(candle, allow_signals=False)
             self._finalize_five_minute_candle(allow_signals=False)
             self._history_ready = True
+            self._history_error = None
             print(f"[algo3] warm-up loaded for {self.symbol}: {len(history)} one-minute candles")
         except Exception as exc:
+            self._history_error = str(exc)
             print(f"[algo3] warm-up failed for {self.symbol}: {exc}")
         finally:
             with self._history_lock:
@@ -108,11 +118,20 @@ class Algo3SilverMicro(Strategy):
     def on_tick(self, symbol: str, ltp: float, timestamp):
         if symbol != self.symbol:
             return
+        now = timestamp if isinstance(timestamp, datetime.datetime) else datetime.datetime.now(IST)
+        if now.tzinfo is not None:
+            now = now.astimezone(IST).replace(tzinfo=None)
+        self._last_tick_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        self._last_tick_ltp = float(ltp)
         self._maybe_execute_pending_entry(symbol, float(ltp), timestamp)
 
     def on_candle_close(self, symbol: str, candle: dict, indicators: dict):
         if symbol != self.symbol:
             return
+        candle_time = candle["time"]
+        if candle_time.tzinfo is not None:
+            candle_time = candle_time.astimezone(IST).replace(tzinfo=None)
+        self._last_minute_candle_at = candle_time.isoformat()
         self._ingest_minute_candle(candle, allow_signals=True)
 
     def _ingest_minute_candle(self, candle: dict, allow_signals: bool):
@@ -159,6 +178,8 @@ class Algo3SilverMicro(Strategy):
         self._five_minute_candles.append(bar)
         self._ema20_price = _ema_step(self._ema20_price, bar["close"])
         self._ema20_volume = _ema_step(self._ema20_volume, bar["volume"])
+        self._last_five_minute_bar_at = bar["time"].isoformat()
+        self._last_five_minute_bar_minute_count = len(self._minute_buffer)
         self._minute_buffer = []
 
         if allow_signals:
@@ -338,3 +359,26 @@ class Algo3SilverMicro(Strategy):
         for position in self.broker.open_positions():
             ltp = position.get("_last_ltp", position["entry_price"])
             self.broker.close_trade(position, ltp, "EOD_SQUAREOFF")
+
+    def feed_status(self) -> dict:
+        return {
+            "algo_id": self.algo_id,
+            "display_name": self.display_name,
+            "symbol": self.symbol,
+            "history_ready": self._history_ready,
+            "history_loading": self._history_loading,
+            "history_error": self._history_error,
+            "warmup_minute_candles": self._warmup_minute_candles,
+            "five_minute_bars": len(self._five_minute_candles),
+            "minute_buffer_count": len(self._minute_buffer),
+            "current_bucket": self._current_bucket.isoformat() if self._current_bucket else None,
+            "pending_setup": bool(self._pending_setup),
+            "pending_entry": bool(self._pending_entry),
+            "last_tick_at": self._last_tick_at,
+            "last_tick_ltp": self._last_tick_ltp,
+            "last_minute_candle_at": self._last_minute_candle_at,
+            "last_five_minute_bar_at": self._last_five_minute_bar_at,
+            "last_five_minute_bar_minute_count": self._last_five_minute_bar_minute_count,
+            "ema20_price": self._ema20_price,
+            "ema20_volume": self._ema20_volume,
+        }
