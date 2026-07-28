@@ -46,14 +46,15 @@ export default function ChargesPanel() {
 
   return (
     <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(360px,0.8fr)]">
-      <div className="panel p-4">
+      <div className="panel space-y-4 p-4">
         <h2 className="text-base font-semibold text-gray-100">Charges Settings</h2>
         <p className="mt-2 text-xs text-gray-500">
           These rates feed Net P&L calculation on every closed paper trade. Cross-check against recent Fyers charges periodically.
         </p>
         {error && <p className="mt-3 rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
 
-        <div className="mt-4 grid gap-3 md:grid-cols-2">
+        <div className="mt-4 rounded border border-[#1f2937] bg-[#0d1117] p-3">
+          <div className="grid gap-3 md:grid-cols-2">
           {FIELDS.map(([key, label, helper]) => (
             <label key={key}>
               <div className="label">{label}</div>
@@ -67,6 +68,7 @@ export default function ChargesPanel() {
               <div className="mt-1 text-xs text-gray-500">{helper}</div>
             </label>
           ))}
+          </div>
         </div>
 
         <button

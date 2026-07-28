@@ -625,17 +625,14 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
     # would remain the initial empty list.
     from app import engine
     from .backtest import start_backtest
-    from .mcx_symbols import get_active_mcx_contract
+    from .strategies.algo3_silver_micro import SILVER_MICRO_SYMBOL
     algo_id = str(payload.get("algo_id") or "")
     # Accept date for existing clients while range-aware clients send both fields.
     start_date = str(payload.get("start_date") or payload.get("date") or "")
     end_date = str(payload.get("end_date") or start_date)
     try:
         if algo_id == "algo3":
-            symbol = get_active_mcx_contract("SILVERMIC")
-            if not symbol:
-                raise ValueError("Could not resolve the active Silver Micro MCX contract.")
-            return start_backtest(algo_id, start_date, end_date, [symbol])
+            return start_backtest(algo_id, start_date, end_date, [SILVER_MICRO_SYMBOL])
         return start_backtest(algo_id, start_date, end_date, engine.WATCHLIST)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

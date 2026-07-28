@@ -30,6 +30,7 @@ from ..timezone import IST
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
 CONFIRMATION_WINDOW_MINUTES = 15
+SILVER_MICRO_SYMBOL = "MCX:SILVER26SEPFUT"
 
 
 def _ema_step(previous: float | None, value: float, period: int = EMA_PERIOD) -> float:
@@ -56,7 +57,7 @@ class Algo3SilverMicro(Strategy):
     display_name = "Silver Micro - 5m EMA/Volume"
 
     def __init__(self, watchlist: list[str] | None = None):
-        self.symbol = (watchlist or [None])[0] if watchlist else get_active_mcx_contract("SILVERMIC")
+        self.symbol = (watchlist or [None])[0] if watchlist else SILVER_MICRO_SYMBOL
         self.watchlist = [self.symbol] if self.symbol else []
         self.settings = get_settings(self.algo_id)
         self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
