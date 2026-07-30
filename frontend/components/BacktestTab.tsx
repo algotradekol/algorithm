@@ -172,7 +172,7 @@ function DailyResults({ rows }: { rows: any[] }) {
   const [page, setPage] = useState(0);
   const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
   const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
-  return <section className="panel overflow-hidden"><div className="border-b border-[#1f2937] p-4"><h3 className="text-sm font-semibold text-gray-100">Daily Results</h3></div><div className="overflow-x-auto"><table className="w-full min-w-[900px] text-xs"><thead className="bg-[#111827]"><tr>{['Date', 'Data coverage', 'Trades', 'Wins / Losses', 'Win rate', 'Gross', 'Charges', 'Net', 'Selected'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr></thead><tbody>{visibleRows.map((day: any, index: number) => { const s = day.summary || {}; const selected = (day.condition_breakdown || []).find((step: any) => step.label === 'Final: selected for trade'); return <tr key={day.date} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}><td className="table-cell num text-gray-100">{day.date}</td><td className="table-cell num">{day.data_available_symbols}</td><td className="table-cell num">{s.trade_count || 0}</td><td className="table-cell num">{s.win_count || 0} / {s.loss_count || 0}</td><td className="table-cell num">{number(s.win_rate_pct)}%</td><td className={`table-cell num ${tone(s.gross_pnl)}`}>{money(s.gross_pnl)}</td><td className="table-cell num">{money(s.total_charges)}</td><td className={`table-cell num font-semibold ${tone(s.net_pnl)}`}>{money(s.net_pnl)}</td><td className="table-cell num">{selected?.passed || 0}</td></tr>; })}</tbody></table></div><div className="px-4 pb-4"><PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} /></div></section>;
+  return <section className="panel overflow-hidden"><div className="border-b border-[#1f2937] p-4"><h3 className="text-sm font-semibold text-gray-100">Daily Results</h3></div><div className="overflow-x-auto"><table className="w-full min-w-[940px] text-xs"><thead className="bg-[#111827]"><tr>{['#', 'Date', 'Data coverage', 'Trades', 'Wins / Losses', 'Win rate', 'Gross', 'Charges', 'Net', 'Selected'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr></thead><tbody>{visibleRows.map((day: any, index: number) => { const s = day.summary || {}; const selected = (day.condition_breakdown || []).find((step: any) => step.label === 'Final: selected for trade'); return <tr key={day.date} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}><td className="table-cell num text-[#60a5fa]">{safePage * PAGE_SIZE + index + 1}</td><td className="table-cell num text-gray-100">{day.date}</td><td className="table-cell num">{day.data_available_symbols}</td><td className="table-cell num">{s.trade_count || 0}</td><td className="table-cell num">{s.win_count || 0} / {s.loss_count || 0}</td><td className="table-cell num">{number(s.win_rate_pct)}%</td><td className={`table-cell num ${tone(s.gross_pnl)}`}>{money(s.gross_pnl)}</td><td className="table-cell num">{money(s.total_charges)}</td><td className={`table-cell num font-semibold ${tone(s.net_pnl)}`}>{money(s.net_pnl)}</td><td className="table-cell num">{selected?.passed || 0}</td></tr>; })}</tbody></table></div><div className="px-4 pb-4"><PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} /></div></section>;
 }
 
 function BacktestCandidates({ days }: { days: any[] }) {
@@ -193,6 +193,7 @@ function BacktestCandidates({ days }: { days: any[] }) {
     .sort((left: any, right: any) => compareCandidates(left, right, sortKey, sortDirection));
 
   const columns: [string, string][] = [
+    ['#', '#'],
     ['symbol', 'Symbol'],
     ['sector', 'Sector'],
     ['side', 'Side'],
@@ -239,7 +240,7 @@ function BacktestCandidates({ days }: { days: any[] }) {
         </div>
       </div>
       <div className="overflow-x-auto">
-        <table className="w-full min-w-[1450px] text-xs">
+        <table className="w-full min-w-[1520px] text-xs">
           <thead className="bg-[#111827]">
             <tr>
               {columns.map(([key, name]) => (
@@ -255,11 +256,12 @@ function BacktestCandidates({ days }: { days: any[] }) {
           <tbody>
             {!candidates.length ? (
               <tr>
-                <td colSpan={18} className="table-cell text-gray-500">No rows to show. This date may be a market holiday, or enable missing-candle data for an audit view.</td>
+                <td colSpan={19} className="table-cell text-gray-500">No rows to show. This date may be a market holiday, or enable missing-candle data for an audit view.</td>
               </tr>
             ) : (
               candidates.map((row: any, index: number) => (
                 <tr key={row.symbol} className={`${index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'} ${row.selected_for_trade ? 'border-l-2 border-l-[#22c55e]' : row.filters_passed ? 'border-l-2 border-l-[#f59e0b]' : 'border-l-2 border-l-[#ef4444]'}`}>
+                  <td className="table-cell num text-[#60a5fa]">{index + 1}</td>
                   <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
                   <td className="table-cell text-gray-400">{row.sector || '-'}</td>
                   <td className={row.side === 'BUY' ? 'table-cell text-[#22c55e]' : row.side === 'SELL' ? 'table-cell text-[#ef4444]' : 'table-cell text-gray-500'}>{row.side || 'WATCH'}</td>
@@ -288,7 +290,7 @@ function BacktestCandidates({ days }: { days: any[] }) {
   );
 }
 function BacktestTrades({ rows }: { rows: any[] }) {
-  return <section className="panel overflow-hidden"><div className="border-b border-[#1f2937] p-4"><h3 className="text-sm font-semibold text-gray-100">Simulated Trades</h3><p className="mt-1 text-xs text-gray-500">Times are based on the historical one-minute candle used for simulated entry and exit.</p></div><div className="overflow-x-auto"><table className="w-full min-w-[1150px] text-xs"><thead className="bg-[#111827]"><tr>{['Date', 'Symbol', 'Side', 'Qty', 'Entry Time', 'Entry', 'Exit Time', 'Exit', 'Reason', 'Net'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr></thead><tbody>{!rows.length ? <tr><td colSpan={10} className="table-cell text-gray-500">No simulated trades in this range.</td></tr> : rows.map((trade, index) => <tr key={`${trade.session_date}-${trade.symbol}-${index}`} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}><td className="table-cell num">{trade.session_date}</td><td className="table-cell font-mono text-gray-100">{trade.symbol}</td><td className={`table-cell font-semibold ${trade.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{trade.side}</td><td className="table-cell num">{trade.qty}</td><td className="table-cell num">{formatTime(trade.entry_time)}</td><td className="table-cell num">{number(trade.entry_price)}</td><td className="table-cell num">{formatTime(trade.exit_time)}</td><td className="table-cell num">{number(trade.exit_price)}</td><td className="table-cell">{trade.exit_reason}</td><td className={`table-cell num font-semibold ${tone(trade.net_pnl)}`}>{money(trade.net_pnl)}</td></tr>)}</tbody></table></div></section>;
+  return <section className="panel overflow-hidden"><div className="border-b border-[#1f2937] p-4"><h3 className="text-sm font-semibold text-gray-100">Simulated Trades</h3><p className="mt-1 text-xs text-gray-500">Times are based on the historical one-minute candle used for simulated entry and exit.</p></div><div className="overflow-x-auto"><table className="w-full min-w-[1180px] text-xs"><thead className="bg-[#111827]"><tr>{['#', 'Date', 'Symbol', 'Side', 'Qty', 'Entry Time', 'Entry', 'Exit Time', 'Exit', 'Reason', 'Net'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr></thead><tbody>{!rows.length ? <tr><td colSpan={11} className="table-cell text-gray-500">No simulated trades in this range.</td></tr> : rows.map((trade, index) => <tr key={`${trade.session_date}-${trade.symbol}-${index}`} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}><td className="table-cell num text-[#60a5fa]">{index + 1}</td><td className="table-cell num">{trade.session_date}</td><td className="table-cell font-mono text-gray-100">{trade.symbol}</td><td className={`table-cell font-semibold ${trade.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{trade.side}</td><td className="table-cell num">{trade.qty}</td><td className="table-cell num">{formatTime(trade.entry_time)}</td><td className="table-cell num">{number(trade.entry_price)}</td><td className="table-cell num">{formatTime(trade.exit_time)}</td><td className="table-cell num">{number(trade.exit_price)}</td><td className="table-cell">{trade.exit_reason}</td><td className={`table-cell num font-semibold ${tone(trade.net_pnl)}`}>{money(trade.net_pnl)}</td></tr>)}</tbody></table></div></section>;
 }
 
 function Card({ label, value, tone: valueTone }: { label: string; value: any; tone?: number }) { return <div className="rounded border border-[#1f2937] bg-[#111827] p-3"><div className="label">{label}</div><div className={`num mt-2 text-lg font-semibold ${tone(valueTone)}`}>{value}</div></div>; }

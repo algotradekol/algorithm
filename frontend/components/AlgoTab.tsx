@@ -410,6 +410,9 @@ function PositionsTable({
           return (
             <div key={row.id || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
               <div className="flex items-center justify-between gap-3">
+                <div className="num rounded border border-[#1f2937] bg-black/20 px-2 py-0.5 text-[10px] font-semibold text-gray-300">
+                  #{safePage * PAGE_SIZE + index + 1}
+                </div>
                 <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
                 <div className={`num flex items-center gap-1 text-base font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</div>
               </div>
@@ -437,7 +440,7 @@ function PositionsTable({
         <table className="w-full min-w-[1040px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['Symbol', 'Side', 'Qty', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
+            {['#', 'Symbol', 'Side', 'Qty', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
               <th key={column} className="table-cell label">{column}</th>
             ))}
           </tr>
@@ -445,7 +448,7 @@ function PositionsTable({
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={13} className="table-cell text-gray-500">No open positions</td>
+              <td colSpan={14} className="table-cell text-gray-500">No open positions</td>
             </tr>
           ) : visibleRows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
@@ -458,6 +461,7 @@ function PositionsTable({
               : null;
             return (
               <tr key={row.id || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
+                <td className="table-cell num text-[#60a5fa]">{safePage * PAGE_SIZE + index + 1}</td>
                 <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
                 <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
                   <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} mr-1 text-sm`} />
@@ -521,6 +525,9 @@ function TradesTable({ rows }: { rows: any[] }) {
         {!rows.length ? <p className="rounded border border-[#1f2937] bg-[#0d1117] p-3 text-sm text-gray-500">No closed trades yet</p> : visibleRows.map((row, index) => (
           <div key={row.id || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
             <div className="flex items-center justify-between gap-3">
+              <div className="num rounded border border-[#1f2937] bg-black/20 px-2 py-0.5 text-[10px] font-semibold text-gray-300">
+                #{safePage * PAGE_SIZE + index + 1}
+              </div>
               <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
               <div className={`num flex items-center gap-1 text-base font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>
                 {Number(row.net_pnl || 0) > 0 && <i className="ri-arrow-up-circle-fill text-sm text-[#22c55e]" />}
@@ -548,7 +555,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <table className="w-full min-w-[1080px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['Symbol', 'Side', 'Entry', 'Exit', 'Reason', 'Signal Audit', 'Trigger', 'Gross', 'Charges', 'Net'].map((column) => (
+            {['#', 'Symbol', 'Side', 'Entry', 'Exit', 'Reason', 'Signal Audit', 'Trigger', 'Gross', 'Charges', 'Net'].map((column) => (
               <th key={column} className="table-cell label">{column}</th>
             ))}
           </tr>
@@ -556,10 +563,11 @@ function TradesTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={10} className="table-cell text-gray-500">No closed trades yet</td>
+              <td colSpan={11} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
           ) : visibleRows.map((row, index) => (
             <tr key={row.id || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
+              <td className="table-cell num text-[#60a5fa]">{safePage * PAGE_SIZE + index + 1}</td>
               <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
               <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
                 <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} mr-1 text-sm`} />
@@ -627,13 +635,17 @@ export function Table({ rows, columns }: { rows: any[]; columns: string[] }) {
       <div className="overflow-x-auto rounded border border-[#1f2937]">
       <table className="w-full min-w-max border-collapse text-sm">
         <thead className="bg-[#111827]">
-          <tr>{columns.map((c) => (
-            <th key={c} className="table-cell label">{c}</th>
-          ))}</tr>
+          <tr>
+            <th className="table-cell label">#</th>
+            {columns.map((c) => (
+              <th key={c} className="table-cell label">{c}</th>
+            ))}
+          </tr>
         </thead>
         <tbody>
           {visibleRows.map((row, i) => (
             <tr key={i} className={i % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
+              <td className="table-cell num text-[#60a5fa]">{safePage * PAGE_SIZE + i + 1}</td>
               {columns.map((c) => (
                 <td key={c} className="table-cell text-gray-100">{String(row[c] ?? '')}</td>
               ))}

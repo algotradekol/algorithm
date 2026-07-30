@@ -143,7 +143,12 @@ export default function CalendarTab() {
                     }`}
                   >
                     <div className="flex items-center justify-between gap-2">
-                      <span className="font-mono text-sm font-semibold text-gray-100">{formatDate(date)}</span>
+                      <div className="flex items-center gap-2">
+                        <span className="inline-flex min-w-6 items-center justify-center rounded bg-[#111827] px-2 py-0.5 text-[10px] font-semibold text-[#60a5fa]">
+                          #{safeDatePage * PAGE_SIZE + visibleDays.findIndex(([visibleDate]) => visibleDate === date) + 1}
+                        </span>
+                        <span className="font-mono text-sm font-semibold text-gray-100">{formatDate(date)}</span>
+                      </div>
                       <span className={`num text-xs font-semibold ${pnlColor(net)}`}>{formatMoney(net)}</span>
                     </div>
                     <div className="mt-1 text-xs text-gray-500">{rows.length} algo snapshots</div>
@@ -378,6 +383,7 @@ function FullTable({ title, rows, columns, description }: { title: string; rows:
   const [page, setPage] = useState(0);
   const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
   const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+  const numberedColumns: [string, string][] = [['#', '#'], ...columns];
   return (
     <section className="rounded border border-[#1f2937] bg-[#0d1117]">
       <div className="flex items-center justify-between gap-3 border-b border-[#1f2937] p-3">
@@ -391,16 +397,17 @@ function FullTable({ title, rows, columns, description }: { title: string; rows:
         <table className="w-full min-w-[1100px] border-collapse text-xs">
           <thead className="sticky top-0 bg-[#111827]">
             <tr>
-              {columns.map(([, label]) => <th key={label} className="table-cell label">{label}</th>)}
+              {numberedColumns.map(([, label]) => <th key={label} className="table-cell label">{label}</th>)}
             </tr>
           </thead>
           <tbody>
             {!rows.length ? (
               <tr>
-                <td colSpan={columns.length} className="table-cell text-gray-500">No rows saved</td>
+                <td colSpan={numberedColumns.length} className="table-cell text-gray-500">No rows saved</td>
               </tr>
             ) : visibleRows.map((row, index) => (
               <tr key={row.id || `${row.symbol}-${index}`} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
+                <td className="table-cell num text-[#60a5fa]">{safePage * PAGE_SIZE + index + 1}</td>
                 {columns.map(([key]) => (
                   <td key={key} className={`table-cell ${key.includes('pnl') || key.includes('price') || key === 'ltp' || key === 'qty' ? 'num text-gray-100' : 'text-gray-300'}`}>
                     {formatCell(row[key], key)}
@@ -434,7 +441,12 @@ function ArchiveList({ title, rows, empty }: { title: string; rows: any[]; empty
           {rows.slice(0, 8).map((row, index) => (
             <div key={row.id || index} className="rounded border border-[#1f2937] bg-[#111827] p-2">
               <div className="flex items-center justify-between gap-2">
-                <span className="font-mono text-xs font-semibold text-gray-100">{row.symbol}</span>
+                <div className="flex items-center gap-2">
+                  <span className="inline-flex min-w-6 items-center justify-center rounded bg-[#0d1117] px-2 py-0.5 text-[10px] font-semibold text-[#60a5fa]">
+                    #{index + 1}
+                  </span>
+                  <span className="font-mono text-xs font-semibold text-gray-100">{row.symbol}</span>
+                </div>
                 <span className={`text-xs font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
                   {row.side === 'SELL' ? 'S' : 'B'}
                 </span>

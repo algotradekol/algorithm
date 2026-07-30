@@ -57,6 +57,7 @@ export default function CompareTab() {
         <table className="w-full min-w-max border-collapse text-xs">
           <thead className="bg-[#111827]">
             <tr>
+              <th className="table-cell label sticky left-0 z-20 min-w-16 bg-[#111827]">#</th>
               <th className="table-cell label sticky left-0 z-20 min-w-32 bg-[#111827]">Metric</th>
               {algoIds.map((id) => (
                 <th key={id} className="table-cell label">{id}</th>
@@ -68,7 +69,8 @@ export default function CompareTab() {
               const rowBg = rowIndex % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]';
               return (
               <tr key={key} className={rowBg}>
-                <td className={`table-cell sticky left-0 z-10 min-w-32 text-gray-500 ${rowBg}`}>{label}</td>
+                <td className={`table-cell sticky left-0 z-20 min-w-16 text-[#60a5fa] ${rowBg}`}>{rowIndex + 1}</td>
+                <td className={`table-cell sticky left-16 z-10 min-w-32 text-gray-500 ${rowBg}`}>{label}</td>
                 {algoIds.map((id) => {
                   const value = data[id][key];
                   const isMoney = key.includes('pnl') || key === 'cash' || key === 'realized_charges';
