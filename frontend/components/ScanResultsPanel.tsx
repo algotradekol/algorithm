@@ -168,34 +168,49 @@ export default function ScanResultsPanel({
       </div>
       <div className="mt-2 text-xs text-gray-500">Last scan: {formatTime(results.scan_time)}</div>
 
-      {bestMatches.length > 0 && <div className="mt-4 rounded border border-[#3b82f6]/30 bg-[#0d1117] p-3">
-        <div className="flex flex-wrap items-baseline justify-between gap-2"><div className="label">Best Matches</div><p className="text-[11px] text-gray-500">{results.ranking?.method || 'Highest composite score is selected first within your configured trade limits.'}</p></div>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{bestMatches.map((row: any) => <BestMatchCard key={row.symbol} row={row} />)}</div>
-      </div>}
-
-      {sectorBreakdown.length > 0 && <div className="mt-4 rounded border border-[#1f2937] bg-[#0d1117] p-3">
-        <div className="label">Sector Breakdown</div>
-        <p className="mt-1 text-xs text-gray-500">We keep the current ranking, but add a sector context bonus so strong symbols can be viewed alongside their sector trend.</p>
-        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-          {sectorBreakdown.map((sector: any) => (
-            <div key={sector.sector} className="rounded border border-[#1f2937] bg-[#111827] p-2">
-              <div className="flex items-start justify-between gap-3">
-                <div>
-                  <div className="font-semibold text-gray-100">{sector.sector}</div>
-                  <div className="text-[11px] text-gray-500">{sector.direction} sector · {sector.rows} symbols</div>
-                </div>
-                <div className="num text-right text-sm font-semibold text-gray-100">{formatScore(sector.avg_score)}</div>
-              </div>
-              <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-[#020617]">
-                <div className="h-full bg-[#22c55e]" style={{ width: `${Math.max(4, Math.min(100, Number(sector.alignment_strength || 0) * 100))}%` }} />
-              </div>
-              <div className="mt-1 text-[11px] text-gray-500">
-                {sector.buy} BUY · {sector.sell} SELL · {sector.selected} selected · avg move {formatNumber(sector.avg_move_pct)}%
-              </div>
+      {bestMatches.length > 0 && (
+        <details className="mt-4 rounded border border-[#3b82f6]/30 bg-[#0d1117] p-3">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+            <div>
+              <div className="label">Best Matches</div>
+              <p className="text-[11px] text-gray-500">{results.ranking?.method || 'Highest composite score is selected first within your configured trade limits.'}</p>
             </div>
-          ))}
-        </div>
-      </div>}
+            <i className="ri-arrow-down-s-line text-lg text-gray-500" />
+          </summary>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{bestMatches.map((row: any) => <BestMatchCard key={row.symbol} row={row} />)}</div>
+        </details>
+      )}
+
+      {sectorBreakdown.length > 0 && (
+        <details className="mt-4 rounded border border-[#1f2937] bg-[#0d1117] p-3">
+          <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+            <div>
+              <div className="label">Sector Breakdown</div>
+              <p className="mt-1 text-xs text-gray-500">We keep the current ranking, but add a sector context bonus so strong symbols can be viewed alongside their sector trend.</p>
+            </div>
+            <i className="ri-arrow-down-s-line text-lg text-gray-500" />
+          </summary>
+          <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+            {sectorBreakdown.map((sector: any) => (
+              <div key={sector.sector} className="rounded border border-[#1f2937] bg-[#111827] p-2">
+                <div className="flex items-start justify-between gap-3">
+                  <div>
+                    <div className="font-semibold text-gray-100">{sector.sector}</div>
+                    <div className="text-[11px] text-gray-500">{sector.direction} sector ? {sector.rows} symbols</div>
+                  </div>
+                  <div className="num text-right text-sm font-semibold text-gray-100">{formatScore(sector.avg_score)}</div>
+                </div>
+                <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-[#020617]">
+                  <div className="h-full bg-[#22c55e]" style={{ width: `${Math.max(4, Math.min(100, Number(sector.alignment_strength || 0) * 100))}%` }} />
+                </div>
+                <div className="mt-1 text-[11px] text-gray-500">
+                  {sector.buy} BUY ? {sector.sell} SELL ? {sector.selected} selected ? avg move {formatNumber(sector.avg_move_pct)}%
+                </div>
+              </div>
+            ))}
+          </div>
+        </details>
+      )}
 
       {tradeError && <div className="mt-4 rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-xs text-[#ef4444]">{tradeError}</div>}
 
@@ -204,6 +219,12 @@ export default function ScanResultsPanel({
         <p className="mt-1 text-xs text-gray-500">
           Temporary screener check: how many stocks survived each condition, step by step.
         </p>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <FunnelCapsule label="Scanned" value={results.total_scanned} active={scanFilter === 'all'} onClick={() => selectFilter('all')} />
+          <FunnelCapsule label="Passed Gap Filter" value={rows.filter((row: any) => row.gap_passed === true || row.opening_range_gap_passed === true).length} active={scanFilter === 'passed'} onClick={() => selectFilter('passed')} />
+          <FunnelCapsule label="Buy" value={results.buy_candidates} active={scanFilter === 'buy'} onClick={() => selectFilter('buy')} />
+          <FunnelCapsule label="Filtered Out" value={results.total_filtered_out} active={scanFilter === 'filtered'} onClick={() => selectFilter('filtered')} />
+        </div>
         <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           {funnel.map((step, index) => (
             <FunnelStep key={`${step.label}-${index}`} step={step} index={index} active={funnelFilter === index} onClick={() => selectFunnelStep(index)} />
@@ -311,6 +332,19 @@ function BestMatchCard({ row }: { row: any }) {
   </div>;
 }
 
+
+function FunnelCapsule({ label, value, active, onClick }: { label: string; value: any; active: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      className={`inline-flex min-h-9 items-center gap-2 rounded-full border px-3 py-1.5 text-[11px] font-semibold transition ${active ? 'border-[#3b82f6] bg-[#3b82f6]/15 text-[#93c5fd]' : 'border-[#1f2937] bg-[#111827] text-gray-300 hover:border-[#374151]'}`}
+    >
+      <span>{label}</span>
+      <span className="num rounded-full bg-black/20 px-2 py-0.5 text-[10px]">{Number(value || 0).toLocaleString('en-IN')}</span>
+    </button>
+  );
+}
 function ScanStat({
   label,
   value,

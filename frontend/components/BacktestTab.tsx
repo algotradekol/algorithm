@@ -128,28 +128,36 @@ function BacktestResult({ result }: { result: any }) {
         <Card label="Net P&L" value={money(summary.net_pnl)} tone={Number(summary.net_pnl)} />
       </div>
     </section>
-    {sectorBreakdown.length > 0 && <section className="panel p-4">
-      <div className="flex items-center justify-between gap-3"><h3 className="text-sm font-semibold text-gray-100">Sector Breakdown</h3><p className="text-xs text-gray-500">Shows how the replayed universe clustered by sector, so you can compare the stock ranking against the broader group trend.</p></div>
-      <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
-        {sectorBreakdown.map((sector: any) => (
-          <div key={sector.sector} className="rounded border border-[#1f2937] bg-[#0d1117] p-3">
-            <div className="flex items-start justify-between gap-3">
-              <div>
-                <div className="font-semibold text-gray-100">{sector.sector}</div>
-                <div className="text-[11px] text-gray-500">{sector.direction} sector · {sector.rows} symbols</div>
-              </div>
-              <div className="num text-right text-sm font-semibold text-gray-100">{number(sector.avg_score)}</div>
-            </div>
-            <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-[#020617]">
-              <div className="h-full bg-[#22c55e]" style={{ width: `${Math.max(4, Math.min(100, Number(sector.alignment_strength || 0) * 100))}%` }} />
-            </div>
-            <div className="mt-1 text-[11px] text-gray-500">
-              {sector.buy} BUY · {sector.sell} SELL · {sector.selected} selected · avg move {number(sector.avg_move_pct)}%
-            </div>
+    {sectorBreakdown.length > 0 && (
+      <details className="panel p-4">
+        <summary className="flex cursor-pointer list-none items-center justify-between gap-3">
+          <div>
+            <h3 className="text-sm font-semibold text-gray-100">Sector Breakdown</h3>
+            <p className="text-xs text-gray-500">Shows how the replayed universe clustered by sector, so you can compare the stock ranking against the broader group trend.</p>
           </div>
-        ))}
-      </div>
-    </section>}
+          <i className="ri-arrow-down-s-line text-lg text-gray-500" />
+        </summary>
+        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+          {sectorBreakdown.map((sector: any) => (
+            <div key={sector.sector} className="rounded border border-[#1f2937] bg-[#0d1117] p-3">
+              <div className="flex items-start justify-between gap-3">
+                <div>
+                  <div className="font-semibold text-gray-100">{sector.sector}</div>
+                  <div className="text-[11px] text-gray-500">{sector.direction} sector ? {sector.rows} symbols</div>
+                </div>
+                <div className="num text-right text-sm font-semibold text-gray-100">{number(sector.avg_score)}</div>
+              </div>
+              <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-[#020617]">
+                <div className="h-full bg-[#22c55e]" style={{ width: `${Math.max(4, Math.min(100, Number(sector.alignment_strength || 0) * 100))}%` }} />
+              </div>
+              <div className="mt-1 text-[11px] text-gray-500">
+                {sector.buy} BUY ? {sector.sell} SELL ? {sector.selected} selected ? avg move {number(sector.avg_move_pct)}%
+              </div>
+            </div>
+          ))}
+        </div>
+      </details>
+    )}
     <section className="grid gap-4 lg:grid-cols-2">
       <div className="panel p-4"><h3 className="text-sm font-semibold text-gray-100">Trade Quality</h3><div className="mt-3 grid grid-cols-2 gap-2 text-sm"><Metric label="Gross profit" value={money(summary.gross_profit)} positive /><Metric label="Gross loss" value={money(-Number(summary.gross_loss || 0))} negative /><Metric label="Average win" value={money(summary.average_win)} positive /><Metric label="Average loss" value={money(summary.average_loss)} negative /><Metric label="Average net / trade" value={money(summary.average_net_per_trade)} tone={Number(summary.average_net_per_trade)} /><Metric label="Max drawdown" value={money(summary.max_drawdown)} negative /></div></div>
       <div className="panel p-4"><h3 className="text-sm font-semibold text-gray-100">Execution And Range</h3><div className="mt-3 grid grid-cols-2 gap-2 text-sm"><Metric label="Gross P&L" value={money(summary.gross_pnl)} tone={Number(summary.gross_pnl)} /><Metric label="Charges" value={money(summary.total_charges)} /><Metric label="Capital deployed" value={money(summary.capital_deployed)} /><Metric label="Net return / deployed" value={`${number(summary.net_return_on_deployed_pct)}%`} tone={Number(summary.net_return_on_deployed_pct)} /><Metric label="Best day" value={result.best_day ? `${result.best_day.date}: ${money(result.best_day.net_pnl)}` : '-'} tone={Number(result.best_day?.net_pnl)} /><Metric label="Worst day" value={result.worst_day ? `${result.worst_day.date}: ${money(result.worst_day.net_pnl)}` : '-'} tone={Number(result.worst_day?.net_pnl)} /></div><p className="mt-3 text-xs text-gray-500">Exits: Target {exits.TARGET || 0}, SL {exits.SL || 0}, EOD {exits.EOD_SQUAREOFF || 0}.</p></div>
