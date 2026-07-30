@@ -255,6 +255,75 @@ def get_wallet_balance(mode: str | None = None) -> dict:
     }
 
 
+def get_live_quotes(symbols: list[str], mode: str | None = None) -> dict[str, float]:
+    """Fetch live quotes for up to 50 symbols per FYERS request.
+
+    Returns a simple {symbol: ltp} map, skipping any entries that do not
+    contain a recognizable last traded price.
+    """
+    cleaned_symbols = []
+    seen = set()
+    for symbol in symbols:
+        symbol_text = str(symbol or "").strip()
+        if not symbol_text or symbol_text in seen:
+            continue
+        seen.add(symbol_text)
+        cleaned_symbols.append(symbol_text)
+
+    if not cleaned_symbols:
+        return {}
+
+    fyers = get_fyers_model(mode)
+    quote_map: dict[str, float] = {}
+
+    for index in range(0, len(cleaned_symbols), 50):
+        batch = cleaned_symbols[index:index + 50]
+        response = fyers.quotes({"symbols": ",".join(batch)})
+        quote_map.update(_parse_quote_response(response))
+
+    return quote_map
+
+
+def _parse_quote_response(response) -> dict[str, float]:
+    quote_map: dict[str, float] = {}
+
+    def extract_ltp(node) -> float | None:
+        if not isinstance(node, dict):
+            return None
+        for key in ("ltp", "lp", "last_price", "lastPrice", "last_traded_price", "lastTradedPrice"):
+            value = node.get(key)
+            if value in (None, ""):
+                continue
+            try:
+                return float(str(value).replace(",", "").strip())
+            except (TypeError, ValueError):
+                continue
+        return None
+
+    def walk(node, current_symbol: str | None = None):
+        if isinstance(node, dict):
+            symbol = current_symbol
+            for key in ("symbol", "n", "trading_symbol", "tradingSymbol", "symbol_name", "name"):
+                value = node.get(key)
+                if isinstance(value, str) and value.strip():
+                    symbol = value.strip()
+                    break
+
+            ltp = extract_ltp(node)
+            if symbol and ltp is not None:
+                quote_map[symbol] = ltp
+
+            for key, child in node.items():
+                if isinstance(child, (dict, list)):
+                    walk(child, symbol)
+        elif isinstance(node, list):
+            for item in node:
+                walk(item, current_symbol)
+
+    walk(response)
+    return quote_map
+
+
 def _summarize_funds_response(response: dict) -> dict:
     candidates: list[tuple[str, float]] = []
 

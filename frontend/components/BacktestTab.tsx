@@ -70,7 +70,7 @@ export default function BacktestTab() {
     : {
         title: 'Historical Backtest',
         body: 'Downloads each NSE 500 symbol once, then replays every weekday in your chosen range. It cannot create live paper trades or alter the live engine.',
-        note: 'Maximum 31 calendar days. Signal uses the combined 09:15-09:17 window; entry uses the 09:18 candle open. If a later candle touches both SL and target, SL is assumed first.',
+        note: 'Maximum 31 calendar days. Signal uses the 09:15 candle only; entry uses the 09:16 candle open. If a later candle touches both SL and target, SL is assumed first.',
       };
   return (
     <section className="space-y-4">

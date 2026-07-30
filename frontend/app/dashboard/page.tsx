@@ -239,7 +239,7 @@ function DashboardContent() {
               <AlgoTab
                 algoId="algo1"
                 displayName="UN1 9:15 v15 - Simple"
-                description="Ranks the combined 9:15-9:17 opening window. Open=low gives BUY, open=high gives SELL, max 2% opening gap, 9:18 entry, 2% target, 1% stop loss."
+                description="Ranks the 09:15 opening candle only. Open=low gives BUY, open=high gives SELL, max 2% opening gap, 09:16 entry, 2% target, 1% stop loss."
                 tradingMode={(engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper'}
                 onWebSocketStatus={setWsStatus}
               />
@@ -248,7 +248,7 @@ function DashboardContent() {
               <AlgoTab
                 algoId="algo2"
                 displayName="UN1 9:15 v14 - Filter"
-                description="Ranks the combined 9:15-9:17 opening window, then applies the UN1 v14 liquidity, volume, and price-range checks before the 9:18 entry. Advanced indicator filters remain optional in Settings."
+                description="Ranks the 09:15 opening candle only, then applies the UN1 v14 liquidity, volume, and price-range checks before the 09:16 entry. Advanced indicator filters remain optional in Settings."
                 tradingMode={(engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper'}
                 onWebSocketStatus={setWsStatus}
               />

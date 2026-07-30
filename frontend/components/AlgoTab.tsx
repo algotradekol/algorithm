@@ -178,6 +178,7 @@ export default function AlgoTab({
       setExitingPositionId(null);
     }
   }, [algoId, refreshSummary, refreshTrades]);
+  const priorityNote = 'Live ticks are repainted in this order: open positions first, then pending setups, then the remaining watchlist.';
 
   if (!summary) {
     return (
@@ -205,6 +206,9 @@ export default function AlgoTab({
           }}
         />
         </div>
+        <p className="mt-3 rounded border border-[#1f2937] bg-[#0b1220] px-3 py-2 text-xs text-gray-400">
+          {priorityNote}
+        </p>
         <p className="mt-2 text-sm text-gray-500">{error || 'Loading strategy data...'}</p>
       </section>
     );
@@ -244,6 +248,9 @@ export default function AlgoTab({
           Settings
         </button>
       </div>
+      <p className="rounded border border-[#1f2937] bg-[#0b1220] px-3 py-2 text-xs text-gray-400">
+        {priorityNote}
+      </p>
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
       {walletStatusError && tradingMode === 'live' && (
         <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">

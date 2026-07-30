@@ -95,8 +95,8 @@ export default function CompareTab() {
       </div>
       <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
         <div className="space-y-1 text-xs text-gray-500">
-          <p>algo1: UN1 9:15 v15 Simple - combined 9:15-9:17 opening range, ranked by gap, 9:18 entry</p>
-          <p>algo2: UN1 9:15 v14 Filter - same ranked 9:15-9:17 opening range plus VWAP, EMA, RSI, ADX, Supertrend, volume, liquidity and price filters</p>
+          <p>algo1: UN1 9:15 v15 Simple - 09:15 opening candle only, ranked by gap, 09:16 entry</p>
+          <p>algo2: UN1 9:15 v14 Filter - 09:15 opening candle plus VWAP, EMA, RSI, ADX, Supertrend, volume, liquidity and price filters before the 09:16 entry</p>
         </div>
       </div>
     </section>

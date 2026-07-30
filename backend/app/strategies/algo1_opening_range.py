@@ -114,23 +114,22 @@ class Algo1OpeningRange(Strategy):
         return (datetime.datetime.strptime(self.scan_candle_time(), "%H:%M") + datetime.timedelta(minutes=minutes_after_start)).strftime("%H:%M")
 
     def _is_collection_candle(self, candle_time: str) -> bool:
-        # The signal is the combined 9:15, 9:16 and 9:17 candles. The
-        # preceding minute is only used to have the live feed ready.
-        return self.scan_candle_time() <= candle_time < self._schedule_time(3)
+        # The signal is the 9:15 candle only.
+        return candle_time == self.scan_candle_time()
 
     def entry_window(self, current_time: str) -> bool:
-        entry = self._schedule_time(3)
+        entry = self._schedule_time(1)
         return entry <= current_time < (datetime.datetime.strptime(entry, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M")
 
     def entry_window_elapsed(self, current_time: str) -> bool:
-        deadline = self._schedule_time(4)
+        deadline = self._schedule_time(2)
         return current_time >= deadline
 
     def schedule_status(self, now: datetime.datetime) -> dict:
         if not self.settings.get("test_schedule_enabled"):
             return {"enabled": False}
         candle_time = self.scan_candle_time()
-        entry_time = self._schedule_time(3)
+        entry_time = self._schedule_time(1)
         current_time = now.strftime("%H:%M")
         state = "waiting"
         if self.entries_evaluated_today == now.date():
@@ -225,11 +224,11 @@ class Algo1OpeningRange(Strategy):
 
     def _backfill_opening_window_from_history(self) -> int:
         """Use the day-session history API to recover symbols whose live feed
-        missed part of the opening window.
+        missed the 09:15 opening candle.
 
         A websocket restart at the bell can leave the live candle collector with
-        only a partial opening universe.  The opening scan is still supposed to
-        use the same 09:15-09:17 window, so we backfill missing symbols from the
+        no 09:15 candle for a symbol. The opening scan is still supposed to use
+        that single 09:15 signal candle, so we backfill missing symbols from the
         intraday history endpoint before evaluating entries.
         """
         if not get_stored_access_token():
@@ -238,10 +237,10 @@ class Algo1OpeningRange(Strategy):
         today = datetime.date.today()
         filled = 0
         start_time = self.scan_candle_time()
-        end_time = self._schedule_time(3)
+        end_time = self._schedule_time(1)
         missing_symbols = [
             symbol for symbol in self.watchlist
-            if len(self.opening_candles.get(symbol, [])) < 3
+            if len(self.opening_candles.get(symbol, [])) < 1
         ]
         if not missing_symbols:
             return 0
@@ -279,7 +278,7 @@ class Algo1OpeningRange(Strategy):
         return filled
 
     def evaluate_entries(self, get_ltp_fn):
-        """Called at 9:18 after the three-minute opening collection window."""
+        """Called at 9:16 after the 9:15 opening signal candle closes."""
         today = datetime.date.today()
         if self.entries_evaluated_today == today:
             return True
@@ -323,7 +322,7 @@ class Algo1OpeningRange(Strategy):
         required = min(MIN_OPENING_READY_SYMBOLS, len(self.watchlist))
         return (
             "Opening scan was not eligible for entry: "
-            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} symbols during the {self.scan_candle_time()}-{self._schedule_time(2)} IST window and "
+            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} symbols during the {self.scan_candle_time()} IST signal candle and "
             f"matched {self._opening_ready_symbol_count()}/{len(self.watchlist)} symbols with previous closes "
             f"(requires at least {required} ready symbols to detect a healthy feed). No late trades will be placed."
         )
@@ -381,15 +380,15 @@ class Algo1OpeningRange(Strategy):
         score = details.get("composite_score")
         ranking_text = f"rank #{rank}, score {float(score):.2f}/100" if rank and score is not None else "unranked"
         return (
-            f"{self.scan_candle_time()}-{self._schedule_time(2)} opening window {candle_shape}; gap {gap_text} within <= {GAP_LIMIT_PCT:.2f}%; "
-            f"{ranking_text}; entered at {self._schedule_time(3)}. Open {open_price}, prev close {prev_close}."
+            f"{self.scan_candle_time()} signal candle {candle_shape}; gap {gap_text} within <= {GAP_LIMIT_PCT:.2f}%; "
+            f"{ranking_text}; entered at {self._schedule_time(1)}. Open {open_price}, prev close {prev_close}."
         )
 
     def _signal_snapshot(self, symbol: str, side: str, entry_price: float) -> dict:
         """Immutable evidence for the candle that selected this paper trade."""
         details = self.candidate_details.get(symbol, {})
         return {
-            "window": f"{self.scan_candle_time()}-{self._schedule_time(2)} IST",
+            "window": f"{self.scan_candle_time()} IST",
             "side": side,
             "sector": self.sector_map.get(symbol),
             "shape": details.get("signal_shape"),
@@ -482,7 +481,7 @@ class Algo1OpeningRange(Strategy):
             )[:4],
             "condition_breakdown": [
                 {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
-                {"label": f"Condition 1: {self.scan_candle_time()}-{self._schedule_time(2)} candles received", "passed": len(self.scan_seen_symbols), "total": len(self.watchlist)},
+                {"label": f"Condition 1: {self.scan_candle_time()} candle received", "passed": len(self.scan_seen_symbols), "total": len(self.watchlist)},
                 {"label": "Condition 2: open equals low/high", "passed": len(self.open_extreme_symbols), "total": len(self.scan_seen_symbols)},
                 {"label": "Condition 3: opening gap <= 2%", "passed": sum(1 for row in rows if row.get("gap_passed")), "total": len(self.open_extreme_symbols)},
                 {"label": "Final: selected for trade", "passed": len(self.selected_symbols), "total": len(rows)},

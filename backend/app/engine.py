@@ -38,6 +38,7 @@ _live_feed_started = False
 _live_feed_socket = None
 _live_feed_lock = threading.Lock()
 _engine_lock = threading.Lock()
+_position_quote_refresh_started = False
 _feed_retry_schedules: set[tuple[datetime.date, str]] = set()
 _feed_watchdog_started = False
 _feed_watchdog_last_restart_at = 0.0
@@ -59,6 +60,169 @@ _engine_status = {
     "last_candle_close_at": None,
     "closed_candle_count": 0,
 }
+
+
+def _strategy_tick_priority(strategy, symbol: str) -> int:
+    """Prioritize live processing for open positions, then pending setups."""
+    watchlist = getattr(strategy, "watchlist", [])
+    if watchlist and symbol not in watchlist:
+        return 99
+
+    broker = getattr(strategy, "broker", None)
+    if broker is not None:
+        try:
+            if any(position.get("symbol") == symbol for position in broker.open_positions()):
+                return 0
+        except Exception:
+            pass
+
+    for attr in ("_pending_setup", "_pending_entry"):
+        pending_state = getattr(strategy, attr, None)
+        if pending_state:
+            if isinstance(pending_state, dict):
+                pending_symbol = pending_state.get("symbol") or pending_state.get("setup_symbol") or pending_state.get("entry_symbol")
+                if pending_symbol and pending_symbol != symbol:
+                    continue
+            return 1
+
+    feed_status = getattr(strategy, "feed_status", None)
+    if callable(feed_status):
+        try:
+            status = feed_status() or {}
+            if status.get("pending_setup") or status.get("pending_entry"):
+                return 1
+        except Exception:
+            pass
+
+    return 2
+
+
+def _iter_priority_symbols() -> tuple[list[str], list[str], list[str]]:
+    """Return open-position symbols first, then pending-setup symbols, then any remaining watchlist symbols."""
+    open_symbols: list[str] = []
+    pending_symbols: list[str] = []
+    remaining_symbols: list[str] = []
+    seen: set[str] = set()
+
+    def add_symbol(symbol: str | None, bucket: list[str]):
+        symbol_text = str(symbol or "").strip()
+        if not symbol_text or symbol_text in seen:
+            return
+        seen.add(symbol_text)
+        bucket.append(symbol_text)
+
+    for strategy in STRATEGIES.values():
+        try:
+            for position in strategy.broker.open_positions():
+                add_symbol(position.get("symbol"), open_symbols)
+        except Exception as exc:
+            print(f"[engine] could not collect open positions for {getattr(strategy, 'algo_id', '?')}: {exc}")
+
+    for strategy in STRATEGIES.values():
+        pending_candidates: list[str] = []
+
+        for attr in ("_pending_setup", "_pending_entry"):
+            pending_state = getattr(strategy, attr, None)
+            if isinstance(pending_state, dict):
+                for key in ("symbol", "setup_symbol", "entry_symbol", "pending_symbol"):
+                    pending_candidates.append(pending_state.get(key))
+            elif isinstance(pending_state, str):
+                pending_candidates.append(pending_state)
+
+        feed_status = getattr(strategy, "feed_status", None)
+        if callable(feed_status):
+            try:
+                status = feed_status() or {}
+                for key in ("pending_setup_symbol", "pending_entry_symbol", "symbol"):
+                    if status.get(key):
+                        pending_candidates.append(status.get(key))
+            except Exception:
+                pass
+
+        for symbol in pending_candidates:
+            add_symbol(symbol, pending_symbols)
+
+        for symbol in getattr(strategy, "watchlist", []) or []:
+            add_symbol(symbol, remaining_symbols)
+
+    return open_symbols, pending_symbols, remaining_symbols
+
+
+def _refresh_open_positions_from_quotes(symbols: list[str]) -> int:
+    if not symbols:
+        return 0
+
+    try:
+        from .fyers_client import get_live_quotes
+    except Exception as exc:
+        print(f"[engine] quote refresh unavailable: {exc}")
+        return 0
+
+    refreshed = 0
+    try:
+        quote_map = get_live_quotes(symbols)
+    except Exception as exc:
+        print(f"[engine] open-position quote refresh failed: {exc}")
+        return 0
+
+    if not quote_map:
+        return 0
+
+    for symbol in symbols:
+        ltp = quote_map.get(symbol)
+        if ltp is None:
+            continue
+        refreshed += 1
+        _apply_symbol_ltp(symbol, ltp, source="quote_refresh")
+
+    return refreshed
+
+
+def _apply_symbol_ltp(symbol: str, ltp: float, source: str = "tick"):
+    last_ltp[symbol] = ltp
+
+    with _engine_lock:
+        _engine_status.update({
+            "last_tick_at": _utc_now(),
+            "last_tick_symbol": symbol,
+            "last_tick_ltp": ltp,
+            "tick_count": int(_engine_status.get("tick_count") or 0) + 1,
+        })
+        if source != "tick":
+            _engine_status["fyers_ws_last_event_at"] = _utc_now()
+
+    if source == "tick":
+        broadcast_sync({"event": "price_update", "symbol": symbol, "ltp": ltp})
+    else:
+        broadcast_sync({
+            "event": "price_update",
+            "symbol": symbol,
+            "ltp": ltp,
+            "source": source,
+        })
+
+    for strategy in STRATEGIES.values():
+        watchlist = getattr(strategy, "watchlist", [])
+        if watchlist and symbol not in watchlist:
+            continue
+        try:
+            positions = strategy.broker.open_positions()
+        except Exception as exc:
+            print(f"[engine] could not load open positions for {getattr(strategy, 'algo_id', '?')}: {exc}")
+            continue
+
+        matched = False
+        for position in positions:
+            if position.get("symbol") != symbol:
+                continue
+            matched = True
+            position["_last_ltp"] = ltp
+            strategy.broker.update_position_range(position, ltp)
+        if matched:
+            try:
+                strategy.check_exits()
+            except Exception as exc:
+                print(f"[engine] exit check failed for {getattr(strategy, 'algo_id', '?')} on {symbol}: {exc}")
 
 
 def _utc_now() -> str:
@@ -108,7 +272,6 @@ def _on_tick(message: dict):
     if not symbol or not ltp:
         return
 
-    last_ltp[symbol] = ltp
     prev_close = (
         message.get("prev_close_price")
         or message.get("prev_close")
@@ -125,34 +288,25 @@ def _on_tick(message: dict):
                 if set_previous_close:
                     set_previous_close(symbol, previous_close_value)
     now = datetime.datetime.now(IST)
-    with _engine_lock:
-        _engine_status.update({
-            "last_tick_at": _utc_now(),
-            "last_tick_symbol": symbol,
-            "last_tick_ltp": ltp,
-            "tick_count": int(_engine_status.get("tick_count") or 0) + 1,
-        })
-    # Broadcast every market tick immediately so the dashboard and any live
-    # selected rows move in lockstep with the feed instead of a throttled view.
-    broadcast_sync({"event": "price_update", "symbol": symbol, "ltp": ltp})
+    _apply_symbol_ltp(symbol, ltp, source="tick")
 
     aggregator.on_tick(symbol, ltp, day_volume, on_candle_close=_on_candle_close)
 
-    for strategy in STRATEGIES.values():
-        watchlist = getattr(strategy, "watchlist", [])
-        if watchlist and symbol not in watchlist:
-            continue
+    prioritized_strategies = sorted(
+        (
+            strategy for strategy in STRATEGIES.values()
+            if not getattr(strategy, "watchlist", []) or symbol in getattr(strategy, "watchlist", [])
+        ),
+        key=lambda strategy: (_strategy_tick_priority(strategy, symbol), getattr(strategy, "algo_id", "")),
+    )
+
+    for strategy in prioritized_strategies:
         strategy.on_tick(symbol, ltp, now)
-        for position in strategy.broker.open_positions():
-            if position["symbol"] == symbol:
-                position["_last_ltp"] = ltp
-                strategy.broker.update_position_range(position, ltp)
-        strategy.check_exits()
 
 
 def _scheduler_loop():
     """Runs alongside the tick handler -- checks the clock for the
-    9:16 entry trigger (algo1) and 3:15 square-off (both algos)."""
+    9:16 entry trigger (algo1 and algo4) and 3:15 square-off (both algos)."""
     entries_fired_date: dict[str, datetime.date] = {}
     entries_fired_schedule: dict[str, tuple[bool, str]] = {}
     test_schedule_attempt_minute: dict[str, tuple[datetime.date, str]] = {}
@@ -203,7 +357,7 @@ def _scheduler_loop():
                 try:
                     entry_time = (
                         datetime.datetime.strptime(scan_time, "%H:%M")
-                        + datetime.timedelta(minutes=3)
+                        + datetime.timedelta(minutes=1)
                     ).strftime("%H:%M")
                 except ValueError:
                     entry_time = None
@@ -317,6 +471,30 @@ def _live_feed_watchdog_loop():
         except Exception as exc:
             print(f"[engine] live-feed watchdog error: {exc}")
         time.sleep(15)
+
+
+def _open_position_quote_refresh_loop():
+    """Refresh open-position LTP from FYERS quotes before the broader watchlist."""
+    global _position_quote_refresh_started
+
+    while True:
+        try:
+            if get_stored_access_token() is None:
+                time.sleep(5)
+                continue
+
+            open_symbols, pending_symbols, _remaining_symbols = _iter_priority_symbols()
+            priority_symbols = open_symbols + [symbol for symbol in pending_symbols if symbol not in open_symbols]
+            if not priority_symbols:
+                time.sleep(2)
+                continue
+
+            refreshed = _refresh_open_positions_from_quotes(priority_symbols)
+            if refreshed:
+                print(f"[engine] refreshed {refreshed} prioritized position quotes ({len(open_symbols)} open, {len(pending_symbols)} pending)")
+        except Exception as exc:
+            print(f"[engine] open-position quote refresh error: {exc}")
+        time.sleep(2)
 
 
 def start_live_feed_if_ready(force: bool = False) -> bool:
@@ -588,7 +766,7 @@ def apply_trading_mode(mode: str) -> dict:
 
 def start_engine():
     """Called once from main.py's FastAPI startup event."""
-    global WATCHLIST, LIVE_FEED_SYMBOLS, _scheduler_started, _feed_watchdog_started
+    global WATCHLIST, LIVE_FEED_SYMBOLS, _scheduler_started, _feed_watchdog_started, _position_quote_refresh_started
 
     with _engine_lock:
         if _engine_status["state"] in {"starting", "running"}:
@@ -626,6 +804,9 @@ def start_engine():
         if not _feed_watchdog_started:
             threading.Thread(target=_live_feed_watchdog_loop, daemon=True).start()
             _feed_watchdog_started = True
+        if not _position_quote_refresh_started:
+            threading.Thread(target=_open_position_quote_refresh_loop, daemon=True).start()
+            _position_quote_refresh_started = True
 
         try_refresh_access_token(reason="startup")
         if not start_live_feed_if_ready():

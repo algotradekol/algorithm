@@ -87,7 +87,7 @@ export default function ScanResultsPanel({
         <div>{results?.message || 'Scan results will appear here at 9:16 AM when the market opens.'}</div>
         {schedule?.enabled && (
           <p className="mt-2 text-xs text-[#93c5fd]">
-            Scheduled test is turned on, so the scanner is waiting for the configured candle window instead of the default 09:15-09:17 opening range.
+            Scheduled test is turned on, so the scanner is waiting for the configured 09:15 signal candle instead of the default live schedule.
           </p>
         )}
       </section>
@@ -288,9 +288,9 @@ export default function ScanResultsPanel({
 
 function TestScheduleStatus({ schedule }: { schedule: any }) {
   const messages: Record<string, string> = {
-    waiting: `Scheduled test: waiting to collect the ${schedule.candle_time} IST candle. Entry evaluation starts at ${schedule.entry_time}.`,
-    collecting_candle: `Scheduled test is active: collecting the ${schedule.candle_time} IST candle across the watchlist.`,
-    evaluating_entries: `Scheduled test is evaluating the ${schedule.candle_time} candle and opening eligible paper positions.`,
+    waiting: `Scheduled test: waiting to collect the ${schedule.candle_time} IST signal candle. Entry evaluation starts at ${schedule.entry_time}.`,
+    collecting_candle: `Scheduled test is active: collecting the ${schedule.candle_time} IST signal candle across the watchlist.`,
+    evaluating_entries: `Scheduled test is evaluating the ${schedule.candle_time} signal candle and opening eligible paper positions.`,
     finished: `Scheduled test window ended. Review the scan funnel and positions below.`,
   };
   return <div className="mb-3 rounded border border-[#3b82f6]/50 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]"><i className="ri-time-fill mr-1" />{messages[schedule.state] || 'Scheduled test status is updating.'}</div>;
