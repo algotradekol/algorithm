@@ -37,6 +37,7 @@ export default function AlgoTab({
   const [exitingPositionId, setExitingPositionId] = useState<string | null>(null);
   const walletRequestId = useRef(0);
   const brokerPositionsRequestId = useRef(0);
+  const dataRequestId = useRef(0);
 
   const refreshSummary = useCallback(async () => {
     try {
@@ -70,10 +71,12 @@ export default function AlgoTab({
   }, [algoId]);
 
   const loadData = useCallback(async () => {
+    const requestId = ++dataRequestId.current;
     const [summaryResult, positionsResult, tradesResult, scanResult, feedResult] = await Promise.allSettled([
       api.summary(algoId), api.positions(algoId), api.trades(algoId), api.scanResults(algoId),
       algoId === 'algo3' ? api.feedStatus(algoId) : Promise.resolve(null),
     ]);
+    if (requestId !== dataRequestId.current) return;
 
     if (summaryResult.status === 'fulfilled') setSummary(summaryResult.value);
     if (positionsResult.status === 'fulfilled') {
@@ -91,7 +94,7 @@ export default function AlgoTab({
       .filter((result) => result.status === 'rejected')
       .map((result) => (result as PromiseRejectedResult).reason?.message || 'Request failed');
     setError(failures[0] || '');
-  }, [algoId]);
+  }, [algoId, tradingMode]);
 
   const loadWalletStatus = useCallback(async () => {
     const requestId = ++walletRequestId.current;
@@ -101,7 +104,7 @@ export default function AlgoTab({
       return;
     }
     try {
-      const result = await api.fyersFunds();
+      const result = await api.fyersFunds(tradingMode, true);
       if (requestId !== walletRequestId.current) return;
       if (result?.available !== false) {
         setWalletStatus(result);
@@ -122,7 +125,7 @@ export default function AlgoTab({
       return;
     }
     try {
-      const result = await api.fyersPositions();
+      const result = await api.fyersPositions(tradingMode);
       if (requestId !== brokerPositionsRequestId.current) return;
       if (result?.available !== false) {
         setBrokerPositions(Array.isArray(result?.positions) ? result.positions : []);
@@ -135,6 +138,23 @@ export default function AlgoTab({
       setBrokerPositionsError(e?.message || 'Failed to load FYERS broker positions');
     }
   }, [fyersConnected, tradingMode]);
+
+  useEffect(() => {
+    dataRequestId.current += 1;
+    walletRequestId.current += 1;
+    brokerPositionsRequestId.current += 1;
+    api.clearFyersAccountCache();
+    setSummary(null);
+    setPositions([]);
+    setTrades([]);
+    setScanResults(null);
+    setFeedStatus(null);
+    setWalletStatus(null);
+    setWalletStatusError('');
+    setBrokerPositions([]);
+    setBrokerPositionsError('');
+    setError('');
+  }, [tradingMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -154,11 +174,18 @@ export default function AlgoTab({
     refreshWallet();
     const interval = setInterval(() => {
       if (!document.hidden && !cancelled) refreshWallet();
-    }, 60_000);
+    }, 15_000);
+    const refreshWhenVisible = () => {
+      if (!document.hidden && !cancelled) refreshWallet();
+    };
+    window.addEventListener('focus', refreshWhenVisible);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
       cancelled = true;
       walletRequestId.current += 1;
       clearInterval(interval);
+      window.removeEventListener('focus', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
   }, [loadWalletStatus]);
 

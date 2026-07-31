@@ -35,6 +35,17 @@ _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
 
 
+class BacktestCancelled(Exception):
+    """Raised inside a worker after the user requests cancellation."""
+
+
+def _raise_if_cancelled(job_id: str) -> None:
+    with _lock:
+        cancelled = bool((_jobs.get(job_id) or {}).get("cancel_requested"))
+    if cancelled:
+        raise BacktestCancelled()
+
+
 def _ema_step(previous: float | None, value: float, period: int = EMA_PERIOD) -> float:
     k = 2 / (period + 1)
     return float(value) if previous is None else float(value) * k + previous * (1 - k)
@@ -104,11 +115,12 @@ def start_backtest(
         "message": "Queued historical candle download.",
         "result": None,
         "error": None,
+        "cancel_requested": False,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     with _lock:
         active = next(
-            (existing for existing in _jobs.values() if existing.get("status") in {"queued", "running"}),
+            (existing for existing in _jobs.values() if existing.get("status") in {"queued", "running", "cancelling"}),
             None,
         )
         if active:
@@ -125,6 +137,21 @@ def get_backtest_job(job_id: str) -> dict | None:
     if job:
         return _public_job(job)
     return _load_persisted_job(job_id)
+
+
+def cancel_backtest_job(job_id: str) -> dict | None:
+    with _lock:
+        job = _jobs.get(job_id)
+        if not job:
+            return None
+        if job.get("status") in {"queued", "running", "cancelling"}:
+            job["cancel_requested"] = True
+            job["status"] = "cancelling"
+            job["phase"] = "cancelling"
+            job["message"] = "Cancelling backtest after the current operation finishes."
+        snapshot = dict(job)
+    _persist_job(snapshot)
+    return _public_job(snapshot)
 
 
 def _public_job(job: dict | None) -> dict | None:
@@ -181,7 +208,7 @@ def _load_persisted_job(job_id: str) -> dict | None:
         if not rows:
             return None
         job = rows[0].get("payload") or None
-        if job and job.get("status") in {"queued", "running"}:
+        if job and job.get("status") in {"queued", "running", "cancelling"}:
             job.update({
                 "status": "failed",
                 "error": "Backtest interrupted by a backend restart. Start a new run.",
@@ -202,6 +229,7 @@ def _run_job(
 ):
     history_cache = BacktestHistoryCache()
     try:
+        _raise_if_cancelled(job_id)
         settings = get_settings(algo_id)
         if algo_id == "algo3":
             if not watchlist:
@@ -228,13 +256,16 @@ def _run_job(
             # Cache each response on disk. Keeping all 500 histories in RAM
             # exhausted Railway, while discarding them forced duplicate Fyers
             # requests for every selected replay signal.
+            _raise_if_cancelled(job_id)
             history = get_intraday_candles_for_range(symbol, lookback_start, last_date)
+            _raise_if_cancelled(job_id)
             rows = [_evaluate_symbol(algo_id, symbol, day, history, settings, sector_map) for day in trading_days]
             return rows, bool(history), history_cache.store(symbol, history)
 
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             futures = [pool.submit(screen_symbol, symbol) for symbol in watchlist]
             for future in as_completed(futures):
+                _raise_if_cancelled(job_id)
                 try:
                     rows, has_history, cached = future.result()
                     if has_history:
@@ -255,6 +286,7 @@ def _run_job(
         # are still being made for every selected signal.
         prepared_days = []
         for target_date in trading_days:
+            _raise_if_cancelled(job_id)
             daily_result, selected = _prepare_daily_result(
                 algo_id, target_date, rows_by_day[target_date], len(watchlist), settings
             )
@@ -284,22 +316,30 @@ def _run_job(
 
         # Replay is now local CPU/disk work. One cached history is used for
         # every selected date of that symbol, with no second Fyers API call.
+        def replay_symbol(symbol: str, selected_rows: list[tuple[datetime.date, dict]]):
+            _raise_if_cancelled(job_id)
+            result = _replay_cached_symbol(
+                history_cache,
+                symbol,
+                selected_rows,
+                settings,
+                charges_config,
+            )
+            _raise_if_cancelled(job_id)
+            return result
+
         with ThreadPoolExecutor(max_workers=MAX_WORKERS) as pool:
             futures = {}
             for symbol, selected_rows in replay_by_symbol.items():
                 future = pool.submit(
-                    _replay_cached_symbol,
-                    history_cache,
+                    replay_symbol,
                     symbol,
                     selected_rows,
-                    settings,
-                    charges_config,
                 )
                 futures[future] = selected_rows
             for future in as_completed(futures):
+                _raise_if_cancelled(job_id)
                 try:
-                    replayed_rows = future.result()
-                except Exception:
                     replayed_rows = future.result()
                 except Exception:
                     replayed_rows = [
@@ -343,6 +383,7 @@ def _run_job(
 
         daily_results = []
         for target_date, daily_result, _ in prepared_days:
+            _raise_if_cancelled(job_id)
             trades = trades_by_date[target_date]
             daily_result["trades"] = trades
             daily_result["summary"] = {
@@ -359,7 +400,17 @@ def _run_job(
             "lookback_start": lookback_start.isoformat(),
         }
         result = _range_result(algo_id, first_date, last_date, daily_results, coverage)
+        _raise_if_cancelled(job_id)
         _update(job_id, status="complete", phase="complete", message="Backtest complete.", result=result)
+    except BacktestCancelled:
+        _update(
+            job_id,
+            status="cancelled",
+            phase="cancelled",
+            message="Backtest cancelled.",
+            error=None,
+            result=None,
+        )
     except Exception as exc:
         _update(job_id, status="failed", error=str(exc), message="Backtest failed.")
     finally:
@@ -751,6 +802,7 @@ def _run_silver_micro_job(
     settings: dict,
     history_cache: BacktestHistoryCache,
 ) -> None:
+    _raise_if_cancelled(job_id)
     lookback_start = first_date - datetime.timedelta(days=WARMUP_LOOKBACK_DAYS)
     charges_config = get_charges_config()
     _update(
@@ -763,6 +815,7 @@ def _run_silver_micro_job(
         replay_failed=0,
     )
     history, history_resolution = _load_silver_micro_history(symbol, lookback_start, last_date)
+    _raise_if_cancelled(job_id)
     if history_cache.store(symbol, history):
         _increment(job_id, "cached_history_symbols")
     if not history:
@@ -797,6 +850,7 @@ def _run_silver_micro_job(
         settings,
         charges_config,
     )
+    _raise_if_cancelled(job_id)
     data_coverage = {
         "requested_symbols": 1,
         "symbols_with_history": 1,
@@ -818,6 +872,7 @@ def _run_silver_micro_job(
             f"Historical data was loaded from {history_resolution}-minute candles."
         ),
     )
+    _raise_if_cancelled(job_id)
     _update(job_id, status="complete", phase="complete", message="Silver Micro backtest complete.", result=result)
 
 
@@ -967,6 +1022,7 @@ def _simulate_silver_micro_range(
         candidate["target_price"] = round(float(target_price), 2)
 
     for bar in bars:
+        _raise_if_cancelled(job_id)
         bar_day = bar["time"].date()
         if bar_day < first_date:
             ema_price = _ema_step(ema_price, bar["close"])
@@ -1096,6 +1152,7 @@ def _simulate_silver_micro_range(
         finalize_pending_setup("confirmation_timeout")
 
     for day in trading_days:
+        _raise_if_cancelled(job_id)
         day_result = daily_results[day]
         trades = day_result["trades"]
         day_result["summary"] = {

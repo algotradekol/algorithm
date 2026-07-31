@@ -39,9 +39,11 @@ export default function TradingModeToggle({
 
     setLoading(true);
     setDisplayMode(nextMode);
+    api.clearFyersAccountCache();
     try {
       const response = await api.updateTradingMode(nextMode) as { trading_mode?: TradingMode; warning?: string };
       const activeMode = normalizeMode(response.trading_mode ?? nextMode);
+      api.clearFyersAccountCache();
       setDisplayMode(activeMode);
       onModeChanged?.(activeMode);
       if (response.warning) {

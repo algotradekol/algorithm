@@ -15,6 +15,7 @@ export default function BacktestTab() {
   const [endDate, setEndDate] = useState(today);
   const [job, setJob] = useState<any>(null);
   const [error, setError] = useState('');
+  const active = ['queued', 'running', 'cancelling'].includes(job?.status);
 
   async function run() {
     setError('');
@@ -38,8 +39,18 @@ export default function BacktestTab() {
     }
   }
 
+  async function cancel() {
+    if (!job?.id || !active) return;
+    setError('');
+    try {
+      setJob(await api.cancelBacktest(job.id));
+    } catch (e: any) {
+      setError(e?.message || 'Could not cancel backtest');
+    }
+  }
+
   useEffect(() => {
-    if (!job?.id || !['queued', 'running'].includes(job.status)) return;
+    if (!job?.id || !['queued', 'running', 'cancelling'].includes(job.status)) return;
     const timer = window.setInterval(async () => {
       try {
         setJob(await api.backtestStatus(job.id));
@@ -81,7 +92,17 @@ export default function BacktestTab() {
           <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option><option value="algo3">Silver Micro (MCX:SILVERMIC26AUGFUT)</option></select></label>
           <label><span className="label">Start date</span><input value={startDate} onChange={(e) => setStartDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <label><span className="label">End date</span><input value={endDate} onChange={(e) => setEndDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
-          <div className="flex items-end"><button onClick={run} disabled={['queued', 'running'].includes(job?.status)} className="min-h-10 w-full rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2 text-sm font-semibold text-white disabled:opacity-50"><i className="ri-play-circle-fill mr-2" />Run range backtest</button></div>
+          <div className="flex items-end">
+            {active ? (
+              <button onClick={cancel} disabled={job?.status === 'cancelling'} className="min-h-10 w-full rounded border border-[#ef4444] bg-[#ef4444]/10 px-4 py-2 text-sm font-semibold text-[#ef4444] disabled:cursor-wait disabled:opacity-60">
+                <i className="ri-stop-circle-fill mr-2" />{job?.status === 'cancelling' ? 'Cancelling...' : 'Cancel backtest'}
+              </button>
+            ) : (
+              <button onClick={run} className="min-h-10 w-full rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2 text-sm font-semibold text-white">
+                <i className="ri-play-circle-fill mr-2" />Run range backtest
+              </button>
+            )}
+          </div>
         </div>
         <p className="mt-3 text-xs text-[#f59e0b]"><i className="ri-error-warning-fill mr-1" />{introCopy.note}</p>
       </div>
@@ -89,6 +110,7 @@ export default function BacktestTab() {
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
       {job && !result && <section className="panel p-4"><div className="flex justify-between gap-3 text-sm text-gray-200"><span>{job.message}</span><span className="num">{progressCompleted} / {progressTotal}</span></div><div className="mt-3 h-2 overflow-hidden rounded bg-[#020617]"><div className="h-full bg-[#3b82f6] transition-[width] duration-500" style={{ width: `${progress}%` }} /></div><p className="mt-2 text-xs text-gray-500">{progress}% complete. {replaying ? `${job.replay_failed || 0} selected signals could not be replayed.` : `${job.failed_symbols || 0} symbols returned no usable history.`}</p>{replaying && <ReplayMonitor activity={job.replay_activity || []} />}</section>}
       {job?.status === 'failed' && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{job.error || job.message}</p>}
+      {job?.status === 'cancelled' && <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">Backtest cancelled. You can start a new range now.</p>}
       {result && <BacktestResult result={result} />}
     </section>
   );

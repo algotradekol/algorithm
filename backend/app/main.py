@@ -224,17 +224,24 @@ def fyers_token_status(_user=Depends(require_auth)):
 
 
 @app.get("/api/fyers/funds")
-def fyers_funds(_user=Depends(require_auth)):
-    mode = get_runtime_trading_mode()
-    broker = get_active_broker_key(mode)
+def fyers_funds(mode: str | None = None, _user=Depends(require_auth)):
+    active_mode = get_runtime_trading_mode()
+    requested_mode = normalize_trading_mode(mode or active_mode)
+    if requested_mode != active_mode:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Trading mode changed to {active_mode}; discard the stale {requested_mode} funds request.",
+        )
+    broker = get_active_broker_key(active_mode)
     try:
-        return get_wallet_balance(mode)
+        result = get_wallet_balance(active_mode)
+        return {**result, "trading_mode": active_mode, "broker": broker}
     except Exception as exc:
         message = str(exc)
         audit_log(
             "fyers",
             "funds request failed",
-            mode=mode,
+            mode=active_mode,
             broker=broker,
             error=message,
         )
@@ -243,17 +250,24 @@ def fyers_funds(_user=Depends(require_auth)):
 
 
 @app.get("/api/fyers/positions")
-def fyers_positions(_user=Depends(require_auth)):
-    mode = get_runtime_trading_mode()
-    broker = get_active_broker_key(mode)
+def fyers_positions(mode: str | None = None, _user=Depends(require_auth)):
+    active_mode = get_runtime_trading_mode()
+    requested_mode = normalize_trading_mode(mode or active_mode)
+    if requested_mode != active_mode:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Trading mode changed to {active_mode}; discard the stale {requested_mode} positions request.",
+        )
+    broker = get_active_broker_key(active_mode)
     try:
-        return get_broker_positions(mode)
+        result = get_broker_positions(active_mode)
+        return {**result, "trading_mode": active_mode, "broker": broker}
     except Exception as exc:
         message = str(exc)
         audit_log(
             "fyers",
             "positions request failed",
-            mode=mode,
+            mode=active_mode,
             broker=broker,
             error=message,
         )
@@ -694,3 +708,11 @@ def backtest_status(job_id: str, _user=Depends(require_auth)):
         raise HTTPException(status_code=404, detail="Backtest job not found. It may predate durable job storage or have been removed.")
     return job
 
+
+@app.post("/api/backtests/{job_id}/cancel")
+def cancel_backtest(job_id: str, _user=Depends(require_auth)):
+    from .backtest import cancel_backtest_job
+    job = cancel_backtest_job(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Backtest job not found.")
+    return job

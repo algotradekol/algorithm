@@ -266,6 +266,7 @@ function DashboardContent() {
           <>
             <div className={tab === 'Simple' ? '' : 'hidden'}>
               <AlgoTab
+                key={`algo1-${tradingMode}`}
                 algoId="algo1"
                 displayName="UN1 9:15 v15 - Simple"
                 description="Ranks the combined 9:15-9:17 opening window. Open=low gives BUY, open=high gives SELL, max 2% opening gap, 9:18 entry, 2% target, 1% stop loss."
@@ -276,6 +277,7 @@ function DashboardContent() {
             </div>
             <div className={tab === 'Filter' ? '' : 'hidden'}>
               <AlgoTab
+                key={`algo2-${tradingMode}`}
                 algoId="algo2"
                 displayName="UN1 9:15 v14 - Filter"
                 description="Ranks the combined 9:15-9:17 opening window, then applies the UN1 v14 liquidity, volume, and price-range checks before the 9:18 entry. Advanced indicator filters remain optional in Settings."
@@ -286,6 +288,7 @@ function DashboardContent() {
             </div>
             <div className={tab === 'Silver Micro' ? '' : 'hidden'}>
               <AlgoTab
+                key={`algo3-${tradingMode}`}
                 algoId="algo3"
                 displayName="Silver Micro - MCX:SILVERMIC26AUGFUT - 5m EMA/Volume"
                 description="Tracks MCX:SILVERMIC26AUGFUT on 5-minute candles. BUY when a green 5m candle closes above EMA20 with volume above volume EMA20, confirm on one of the subsequent green candles within the confirmation window, and enter on the next candle open. SELL mirrors the same logic. Reversal happens when the opposite side confirms."

@@ -52,7 +52,7 @@ export default function HistoryTab({
       return;
     }
     try {
-      const result = await api.fyersFunds();
+      const result = await api.fyersFunds(tradingMode, true);
       if (requestId !== walletRequestId.current) return;
       setWalletStatus(result);
       setWalletStatusError('');
@@ -122,11 +122,18 @@ export default function HistoryTab({
       }
     }
     refresh();
-    const interval = window.setInterval(refresh, 60_000);
+    const interval = window.setInterval(refresh, 15_000);
+    const refreshWhenVisible = () => {
+      if (!document.hidden && !cancelled) refresh();
+    };
+    window.addEventListener('focus', refreshWhenVisible);
+    document.addEventListener('visibilitychange', refreshWhenVisible);
     return () => {
       cancelled = true;
       walletRequestId.current += 1;
       window.clearInterval(interval);
+      window.removeEventListener('focus', refreshWhenVisible);
+      document.removeEventListener('visibilitychange', refreshWhenVisible);
     };
   }, [fyersConnected, loadTokenStatus, loadWalletStatus, tradingMode]);
 

@@ -3,10 +3,11 @@ import { clearPinToken } from './pinAuth';
 import { supabase } from './supabaseClient';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
-let fyersPositionsInFlight: Promise<any> | null = null;
-let fyersPositionsCache: { value: any; cachedAt: number } | null = null;
-let fyersFundsInFlight: Promise<any> | null = null;
-let fyersFundsCache: { value: any; cachedAt: number } | null = null;
+type TradingMode = 'paper' | 'live';
+const fyersPositionsInFlight = new Map<TradingMode, Promise<any>>();
+const fyersPositionsCache = new Map<TradingMode, { value: any; cachedAt: number }>();
+const fyersFundsInFlight = new Map<TradingMode, Promise<any>>();
+const fyersFundsCache = new Map<TradingMode, { value: any; cachedAt: number }>();
 const FYERS_POSITIONS_CLIENT_CACHE_MS = 8_000;
 const FYERS_FUNDS_CLIENT_CACHE_MS = 15_000;
 
@@ -45,40 +46,62 @@ async function authedFetch(path: string, options: RequestInit = {}) {
   return res.json();
 }
 
-function fetchFyersPositions() {
-  const now = Date.now();
-  if (fyersPositionsCache && now - fyersPositionsCache.cachedAt < FYERS_POSITIONS_CLIENT_CACHE_MS) {
-    return Promise.resolve(fyersPositionsCache.value);
+function assertAccountMode(value: any, mode: TradingMode) {
+  if (value?.trading_mode && value.trading_mode !== mode) {
+    throw new Error(`Discarded stale ${value.trading_mode} broker response while ${mode} mode is active`);
   }
-  if (fyersPositionsInFlight) return fyersPositionsInFlight;
-
-  fyersPositionsInFlight = authedFetch('/api/fyers/positions')
-    .then((value) => {
-      fyersPositionsCache = { value, cachedAt: Date.now() };
-      return value;
-    })
-    .finally(() => {
-      fyersPositionsInFlight = null;
-    });
-  return fyersPositionsInFlight;
+  return value;
 }
 
-function fetchFyersFunds() {
-  const now = Date.now();
-  if (fyersFundsCache && now - fyersFundsCache.cachedAt < FYERS_FUNDS_CLIENT_CACHE_MS) {
-    return Promise.resolve(fyersFundsCache.value);
-  }
-  if (fyersFundsInFlight) return fyersFundsInFlight;
+function clearFyersAccountCache() {
+  fyersPositionsCache.clear();
+  fyersPositionsInFlight.clear();
+  fyersFundsCache.clear();
+  fyersFundsInFlight.clear();
+}
 
-  fyersFundsInFlight = authedFetch('/api/fyers/funds')
+function fetchFyersPositions(mode: TradingMode = 'live', force = false) {
+  const now = Date.now();
+  const cached = fyersPositionsCache.get(mode);
+  if (!force && cached && now - cached.cachedAt < FYERS_POSITIONS_CLIENT_CACHE_MS) {
+    return Promise.resolve(cached.value);
+  }
+  const inFlight = fyersPositionsInFlight.get(mode);
+  if (inFlight) return inFlight;
+
+  const request = authedFetch(`/api/fyers/positions?mode=${mode}`)
     .then((value) => {
-      fyersFundsCache = { value, cachedAt: Date.now() };
-      return value;
+      const checked = assertAccountMode(value, mode);
+      fyersPositionsCache.set(mode, { value: checked, cachedAt: Date.now() });
+      return checked;
     })
     .finally(() => {
-      fyersFundsInFlight = null;
+      fyersPositionsInFlight.delete(mode);
     });
-  return fyersFundsInFlight;
+  fyersPositionsInFlight.set(mode, request);
+  return request;
+}
+
+function fetchFyersFunds(mode: TradingMode = 'live', force = false) {
+  const now = Date.now();
+  const cached = fyersFundsCache.get(mode);
+  if (!force && cached && now - cached.cachedAt < FYERS_FUNDS_CLIENT_CACHE_MS) {
+    return Promise.resolve(cached.value);
+  }
+  const inFlight = fyersFundsInFlight.get(mode);
+  if (inFlight) return inFlight;
+
+  const request = authedFetch(`/api/fyers/funds?mode=${mode}`)
+    .then((value) => {
+      const checked = assertAccountMode(value, mode);
+      fyersFundsCache.set(mode, { value: checked, cachedAt: Date.now() });
+      return checked;
+    })
+    .finally(() => {
+      fyersFundsInFlight.delete(mode);
+    });
+  fyersFundsInFlight.set(mode, request);
+  return request;
 }
 
 export const api = {
@@ -117,6 +140,7 @@ export const api = {
   fyersTokenStatus: () => authedFetch('/api/fyers/token-status'),
   fyersFunds: fetchFyersFunds,
   fyersPositions: fetchFyersPositions,
+  clearFyersAccountCache,
   aiSessions: () => authedFetch('/api/ai/sessions'),
   aiCreateSession: (title = 'New chat') => authedFetch('/api/ai/sessions', { method: 'POST', body: JSON.stringify({ title }) }),
   aiMessages: (sessionId: string) => authedFetch(`/api/ai/sessions/${sessionId}/messages`),
@@ -131,4 +155,6 @@ export const api = {
   startBacktest: (payload: { algo_id: string; start_date: string; end_date: string }) =>
     authedFetch('/api/backtests', { method: 'POST', body: JSON.stringify(payload) }),
   backtestStatus: (jobId: string) => authedFetch(`/api/backtests/${encodeURIComponent(jobId)}`),
+  cancelBacktest: (jobId: string) =>
+    authedFetch(`/api/backtests/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
 };
