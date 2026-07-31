@@ -82,7 +82,8 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
         broker=get_active_broker_key(mode),
         client_id=fyers_config["client_id"],
         redirect_uri=fyers_config["redirect_uri"],
-        proxy_enabled=bool(fyers_proxies),
+        live_order_proxy_configured=bool(fyers_proxies),
+        exchange_transport="direct",
     )
     last_error: str | None = None
     for app_id_hash in _candidate_app_id_hashes(mode):
@@ -93,7 +94,7 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
             broker=get_active_broker_key(mode),
             client_id=fyers_config["client_id"],
             redirect_uri=fyers_config["redirect_uri"],
-            proxy_enabled=bool(fyers_proxies),
+            proxy_enabled=False,
             app_id_hash_prefix=app_id_hash[:12],
         )
         request_kwargs = {
@@ -103,14 +104,10 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
                 "appIdHash": app_id_hash,
                 "code": auth_code,
             },
-            "timeout": 30,
+            "timeout": 15,
         }
         try:
-            response = requests.post(
-                AUTH_CODE_EXCHANGE_URL,
-                proxies=fyers_proxies,
-                **request_kwargs,
-            )
+            response = requests.post(AUTH_CODE_EXCHANGE_URL, **request_kwargs)
         except requests.RequestException as exc:
             last_error = str(exc)
             audit_log(
@@ -118,38 +115,11 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
                 "auth-code exchange request failed",
                 mode=mode or "runtime",
                 broker=get_active_broker_key(mode),
-                proxy_enabled=bool(fyers_proxies),
+                proxy_enabled=False,
                 app_id_hash_prefix=app_id_hash[:12],
                 error=str(exc),
             )
-            if fyers_proxies and _is_proxy_connectivity_error(exc):
-                audit_log(
-                    "fyers",
-                    "auth-code exchange retrying without proxy",
-                    mode=mode or "runtime",
-                    broker=get_active_broker_key(mode),
-                    app_id_hash_prefix=app_id_hash[:12],
-                    reason="proxy connectivity failure",
-                )
-                try:
-                    response = requests.post(
-                        AUTH_CODE_EXCHANGE_URL,
-                        **request_kwargs,
-                    )
-                except requests.RequestException as direct_exc:
-                    last_error = str(direct_exc)
-                    audit_log(
-                        "fyers",
-                        "auth-code exchange direct retry failed",
-                        mode=mode or "runtime",
-                        broker=get_active_broker_key(mode),
-                        proxy_enabled=False,
-                        app_id_hash_prefix=app_id_hash[:12],
-                        error=str(direct_exc),
-                    )
-                    continue
-            else:
-                continue
+            continue
         try:
             data = response.json()
         except ValueError as exc:
@@ -160,7 +130,7 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
                 "auth-code exchange returned non-json response",
                 mode=mode or "runtime",
                 broker=get_active_broker_key(mode),
-                proxy_enabled=bool(fyers_proxies),
+                proxy_enabled=False,
                 app_id_hash_prefix=app_id_hash[:12],
                 status_code=response.status_code,
                 content_type=content_type,
@@ -178,7 +148,7 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
             broker=get_active_broker_key(mode),
             status_code=response.status_code,
             app_id_hash_prefix=app_id_hash[:12],
-            proxy_enabled=bool(fyers_proxies),
+            proxy_enabled=False,
             error=error_body,
         )
         if response.status_code not in {200, 201, 202, 204, 308}:
@@ -419,14 +389,14 @@ def get_token_status(mode: str | None = None) -> dict:
 def _candidate_app_id_hashes(mode: str | None = None) -> list[str]:
     fyers_config = _fyers_config(mode)
     values = [
-        f"{fyers_config['client_id']}{fyers_config['secret_key']}",
         f"{fyers_config['client_id']}:{fyers_config['secret_key']}",
+        f"{fyers_config['client_id']}{fyers_config['secret_key']}",
     ]
     app_id_without_type = fyers_config["client_id"].split("-")[0]
     if app_id_without_type and app_id_without_type != fyers_config["client_id"]:
         values.extend([
-            f"{app_id_without_type}{fyers_config['secret_key']}",
             f"{app_id_without_type}:{fyers_config['secret_key']}",
+            f"{app_id_without_type}{fyers_config['secret_key']}",
         ])
     seen = set()
     hashes = []
