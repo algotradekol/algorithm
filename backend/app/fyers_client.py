@@ -9,9 +9,13 @@ import time
 try:
     from fyers_apiv3 import fyersModel
     from fyers_apiv3.FyersWebsocket import data_ws
+    from requests.adapters import HTTPAdapter
+    from urllib3.util.retry import Retry
 except ImportError:  # pragma: no cover - keeps /health alive if SDK is missing
     fyersModel = None
     data_ws = None
+    HTTPAdapter = None
+    Retry = None
 
 from .runtime_mode import get_active_broker_key, get_fyers_config, get_runtime_trading_mode
 from .timezone import IST
@@ -37,6 +41,22 @@ def get_fyers_model(mode: str | None = None):
         proxies = {"http": proxy_url, "https": proxy_url}
         fyers.service.session.proxies.update(proxies)
         fyers.service.session.trust_env = False
+        
+        # Add retry strategy with exponential backoff for proxy timeouts
+        if HTTPAdapter and Retry:
+            retry_strategy = Retry(
+                total=3,
+                status_forcelist=[429, 500, 502, 503, 504],
+                method_whitelist=["HEAD", "GET", "OPTIONS", "POST"],
+                backoff_factor=1,  # 1s, 2s, 4s delays
+                raise_on_status=False,
+            )
+            adapter = HTTPAdapter(max_retries=retry_strategy)
+            fyers.service.session.mount("http://", adapter)
+            fyers.service.session.mount("https://", adapter)
+        
+        # Increase connection timeout for proxy traversal
+        fyers.service.session.timeout = (10, 60)  # (connect_timeout, read_timeout) in seconds
     return fyers
 
 
@@ -413,3 +433,4 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
 
     threading.Thread(target=detect_missing_first_tick, daemon=True).start()
     return socket
+
