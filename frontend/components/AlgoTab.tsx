@@ -222,7 +222,7 @@ export default function AlgoTab({
   const netPnl = Number(summary.realized_net_pnl || 0);
   const grossPnl = Number(summary.realized_gross_pnl || 0);
   const walletSummary = walletStatus?.summary || {};
-  const liveWalletBalance = optionalNumber(walletSummary.wallet_balance, walletSummary.available_margin);
+  const liveWalletBalance = optionalNumber(walletSummary.wallet_balance);
   const showLiveWallet = tradingMode === 'live';
   const openUnrealizedPnl = positions.reduce((total, position) => {
     const ltp = Number(position.ltp ?? position.last_ltp ?? position._last_ltp ?? position.entry_price);

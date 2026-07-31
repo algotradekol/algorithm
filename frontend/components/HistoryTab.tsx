@@ -241,7 +241,7 @@ function TokenRefreshPanel({
   const hasRefreshToken = Boolean(status?.refresh_token_present);
   const lastError = status?.last_refresh_error;
   const walletSummary = walletStatus?.summary || {};
-  const walletBalance = optionalNumber(walletSummary.wallet_balance, walletSummary.available_margin);
+  const walletBalance = optionalNumber(walletSummary.wallet_balance);
   return (
     <section className="rounded border border-[#1f2937] bg-[#111827] p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
