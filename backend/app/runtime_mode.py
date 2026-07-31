@@ -31,6 +31,7 @@ from .supabase_client import run_with_supabase
 RUNTIME_MODE_TABLE = "app_runtime_settings"
 RUNTIME_MODE_KEY = "trading_mode"
 FYERS_LOGIN_MODE_KEY = "pending_fyers_login_mode"
+FYERS_LOGIN_ORIGIN_KEY = "pending_fyers_login_origin"
 VALID_TRADING_MODES = {"paper", "live"}
 _runtime_mode_cache: str | None = None
 
@@ -137,6 +138,71 @@ def clear_pending_fyers_login_mode() -> None:
             lambda supabase: supabase.table(RUNTIME_MODE_TABLE)
             .delete()
             .eq("setting_key", FYERS_LOGIN_MODE_KEY)
+            .execute()
+        )
+    except Exception:
+        pass
+
+
+def _normalize_frontend_origin(origin: str | None) -> str | None:
+    value = str(origin or "").strip()
+    if not value:
+        return None
+    if "://" not in value:
+        return None
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(value)
+    if not parts.scheme or not parts.netloc:
+        return None
+    return f"{parts.scheme}://{parts.netloc}"
+
+
+def set_pending_fyers_login_origin(origin: str | None) -> str | None:
+    normalized = _normalize_frontend_origin(origin)
+    now = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    if not normalized:
+        return None
+    try:
+        run_with_supabase(
+            lambda supabase: supabase.table(RUNTIME_MODE_TABLE).upsert(
+                {
+                    "setting_key": FYERS_LOGIN_ORIGIN_KEY,
+                    "setting_value": normalized,
+                    "updated_at": now,
+                }
+            ).execute()
+        )
+    except Exception as exc:
+        if "PGRST205" not in str(exc) and RUNTIME_MODE_TABLE not in str(exc):
+            raise
+        print(f"[runtime_mode] {RUNTIME_MODE_TABLE} missing; pending FYERS login origin kept in memory only until SQL migration is applied.")
+    return normalized
+
+
+def get_pending_fyers_login_origin() -> str | None:
+    try:
+        result = run_with_supabase(
+            lambda supabase: (
+                supabase.table(RUNTIME_MODE_TABLE)
+                .select("setting_value")
+                .eq("setting_key", FYERS_LOGIN_ORIGIN_KEY)
+                .limit(1)
+                .execute()
+            )
+        )
+        row = (result.data or [{}])[0] if result.data else None
+        return _normalize_frontend_origin((row or {}).get("setting_value")) if row else None
+    except Exception:
+        return None
+
+
+def clear_pending_fyers_login_origin() -> None:
+    try:
+        run_with_supabase(
+            lambda supabase: supabase.table(RUNTIME_MODE_TABLE)
+            .delete()
+            .eq("setting_key", FYERS_LOGIN_ORIGIN_KEY)
             .execute()
         )
     except Exception:

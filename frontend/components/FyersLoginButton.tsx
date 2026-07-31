@@ -36,7 +36,7 @@ export default function FyersLoginButton({ connected = false, mode = 'paper' }: 
       const data = await res.json() as { url?: string };
       if (!data.url) throw new Error('Fyers login URL was not returned');
 
-      window.open(data.url, '_blank');
+      window.location.assign(data.url);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Unable to start Fyers login');
     } finally {

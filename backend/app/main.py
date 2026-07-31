@@ -11,7 +11,7 @@ import math
 import threading
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
-from fastapi import FastAPI, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import RedirectResponse
 import jwt
@@ -30,11 +30,14 @@ from .fyers_client import get_connection_status, get_price_history, get_wallet_b
 from .fyers_auth import disconnect_broker_tokens, exchange_auth_code, store_broker_tokens
 from .runtime_mode import (
     clear_pending_fyers_login_mode,
+    clear_pending_fyers_login_origin,
     get_active_broker_key,
     get_fyers_config,
+    get_pending_fyers_login_origin,
     get_pending_fyers_login_mode,
     get_runtime_trading_mode,
     normalize_trading_mode,
+    set_pending_fyers_login_origin,
     set_pending_fyers_login_mode,
 )
 from .supabase_client import supabase
@@ -171,11 +174,12 @@ def pin_login(payload: dict):
 
 
 @app.get("/api/fyers/login-url")
-def fyers_login_url(mode: str | None = None, _user=Depends(require_auth)):
+def fyers_login_url(request: Request, mode: str | None = None, _user=Depends(require_auth)):
     if fyersModel is None:
         raise HTTPException(status_code=503, detail="Fyers SDK is not installed in this environment.")
     requested_mode = normalize_trading_mode(mode or get_runtime_trading_mode())
     fyers_config = get_fyers_config(requested_mode)
+    set_pending_fyers_login_origin(request.headers.get("origin") or request.headers.get("referer"))
     session = fyersModel.SessionModel(
         client_id=fyers_config["client_id"],
         secret_key=fyers_config["secret_key"],
@@ -306,11 +310,15 @@ def ai_chat(payload: dict, _user=Depends(require_auth)):
 @app.get("/api/fyers/callback")
 def fyers_callback(auth_code: str = None, code: str = None, state: str | None = None, mode: str | None = None):
     received_code = auth_code or code
+    frontend_origin = get_pending_fyers_login_origin() or FRONTEND_URL
+    redirect_base = frontend_origin.rstrip("/")
     if not received_code:
-        return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
+        clear_pending_fyers_login_origin()
+        return RedirectResponse(f"{redirect_base}/dashboard?fyers_login=failed")
     if fyersModel is None:
         print("[fyers] OAuth callback received, but fyers_apiv3 is not installed.")
-        return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
+        clear_pending_fyers_login_origin()
+        return RedirectResponse(f"{redirect_base}/dashboard?fyers_login=failed")
     callback_mode = normalize_trading_mode(state or mode or get_pending_fyers_login_mode() or get_runtime_trading_mode())
     fyers_config = get_fyers_config(callback_mode)
     audit_log(
@@ -327,12 +335,14 @@ def fyers_callback(auth_code: str = None, code: str = None, state: str | None = 
     except Exception as exc:
         audit_log("fyers", "oauth callback exchange failed", mode=callback_mode, error=str(exc))
         clear_pending_fyers_login_mode()
-        return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=failed")
+        clear_pending_fyers_login_origin()
+        return RedirectResponse(f"{redirect_base}/dashboard?fyers_login=failed")
     store_broker_tokens(response, mode=callback_mode)
     clear_pending_fyers_login_mode()
+    clear_pending_fyers_login_origin()
     restart_live_feed(reason=f"fyers_oauth_callback:{callback_mode}")
     audit_log("fyers", "oauth callback completed", mode=callback_mode)
-    return RedirectResponse(f"{FRONTEND_URL}/dashboard?fyers_login=success")
+    return RedirectResponse(f"{redirect_base}/dashboard?fyers_login=success")
 
 
 @app.get("/api/algo/{algo_id}/summary")
