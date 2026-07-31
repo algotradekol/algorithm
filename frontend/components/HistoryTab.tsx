@@ -5,7 +5,13 @@ import { Table } from './AlgoTab';
 
 const RESOLUTIONS = ['5', '15', '60', 'D'];
 
-export default function HistoryTab() {
+export default function HistoryTab({
+  tradingMode = 'paper',
+  fyersConnected = false,
+}: {
+  tradingMode?: 'paper' | 'live';
+  fyersConnected?: boolean;
+}) {
   const [algoId, setAlgoId] = useState('algo1');
   const [days, setDays] = useState(30);
   const [resolution, setResolution] = useState('15');
@@ -22,6 +28,7 @@ export default function HistoryTab() {
   const [walletStatus, setWalletStatus] = useState<any>(null);
   const [walletStatusError, setWalletStatusError] = useState('');
   const [disconnecting, setDisconnecting] = useState(false);
+  const walletRequestId = useRef(0);
 
   const loadTokenStatus = useCallback(async () => {
     try {
@@ -36,15 +43,23 @@ export default function HistoryTab() {
   }, []);
 
   const loadWalletStatus = useCallback(async () => {
+    const requestId = ++walletRequestId.current;
+    if (tradingMode !== 'live' || !fyersConnected) {
+      setWalletStatus(null);
+      setWalletStatusError('');
+      return;
+    }
     try {
       const result = await api.fyersFunds();
+      if (requestId !== walletRequestId.current) return;
       setWalletStatus(result);
       setWalletStatusError('');
     } catch (e: any) {
+      if (requestId !== walletRequestId.current) return;
       setWalletStatus(null);
       setWalletStatusError(e?.message || 'Failed to load wallet balance');
     }
-  }, []);
+  }, [fyersConnected, tradingMode]);
 
   useEffect(() => {
     api.watchlist().then((result) => {
@@ -96,10 +111,10 @@ export default function HistoryTab() {
     let cancelled = false;
     async function refresh() {
       const result = await loadTokenStatus();
-      if (!cancelled && result?.refresh_token_present) {
+      if (!cancelled && result?.refresh_token_present && tradingMode === 'live' && fyersConnected) {
         await loadWalletStatus();
       }
-      if (!cancelled && !result?.refresh_token_present) {
+      if (!cancelled && (!result?.refresh_token_present || tradingMode !== 'live' || !fyersConnected)) {
         setWalletStatus(null);
         setWalletStatusError('');
       }
@@ -108,9 +123,10 @@ export default function HistoryTab() {
     const interval = window.setInterval(refresh, 60_000);
     return () => {
       cancelled = true;
+      walletRequestId.current += 1;
       window.clearInterval(interval);
     };
-  }, [loadTokenStatus, loadWalletStatus]);
+  }, [fyersConnected, loadTokenStatus, loadWalletStatus, tradingMode]);
 
   async function handleDisconnectFyers() {
     if (!window.confirm('Disconnect FYERS and clear the stored token for this mode?')) return;

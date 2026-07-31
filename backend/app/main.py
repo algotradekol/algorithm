@@ -225,10 +225,21 @@ def fyers_token_status(_user=Depends(require_auth)):
 
 @app.get("/api/fyers/funds")
 def fyers_funds(_user=Depends(require_auth)):
+    mode = get_runtime_trading_mode()
+    broker = get_active_broker_key(mode)
     try:
-        return get_wallet_balance()
+        return get_wallet_balance(mode)
     except Exception as exc:
-        raise HTTPException(status_code=400, detail=str(exc))
+        message = str(exc)
+        audit_log(
+            "fyers",
+            "funds request failed",
+            mode=mode,
+            broker=broker,
+            error=message,
+        )
+        status_code = 409 if "No Fyers access token" in message else 502
+        raise HTTPException(status_code=status_code, detail=message)
 
 
 @app.post("/api/fyers/disconnect")

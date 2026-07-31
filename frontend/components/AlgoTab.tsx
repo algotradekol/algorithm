@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import StrategySettingsPanel from './StrategySettingsPanel';
 import ScanResultsPanel from './ScanResultsPanel';
@@ -13,12 +13,14 @@ export default function AlgoTab({
   displayName,
   description,
   tradingMode,
+  fyersConnected,
   onWebSocketStatus,
 }: {
   algoId: string;
   displayName: string;
   description?: string;
   tradingMode?: 'paper' | 'live';
+  fyersConnected?: boolean;
   onWebSocketStatus?: (status: WebSocketState) => void;
 }) {
   const [summary, setSummary] = useState<any>(null);
@@ -31,6 +33,7 @@ export default function AlgoTab({
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exitingPositionId, setExitingPositionId] = useState<string | null>(null);
+  const walletRequestId = useRef(0);
 
   const refreshSummary = useCallback(async () => {
     try {
@@ -88,20 +91,23 @@ export default function AlgoTab({
   }, [algoId]);
 
   const loadWalletStatus = useCallback(async () => {
-    if (tradingMode !== 'live') {
+    const requestId = ++walletRequestId.current;
+    if (tradingMode !== 'live' || !fyersConnected) {
       setWalletStatus(null);
       setWalletStatusError('');
       return;
     }
     try {
       const result = await api.fyersFunds();
+      if (requestId !== walletRequestId.current) return;
       setWalletStatus(result);
       setWalletStatusError('');
     } catch (e: any) {
+      if (requestId !== walletRequestId.current) return;
       setWalletStatus(null);
       setWalletStatusError(e?.message || 'Failed to load FYERS wallet balance');
     }
-  }, [tradingMode]);
+  }, [fyersConnected, tradingMode]);
 
   useEffect(() => {
     let cancelled = false;
@@ -124,6 +130,7 @@ export default function AlgoTab({
     }, 60_000);
     return () => {
       cancelled = true;
+      walletRequestId.current += 1;
       clearInterval(interval);
     };
   }, [loadWalletStatus]);
@@ -245,7 +252,7 @@ export default function AlgoTab({
         </button>
       </div>
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
-      {walletStatusError && tradingMode === 'live' && (
+      {walletStatusError && tradingMode === 'live' && fyersConnected && (
         <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
           {walletStatusError}
         </p>

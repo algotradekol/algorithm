@@ -36,6 +36,7 @@ function DashboardContent() {
     connected: boolean;
     status: string;
     message: string;
+    trading_mode?: 'paper' | 'live';
   } | null>(null);
   const [engineStatus, setEngineStatus] = useState<{
     state: string;
@@ -62,10 +63,15 @@ function DashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const fyersLogin = searchParams.get('fyers_login');
-  const tradingReady = Boolean(fyersStatus?.connected && engineStatus?.state === 'running');
-  const statusText = fyersStatus?.connected ? 'LIVE' : fyersStatus?.status === 'disconnected' ? 'TOKEN MISSING' : 'STOPPED';
+  const tradingMode = (engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper';
+  const fyersConnectedForMode = Boolean(
+    fyersStatus?.connected
+    && (!fyersStatus.trading_mode || fyersStatus.trading_mode === tradingMode)
+  );
+  const tradingReady = Boolean(fyersConnectedForMode && engineStatus?.state === 'running');
+  const statusText = fyersConnectedForMode ? 'LIVE' : fyersStatus?.status === 'disconnected' ? 'TOKEN MISSING' : 'STOPPED';
   const wsText = wsStatus === 'connected' ? 'Live' : wsStatus === 'reconnecting' ? 'Reconnecting' : 'Offline';
-  const statusIconTone = fyersStatus?.connected ? 'text-[#22c55e]' : fyersStatus?.status === 'disconnected' ? 'text-[#f59e0b]' : 'text-[#ef4444]';
+  const statusIconTone = fyersConnectedForMode ? 'text-[#22c55e]' : fyersStatus?.status === 'disconnected' ? 'text-[#f59e0b]' : 'text-[#ef4444]';
   const wsIconTone = wsStatus === 'connected' ? 'text-[#22c55e]' : wsStatus === 'reconnecting' ? 'text-[#f59e0b]' : 'text-[#ef4444]';
 
   useEffect(() => {
@@ -175,11 +181,14 @@ function DashboardContent() {
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
             <TradingModeToggle
               mode={engineStatus?.trading_mode}
-              onModeChanged={(mode) => setEngineStatus((current) => (
-                current ? { ...current, trading_mode: mode } : current
-              ))}
+              onModeChanged={(mode) => {
+                setFyersStatus(null);
+                setEngineStatus((current) => (
+                  current ? { ...current, trading_mode: mode } : current
+                ));
+              }}
             />
-            <FyersLoginButton connected={Boolean(fyersStatus?.connected)} mode={(engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper'} />
+            <FyersLoginButton connected={fyersConnectedForMode} mode={tradingMode} />
             <button
               onClick={async () => { clearPinToken(); await supabase.auth.signOut(); router.replace('/login'); }}
               className="inline-flex min-h-10 items-center gap-1 text-sm text-gray-500 hover:text-gray-100"
@@ -222,7 +231,7 @@ function DashboardContent() {
               <StatusCard
                 label="Fyers"
                 dotClass={statusIconTone}
-                value={fyersStatus ? (fyersStatus.connected ? 'Connected' : fyersStatus.status) : 'Checking'}
+                value={fyersStatus ? (fyersConnectedForMode ? 'Connected' : fyersStatus.status) : 'Checking'}
                 detail={fyersStatus?.message || 'Waiting for broker status check.'}
               />
               <StatusCard
@@ -240,7 +249,8 @@ function DashboardContent() {
                 algoId="algo1"
                 displayName="UN1 9:15 v15 - Simple"
                 description="Ranks the combined 9:15-9:17 opening window. Open=low gives BUY, open=high gives SELL, max 2% opening gap, 9:18 entry, 2% target, 1% stop loss."
-                tradingMode={(engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper'}
+                tradingMode={tradingMode}
+                fyersConnected={fyersConnectedForMode}
                 onWebSocketStatus={setWsStatus}
               />
             </div>
@@ -249,7 +259,8 @@ function DashboardContent() {
                 algoId="algo2"
                 displayName="UN1 9:15 v14 - Filter"
                 description="Ranks the combined 9:15-9:17 opening window, then applies the UN1 v14 liquidity, volume, and price-range checks before the 9:18 entry. Advanced indicator filters remain optional in Settings."
-                tradingMode={(engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper'}
+                tradingMode={tradingMode}
+                fyersConnected={fyersConnectedForMode}
                 onWebSocketStatus={setWsStatus}
               />
             </div>
@@ -258,13 +269,16 @@ function DashboardContent() {
                 algoId="algo3"
                 displayName="Silver Micro - MCX:SILVERMIC26AUGFUT - 5m EMA/Volume"
                 description="Tracks MCX:SILVERMIC26AUGFUT on 5-minute candles. BUY when a green 5m candle closes above EMA20 with volume above volume EMA20, confirm on one of the subsequent green candles within the confirmation window, and enter on the next candle open. SELL mirrors the same logic. Reversal happens when the opposite side confirms."
-                tradingMode={(engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper'}
+                tradingMode={tradingMode}
+                fyersConnected={fyersConnectedForMode}
                 onWebSocketStatus={setWsStatus}
               />
             </div>
             {tab === 'Backtest' && <BacktestTab />}
             {tab === 'Compare' && <CompareTab />}
-            {tab === 'History' && <HistoryTab />}
+            {tab === 'History' && (
+              <HistoryTab tradingMode={tradingMode} fyersConnected={fyersConnectedForMode} />
+            )}
             {tab === 'Calendar' && <CalendarTab />}
             {tab === 'Charges' && <ChargesPanel />}
           </>

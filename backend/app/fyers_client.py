@@ -49,6 +49,7 @@ def _patch_retry_compatibility() -> None:
 
 _patch_retry_compatibility()
 
+from .audit_log import audit_log
 from .runtime_mode import get_active_broker_key, get_fyers_config, get_runtime_trading_mode
 from .timezone import IST
 from .fyers_auth import get_stored_access_token, get_stored_token_row
@@ -56,44 +57,55 @@ from .fyers_auth import get_stored_access_token, get_stored_token_row
 RECENT_LOGIN_GRACE_SECONDS = 180
 
 
-def get_fyers_model(mode: str | None = None):
+def get_fyers_model(mode: str | None = None, *, use_proxy: bool = True):
     if fyersModel is None:
         raise RuntimeError(
             "Fyers SDK is not installed in this environment. "
             "Install the backend requirements before using live Fyers features."
         )
-    token = get_stored_access_token()
+    effective_mode = mode or get_runtime_trading_mode()
+    token = get_stored_access_token(effective_mode)
     if not token:
-        raise RuntimeError("No Fyers access token in Supabase yet. Use the Login to Fyers button first.")
-    config = get_fyers_config(mode)
+        raise RuntimeError(
+            f"No Fyers access token for {effective_mode} mode in Supabase yet. "
+            "Use the Login to Fyers button first."
+        )
+    config = get_fyers_config(effective_mode)
     client_id = config["client_id"]
     fyers = fyersModel.FyersModel(token=token, is_async=False, client_id=client_id, log_path="")
-    proxy_url = config.get("proxy_url")
-    if proxy_url and hasattr(fyers, "service") and getattr(fyers.service, "session", None) is not None:
+    session = getattr(getattr(fyers, "service", None), "session", None)
+    proxy_url = config.get("proxy_url") if use_proxy else None
+    if session is not None and not use_proxy:
+        # Read-only calls must not inherit HTTP(S)_PROXY from the container.
+        session.proxies.clear()
+        session.trust_env = False
+    if proxy_url and session is not None:
         proxies = {"http": proxy_url, "https": proxy_url}
-        fyers.service.session.proxies.update(proxies)
-        fyers.service.session.trust_env = False
+        session.proxies.update(proxies)
+        session.trust_env = False
         
         # Add retry strategy with exponential backoff for proxy timeouts
         if HTTPAdapter and Retry:
             retry_strategy = Retry(
                 total=3,
                 status_forcelist=[429, 500, 502, 503, 504],
-                method_whitelist=["HEAD", "GET", "OPTIONS", "POST"],
+                allowed_methods=["HEAD", "GET", "OPTIONS", "POST"],
                 backoff_factor=1,  # 1s, 2s, 4s delays
                 raise_on_status=False,
             )
             adapter = HTTPAdapter(max_retries=retry_strategy)
-            fyers.service.session.mount("http://", adapter)
-            fyers.service.session.mount("https://", adapter)
+            session.mount("http://", adapter)
+            session.mount("https://", adapter)
         
         # Increase connection timeout for proxy traversal
-        fyers.service.session.timeout = (10, 60)  # (connect_timeout, read_timeout) in seconds
+        session.timeout = (10, 60)  # (connect_timeout, read_timeout) in seconds
     return fyers
 
 
 def get_connection_status() -> dict:
-    token_row = get_stored_token_row()
+    effective_mode = get_runtime_trading_mode()
+    broker = get_active_broker_key(effective_mode)
+    token_row = get_stored_token_row(effective_mode)
     token = token_row.get("access_token") if token_row else None
     refresh_token_present = bool(token_row and token_row.get("refresh_token"))
     if not token:
@@ -102,12 +114,14 @@ def get_connection_status() -> dict:
             "status": "disconnected",
             "message": "No Fyers access token found. Login to Fyers before trading.",
             "refresh_token_present": refresh_token_present,
-            "broker": get_active_broker_key(),
-            "trading_mode": get_runtime_trading_mode(),
+            "broker": broker,
+            "trading_mode": effective_mode,
         }
 
     try:
-        response = get_fyers_model().get_profile()
+        # Profile validation is read-only. Keeping it off the trading proxy
+        # prevents a dead proxy from making a valid OAuth session look expired.
+        response = get_fyers_model(effective_mode, use_proxy=False).get_profile()
     except Exception as exc:
         if _is_recent_token_row(token_row, RECENT_LOGIN_GRACE_SECONDS):
             return {
@@ -117,8 +131,8 @@ def get_connection_status() -> dict:
                 "refresh_token_present": refresh_token_present,
                 "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
                 "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
-                "broker": get_active_broker_key(),
-                "trading_mode": get_runtime_trading_mode(),
+                "broker": broker,
+                "trading_mode": effective_mode,
             }
         return {
             "connected": False,
@@ -127,8 +141,8 @@ def get_connection_status() -> dict:
             "refresh_token_present": refresh_token_present,
             "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
             "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
-            "broker": get_active_broker_key(),
-            "trading_mode": get_runtime_trading_mode(),
+            "broker": broker,
+            "trading_mode": effective_mode,
         }
 
     if response.get("s") == "ok":
@@ -139,8 +153,8 @@ def get_connection_status() -> dict:
             "refresh_token_present": refresh_token_present,
             "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
             "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
-            "broker": get_active_broker_key(),
-            "trading_mode": get_runtime_trading_mode(),
+            "broker": broker,
+            "trading_mode": effective_mode,
         }
 
     if _is_recent_token_row(token_row, RECENT_LOGIN_GRACE_SECONDS):
@@ -151,8 +165,8 @@ def get_connection_status() -> dict:
             "refresh_token_present": refresh_token_present,
             "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
             "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
-            "broker": get_active_broker_key(),
-            "trading_mode": get_runtime_trading_mode(),
+            "broker": broker,
+            "trading_mode": effective_mode,
         }
 
     return {
@@ -162,8 +176,8 @@ def get_connection_status() -> dict:
         "refresh_token_present": refresh_token_present,
         "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
         "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
-        "broker": get_active_broker_key(),
-        "trading_mode": get_runtime_trading_mode(),
+        "broker": broker,
+        "trading_mode": effective_mode,
     }
 
 
@@ -299,8 +313,25 @@ def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_d
 
 def get_wallet_balance(mode: str | None = None) -> dict:
     """Return FYERS funds information with a best-effort wallet summary."""
-    fyers = get_fyers_model(mode)
+    effective_mode = mode or get_runtime_trading_mode()
+    # Funds is read-only and does not need the whitelisted order egress path.
+    # Live order placement still uses the proxy through LiveBroker.
+    fyers = get_fyers_model(effective_mode, use_proxy=False)
+    audit_log(
+        "fyers",
+        "funds request started",
+        mode=effective_mode,
+        broker=get_active_broker_key(effective_mode),
+        read_only_direct=True,
+    )
     response = fyers.funds()
+    if not isinstance(response, dict):
+        raise RuntimeError("Fyers funds returned an invalid response.")
+    if response.get("s") == "error":
+        message = response.get("message") or "Fyers rejected the funds request."
+        code = response.get("code")
+        suffix = f" (code {code})" if code is not None else ""
+        raise RuntimeError(f"{message}{suffix}")
     return {
         "raw": response,
         "summary": _summarize_funds_response(response),
