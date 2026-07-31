@@ -431,7 +431,25 @@ def get_wallet_balance(mode: str | None = None) -> dict:
                 error=str(exc),
             )
             return result
-        raise
+        message = str(exc)
+        if "No Fyers access token" in message:
+            raise
+        audit_log(
+            "fyers",
+            "funds request unavailable",
+            mode=effective_mode,
+            broker=get_active_broker_key(effective_mode),
+            error=message,
+        )
+        return {
+            "raw": {},
+            "summary": {},
+            "available": False,
+            "cached": False,
+            "stale": False,
+            "syncing": False,
+            "warning": f"FYERS funds are temporarily unavailable: {message}",
+        }
     finally:
         lock.release()
 
@@ -546,7 +564,28 @@ def get_broker_positions(mode: str | None = None) -> dict:
                 error=str(exc),
             )
             return result
-        raise
+        message = str(exc)
+        if "No Fyers access token" in message:
+            raise
+        audit_log(
+            "fyers",
+            "positions request unavailable",
+            mode=effective_mode,
+            broker=get_active_broker_key(effective_mode),
+            error=message,
+        )
+        return {
+            "mode": effective_mode,
+            "broker": get_active_broker_key(effective_mode),
+            "count": 0,
+            "positions": [],
+            "overall": {},
+            "available": False,
+            "cached": False,
+            "stale": False,
+            "syncing": False,
+            "warning": f"FYERS positions are temporarily unavailable: {message}",
+        }
     finally:
         lock.release()
 

@@ -158,25 +158,31 @@ export default function ScanResultsPanel({
           {results.scan_message || 'Opening market data was incomplete. This is not a valid zero-candidate scan.'}
         </div>
       )}
-      <div className="grid gap-2 text-xs sm:grid-cols-3 lg:grid-cols-6">
-        <ScanStat label="Scanned" value={results.total_scanned} filter="all" active={scanFilter === 'all'} onClick={() => selectFilter('all')} />
-        <ScanStat label="Passed Gap Filter" value={rows.filter((row: any) => row.gap_passed === true || row.opening_range_gap_passed === true).length} filter="passed" active={scanFilter === 'passed'} onClick={() => selectFilter('passed')} />
-        <ScanStat label="Buy" value={results.buy_candidates} filter="buy" active={scanFilter === 'buy'} onClick={() => selectFilter('buy')} />
-        <ScanStat label="Sell" value={results.sell_candidates} filter="sell" active={scanFilter === 'sell'} onClick={() => selectFilter('sell')} />
-        <ScanStat label="Selected" value={rows.filter((row: any) => row.selected_for_trade).length} filter="selected" active={scanFilter === 'selected'} onClick={() => selectFilter('selected')} />
-        <ScanStat label="Filtered Out" value={results.total_filtered_out} filter="filtered" active={scanFilter === 'filtered'} onClick={() => selectFilter('filtered')} />
-      </div>
       <div className="mt-2 text-xs text-gray-500">Last scan: {formatTime(results.scan_time)}</div>
 
-      {bestMatches.length > 0 && <div className="mt-4 rounded border border-[#3b82f6]/30 bg-[#0d1117] p-3">
-        <div className="flex flex-wrap items-baseline justify-between gap-2"><div className="label">Best Matches</div><p className="text-[11px] text-gray-500">{results.ranking?.method || 'Highest composite score is selected first within your configured trade limits.'}</p></div>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{bestMatches.map((row: any) => <BestMatchCard key={row.symbol} row={row} />)}</div>
-      </div>}
+      {bestMatches.length > 0 && <details className="group mt-4 rounded border border-[#3b82f6]/30 bg-[#0d1117]">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-3 py-2">
+          <div>
+            <div className="label">Best Matches</div>
+            <p className="mt-0.5 text-[11px] text-gray-500">{results.ranking?.method || 'Highest composite score is selected first within your configured trade limits.'}</p>
+          </div>
+          <i className="ri-arrow-down-s-fill text-base text-[#60a5fa] transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="border-t border-[#1f2937] p-3">
+          <div className="grid gap-2 sm:grid-cols-2 lg:grid-cols-4">{bestMatches.map((row: any) => <BestMatchCard key={row.symbol} row={row} />)}</div>
+        </div>
+      </details>}
 
-      {sectorBreakdown.length > 0 && <div className="mt-4 rounded border border-[#1f2937] bg-[#0d1117] p-3">
-        <div className="label">Sector Breakdown</div>
-        <p className="mt-1 text-xs text-gray-500">We keep the current ranking, but add a sector context bonus so strong symbols can be viewed alongside their sector trend.</p>
-        <div className="mt-3 grid gap-2 md:grid-cols-2 xl:grid-cols-3">
+      {sectorBreakdown.length > 0 && <details className="group mt-4 rounded border border-[#1f2937] bg-[#0d1117]">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-3 py-2">
+          <div>
+            <div className="label">Sector Breakdown</div>
+            <p className="mt-0.5 text-xs text-gray-500">Sector context for the current ranking.</p>
+          </div>
+          <i className="ri-arrow-down-s-fill text-base text-[#60a5fa] transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="border-t border-[#1f2937] p-3">
+          <div className="grid gap-2 md:grid-cols-2 xl:grid-cols-3">
           {sectorBreakdown.map((sector: any) => (
             <div key={sector.sector} className="rounded border border-[#1f2937] bg-[#111827] p-2">
               <div className="flex items-start justify-between gap-3">
@@ -194,8 +200,9 @@ export default function ScanResultsPanel({
               </div>
             </div>
           ))}
+          </div>
         </div>
-      </div>}
+      </details>}
 
       {tradeError && <div className="mt-4 rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-xs text-[#ef4444]">{tradeError}</div>}
 
@@ -204,6 +211,14 @@ export default function ScanResultsPanel({
         <p className="mt-1 text-xs text-gray-500">
           Temporary screener check: how many stocks survived each condition, step by step.
         </p>
+        <div className="mt-3 flex flex-wrap gap-1.5">
+          <ScanStat label="Scanned" value={results.total_scanned} filter="all" active={scanFilter === 'all'} onClick={() => selectFilter('all')} />
+          <ScanStat label="Passed Gap Filter" value={rows.filter((row: any) => row.gap_passed === true || row.opening_range_gap_passed === true).length} filter="passed" active={scanFilter === 'passed'} onClick={() => selectFilter('passed')} />
+          <ScanStat label="Buy" value={results.buy_candidates} filter="buy" active={scanFilter === 'buy'} onClick={() => selectFilter('buy')} />
+          <ScanStat label="Sell" value={results.sell_candidates} filter="sell" active={scanFilter === 'sell'} onClick={() => selectFilter('sell')} />
+          <ScanStat label="Selected" value={rows.filter((row: any) => row.selected_for_trade).length} filter="selected" active={scanFilter === 'selected'} onClick={() => selectFilter('selected')} />
+          <ScanStat label="Filtered Out" value={results.total_filtered_out} filter="filtered" active={scanFilter === 'filtered'} onClick={() => selectFilter('filtered')} />
+        </div>
         <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           {funnel.map((step, index) => (
             <FunnelStep key={`${step.label}-${index}`} step={step} index={index} active={funnelFilter === index} onClick={() => selectFunnelStep(index)} />
@@ -329,10 +344,10 @@ function ScanStat({
       type="button"
       title={`Show ${filterLabel(filter).toLowerCase()} candidates`}
       onClick={onClick}
-      className={`min-h-16 rounded border p-2 text-left transition-colors ${active ? 'border-[#3b82f6] bg-[#172554]' : 'border-[#1f2937] bg-[#0d1117] hover:border-[#3b82f6]/70'}`}
+      className={`inline-flex min-h-8 items-center gap-2 rounded-full border px-2.5 py-1 text-left transition-colors ${active ? 'border-[#3b82f6] bg-[#172554]' : 'border-[#1f2937] bg-[#111827] hover:border-[#3b82f6]/70'}`}
     >
-      <div className="label">{label}</div>
-      <div className="num mt-1 text-lg font-semibold text-gray-100">{Number(value || 0).toLocaleString('en-IN')}</div>
+      <span className="text-[10px] uppercase tracking-[0.12em] text-gray-500">{label}</span>
+      <span className="num text-xs font-semibold text-gray-100">{Number(value || 0).toLocaleString('en-IN')}</span>
     </button>
   );
 }
