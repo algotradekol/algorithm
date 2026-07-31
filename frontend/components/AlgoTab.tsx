@@ -288,6 +288,23 @@ export default function AlgoTab({
   // once so Total Capital represents the live paper-account value.
   const totalCapital = cash + openUnrealizedPnl;
   const liveNetPnl = netPnl + openUnrealizedPnl;
+  const managedPositionKeys = new Set(
+    positions.map((position) => `${position.symbol}|${position.side}`),
+  );
+  const openPositionRows = [
+    ...positions.map((position) => ({
+      ...position,
+      position_source: 'algorithm',
+    })),
+    ...brokerPositions
+      .filter((position) => !managedPositionKeys.has(`${position.symbol}|${position.side}`))
+      .map((position) => ({
+        ...position,
+        position_source: 'fyers_app',
+        is_broker_position: true,
+        entry_trigger: 'Opened directly in FYERS app',
+      })),
+  ];
 
   return (
     <section className="space-y-4">
@@ -339,29 +356,12 @@ export default function AlgoTab({
 
       <SettingsDrawer open={settingsOpen} algoId={algoId} onClose={() => setSettingsOpen(false)} />
 
-      {tradingMode === 'live' && (
-        <section className="rounded border border-[#22c55e]/30 bg-[#0b1220] p-3">
-          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
-            <div>
-              <h3 className="text-xs font-semibold uppercase tracking-wider text-[#22c55e]">FYERS Broker Positions</h3>
-              <p className="mt-1 text-xs text-gray-500">
-                Account positions opened in FYERS or another client. This panel is read-only and separate from algorithm-managed positions.
-              </p>
-            </div>
-            <span className="rounded border border-[#22c55e]/30 px-2 py-1 text-xs text-[#22c55e]">
-              {brokerPositions.length} open
-            </span>
-          </div>
-          <BrokerPositionsTable rows={brokerPositions} />
-        </section>
-      )}
-
       <ScanResultsPanel algoId={algoId} results={scanResults} openPositions={positions} onRefresh={loadData} />
 
       <div className="grid gap-4">
         <section>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Open Positions</h3>
-          <PositionsTable rows={positions} onExit={exitPosition} exitingPositionId={exitingPositionId} />
+          <PositionsTable rows={openPositionRows} onExit={exitPosition} exitingPositionId={exitingPositionId} />
         </section>
 
         <section>
@@ -371,76 +371,6 @@ export default function AlgoTab({
       </div>
       {description && <div className="rounded border border-[#1f2937] bg-[#111827] px-3 py-2 text-xs text-gray-500">{description}</div>}
     </section>
-  );
-}
-
-function BrokerPositionsTable({ rows }: { rows: any[] }) {
-  return (
-    <>
-      <div className="space-y-2 sm:hidden">
-        {!rows.length ? (
-          <p className="rounded border border-[#1f2937] bg-[#0d1117] p-3 text-sm text-gray-500">
-            No open FYERS broker positions.
-          </p>
-        ) : rows.map((row, index) => (
-          <div key={row.id || row.symbol || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
-            <div className="flex items-center justify-between gap-3">
-              <div>
-                <div className="label text-[10px]">#{index + 1}</div>
-                <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
-              </div>
-              <div className={`num text-base font-semibold ${pnlColor(Number(row.total_pnl || 0))}`}>
-                {formatMoney(row.total_pnl)}
-              </div>
-            </div>
-            <div className={`mt-1 inline-flex items-center gap-1 text-sm font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
-              <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} text-sm`} />
-              {row.side}
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
-              <MobileField label="Qty" value={formatNumber(row.qty)} />
-              <MobileField label="Product" value={row.product_type || '--'} />
-              <MobileField label="Avg Entry" value={formatNumber(row.entry_price)} />
-              <MobileField label="LTP" value={formatNumber(row.ltp)} />
-              <MobileField label="Unrealized" value={formatMoney(row.unrealized_pnl)} />
-              <MobileField label="Realized" value={formatMoney(row.realized_pnl)} />
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="hidden overflow-x-auto rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[900px] border-collapse text-sm">
-          <thead className="bg-[#111827]">
-            <tr>
-              {['#', 'Symbol', 'Side', 'Qty', 'Product', 'Avg Entry', 'LTP', 'Unrealized P&L', 'Realized P&L', 'Total P&L'].map((label) => (
-                <th key={label} className="table-cell label">{label}</th>
-              ))}
-            </tr>
-          </thead>
-          <tbody>
-            {!rows.length ? (
-              <tr><td colSpan={10} className="table-cell text-gray-500">No open FYERS broker positions.</td></tr>
-            ) : rows.map((row, index) => (
-              <tr key={row.id || row.symbol || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
-                <td className="table-cell num text-gray-500">{index + 1}</td>
-                <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
-                <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
-                  <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} mr-1 text-sm`} />
-                  {row.side}
-                </td>
-                <td className="table-cell num text-gray-100">{formatNumber(row.qty)}</td>
-                <td className="table-cell text-gray-300">{row.product_type || '--'}</td>
-                <td className="table-cell num text-gray-100">{formatNumber(row.entry_price)}</td>
-                <td className="table-cell num text-gray-100">{formatNumber(row.ltp)}</td>
-                <td className={`table-cell num ${pnlColor(Number(row.unrealized_pnl || 0))}`}>{formatMoney(row.unrealized_pnl)}</td>
-                <td className={`table-cell num ${pnlColor(Number(row.realized_pnl || 0))}`}>{formatMoney(row.realized_pnl)}</td>
-                <td className={`table-cell num font-semibold ${pnlColor(Number(row.total_pnl || 0))}`}>{formatMoney(row.total_pnl)}</td>
-              </tr>
-            ))}
-          </tbody>
-        </table>
-      </div>
-    </>
   );
 }
 
@@ -558,7 +488,10 @@ function PositionsTable({
           return (
             <div key={row.id || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
               <div className="flex items-center justify-between gap-3">
-                <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
+                <div>
+                  <div className="label text-[10px]">#{safePage * PAGE_SIZE + index + 1}</div>
+                  <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
+                </div>
                 <div className={`num flex items-center gap-1 text-base font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</div>
               </div>
               <div className={`mt-1 inline-flex items-center gap-1 text-sm font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
@@ -566,6 +499,7 @@ function PositionsTable({
                 {row.side === 'SELL' ? 'S' : 'B'}
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
+                <MobileField label="Source" value={<PositionSourceBadge row={row} />} wide />
                 <MobileField label="Qty" value={row.qty} />
                 <MobileField label="Entry" value={formatNumber(row.entry_price)} />
                 <MobileField label="LTP" value={Number.isFinite(ltp) ? formatNumber(ltp) : '--'} />
@@ -582,10 +516,10 @@ function PositionsTable({
         })}
       </div>
       <div className="hidden overflow-x-auto rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1040px] border-collapse text-xs">
+        <table className="w-full min-w-[1180px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['Symbol', 'Side', 'Qty', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
+            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
               <th key={column} className="table-cell label">{column}</th>
             ))}
           </tr>
@@ -593,7 +527,7 @@ function PositionsTable({
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={13} className="table-cell text-gray-500">No open positions</td>
+              <td colSpan={15} className="table-cell text-gray-500">No open positions</td>
             </tr>
           ) : visibleRows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
@@ -606,7 +540,9 @@ function PositionsTable({
               : null;
             return (
               <tr key={row.id || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
+                <td className="table-cell num text-gray-500">{safePage * PAGE_SIZE + index + 1}</td>
                 <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
+                <td className="table-cell"><PositionSourceBadge row={row} /></td>
                 <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
                   <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} mr-1 text-sm`} />
                   {row.side === 'SELL' ? 'S' : 'B'}
@@ -644,6 +580,17 @@ function ManualExitButton({
   exitingPositionId: string | null;
   mobile?: boolean;
 }) {
+  if (row.is_broker_position || row.position_source === 'fyers_app') {
+    return (
+      <span
+        className={`${mobile ? 'mt-3 flex w-full justify-center' : 'inline-flex'} min-h-9 items-center rounded border border-[#3b82f6]/40 px-2.5 py-1.5 text-xs font-semibold text-[#60a5fa]`}
+        title="This position was opened outside the algorithm. Manage or exit it in the FYERS app."
+      >
+        <i className="ri-smartphone-fill mr-1 text-sm" />
+        Manage in FYERS
+      </span>
+    );
+  }
   const exiting = String(row.id) === exitingPositionId;
   return (
     <button
@@ -656,6 +603,20 @@ function ManualExitButton({
       <i className="ri-close-circle-fill mr-1 text-sm" />
       {exiting ? 'Exiting...' : 'Exit'}
     </button>
+  );
+}
+
+function PositionSourceBadge({ row }: { row: any }) {
+  const fromFyersApp = row.is_broker_position || row.position_source === 'fyers_app';
+  return (
+    <span className={`inline-flex items-center whitespace-nowrap rounded border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${
+      fromFyersApp
+        ? 'border-[#60a5fa]/40 bg-[#3b82f6]/10 text-[#60a5fa]'
+        : 'border-[#22c55e]/30 bg-[#22c55e]/10 text-[#22c55e]'
+    }`}>
+      <i className={`${fromFyersApp ? 'ri-smartphone-fill' : 'ri-robot-2-fill'} mr-1 text-xs`} />
+      {fromFyersApp ? 'FYERS App' : 'Algorithm'}
+    </span>
   );
 }
 
@@ -744,6 +705,9 @@ function MobileField({ label, value, wide = false }: { label: string; value: any
 }
 
 function SignalAudit({ row }: { row: any }) {
+  if (row.is_broker_position || row.position_source === 'fyers_app') {
+    return <span className="text-xs text-[#60a5fa]">Opened outside the algorithm in FYERS</span>;
+  }
   const signal = row.signal_snapshot;
   if (!signal || typeof signal !== 'object') {
     return <span className="text-xs text-gray-500">Not captured for this legacy trade</span>;
