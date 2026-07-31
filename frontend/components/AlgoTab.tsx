@@ -103,11 +103,13 @@ export default function AlgoTab({
     try {
       const result = await api.fyersFunds();
       if (requestId !== walletRequestId.current) return;
-      setWalletStatus(result);
-      setWalletStatusError('');
+      if (result?.available !== false) {
+        setWalletStatus(result);
+      }
+      setWalletStatusError(result?.warning || '');
     } catch (e: any) {
       if (requestId !== walletRequestId.current) return;
-      setWalletStatus(null);
+      // Keep the last confirmed balance visible while FYERS is unavailable.
       setWalletStatusError(e?.message || 'Failed to load FYERS wallet balance');
     }
   }, [fyersConnected, tradingMode]);
@@ -122,11 +124,14 @@ export default function AlgoTab({
     try {
       const result = await api.fyersPositions();
       if (requestId !== brokerPositionsRequestId.current) return;
-      setBrokerPositions(Array.isArray(result?.positions) ? result.positions : []);
-      setBrokerPositionsError('');
+      if (result?.available !== false) {
+        setBrokerPositions(Array.isArray(result?.positions) ? result.positions : []);
+      }
+      setBrokerPositionsError(result?.warning || '');
     } catch (e: any) {
       if (requestId !== brokerPositionsRequestId.current) return;
-      setBrokerPositions([]);
+      // Preserve the last known broker snapshot during a transient FYERS or
+      // Railway outage. Clearing it makes an open live trade disappear.
       setBrokerPositionsError(e?.message || 'Failed to load FYERS broker positions');
     }
   }, [fyersConnected, tradingMode]);

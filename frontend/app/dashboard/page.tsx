@@ -114,9 +114,17 @@ function DashboardContent() {
         if (!cancelled) setFyersStatus(status);
       } catch (error) {
         if (!cancelled) {
-          setFyersStatus({
+          setFyersStatus((current) => current ? {
+            ...current,
+            status: current.connected ? 'degraded' : current.status,
+            message: current.connected
+              ? `Connection check temporarily unavailable; keeping the last confirmed session. ${
+                  error instanceof Error ? error.message : ''
+                }`.trim()
+              : (error instanceof Error ? error.message : 'Unable to check Fyers status'),
+          } : {
             connected: false,
-            status: 'error',
+            status: 'checking',
             message: error instanceof Error ? error.message : 'Unable to check Fyers status',
           });
         }

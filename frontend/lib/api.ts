@@ -3,6 +3,12 @@ import { clearPinToken } from './pinAuth';
 import { supabase } from './supabaseClient';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
+let fyersPositionsInFlight: Promise<any> | null = null;
+let fyersPositionsCache: { value: any; cachedAt: number } | null = null;
+let fyersFundsInFlight: Promise<any> | null = null;
+let fyersFundsCache: { value: any; cachedAt: number } | null = null;
+const FYERS_POSITIONS_CLIENT_CACHE_MS = 8_000;
+const FYERS_FUNDS_CLIENT_CACHE_MS = 15_000;
 
 async function authedFetch(path: string, options: RequestInit = {}) {
   if (!API_URL) throw new Error('NEXT_PUBLIC_API_URL is not configured');
@@ -39,6 +45,42 @@ async function authedFetch(path: string, options: RequestInit = {}) {
   return res.json();
 }
 
+function fetchFyersPositions() {
+  const now = Date.now();
+  if (fyersPositionsCache && now - fyersPositionsCache.cachedAt < FYERS_POSITIONS_CLIENT_CACHE_MS) {
+    return Promise.resolve(fyersPositionsCache.value);
+  }
+  if (fyersPositionsInFlight) return fyersPositionsInFlight;
+
+  fyersPositionsInFlight = authedFetch('/api/fyers/positions')
+    .then((value) => {
+      fyersPositionsCache = { value, cachedAt: Date.now() };
+      return value;
+    })
+    .finally(() => {
+      fyersPositionsInFlight = null;
+    });
+  return fyersPositionsInFlight;
+}
+
+function fetchFyersFunds() {
+  const now = Date.now();
+  if (fyersFundsCache && now - fyersFundsCache.cachedAt < FYERS_FUNDS_CLIENT_CACHE_MS) {
+    return Promise.resolve(fyersFundsCache.value);
+  }
+  if (fyersFundsInFlight) return fyersFundsInFlight;
+
+  fyersFundsInFlight = authedFetch('/api/fyers/funds')
+    .then((value) => {
+      fyersFundsCache = { value, cachedAt: Date.now() };
+      return value;
+    })
+    .finally(() => {
+      fyersFundsInFlight = null;
+    });
+  return fyersFundsInFlight;
+}
+
 export const api = {
   summary: (algoId: string) => authedFetch(`/api/algo/${algoId}/summary`),
   positions: (algoId: string) => authedFetch(`/api/algo/${algoId}/positions`),
@@ -73,8 +115,8 @@ export const api = {
   fyersRefreshToken: () => authedFetch('/api/fyers/refresh-token', { method: 'POST' }),
   fyersDisconnect: () => authedFetch('/api/fyers/disconnect', { method: 'POST' }),
   fyersTokenStatus: () => authedFetch('/api/fyers/token-status'),
-  fyersFunds: () => authedFetch('/api/fyers/funds'),
-  fyersPositions: () => authedFetch('/api/fyers/positions'),
+  fyersFunds: fetchFyersFunds,
+  fyersPositions: fetchFyersPositions,
   aiSessions: () => authedFetch('/api/ai/sessions'),
   aiCreateSession: (title = 'New chat') => authedFetch('/api/ai/sessions', { method: 'POST', body: JSON.stringify({ title }) }),
   aiMessages: (sessionId: string) => authedFetch(`/api/ai/sessions/${sessionId}/messages`),

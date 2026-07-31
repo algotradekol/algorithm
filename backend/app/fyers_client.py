@@ -3,6 +3,7 @@ fyers_client.py — thin wrapper around Fyers' live WebSocket and
 historical candle REST API, used by engine.py.
 """
 import datetime
+import copy
 import threading
 import time
 
@@ -55,9 +56,29 @@ from .timezone import IST
 from .fyers_auth import get_stored_access_token, get_stored_token_row
 
 RECENT_LOGIN_GRACE_SECONDS = 180
+BROKER_POSITIONS_CACHE_TTL_SECONDS = 10
+BROKER_POSITIONS_STALE_TTL_SECONDS = 300
+FYERS_FUNDS_CACHE_TTL_SECONDS = 20
+FYERS_FUNDS_STALE_TTL_SECONDS = 300
+_broker_positions_cache: dict[str, dict] = {}
+_broker_positions_locks = {
+    "paper": threading.Lock(),
+    "live": threading.Lock(),
+}
+_fyers_funds_cache: dict[str, dict] = {}
+_fyers_funds_locks = {
+    "paper": threading.Lock(),
+    "live": threading.Lock(),
+}
 
 
-def get_fyers_model(mode: str | None = None, *, use_proxy: bool = True):
+def get_fyers_model(
+    mode: str | None = None,
+    *,
+    use_proxy: bool = True,
+    retry_total: int = 3,
+    request_timeout: tuple[int, int] = (10, 30),
+):
     if fyersModel is None:
         raise RuntimeError(
             "Fyers SDK is not installed in this environment. "
@@ -87,7 +108,7 @@ def get_fyers_model(mode: str | None = None, *, use_proxy: bool = True):
         # Add retry strategy with exponential backoff for proxy timeouts
         if HTTPAdapter and Retry:
             retry_strategy = Retry(
-                total=3,
+                total=retry_total,
                 status_forcelist=[429, 500, 502, 503, 504],
                 allowed_methods=["HEAD", "GET", "OPTIONS", "POST"],
                 backoff_factor=1,  # 1s, 2s, 4s delays
@@ -96,9 +117,18 @@ def get_fyers_model(mode: str | None = None, *, use_proxy: bool = True):
             adapter = HTTPAdapter(max_retries=retry_strategy)
             session.mount("http://", adapter)
             session.mount("https://", adapter)
-        
-        # Increase connection timeout for proxy traversal
-        session.timeout = (10, 60)  # (connect_timeout, read_timeout) in seconds
+
+    if session is not None:
+        # requests.Session has no effective `session.timeout` default. Injecting
+        # it into request() prevents a slow proxy/FYERS account call from
+        # occupying a FastAPI worker indefinitely.
+        original_request = session.request
+
+        def request_with_timeout(method, url, **kwargs):
+            kwargs.setdefault("timeout", request_timeout)
+            return original_request(method, url, **kwargs)
+
+        session.request = request_with_timeout
     return fyers
 
 
@@ -134,10 +164,13 @@ def get_connection_status() -> dict:
                 "broker": broker,
                 "trading_mode": effective_mode,
             }
+        # A timeout, Railway rollout, or temporary FYERS failure does not prove
+        # that the stored token was revoked. Keep the trading session available
+        # and expose a degraded verification state until FYERS responds again.
         return {
-            "connected": False,
-            "status": "error",
-            "message": f"Fyers token check failed: {exc}",
+            "connected": True,
+            "status": "degraded",
+            "message": f"Fyers token is stored, but verification is temporarily unavailable: {exc}",
             "refresh_token_present": refresh_token_present,
             "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
             "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
@@ -314,73 +347,208 @@ def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_d
 def get_wallet_balance(mode: str | None = None) -> dict:
     """Return FYERS funds information with a best-effort wallet summary."""
     effective_mode = mode or get_runtime_trading_mode()
+    now = time.monotonic()
+    cached = _fyers_funds_cache.get(effective_mode)
+    if cached and now - cached["cached_at"] <= FYERS_FUNDS_CACHE_TTL_SECONDS:
+        result = copy.deepcopy(cached["result"])
+        result.update({"cached": True, "stale": False, "syncing": False})
+        return result
+
+    lock = _fyers_funds_locks.setdefault(effective_mode, threading.Lock())
+    if not lock.acquire(blocking=False):
+        if cached and now - cached["cached_at"] <= FYERS_FUNDS_STALE_TTL_SECONDS:
+            result = copy.deepcopy(cached["result"])
+            result.update({
+                "cached": True,
+                "stale": True,
+                "syncing": True,
+                "warning": "A fresh FYERS funds request is already in progress.",
+            })
+            return result
+        return {
+            "raw": {},
+            "summary": {},
+            "available": False,
+            "cached": False,
+            "stale": False,
+            "syncing": True,
+            "warning": "A FYERS funds request is already in progress.",
+        }
+
     # Funds is read-only and does not need the whitelisted order egress path.
     # Live order placement still uses the proxy through LiveBroker.
-    fyers = get_fyers_model(effective_mode, use_proxy=False)
-    audit_log(
-        "fyers",
-        "funds request started",
-        mode=effective_mode,
-        broker=get_active_broker_key(effective_mode),
-        read_only_direct=True,
-    )
-    response = fyers.funds()
-    if not isinstance(response, dict):
-        raise RuntimeError("Fyers funds returned an invalid response.")
-    if response.get("s") == "error":
-        message = response.get("message") or "Fyers rejected the funds request."
-        code = response.get("code")
-        suffix = f" (code {code})" if code is not None else ""
-        raise RuntimeError(f"{message}{suffix}")
-    return {
-        "raw": response,
-        "summary": _summarize_funds_response(response),
-    }
+    try:
+        fyers = get_fyers_model(
+            effective_mode,
+            use_proxy=False,
+            retry_total=0,
+            request_timeout=(5, 12),
+        )
+        audit_log(
+            "fyers",
+            "funds request started",
+            mode=effective_mode,
+            broker=get_active_broker_key(effective_mode),
+            read_only_direct=True,
+        )
+        response = fyers.funds()
+        if not isinstance(response, dict):
+            raise RuntimeError("Fyers funds returned an invalid response.")
+        if response.get("s") == "error":
+            message = response.get("message") or "Fyers rejected the funds request."
+            code = response.get("code")
+            suffix = f" (code {code})" if code is not None else ""
+            raise RuntimeError(f"{message}{suffix}")
+        result = {
+            "raw": response,
+            "summary": _summarize_funds_response(response),
+            "available": True,
+            "cached": False,
+            "stale": False,
+            "syncing": False,
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        _fyers_funds_cache[effective_mode] = {
+            "cached_at": time.monotonic(),
+            "result": copy.deepcopy(result),
+        }
+        return result
+    except Exception as exc:
+        cached = _fyers_funds_cache.get(effective_mode)
+        if cached and time.monotonic() - cached["cached_at"] <= FYERS_FUNDS_STALE_TTL_SECONDS:
+            result = copy.deepcopy(cached["result"])
+            result.update({
+                "cached": True,
+                "stale": True,
+                "syncing": False,
+                "warning": f"FYERS funds refresh failed; showing the last known balance: {exc}",
+            })
+            audit_log(
+                "fyers",
+                "funds request using stale cache",
+                mode=effective_mode,
+                broker=get_active_broker_key(effective_mode),
+                error=str(exc),
+            )
+            return result
+        raise
+    finally:
+        lock.release()
 
 
 def get_broker_positions(mode: str | None = None) -> dict:
     """Return currently open positions reported by the FYERS account."""
     effective_mode = mode or get_runtime_trading_mode()
+    now = time.monotonic()
+    cached = _broker_positions_cache.get(effective_mode)
+    if cached and now - cached["cached_at"] <= BROKER_POSITIONS_CACHE_TTL_SECONDS:
+        result = copy.deepcopy(cached["result"])
+        result.update({"cached": True, "stale": False, "syncing": False})
+        return result
+
+    lock = _broker_positions_locks.setdefault(effective_mode, threading.Lock())
+    if not lock.acquire(blocking=False):
+        if cached and now - cached["cached_at"] <= BROKER_POSITIONS_STALE_TTL_SECONDS:
+            result = copy.deepcopy(cached["result"])
+            result.update({
+                "cached": True,
+                "stale": True,
+                "syncing": True,
+                "warning": "A fresh FYERS positions request is already in progress.",
+            })
+            return result
+        return {
+            "mode": effective_mode,
+            "broker": get_active_broker_key(effective_mode),
+            "count": 0,
+            "positions": [],
+            "overall": {},
+            "available": False,
+            "cached": False,
+            "stale": False,
+            "syncing": True,
+            "warning": "A FYERS positions request is already in progress.",
+        }
+
     # Trading-app APIs are IP allowlisted, so live account reads use the same
     # static egress path as live orders. Paper/non-trading reads remain direct.
     use_proxy = effective_mode == "live"
-    fyers = get_fyers_model(effective_mode, use_proxy=use_proxy)
-    audit_log(
-        "fyers",
-        "positions request started",
-        mode=effective_mode,
-        broker=get_active_broker_key(effective_mode),
-        proxy_enabled=use_proxy,
-    )
-    response = fyers.positions()
-    if not isinstance(response, dict):
-        raise RuntimeError("Fyers positions returned an invalid response.")
-    if response.get("s") == "error":
-        message = response.get("message") or "Fyers rejected the positions request."
-        code = response.get("code")
-        suffix = f" (code {code})" if code is not None else ""
-        raise RuntimeError(f"{message}{suffix}")
+    try:
+        # Account reads should fail quickly and be retried by the next poll,
+        # rather than multiplying long proxy retries across dashboard tabs.
+        fyers = get_fyers_model(
+            effective_mode,
+            use_proxy=use_proxy,
+            retry_total=0,
+            request_timeout=(5, 12),
+        )
+        audit_log(
+            "fyers",
+            "positions request started",
+            mode=effective_mode,
+            broker=get_active_broker_key(effective_mode),
+            proxy_enabled=use_proxy,
+        )
+        response = fyers.positions()
+        if not isinstance(response, dict):
+            raise RuntimeError("Fyers positions returned an invalid response.")
+        if response.get("s") == "error":
+            message = response.get("message") or "Fyers rejected the positions request."
+            code = response.get("code")
+            suffix = f" (code {code})" if code is not None else ""
+            raise RuntimeError(f"{message}{suffix}")
 
-    positions = [
-        normalized
-        for row in response.get("netPositions", response.get("net_positions", [])) or []
-        if isinstance(row, dict)
-        and (normalized := _normalize_broker_position(row)) is not None
-    ]
-    audit_log(
-        "fyers",
-        "positions request completed",
-        mode=effective_mode,
-        broker=get_active_broker_key(effective_mode),
-        open_position_count=len(positions),
-    )
-    return {
-        "mode": effective_mode,
-        "broker": get_active_broker_key(effective_mode),
-        "count": len(positions),
-        "positions": positions,
-        "overall": response.get("overall") if isinstance(response.get("overall"), dict) else {},
-    }
+        positions = [
+            normalized
+            for row in response.get("netPositions", response.get("net_positions", [])) or []
+            if isinstance(row, dict)
+            and (normalized := _normalize_broker_position(row)) is not None
+        ]
+        result = {
+            "mode": effective_mode,
+            "broker": get_active_broker_key(effective_mode),
+            "count": len(positions),
+            "positions": positions,
+            "overall": response.get("overall") if isinstance(response.get("overall"), dict) else {},
+            "available": True,
+            "cached": False,
+            "stale": False,
+            "syncing": False,
+            "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        }
+        _broker_positions_cache[effective_mode] = {
+            "cached_at": time.monotonic(),
+            "result": copy.deepcopy(result),
+        }
+        audit_log(
+            "fyers",
+            "positions request completed",
+            mode=effective_mode,
+            broker=get_active_broker_key(effective_mode),
+            open_position_count=len(positions),
+        )
+        return result
+    except Exception as exc:
+        cached = _broker_positions_cache.get(effective_mode)
+        if cached and time.monotonic() - cached["cached_at"] <= BROKER_POSITIONS_STALE_TTL_SECONDS:
+            result = copy.deepcopy(cached["result"])
+            result.update({
+                "cached": True,
+                "stale": True,
+                "syncing": False,
+                "warning": f"FYERS positions refresh failed; showing the last known snapshot: {exc}",
+            })
+            audit_log(
+                "fyers",
+                "positions request using stale cache",
+                mode=effective_mode,
+                broker=get_active_broker_key(effective_mode),
+                error=str(exc),
+            )
+            return result
+        raise
+    finally:
+        lock.release()
 
 
 def _normalize_broker_position(row: dict) -> dict | None:
