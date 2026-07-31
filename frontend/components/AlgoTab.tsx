@@ -30,10 +30,13 @@ export default function AlgoTab({
   const [feedStatus, setFeedStatus] = useState<any>(null);
   const [walletStatus, setWalletStatus] = useState<any>(null);
   const [walletStatusError, setWalletStatusError] = useState('');
+  const [brokerPositions, setBrokerPositions] = useState<any[]>([]);
+  const [brokerPositionsError, setBrokerPositionsError] = useState('');
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exitingPositionId, setExitingPositionId] = useState<string | null>(null);
   const walletRequestId = useRef(0);
+  const brokerPositionsRequestId = useRef(0);
 
   const refreshSummary = useCallback(async () => {
     try {
@@ -109,6 +112,25 @@ export default function AlgoTab({
     }
   }, [fyersConnected, tradingMode]);
 
+  const loadBrokerPositions = useCallback(async () => {
+    const requestId = ++brokerPositionsRequestId.current;
+    if (tradingMode !== 'live' || !fyersConnected) {
+      setBrokerPositions([]);
+      setBrokerPositionsError('');
+      return;
+    }
+    try {
+      const result = await api.fyersPositions();
+      if (requestId !== brokerPositionsRequestId.current) return;
+      setBrokerPositions(Array.isArray(result?.positions) ? result.positions : []);
+      setBrokerPositionsError('');
+    } catch (e: any) {
+      if (requestId !== brokerPositionsRequestId.current) return;
+      setBrokerPositions([]);
+      setBrokerPositionsError(e?.message || 'Failed to load FYERS broker positions');
+    }
+  }, [fyersConnected, tradingMode]);
+
   useEffect(() => {
     let cancelled = false;
     loadData();
@@ -135,6 +157,23 @@ export default function AlgoTab({
     };
   }, [loadWalletStatus]);
 
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshBrokerPositions() {
+      await loadBrokerPositions();
+      if (cancelled) return;
+    }
+    refreshBrokerPositions();
+    const interval = setInterval(() => {
+      if (!document.hidden && !cancelled) refreshBrokerPositions();
+    }, 15_000);
+    return () => {
+      cancelled = true;
+      brokerPositionsRequestId.current += 1;
+      clearInterval(interval);
+    };
+  }, [loadBrokerPositions]);
+
   const handleWsMessage = useCallback((message: any) => {
     if (message.event === 'price_update') {
       setPositions((current) => current.map((position) => (
@@ -146,6 +185,19 @@ export default function AlgoTab({
           unrealized_pnl: calculateUnrealized(position, message.ltp),
         } : position
       )));
+      setBrokerPositions((current) => current.map((position) => {
+        if (position.symbol !== message.symbol) return position;
+        const ltp = Number(message.ltp);
+        const entry = Number(position.entry_price || 0);
+        const qty = Math.abs(Number(position.net_qty ?? position.qty ?? 0));
+        const unrealized = (position.side === 'SELL' ? entry - ltp : ltp - entry) * qty;
+        return {
+          ...position,
+          ltp,
+          unrealized_pnl: unrealized,
+          total_pnl: Number(position.realized_pnl || 0) + unrealized,
+        };
+      }));
       return;
     }
 
@@ -257,6 +309,11 @@ export default function AlgoTab({
           {walletStatusError}
         </p>
       )}
+      {brokerPositionsError && tradingMode === 'live' && fyersConnected && (
+        <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
+          {brokerPositionsError}
+        </p>
+      )}
       {algoId === 'algo3' && <SilverFeedPanel status={feedStatus} />}
 
       <div className="grid grid-cols-3 gap-1.5 sm:gap-2 lg:grid-cols-6">
@@ -282,6 +339,23 @@ export default function AlgoTab({
 
       <SettingsDrawer open={settingsOpen} algoId={algoId} onClose={() => setSettingsOpen(false)} />
 
+      {tradingMode === 'live' && (
+        <section className="rounded border border-[#22c55e]/30 bg-[#0b1220] p-3">
+          <div className="mb-3 flex flex-wrap items-start justify-between gap-2">
+            <div>
+              <h3 className="text-xs font-semibold uppercase tracking-wider text-[#22c55e]">FYERS Broker Positions</h3>
+              <p className="mt-1 text-xs text-gray-500">
+                Account positions opened in FYERS or another client. This panel is read-only and separate from algorithm-managed positions.
+              </p>
+            </div>
+            <span className="rounded border border-[#22c55e]/30 px-2 py-1 text-xs text-[#22c55e]">
+              {brokerPositions.length} open
+            </span>
+          </div>
+          <BrokerPositionsTable rows={brokerPositions} />
+        </section>
+      )}
+
       <ScanResultsPanel algoId={algoId} results={scanResults} openPositions={positions} onRefresh={loadData} />
 
       <div className="grid gap-4">
@@ -297,6 +371,76 @@ export default function AlgoTab({
       </div>
       {description && <div className="rounded border border-[#1f2937] bg-[#111827] px-3 py-2 text-xs text-gray-500">{description}</div>}
     </section>
+  );
+}
+
+function BrokerPositionsTable({ rows }: { rows: any[] }) {
+  return (
+    <>
+      <div className="space-y-2 sm:hidden">
+        {!rows.length ? (
+          <p className="rounded border border-[#1f2937] bg-[#0d1117] p-3 text-sm text-gray-500">
+            No open FYERS broker positions.
+          </p>
+        ) : rows.map((row, index) => (
+          <div key={row.id || row.symbol || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <div className="label text-[10px]">#{index + 1}</div>
+                <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
+              </div>
+              <div className={`num text-base font-semibold ${pnlColor(Number(row.total_pnl || 0))}`}>
+                {formatMoney(row.total_pnl)}
+              </div>
+            </div>
+            <div className={`mt-1 inline-flex items-center gap-1 text-sm font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
+              <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} text-sm`} />
+              {row.side}
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
+              <MobileField label="Qty" value={formatNumber(row.qty)} />
+              <MobileField label="Product" value={row.product_type || '--'} />
+              <MobileField label="Avg Entry" value={formatNumber(row.entry_price)} />
+              <MobileField label="LTP" value={formatNumber(row.ltp)} />
+              <MobileField label="Unrealized" value={formatMoney(row.unrealized_pnl)} />
+              <MobileField label="Realized" value={formatMoney(row.realized_pnl)} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="hidden overflow-x-auto rounded border border-[#1f2937] sm:block">
+        <table className="w-full min-w-[900px] border-collapse text-sm">
+          <thead className="bg-[#111827]">
+            <tr>
+              {['#', 'Symbol', 'Side', 'Qty', 'Product', 'Avg Entry', 'LTP', 'Unrealized P&L', 'Realized P&L', 'Total P&L'].map((label) => (
+                <th key={label} className="table-cell label">{label}</th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {!rows.length ? (
+              <tr><td colSpan={10} className="table-cell text-gray-500">No open FYERS broker positions.</td></tr>
+            ) : rows.map((row, index) => (
+              <tr key={row.id || row.symbol || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
+                <td className="table-cell num text-gray-500">{index + 1}</td>
+                <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
+                <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
+                  <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} mr-1 text-sm`} />
+                  {row.side}
+                </td>
+                <td className="table-cell num text-gray-100">{formatNumber(row.qty)}</td>
+                <td className="table-cell text-gray-300">{row.product_type || '--'}</td>
+                <td className="table-cell num text-gray-100">{formatNumber(row.entry_price)}</td>
+                <td className="table-cell num text-gray-100">{formatNumber(row.ltp)}</td>
+                <td className={`table-cell num ${pnlColor(Number(row.unrealized_pnl || 0))}`}>{formatMoney(row.unrealized_pnl)}</td>
+                <td className={`table-cell num ${pnlColor(Number(row.realized_pnl || 0))}`}>{formatMoney(row.realized_pnl)}</td>
+                <td className={`table-cell num font-semibold ${pnlColor(Number(row.total_pnl || 0))}`}>{formatMoney(row.total_pnl)}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </>
   );
 }
 

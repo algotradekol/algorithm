@@ -338,6 +338,117 @@ def get_wallet_balance(mode: str | None = None) -> dict:
     }
 
 
+def get_broker_positions(mode: str | None = None) -> dict:
+    """Return currently open positions reported by the FYERS account."""
+    effective_mode = mode or get_runtime_trading_mode()
+    # Trading-app APIs are IP allowlisted, so live account reads use the same
+    # static egress path as live orders. Paper/non-trading reads remain direct.
+    use_proxy = effective_mode == "live"
+    fyers = get_fyers_model(effective_mode, use_proxy=use_proxy)
+    audit_log(
+        "fyers",
+        "positions request started",
+        mode=effective_mode,
+        broker=get_active_broker_key(effective_mode),
+        proxy_enabled=use_proxy,
+    )
+    response = fyers.positions()
+    if not isinstance(response, dict):
+        raise RuntimeError("Fyers positions returned an invalid response.")
+    if response.get("s") == "error":
+        message = response.get("message") or "Fyers rejected the positions request."
+        code = response.get("code")
+        suffix = f" (code {code})" if code is not None else ""
+        raise RuntimeError(f"{message}{suffix}")
+
+    positions = [
+        normalized
+        for row in response.get("netPositions", response.get("net_positions", [])) or []
+        if isinstance(row, dict)
+        and (normalized := _normalize_broker_position(row)) is not None
+    ]
+    audit_log(
+        "fyers",
+        "positions request completed",
+        mode=effective_mode,
+        broker=get_active_broker_key(effective_mode),
+        open_position_count=len(positions),
+    )
+    return {
+        "mode": effective_mode,
+        "broker": get_active_broker_key(effective_mode),
+        "count": len(positions),
+        "positions": positions,
+        "overall": response.get("overall") if isinstance(response.get("overall"), dict) else {},
+    }
+
+
+def _normalize_broker_position(row: dict) -> dict | None:
+    """Normalize FYERS camelCase/snake_case position fields for the frontend."""
+    lowered = {str(key).lower(): value for key, value in row.items()}
+
+    def value(*keys):
+        for key in keys:
+            if key in row and row[key] is not None:
+                return row[key]
+            lowered_key = key.lower()
+            if lowered_key in lowered and lowered[lowered_key] is not None:
+                return lowered[lowered_key]
+        return None
+
+    def number(*keys, default: float = 0.0) -> float:
+        raw = value(*keys)
+        if isinstance(raw, bool) or raw is None:
+            return default
+        try:
+            return float(str(raw).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return default
+
+    raw_net_qty = value("netQty", "net_qty")
+    if raw_net_qty is None:
+        quantity = abs(number("qty", "quantity"))
+        side_value = number("side")
+        net_qty = quantity * (-1 if side_value < 0 else 1)
+    else:
+        net_qty = number("netQty", "net_qty")
+    if abs(net_qty) < 1e-12:
+        return None
+
+    side = "SELL" if net_qty < 0 else "BUY"
+    entry_price = number("netAvg", "net_avg", "avgPrice", "avg_price")
+    if entry_price <= 0:
+        entry_price = number("sellAvg", "sell_avg") if side == "SELL" else number("buyAvg", "buy_avg")
+
+    unrealized_pnl = number("unrealized_profit", "unrealizedProfit", "unrealized_pl")
+    realized_pnl = number("realized_profit", "realizedProfit", "realized_pl")
+    total_pnl_raw = value("pl", "pnl", "totalPnl", "total_pnl")
+    total_pnl = (
+        number("pl", "pnl", "totalPnl", "total_pnl")
+        if total_pnl_raw is not None
+        else realized_pnl + unrealized_pnl
+    )
+    symbol = str(value("symbol") or "").strip()
+    if not symbol:
+        return None
+
+    return {
+        "id": str(value("id", "positionId", "position_id") or symbol),
+        "symbol": symbol,
+        "side": side,
+        "qty": abs(net_qty),
+        "net_qty": net_qty,
+        "entry_price": entry_price,
+        "ltp": number("ltp", "lastPrice", "last_price"),
+        "unrealized_pnl": unrealized_pnl,
+        "realized_pnl": realized_pnl,
+        "total_pnl": total_pnl,
+        "product_type": str(value("productType", "product_type") or ""),
+        "buy_qty": number("buyQty", "buy_qty"),
+        "sell_qty": number("sellQty", "sell_qty"),
+    }
+
+
 def _summarize_funds_response(response: dict) -> dict:
     def parse_amount(value) -> float | None:
         if value is None or isinstance(value, bool):
