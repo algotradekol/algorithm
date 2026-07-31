@@ -17,6 +17,38 @@ except ImportError:  # pragma: no cover - keeps /health alive if SDK is missing
     HTTPAdapter = None
     Retry = None
 
+try:  # pragma: no cover - compatibility shim for older FYERS SDK retries
+    from urllib3.util.retry import Retry as _Urllib3Retry
+except Exception:  # pragma: no cover
+    _Urllib3Retry = None
+
+
+def _patch_retry_compatibility() -> None:
+    """Allow older FYERS SDK code to keep using method_whitelist.
+
+    urllib3 2.x renamed Retry(method_whitelist=...) to
+    Retry(allowed_methods=...). The FYERS SDK still passes the old keyword in
+    some environments, which breaks funds/login/profile calls before we even
+    get a response. We translate the legacy kwarg so both versions work.
+    """
+    if _Urllib3Retry is None:
+        return
+    original_init = _Urllib3Retry.__init__
+    if getattr(original_init, "_codex_retry_compat", False):
+        return
+
+    def patched_init(self, *args, **kwargs):
+        method_whitelist = kwargs.pop("method_whitelist", None)
+        if method_whitelist is not None and "allowed_methods" not in kwargs:
+            kwargs["allowed_methods"] = method_whitelist
+        return original_init(self, *args, **kwargs)
+
+    patched_init._codex_retry_compat = True  # type: ignore[attr-defined]
+    _Urllib3Retry.__init__ = patched_init
+
+
+_patch_retry_compatibility()
+
 from .runtime_mode import get_active_broker_key, get_fyers_config, get_runtime_trading_mode
 from .timezone import IST
 from .fyers_auth import get_stored_access_token, get_stored_token_row
