@@ -31,6 +31,7 @@ function DashboardContent() {
   const [tab, setTab] = useState<(typeof TABS)[number]>('Simple');
   const [ready, setReady] = useState(false);
   const [showFyersBanner, setShowFyersBanner] = useState(true);
+  const [fyersLoginResult, setFyersLoginResult] = useState<'success' | 'failed' | null>(null);
   const [istTime, setIstTime] = useState(formatIstTime());
   const [fyersStatus, setFyersStatus] = useState<{
     connected: boolean;
@@ -62,7 +63,6 @@ function DashboardContent() {
   const [wsStatus, setWsStatus] = useState<WebSocketState>('reconnecting');
   const router = useRouter();
   const searchParams = useSearchParams();
-  const fyersLogin = searchParams.get('fyers_login');
   const tradingMode = (engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper';
   const fyersConnectedForMode = Boolean(
     fyersStatus?.connected
@@ -91,6 +91,18 @@ function DashboardContent() {
     const interval = window.setInterval(() => setIstTime(formatIstTime()), 1000);
     return () => window.clearInterval(interval);
   }, []);
+
+  useEffect(() => {
+    const result = searchParams.get('fyers_login');
+    if (result !== 'success' && result !== 'failed') return;
+
+    setFyersLoginResult(result);
+    setShowFyersBanner(true);
+    const nextParams = new URLSearchParams(searchParams.toString());
+    nextParams.delete('fyers_login');
+    const query = nextParams.toString();
+    router.replace(query ? `/dashboard?${query}` : '/dashboard', { scroll: false });
+  }, [router, searchParams]);
 
   useEffect(() => {
     if (!ready) return;
@@ -130,23 +142,23 @@ function DashboardContent() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [ready, fyersLogin]);
+  }, [ready, fyersLoginResult]);
 
   if (!ready) return null;
 
   return (
     <main className="min-h-screen overflow-x-hidden bg-[#0a0e14]" data-ai-active-tab={tab}>
       <div className="mx-auto max-w-[1400px] px-3 py-3 sm:px-6 sm:py-4">
-        {fyersLogin && showFyersBanner && (
+        {fyersLoginResult && showFyersBanner && (
           <div
             className={`mb-3 flex items-center justify-between gap-3 rounded border px-3 py-2 ${
-              fyersLogin === 'success'
+              fyersLoginResult === 'success'
                 ? 'border-[#22c55e]/40 bg-[#22c55e]/10'
                 : 'border-[#ef4444]/40 bg-[#ef4444]/10'
             }`}
           >
             <span className="text-sm text-gray-100">
-              {fyersLogin === 'success' ? 'Fyers login successful' : 'Fyers login failed, try again'}
+              {fyersLoginResult === 'success' ? 'Fyers login successful' : 'Fyers login failed, try again'}
             </span>
             <button
               onClick={() => setShowFyersBanner(false)}
@@ -277,7 +289,20 @@ function DashboardContent() {
             {tab === 'Backtest' && <BacktestTab />}
             {tab === 'Compare' && <CompareTab />}
             {tab === 'History' && (
-              <HistoryTab tradingMode={tradingMode} fyersConnected={fyersConnectedForMode} />
+              <HistoryTab
+                tradingMode={tradingMode}
+                fyersConnected={fyersConnectedForMode}
+                onFyersDisconnected={() => {
+                  setFyersStatus({
+                    connected: false,
+                    status: 'disconnected',
+                    message: `FYERS ${tradingMode} token was disconnected.`,
+                    trading_mode: tradingMode,
+                  });
+                  setFyersLoginResult(null);
+                  setShowFyersBanner(false);
+                }}
+              />
             )}
             {tab === 'Calendar' && <CalendarTab />}
             {tab === 'Charges' && <ChargesPanel />}

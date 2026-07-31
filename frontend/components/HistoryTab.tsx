@@ -8,9 +8,11 @@ const RESOLUTIONS = ['5', '15', '60', 'D'];
 export default function HistoryTab({
   tradingMode = 'paper',
   fyersConnected = false,
+  onFyersDisconnected,
 }: {
   tradingMode?: 'paper' | 'live';
   fyersConnected?: boolean;
+  onFyersDisconnected?: () => void;
 }) {
   const [algoId, setAlgoId] = useState('algo1');
   const [days, setDays] = useState(30);
@@ -136,6 +138,7 @@ export default function HistoryTab({
       await loadTokenStatus();
       setWalletStatus(null);
       setWalletStatusError('');
+      onFyersDisconnected?.();
     } catch (e: any) {
       setTokenStatusError(e?.message || 'Failed to disconnect FYERS');
     } finally {

@@ -244,11 +244,19 @@ def fyers_funds(_user=Depends(require_auth)):
 
 @app.post("/api/fyers/disconnect")
 def fyers_disconnect(_user=Depends(require_auth)):
-    disconnect_broker_tokens()
+    mode = get_runtime_trading_mode()
+    broker = get_active_broker_key(mode)
+    disconnect_broker_tokens(mode)
     clear_pending_fyers_login_mode()
+    clear_pending_fyers_login_origin()
     stop_live_feed(reason="fyers_disconnect")
-    audit_log("fyers", "disconnect requested")
-    return {"status": "ok", "message": "FYERS disconnected."}
+    audit_log("fyers", "disconnect requested", mode=mode, broker=broker)
+    return {
+        "status": "ok",
+        "message": f"FYERS {mode} connection disconnected.",
+        "trading_mode": mode,
+        "broker": broker,
+    }
 
 
 @app.get("/api/runtime/trading-mode")
