@@ -339,6 +339,123 @@ def get_wallet_balance(mode: str | None = None) -> dict:
 
 
 def _summarize_funds_response(response: dict) -> dict:
+    def parse_amount(value) -> float | None:
+        if value is None or isinstance(value, bool):
+            return None
+        if isinstance(value, (int, float)):
+            return float(value)
+        if isinstance(value, str):
+            cleaned = (
+                value.replace(",", "")
+                .replace("₹", "")
+                .replace("Rs.", "")
+                .replace("Rs", "")
+                .strip()
+            )
+            try:
+                return float(cleaned)
+            except ValueError:
+                return None
+        return None
+
+    def normalize_title(value) -> str:
+        return " ".join(str(value or "").lower().replace("_", " ").split())
+
+    fund_rows: list[dict] = []
+    raw_fund_rows = response.get("fund_limit")
+    if isinstance(raw_fund_rows, list):
+        for index, row in enumerate(raw_fund_rows):
+            if not isinstance(row, dict):
+                continue
+            normalized = {str(key).lower(): value for key, value in row.items()}
+            equity = parse_amount(normalized.get("equityamount"))
+            commodity = parse_amount(normalized.get("commodityamount"))
+            explicit_amount = next(
+                (
+                    parsed
+                    for key in ("amount", "totalamount", "value")
+                    if (parsed := parse_amount(normalized.get(key))) is not None
+                ),
+                None,
+            )
+            total = (
+                (equity or 0.0) + (commodity or 0.0)
+                if equity is not None or commodity is not None
+                else explicit_amount
+            )
+            if total is None:
+                continue
+            title = str(row.get("title") or row.get("name") or f"row {index + 1}").strip()
+            fund_rows.append(
+                {
+                    "index": index,
+                    "title": title,
+                    "normalized_title": normalize_title(title),
+                    "equity_amount": equity,
+                    "commodity_amount": commodity,
+                    "total": total,
+                }
+            )
+
+    def pick_fund_row(titles: tuple[str, ...]) -> dict | None:
+        normalized_titles = tuple(normalize_title(title) for title in titles)
+        for wanted in normalized_titles:
+            for row in fund_rows:
+                if row["normalized_title"] == wanted:
+                    return row
+        for wanted in normalized_titles:
+            for row in fund_rows:
+                if wanted in row["normalized_title"]:
+                    return row
+        return None
+
+    wallet_row = pick_fund_row(
+        (
+            "total balance",
+            "available balance",
+            "clear balance",
+            "cash balance",
+            "available funds",
+            "limit at start of day",
+        )
+    )
+    margin_row = pick_fund_row(
+        (
+            "available balance",
+            "clear balance",
+            "total balance",
+            "available funds",
+        )
+    )
+    if wallet_row is not None:
+        source = (
+            f"fund_limit[{wallet_row['index']}].{wallet_row['title']} "
+            "(equityAmount + commodityAmount)"
+        )
+        margin_source = None
+        if margin_row is not None:
+            margin_source = (
+                f"fund_limit[{margin_row['index']}].{margin_row['title']} "
+                "(equityAmount + commodityAmount)"
+            )
+        return {
+            "wallet_balance": wallet_row["total"],
+            "wallet_balance_source": source,
+            "equity_balance": wallet_row["equity_amount"],
+            "commodity_balance": wallet_row["commodity_amount"],
+            "available_margin": margin_row["total"] if margin_row is not None else None,
+            "available_margin_source": margin_source,
+            "fund_limit_rows": [
+                {
+                    "title": row["title"],
+                    "equity_amount": row["equity_amount"],
+                    "commodity_amount": row["commodity_amount"],
+                    "total": row["total"],
+                }
+                for row in fund_rows
+            ],
+        }
+
     candidates: list[tuple[str, float]] = []
 
     def collect(value, path: str = ""):
@@ -346,15 +463,10 @@ def _summarize_funds_response(response: dict) -> dict:
             for key, child in value.items():
                 key_text = str(key).lower()
                 child_path = f"{path}.{key}" if path else str(key)
-                if isinstance(child, (int, float)):
+                parsed = parse_amount(child)
+                if parsed is not None:
                     if any(marker in key_text for marker in ("available", "balance", "cash", "margin", "fund")):
-                        candidates.append((child_path, float(child)))
-                elif isinstance(child, str):
-                    if any(marker in key_text for marker in ("available", "balance", "cash", "margin", "fund")):
-                        try:
-                            candidates.append((child_path, float(child.replace(",", "").strip())))
-                        except ValueError:
-                            pass
+                        candidates.append((child_path, parsed))
                 else:
                     collect(child, child_path)
         elif isinstance(value, list):

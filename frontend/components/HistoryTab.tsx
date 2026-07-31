@@ -241,6 +241,7 @@ function TokenRefreshPanel({
   const hasRefreshToken = Boolean(status?.refresh_token_present);
   const lastError = status?.last_refresh_error;
   const walletSummary = walletStatus?.summary || {};
+  const walletBalance = optionalNumber(walletSummary.wallet_balance, walletSummary.available_margin);
   return (
     <section className="rounded border border-[#1f2937] bg-[#111827] p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -273,9 +274,13 @@ function TokenRefreshPanel({
         <TokenStat label="Days left" value={Number.isFinite(daysLeft) ? `${daysLeft} days` : '--'} tone={daysLeft <= 2 ? 'text-[#f59e0b]' : 'text-gray-100'} />
         <TokenStat
           label="Wallet balance"
-          value={formatMoney(walletSummary.wallet_balance)}
-          tone={Number.isFinite(Number(walletSummary.wallet_balance)) ? 'text-gray-100' : 'text-gray-500'}
-          helper={walletSummary.wallet_balance_source ? `source: ${walletSummary.wallet_balance_source}` : 'Live FYERS funds summary'}
+          value={walletBalance === null ? '--' : formatMoney(walletBalance)}
+          tone={walletBalance === null ? 'text-gray-500' : 'text-gray-100'}
+          helper={
+            walletSummary.wallet_balance_source
+              ? `source: ${walletSummary.wallet_balance_source}`
+              : walletStatusError || 'Waiting for FYERS funds'
+          }
         />
         <TokenStat label="Refresh token expires" value={formatDateTime(status?.refresh_token_estimated_expires_at)} />
         <TokenStat label="Last access token" value={formatDateTime(status?.access_token_updated_at)} />
@@ -632,9 +637,19 @@ function formatNumber(value: number) {
 }
 
 function formatMoney(value: unknown) {
+  if (value === null || value === undefined || value === '') return '--';
   const amount = Number(value);
   if (!Number.isFinite(amount)) return '--';
   return `Rs ${amount.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+}
+
+function optionalNumber(...values: unknown[]) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue;
+    const amount = Number(value);
+    if (Number.isFinite(amount)) return amount;
+  }
+  return null;
 }
 
 function formatDateTime(value: string | null | undefined) {

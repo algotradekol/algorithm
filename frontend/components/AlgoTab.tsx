@@ -222,8 +222,8 @@ export default function AlgoTab({
   const netPnl = Number(summary.realized_net_pnl || 0);
   const grossPnl = Number(summary.realized_gross_pnl || 0);
   const walletSummary = walletStatus?.summary || {};
-  const liveWalletBalance = Number(walletSummary.wallet_balance ?? walletSummary.available_margin);
-  const showLiveWallet = tradingMode === 'live' && Number.isFinite(liveWalletBalance);
+  const liveWalletBalance = optionalNumber(walletSummary.wallet_balance, walletSummary.available_margin);
+  const showLiveWallet = tradingMode === 'live';
   const openUnrealizedPnl = positions.reduce((total, position) => {
     const ltp = Number(position.ltp ?? position.last_ltp ?? position._last_ltp ?? position.entry_price);
     const entry = Number(position.entry_price || 0);
@@ -263,8 +263,12 @@ export default function AlgoTab({
         {showLiveWallet ? (
           <MetricCard
             label="Wallet Balance"
-            value={formatMoney(liveWalletBalance)}
-            helper={walletSummary.wallet_balance_source ? `source: ${walletSummary.wallet_balance_source}` : 'Live FYERS funds'}
+            value={liveWalletBalance === null ? '--' : formatMoney(liveWalletBalance)}
+            helper={
+              walletSummary.wallet_balance_source
+                ? `source: ${walletSummary.wallet_balance_source}`
+                : walletStatusError || 'Waiting for FYERS funds'
+            }
           />
         ) : (
           <MetricCard label="Total Capital" value={formatMoney(totalCapital)} delta={formatSignedMoney(totalCapital - startingCapital)} pnl={totalCapital - startingCapital} />
@@ -650,6 +654,15 @@ export function Table({ rows, columns }: { rows: any[]; columns: string[] }) {
 function formatMoney(value: unknown) {
   const number = Number(value || 0);
   return `Rs ${number.toLocaleString('en-IN', { maximumFractionDigits: 2 })}`;
+}
+
+function optionalNumber(...values: unknown[]) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue;
+    const number = Number(value);
+    if (Number.isFinite(number)) return number;
+  }
+  return null;
 }
 
 function calculateUnrealized(position: any, ltpValue: unknown) {
