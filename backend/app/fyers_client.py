@@ -58,10 +58,17 @@ from .fyers_auth import get_stored_access_token, get_stored_token_row
 RECENT_LOGIN_GRACE_SECONDS = 180
 BROKER_POSITIONS_CACHE_TTL_SECONDS = 10
 BROKER_POSITIONS_STALE_TTL_SECONDS = 300
+BROKER_ORDERS_CACHE_TTL_SECONDS = 10
+BROKER_ORDERS_STALE_TTL_SECONDS = 300
 FYERS_FUNDS_CACHE_TTL_SECONDS = 20
 FYERS_FUNDS_STALE_TTL_SECONDS = 300
 _broker_positions_cache: dict[str, dict] = {}
 _broker_positions_locks = {
+    "paper": threading.Lock(),
+    "live": threading.Lock(),
+}
+_broker_orders_cache: dict[str, dict] = {}
+_broker_orders_locks = {
     "paper": threading.Lock(),
     "live": threading.Lock(),
 }
@@ -593,6 +600,106 @@ def get_broker_positions(mode: str | None = None) -> dict:
         lock.release()
 
 
+def get_broker_orders(mode: str | None = None) -> dict:
+    effective_mode = mode or get_runtime_trading_mode()
+    lock = _broker_orders_locks.setdefault(effective_mode, threading.Lock())
+    cache_entry = _broker_orders_cache.get(effective_mode)
+    now = time.time()
+
+    if cache_entry and now - cache_entry.get("cached_at", 0.0) < BROKER_ORDERS_CACHE_TTL_SECONDS:
+        cached_result = copy.deepcopy(cache_entry["value"])
+        cached_result.update({"cached": True, "stale": False, "syncing": False})
+        return cached_result
+
+    if not lock.acquire(blocking=False):
+        if cache_entry:
+            cached_result = copy.deepcopy(cache_entry["value"])
+            is_stale = now - cache_entry.get("cached_at", 0.0) >= BROKER_ORDERS_CACHE_TTL_SECONDS
+            cached_result.update({"cached": True, "stale": is_stale, "syncing": True})
+            return cached_result
+        return {
+            "mode": effective_mode,
+            "broker": get_active_broker_key(effective_mode),
+            "count": 0,
+            "orders": [],
+            "available": False,
+            "cached": False,
+            "stale": False,
+            "syncing": True,
+            "warning": "FYERS orders are syncing. Try again in a moment.",
+        }
+
+    try:
+        try:
+            response = get_fyers_model(effective_mode, use_proxy=False).orderbook()
+            raw_rows = response.get("orderBook", response.get("orderbook", []))
+            orders = []
+            if isinstance(raw_rows, list):
+                for row in raw_rows:
+                    if not isinstance(row, dict):
+                        continue
+                    normalized = _normalize_broker_order(row)
+                    if normalized:
+                        orders.append(normalized)
+
+            result = {
+                "mode": effective_mode,
+                "broker": get_active_broker_key(effective_mode),
+                "count": len(orders),
+                "orders": orders,
+                "available": True,
+                "cached": False,
+                "stale": False,
+                "syncing": False,
+                "updated_at": datetime.datetime.now(datetime.UTC).isoformat(),
+            }
+            _broker_orders_cache[effective_mode] = {
+                "cached_at": now,
+                "value": copy.deepcopy(result),
+            }
+            return result
+        except Exception as exc:
+            if cache_entry and now - cache_entry.get("cached_at", 0.0) < BROKER_ORDERS_STALE_TTL_SECONDS:
+                result = copy.deepcopy(cache_entry["value"])
+                result.update({
+                    "cached": True,
+                    "stale": True,
+                    "syncing": False,
+                    "warning": f"FYERS orders are temporarily unavailable: {exc}",
+                })
+                audit_log(
+                    "fyers",
+                    "orders request using stale cache",
+                    mode=effective_mode,
+                    broker=get_active_broker_key(effective_mode),
+                    error=str(exc),
+                )
+                return result
+            message = str(exc)
+            if "No Fyers access token" in message:
+                raise
+            audit_log(
+                "fyers",
+                "orders request unavailable",
+                mode=effective_mode,
+                broker=get_active_broker_key(effective_mode),
+                error=message,
+            )
+            return {
+                "mode": effective_mode,
+                "broker": get_active_broker_key(effective_mode),
+                "count": 0,
+                "orders": [],
+                "available": False,
+                "cached": False,
+                "stale": False,
+                "syncing": False,
+                "warning": f"FYERS orders are temporarily unavailable: {message}",
+            }
+    finally:
+        lock.release()
+
+
 def _normalize_broker_position(row: dict) -> dict | None:
     """Normalize FYERS camelCase/snake_case position fields for the frontend."""
     lowered = {str(key).lower(): value for key, value in row.items()}
@@ -656,6 +763,69 @@ def _normalize_broker_position(row: dict) -> dict | None:
         "product_type": str(value("productType", "product_type") or ""),
         "buy_qty": number("buyQty", "buy_qty"),
         "sell_qty": number("sellQty", "sell_qty"),
+    }
+
+
+def _normalize_broker_order(row: dict) -> dict | None:
+    lowered = {str(key).lower(): value for key, value in row.items()}
+
+    def value(*keys):
+        for key in keys:
+            if key in row and row[key] is not None:
+                return row[key]
+            lowered_key = key.lower()
+            if lowered_key in lowered and lowered[lowered_key] is not None:
+                return lowered[lowered_key]
+        return None
+
+    def number(*keys, default: float = 0.0) -> float:
+        raw = value(*keys)
+        if isinstance(raw, bool) or raw is None:
+            return default
+        try:
+            return float(str(raw).replace(",", "").strip())
+        except (TypeError, ValueError):
+            return default
+
+    symbol = str(value("symbol") or "").strip()
+    if not symbol:
+        return None
+
+    status_text = str(value("statusDescription", "status_description", "status") or "").strip()
+    status_upper = status_text.upper()
+    if any(token in status_upper for token in ("CANCEL", "REJECT", "COMPLETE", "FILLED", "TRADED", "EXPIRE")):
+        remaining_qty = number("remainingQuantity", "remaining_quantity", "remainingQty", "remaining_qty")
+        if remaining_qty <= 0:
+            return None
+
+    qty = abs(number("qty", "quantity", default=0.0))
+    remaining_qty = abs(number("remainingQuantity", "remaining_quantity", "remainingQty", "remaining_qty", default=qty))
+    filled_qty = abs(number("filledQty", "filled_qty", default=max(0.0, qty - remaining_qty)))
+    if qty <= 0 and remaining_qty <= 0 and filled_qty <= 0:
+        return None
+
+    side_value = number("side")
+    side = "SELL" if side_value < 0 else "BUY"
+    limit_price = number("limitPrice", "limit_price")
+    trigger_price = number("stopPrice", "stop_price", "triggerPrice", "trigger_price")
+    entry_price = limit_price or trigger_price or number("price")
+    product_type = str(value("productType", "product_type") or "")
+    order_type = str(value("type", "orderType", "order_type") or "")
+
+    return {
+        "id": str(value("id", "orderId", "order_id") or f"{symbol}:{side}:{status_text or 'pending'}"),
+        "symbol": symbol,
+        "side": side,
+        "qty": qty or remaining_qty or filled_qty,
+        "remaining_qty": remaining_qty,
+        "filled_qty": filled_qty,
+        "entry_price": entry_price,
+        "limit_price": limit_price,
+        "trigger_price": trigger_price,
+        "status": status_text or "Pending",
+        "product_type": product_type,
+        "order_type": order_type,
+        "ltp": None,
     }
 
 

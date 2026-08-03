@@ -26,7 +26,7 @@ from .auth import require_auth
 from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, last_ltp, restart_live_feed, start_engine, stop_live_feed, STRATEGIES
 from .charges import get_charges_config, set_charges_config
 from .audit_log import audit_log
-from .fyers_client import get_broker_positions, get_connection_status, get_price_history, get_wallet_balance
+from .fyers_client import get_broker_orders, get_broker_positions, get_connection_status, get_price_history, get_wallet_balance
 from .fyers_auth import disconnect_broker_tokens, exchange_auth_code, store_broker_tokens
 from .runtime_mode import (
     clear_pending_fyers_login_mode,
@@ -267,6 +267,32 @@ def fyers_positions(mode: str | None = None, _user=Depends(require_auth)):
         audit_log(
             "fyers",
             "positions request failed",
+            mode=active_mode,
+            broker=broker,
+            error=message,
+        )
+        status_code = 409 if "No Fyers access token" in message else 502
+        raise HTTPException(status_code=status_code, detail=message)
+
+
+@app.get("/api/fyers/orders")
+def fyers_orders(mode: str | None = None, _user=Depends(require_auth)):
+    active_mode = get_runtime_trading_mode()
+    requested_mode = normalize_trading_mode(mode or active_mode)
+    if requested_mode != active_mode:
+        raise HTTPException(
+            status_code=409,
+            detail=f"Trading mode changed to {active_mode}; discard the stale {requested_mode} orders request.",
+        )
+    broker = get_active_broker_key(active_mode)
+    try:
+        result = get_broker_orders(active_mode)
+        return {**result, "trading_mode": active_mode, "broker": broker}
+    except Exception as exc:
+        message = str(exc)
+        audit_log(
+            "fyers",
+            "orders request failed",
             mode=active_mode,
             broker=broker,
             error=message,

@@ -6,9 +6,12 @@ const API_URL = process.env.NEXT_PUBLIC_API_URL;
 type TradingMode = 'paper' | 'live';
 const fyersPositionsInFlight = new Map<TradingMode, Promise<any>>();
 const fyersPositionsCache = new Map<TradingMode, { value: any; cachedAt: number }>();
+const fyersOrdersInFlight = new Map<TradingMode, Promise<any>>();
+const fyersOrdersCache = new Map<TradingMode, { value: any; cachedAt: number }>();
 const fyersFundsInFlight = new Map<TradingMode, Promise<any>>();
 const fyersFundsCache = new Map<TradingMode, { value: any; cachedAt: number }>();
 const FYERS_POSITIONS_CLIENT_CACHE_MS = 8_000;
+const FYERS_ORDERS_CLIENT_CACHE_MS = 8_000;
 const FYERS_FUNDS_CLIENT_CACHE_MS = 15_000;
 
 async function authedFetch(path: string, options: RequestInit = {}) {
@@ -56,6 +59,8 @@ function assertAccountMode(value: any, mode: TradingMode) {
 function clearFyersAccountCache() {
   fyersPositionsCache.clear();
   fyersPositionsInFlight.clear();
+  fyersOrdersCache.clear();
+  fyersOrdersInFlight.clear();
   fyersFundsCache.clear();
   fyersFundsInFlight.clear();
 }
@@ -104,6 +109,28 @@ function fetchFyersFunds(mode: TradingMode = 'live', force = false) {
   return request;
 }
 
+function fetchFyersOrders(mode: TradingMode = 'live', force = false) {
+  const now = Date.now();
+  const cached = fyersOrdersCache.get(mode);
+  if (!force && cached && now - cached.cachedAt < FYERS_ORDERS_CLIENT_CACHE_MS) {
+    return Promise.resolve(cached.value);
+  }
+  const inFlight = fyersOrdersInFlight.get(mode);
+  if (inFlight) return inFlight;
+
+  const request = authedFetch(`/api/fyers/orders?mode=${mode}`)
+    .then((value) => {
+      const checked = assertAccountMode(value, mode);
+      fyersOrdersCache.set(mode, { value: checked, cachedAt: Date.now() });
+      return checked;
+    })
+    .finally(() => {
+      fyersOrdersInFlight.delete(mode);
+    });
+  fyersOrdersInFlight.set(mode, request);
+  return request;
+}
+
 export const api = {
   summary: (algoId: string) => authedFetch(`/api/algo/${algoId}/summary`),
   positions: (algoId: string) => authedFetch(`/api/algo/${algoId}/positions`),
@@ -140,6 +167,7 @@ export const api = {
   fyersTokenStatus: () => authedFetch('/api/fyers/token-status'),
   fyersFunds: fetchFyersFunds,
   fyersPositions: fetchFyersPositions,
+  fyersOrders: fetchFyersOrders,
   clearFyersAccountCache,
   aiSessions: () => authedFetch('/api/ai/sessions'),
   aiCreateSession: (title = 'New chat') => authedFetch('/api/ai/sessions', { method: 'POST', body: JSON.stringify({ title }) }),

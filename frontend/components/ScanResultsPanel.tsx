@@ -206,27 +206,32 @@ export default function ScanResultsPanel({
 
       {tradeError && <div className="mt-4 rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-xs text-[#ef4444]">{tradeError}</div>}
 
-      <div className="mt-4 rounded border border-[#1f2937] bg-[#0d1117] p-3">
-        <div className="label">Condition Funnel</div>
-        <p className="mt-1 text-xs text-gray-500">
-          Temporary screener check: how many stocks survived each condition, step by step.
-        </p>
-        <div className="mt-3 flex flex-wrap gap-1.5">
+      <details className="group mt-4 rounded border border-[#1f2937] bg-[#0d1117]">
+        <summary className="flex min-h-11 cursor-pointer list-none items-center justify-between gap-3 px-3 py-2">
+          <div>
+            <div className="label">Condition Funnel</div>
+            <p className="mt-0.5 text-xs text-gray-500">
+              Temporary screener check: how many stocks survived each condition, step by step.
+            </p>
+          </div>
+          <i className="ri-arrow-down-s-fill text-base text-[#60a5fa] transition-transform group-open:rotate-180" />
+        </summary>
+        <div className="border-t border-[#1f2937] p-3">
+          <div className="flex flex-wrap gap-1.5">
           <ScanStat label="Scanned" value={results.total_scanned} filter="all" active={scanFilter === 'all'} onClick={() => selectFilter('all')} />
           <ScanStat label="Passed Gap Filter" value={rows.filter((row: any) => row.gap_passed === true || row.opening_range_gap_passed === true).length} filter="passed" active={scanFilter === 'passed'} onClick={() => selectFilter('passed')} />
           <ScanStat label="Buy" value={results.buy_candidates} filter="buy" active={scanFilter === 'buy'} onClick={() => selectFilter('buy')} />
           <ScanStat label="Sell" value={results.sell_candidates} filter="sell" active={scanFilter === 'sell'} onClick={() => selectFilter('sell')} />
           <ScanStat label="Selected" value={rows.filter((row: any) => row.selected_for_trade).length} filter="selected" active={scanFilter === 'selected'} onClick={() => selectFilter('selected')} />
           <ScanStat label="Filtered Out" value={results.total_filtered_out} filter="filtered" active={scanFilter === 'filtered'} onClick={() => selectFilter('filtered')} />
-        </div>
-        <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
+          </div>
+          <div className="mt-3 grid gap-2 sm:grid-cols-2 lg:grid-cols-4">
           {funnel.map((step, index) => (
             <FunnelStep key={`${step.label}-${index}`} step={step} index={index} active={funnelFilter === index} onClick={() => selectFunnelStep(index)} />
           ))}
-        </div>
-      </div>
+          </div>
 
-      <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
+          <div className="mt-4 flex flex-wrap items-center justify-between gap-3">
         <div>
           <h3 className="label">{funnelFilter !== null ? `Passed: ${funnel[funnelFilter]?.label}` : scanFilter === 'all' ? 'All Candidates' : `${filterLabel(scanFilter)} Candidates`}</h3>
           {(scanFilter !== 'all' || funnelFilter !== null) && <button onClick={() => { setScanFilter('all'); setFunnelFilter(null); setPage(0); }} className="mt-1 text-xs text-[#60a5fa]">Show all candidates</button>}
@@ -237,9 +242,9 @@ export default function ScanResultsPanel({
           placeholder="Filter symbols..."
           className="control max-w-xs"
         />
-      </div>
+          </div>
 
-      <div className="mt-3 overflow-x-auto rounded border border-[#1f2937]">
+          <div className="mt-3 overflow-x-auto rounded border border-[#1f2937]">
         <table className="w-full min-w-max border-collapse text-xs">
           <thead className="bg-[#111827]">
             <tr>
@@ -294,9 +299,11 @@ export default function ScanResultsPanel({
             ))}
           </tbody>
         </table>
-      </div>
+          </div>
 
-      <PaginationControls page={page} totalRows={filtered.length} onPageChange={setPage} />
+          <PaginationControls page={page} totalRows={filtered.length} onPageChange={setPage} />
+        </div>
+      </details>
     </section>
   );
 }

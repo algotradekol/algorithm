@@ -32,11 +32,14 @@ export default function AlgoTab({
   const [walletStatusError, setWalletStatusError] = useState('');
   const [brokerPositions, setBrokerPositions] = useState<any[]>([]);
   const [brokerPositionsError, setBrokerPositionsError] = useState('');
+  const [brokerOrders, setBrokerOrders] = useState<any[]>([]);
+  const [brokerOrdersError, setBrokerOrdersError] = useState('');
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exitingPositionId, setExitingPositionId] = useState<string | null>(null);
   const walletRequestId = useRef(0);
   const brokerPositionsRequestId = useRef(0);
+  const brokerOrdersRequestId = useRef(0);
   const dataRequestId = useRef(0);
 
   const refreshSummary = useCallback(async () => {
@@ -139,10 +142,31 @@ export default function AlgoTab({
     }
   }, [fyersConnected, tradingMode]);
 
+  const loadBrokerOrders = useCallback(async () => {
+    const requestId = ++brokerOrdersRequestId.current;
+    if (tradingMode !== 'live' || !fyersConnected) {
+      setBrokerOrders([]);
+      setBrokerOrdersError('');
+      return;
+    }
+    try {
+      const result = await api.fyersOrders(tradingMode, true);
+      if (requestId !== brokerOrdersRequestId.current) return;
+      if (result?.available !== false) {
+        setBrokerOrders(Array.isArray(result?.orders) ? result.orders : []);
+      }
+      setBrokerOrdersError(result?.warning || '');
+    } catch (e: any) {
+      if (requestId !== brokerOrdersRequestId.current) return;
+      setBrokerOrdersError(e?.message || 'Failed to load FYERS pending orders');
+    }
+  }, [fyersConnected, tradingMode]);
+
   useEffect(() => {
     dataRequestId.current += 1;
     walletRequestId.current += 1;
     brokerPositionsRequestId.current += 1;
+    brokerOrdersRequestId.current += 1;
     api.clearFyersAccountCache();
     setSummary(null);
     setPositions([]);
@@ -153,6 +177,8 @@ export default function AlgoTab({
     setWalletStatusError('');
     setBrokerPositions([]);
     setBrokerPositionsError('');
+    setBrokerOrders([]);
+    setBrokerOrdersError('');
     setError('');
   }, [tradingMode]);
 
@@ -205,6 +231,23 @@ export default function AlgoTab({
       clearInterval(interval);
     };
   }, [loadBrokerPositions]);
+
+  useEffect(() => {
+    let cancelled = false;
+    async function refreshBrokerOrders() {
+      await loadBrokerOrders();
+      if (cancelled) return;
+    }
+    refreshBrokerOrders();
+    const interval = setInterval(() => {
+      if (!document.hidden && !cancelled) refreshBrokerOrders();
+    }, 15_000);
+    return () => {
+      cancelled = true;
+      brokerOrdersRequestId.current += 1;
+      clearInterval(interval);
+    };
+  }, [loadBrokerOrders]);
 
   const handleWsMessage = useCallback((message: any) => {
     if (message.event === 'price_update') {
@@ -323,6 +366,9 @@ export default function AlgoTab({
   const managedPositionKeys = new Set(
     positions.map((position) => `${position.symbol}|${position.side}`),
   );
+  const brokerPositionKeys = new Set(
+    brokerPositions.map((position) => `${position.symbol}|${position.side}`),
+  );
   const openPositionRows = [
     ...positions.map((position) => ({
       ...position,
@@ -335,6 +381,17 @@ export default function AlgoTab({
         position_source: 'fyers_app',
         is_broker_position: true,
         entry_trigger: 'Opened directly in FYERS app',
+      })),
+    ...brokerOrders
+      .filter((order) => {
+        const key = `${order.symbol}|${order.side}`;
+        return !managedPositionKeys.has(key) && !brokerPositionKeys.has(key);
+      })
+      .map((order) => ({
+        ...order,
+        position_source: 'fyers_order',
+        is_broker_order: true,
+        entry_trigger: 'Scheduled / pending in FYERS app',
       })),
   ];
 
@@ -361,6 +418,11 @@ export default function AlgoTab({
       {brokerPositionsError && tradingMode === 'live' && fyersConnected && (
         <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
           {brokerPositionsError}
+        </p>
+      )}
+      {brokerOrdersError && tradingMode === 'live' && fyersConnected && (
+        <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
+          {brokerOrdersError}
         </p>
       )}
       {algoId === 'algo3' && <SilverFeedPanel status={feedStatus} />}
@@ -612,6 +674,17 @@ function ManualExitButton({
   exitingPositionId: string | null;
   mobile?: boolean;
 }) {
+  if (row.is_broker_order || row.position_source === 'fyers_order') {
+    return (
+      <span
+        className={`${mobile ? 'mt-3 flex w-full justify-center' : 'inline-flex'} min-h-9 items-center rounded border border-[#3b82f6]/40 px-2.5 py-1.5 text-xs font-semibold text-[#60a5fa]`}
+        title="This order is still pending or scheduled in FYERS. Manage it from the FYERS app."
+      >
+        <i className="ri-time-fill mr-1 text-sm" />
+        Pending in FYERS
+      </span>
+    );
+  }
   if (row.is_broker_position || row.position_source === 'fyers_app') {
     return (
       <span
@@ -639,15 +712,16 @@ function ManualExitButton({
 }
 
 function PositionSourceBadge({ row }: { row: any }) {
+  const fromFyersOrder = row.is_broker_order || row.position_source === 'fyers_order';
   const fromFyersApp = row.is_broker_position || row.position_source === 'fyers_app';
   return (
     <span className={`inline-flex items-center whitespace-nowrap rounded border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${
-      fromFyersApp
+      fromFyersOrder || fromFyersApp
         ? 'border-[#60a5fa]/40 bg-[#3b82f6]/10 text-[#60a5fa]'
         : 'border-[#22c55e]/30 bg-[#22c55e]/10 text-[#22c55e]'
     }`}>
-      <i className={`${fromFyersApp ? 'ri-smartphone-fill' : 'ri-robot-2-fill'} mr-1 text-xs`} />
-      {fromFyersApp ? 'FYERS App' : 'Algorithm'}
+      <i className={`${fromFyersOrder ? 'ri-time-fill' : fromFyersApp ? 'ri-smartphone-fill' : 'ri-robot-2-fill'} mr-1 text-xs`} />
+      {fromFyersOrder ? 'FYERS Order' : fromFyersApp ? 'FYERS App' : 'Algorithm'}
     </span>
   );
 }
@@ -737,6 +811,9 @@ function MobileField({ label, value, wide = false }: { label: string; value: any
 }
 
 function SignalAudit({ row }: { row: any }) {
+  if (row.is_broker_order || row.position_source === 'fyers_order') {
+    return <span className="text-xs text-[#60a5fa]">Pending or scheduled in FYERS ({row.status || 'waiting'})</span>;
+  }
   if (row.is_broker_position || row.position_source === 'fyers_app') {
     return <span className="text-xs text-[#60a5fa]">Opened outside the algorithm in FYERS</span>;
   }
