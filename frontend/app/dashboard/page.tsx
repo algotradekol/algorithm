@@ -269,7 +269,7 @@ function DashboardContent() {
                 key={`algo1-${tradingMode}`}
                 algoId="algo1"
                 displayName="UN1 9:15 v15 - Simple"
-                description="Ranks the combined 9:15-9:17 opening window. Open=low gives BUY, open=high gives SELL, max 2% opening gap, 9:18 entry, 2% target, 1% stop loss."
+                description="Uses the 9:15 signal candle only. Open=low gives BUY, open=high gives SELL, max 2% opening gap, 9:16 entry, 2% target, 1% stop loss."
                 tradingMode={tradingMode}
                 fyersConnected={fyersConnectedForMode}
                 onWebSocketStatus={setWsStatus}
@@ -280,7 +280,7 @@ function DashboardContent() {
                 key={`algo2-${tradingMode}`}
                 algoId="algo2"
                 displayName="UN1 9:15 v14 - Filter"
-                description="Ranks the combined 9:15-9:17 opening window, then applies the UN1 v14 liquidity, volume, and price-range checks before the 9:18 entry. Advanced indicator filters remain optional in Settings."
+                description="Uses the 9:15 signal candle only, then applies the UN1 v14 liquidity, volume, and price-range checks before the 9:16 entry. Advanced indicator filters remain optional in Settings."
                 tradingMode={tradingMode}
                 fyersConnected={fyersConnectedForMode}
                 onWebSocketStatus={setWsStatus}

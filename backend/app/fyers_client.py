@@ -488,9 +488,12 @@ def get_broker_positions(mode: str | None = None) -> dict:
             "warning": "A FYERS positions request is already in progress.",
         }
 
-    # Trading-app APIs are IP allowlisted, so live account reads use the same
-    # static egress path as live orders. Paper/non-trading reads remain direct.
-    use_proxy = effective_mode == "live"
+    # Read-only account queries should stay off the trading proxy. The proxy is
+    # required for order placement from the trading app's allowlisted IP, but
+    # FYERS funds/profile already work more reliably on the direct path and
+    # positions should behave the same way. This avoids proxy-side request
+    # mangling that surfaces as FYERS "Bad request (code -99)" on positions.
+    use_proxy = False
     try:
         # Account reads should fail quickly and be retried by the next poll,
         # rather than multiplying long proxy retries across dashboard tabs.

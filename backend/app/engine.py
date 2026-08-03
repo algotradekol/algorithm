@@ -203,7 +203,7 @@ def _scheduler_loop():
                 try:
                     entry_time = (
                         datetime.datetime.strptime(scan_time, "%H:%M")
-                        + datetime.timedelta(minutes=3)
+                        + datetime.timedelta(minutes=1)
                     ).strftime("%H:%M")
                 except ValueError:
                     entry_time = None

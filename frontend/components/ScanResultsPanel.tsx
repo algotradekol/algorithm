@@ -87,7 +87,7 @@ export default function ScanResultsPanel({
         <div>{results?.message || 'Scan results will appear here at 9:16 AM when the market opens.'}</div>
         {schedule?.enabled && (
           <p className="mt-2 text-xs text-[#93c5fd]">
-            Scheduled test is turned on, so the scanner is waiting for the configured candle window instead of the default 09:15-09:17 opening range.
+            Scheduled test is turned on, so the scanner is waiting for the configured signal candle instead of the default 09:15 opening candle.
           </p>
         )}
       </section>
