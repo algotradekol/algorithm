@@ -111,6 +111,9 @@ class Algo1OpeningRange(Strategy):
     def scan_candle_time(self) -> str:
         return self.settings.get("test_candle_time", "11:10") if self.settings.get("test_schedule_enabled") else "09:15"
 
+    def _display_time(self, value: str) -> str:
+        return datetime.datetime.strptime(value, "%H:%M").strftime("%H:%M:%S")
+
     def _schedule_time(self, minutes_after_start: int) -> str:
         return (datetime.datetime.strptime(self.scan_candle_time(), "%H:%M") + datetime.timedelta(minutes=minutes_after_start)).strftime("%H:%M")
 
@@ -141,7 +144,12 @@ class Algo1OpeningRange(Strategy):
             state = "collecting_candle"
         else:
             state = "evaluating_entries"
-        return {"enabled": True, "candle_time": candle_time, "entry_time": entry_time, "state": state}
+        return {
+            "enabled": True,
+            "candle_time": self._display_time(candle_time),
+            "entry_time": self._display_time(entry_time),
+            "state": state,
+        }
 
     def on_tick(self, symbol: str, ltp: float, timestamp):
         pass  # algo1 acts on the signal candle close and enters on the next candle open/check
@@ -323,7 +331,7 @@ class Algo1OpeningRange(Strategy):
         required = min(MIN_OPENING_READY_SYMBOLS, len(self.watchlist))
         return (
             "Opening scan was not eligible for entry: "
-            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} symbols for the {self.scan_candle_time()} IST signal candle and "
+            f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} symbols for the {self._display_time(self.scan_candle_time())} IST signal candle and "
             f"matched {self._opening_ready_symbol_count()}/{len(self.watchlist)} symbols with previous closes "
             f"(requires at least {required} ready symbols to detect a healthy feed). No late trades will be placed."
         )
@@ -378,15 +386,15 @@ class Algo1OpeningRange(Strategy):
         candle_shape = "open = low" if side == "BUY" else "open = high"
         gap_text = f"{float(gap_pct):.2f}%" if gap_pct is not None else "--"
         return (
-            f"{self.scan_candle_time()} signal candle {candle_shape}; gap {gap_text} within <= {GAP_LIMIT_PCT:.2f}%; "
-            f"entered at {self._schedule_time(1)}. Open {open_price}, prev close {prev_close}."
+            f"{self._display_time(self.scan_candle_time())} signal candle {candle_shape}; gap {gap_text} within <= {GAP_LIMIT_PCT:.2f}%; "
+            f"entered at {self._display_time(self._schedule_time(1))}. Open {open_price}, prev close {prev_close}."
         )
 
     def _signal_snapshot(self, symbol: str, side: str, entry_price: float) -> dict:
         """Immutable evidence for the candle that selected this paper trade."""
         details = self.candidate_details.get(symbol, {})
         return {
-            "window": f"{self.scan_candle_time()} IST",
+            "window": f"{self._display_time(self.scan_candle_time())} IST",
             "side": side,
             "sector": self.sector_map.get(symbol),
             "shape": details.get("signal_shape"),
@@ -469,7 +477,7 @@ class Algo1OpeningRange(Strategy):
             "sector_breakdown": build_sector_breakdown(rows),
             "condition_breakdown": [
                 {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
-                {"label": f"Condition 1: {self.scan_candle_time()} candle received", "passed": len(self.scan_seen_symbols), "total": len(self.watchlist)},
+                {"label": f"Condition 1: {self._display_time(self.scan_candle_time())} candle received", "passed": len(self.scan_seen_symbols), "total": len(self.watchlist)},
                 {"label": "Condition 2: open equals low/high", "passed": len(self.open_extreme_symbols), "total": len(self.scan_seen_symbols)},
                 {"label": "Condition 3: opening gap <= 2%", "passed": sum(1 for row in rows if row.get("gap_passed")), "total": len(self.open_extreme_symbols)},
                 {"label": "Final: selected for trade", "passed": len(self.selected_symbols), "total": sum(1 for row in rows if row.get("gap_passed"))},

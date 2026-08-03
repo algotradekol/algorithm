@@ -16,7 +16,15 @@ export default function CompareTab() {
         const result = await api.compare();
         if (!cancelled) {
           setData(result);
-          setLastUpdated(new Date().toLocaleTimeString('en-IN', { hour12: false }));
+          setLastUpdated(
+            new Date().toLocaleTimeString('en-IN', {
+              hour: '2-digit',
+              minute: '2-digit',
+              second: '2-digit',
+              hour12: false,
+              timeZone: 'Asia/Kolkata',
+            }),
+          );
           setError('');
         }
       } catch (e: any) {
