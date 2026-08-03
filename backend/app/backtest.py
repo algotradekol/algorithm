@@ -15,7 +15,8 @@ from .charges import calculate_charges, get_charges_config
 from .fyers_client import get_intraday_candles_for_range
 from .strategy_settings import get_settings
 from .strategies.algo4_opening_range_indicators import Algo4OpeningRangeIndicators
-from .candidate_ranking import build_sector_breakdown, rank_candidates, select_ranked_candidates
+from .candidate_ranking import build_sector_breakdown
+from .candidate_selection import select_candidates_first_come
 from .supabase_client import run_with_supabase
 from .symbols import get_nse500_sector_map
 
@@ -729,12 +730,7 @@ def _evaluate_symbol(algo_id: str, symbol: str, target_date: datetime.date, hist
 
 
 def _select_candidates(candidates: list[dict], settings: dict) -> list[dict]:
-    profile = "simple" if candidates and candidates[0].get("algo_id") == "algo1" else "filter"
-    # Candidate rows do not carry algo_id in older stored data. The simple
-    # strategy has no indicator data, which is the reliable fallback signal.
-    if candidates and not candidates[0].get("indicator_results"):
-        profile = "simple"
-    return select_ranked_candidates(rank_candidates(candidates, settings, profile), settings)
+    return select_candidates_first_come(candidates, settings)
 
 
 def _simulate_trade(row: dict, history: list[dict], target_date: datetime.date, settings: dict, charges_config: dict) -> dict | None:
@@ -1130,8 +1126,6 @@ def _simulate_silver_micro_range(
                 "net_pnl": None,
                 "gross_pnl": None,
                 "total_charges": None,
-                "composite_score": None,
-                "rank": None,
             }
             day_result["candidates"].append(candidate)
             if position and position["side"] != side:

@@ -382,17 +382,6 @@ export default function AlgoTab({
         is_broker_position: true,
         entry_trigger: 'Opened directly in FYERS app',
       })),
-    ...brokerOrders
-      .filter((order) => {
-        const key = `${order.symbol}|${order.side}`;
-        return !managedPositionKeys.has(key) && !brokerPositionKeys.has(key);
-      })
-      .map((order) => ({
-        ...order,
-        position_source: 'fyers_order',
-        is_broker_order: true,
-        entry_trigger: 'Scheduled / pending in FYERS app',
-      })),
   ];
 
   return (
@@ -832,7 +821,7 @@ function SignalAudit({ row }: { row: any }) {
         <div className="font-semibold text-gray-200">{shape}</div>
         <div>{signal.window || 'Opening window'}: O {formatNumber(signal.open)} / H {formatNumber(signal.high)} / L {formatNumber(signal.low)} / C {formatNumber(signal.close)}</div>
         <div>Prev close {formatNumber(signal.previous_close)} | Gap {Number.isFinite(Number(signal.gap_pct)) ? `${Number(signal.gap_pct).toFixed(2)}%` : '--'}</div>
-        <div>Entry LTP {formatNumber(signal.entry_ltp)}{signal.rank ? ` | Rank #${signal.rank}` : ''}{signal.composite_score !== undefined && signal.composite_score !== null ? ` | Score ${formatNumber(signal.composite_score)}` : ''}</div>
+        <div>Entry LTP {formatNumber(signal.entry_ltp)}</div>
       </div>
     </details>
   );

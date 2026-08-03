@@ -24,7 +24,8 @@ from .base import Strategy
 from ..broker_factory import create_broker
 from ..fyers_client import get_previous_close, get_intraday_candles_for_range
 from ..fyers_auth import get_stored_access_token
-from ..candidate_ranking import build_sector_breakdown, rank_candidates, select_ranked_candidates
+from ..candidate_ranking import build_sector_breakdown
+from ..candidate_selection import select_candidates_first_come
 from ..symbols import get_nse500_sector_map
 GAP_LIMIT_PCT = 2.0
 TICK_SIZE = 0.05
@@ -294,8 +295,7 @@ class Algo1OpeningRange(Strategy):
             self.candidate_details[symbol]
             for symbol in self.buy_candidates + self.sell_candidates
         ]
-        ranked = rank_candidates(qualified, self.settings, profile="simple")
-        selected = select_ranked_candidates(ranked, self.settings)
+        selected = select_candidates_first_come(qualified, self.settings)
         buys = [row["symbol"] for row in selected if row["side"] == "BUY"]
         sells = [row["symbol"] for row in selected if row["side"] == "SELL"]
 
@@ -377,12 +377,9 @@ class Algo1OpeningRange(Strategy):
         gap_pct = details.get("gap_pct")
         candle_shape = "open = low" if side == "BUY" else "open = high"
         gap_text = f"{float(gap_pct):.2f}%" if gap_pct is not None else "--"
-        rank = details.get("rank")
-        score = details.get("composite_score")
-        ranking_text = f"rank #{rank}, score {float(score):.2f}/100" if rank and score is not None else "unranked"
         return (
             f"{self.scan_candle_time()} signal candle {candle_shape}; gap {gap_text} within <= {GAP_LIMIT_PCT:.2f}%; "
-            f"{ranking_text}; entered at {self._schedule_time(1)}. Open {open_price}, prev close {prev_close}."
+            f"entered at {self._schedule_time(1)}. Open {open_price}, prev close {prev_close}."
         )
 
     def _signal_snapshot(self, symbol: str, side: str, entry_price: float) -> dict:
@@ -400,8 +397,6 @@ class Algo1OpeningRange(Strategy):
             "volume": details.get("volume"),
             "previous_close": details.get("prev_close"),
             "gap_pct": details.get("gap_pct"),
-            "rank": details.get("rank"),
-            "composite_score": details.get("composite_score"),
             "entry_ltp": entry_price,
         }
 
@@ -472,14 +467,6 @@ class Algo1OpeningRange(Strategy):
             "scan_status": scan_status,
             "scan_message": scan_message,
             "sector_breakdown": build_sector_breakdown(rows),
-            "ranking": {
-                "method": "Gap strength only: closer to the 2% gap limit ranks higher.",
-                "weights": {"gap_strength": 1.0},
-            },
-            "best_matches": sorted(
-                (row for row in rows if row.get("composite_score") is not None),
-                key=lambda row: row.get("rank", 999999),
-            )[:4],
             "condition_breakdown": [
                 {"label": "Scanned universe", "passed": len(self.watchlist), "total": len(self.watchlist)},
                 {"label": f"Condition 1: {self.scan_candle_time()} candle received", "passed": len(self.scan_seen_symbols), "total": len(self.watchlist)},

@@ -1,4 +1,4 @@
-"""Deterministic, explainable ranking for already-qualified paper-trade signals."""
+"""Helpers for scan summaries and legacy candidate ranking."""
 
 from __future__ import annotations
 
@@ -56,20 +56,18 @@ def build_sector_breakdown(candidates: list[dict]) -> list[dict]:
         selected = sum(1 for row in rows if row.get("selected_for_trade"))
         buy = sum(1 for row in rows if row.get("side") == "BUY")
         sell = sum(1 for row in rows if row.get("side") == "SELL")
-        avg_score = sum(_number(row.get("composite_score")) or 0.0 for row in rows) / len(rows) if rows else 0.0
         breakdown.append({
             "sector": sector,
             "rows": len(rows),
             "buy": buy,
             "sell": sell,
             "selected": selected,
-            "avg_score": round(avg_score, 2),
             "direction": "bullish" if avg_move > 0 else "bearish" if avg_move < 0 else "neutral",
             "avg_move_pct": round(avg_move, 3),
             "alignment_strength": round(_clamp(abs(avg_move) / 2.0), 4),
         })
 
-    return sorted(breakdown, key=lambda row: (-row["selected"], -row["avg_score"], row["sector"]))
+    return sorted(breakdown, key=lambda row: (-row["selected"], -row["rows"], row["sector"]))
 
 
 def _sector_alignment(row: dict) -> float:

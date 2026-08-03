@@ -5,6 +5,7 @@ DEFAULT_SETTINGS = {
     "starting_capital": 500000,
     "capital_per_trade": 50000,
     "margin_multiplier": 5,
+    "scan_enabled": True,
     "target_pct": 2.0,
     "sl_pct": 1.0,
     "exit_mode": "fixed_target_sl",
@@ -45,6 +46,7 @@ STRATEGY_DEFAULT_OVERRIDES = {
         "max_sell_trades": 5,
     },
     "algo2": {
+        "scan_enabled": False,
         "exit_mode": "fixed_target_sl",
         "trailing_sl_enabled": False,
         "max_trades_per_day": 10,
@@ -72,6 +74,9 @@ STRATEGY_DEFAULT_OVERRIDES = {
         "supertrend_period": 10,
         "supertrend_multiplier": 3,
     },
+    "algo3": {
+        "scan_enabled": False,
+    },
 }
 
 INT_FIELDS = {
@@ -82,6 +87,7 @@ INT_FIELDS = {
 }
 
 BOOL_FIELDS = {
+    "scan_enabled",
     "filter_vwap",
     "filter_rsi",
     "filter_adx",

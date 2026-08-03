@@ -794,9 +794,7 @@ def _normalize_broker_order(row: dict) -> dict | None:
     status_text = str(value("statusDescription", "status_description", "status") or "").strip()
     status_upper = status_text.upper()
     if any(token in status_upper for token in ("CANCEL", "REJECT", "COMPLETE", "FILLED", "TRADED", "EXPIRE")):
-        remaining_qty = number("remainingQuantity", "remaining_quantity", "remainingQty", "remaining_qty")
-        if remaining_qty <= 0:
-            return None
+        return None
 
     qty = abs(number("qty", "quantity", default=0.0))
     remaining_qty = abs(number("remainingQuantity", "remaining_quantity", "remainingQty", "remaining_qty", default=qty))

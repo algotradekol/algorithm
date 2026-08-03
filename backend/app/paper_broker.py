@@ -124,6 +124,7 @@ class PaperBroker:
         target_price: float,
         entry_trigger: str | None = None,
         signal_snapshot: dict | None = None,
+        entry_time: str | None = None,
     ):
         position_row = {
             "algo_id": self.algo_id,
@@ -139,7 +140,7 @@ class PaperBroker:
             "entry_trigger": entry_trigger or "Strategy entry conditions matched",
             "signal_snapshot": signal_snapshot,
             "status": "open",
-            "entry_time": datetime.datetime.now().isoformat(),
+            "entry_time": entry_time or datetime.datetime.now().isoformat(),
         }
         try:
             run_with_supabase(
@@ -254,7 +255,13 @@ class PaperBroker:
             "sell_count_today": sell_count,
         }
 
-    def close_trade(self, position: dict, exit_price: float, exit_reason: str):
+    def close_trade(
+        self,
+        position: dict,
+        exit_price: float,
+        exit_reason: str,
+        exit_time: str | None = None,
+    ):
         side = position["side"]
         qty = position["qty"]
         entry_price = position["entry_price"]
@@ -276,7 +283,7 @@ class PaperBroker:
             "entry_price": entry_price,
             "exit_price": exit_price,
             "entry_time": position["entry_time"],
-            "exit_time": datetime.datetime.now().isoformat(),
+            "exit_time": exit_time or datetime.datetime.now().isoformat(),
             "entry_trigger": position.get("entry_trigger"),
             "signal_snapshot": position.get("signal_snapshot"),
             "exit_reason": exit_reason,

@@ -7,7 +7,8 @@ from .base import Strategy
 from ..fyers_auth import get_stored_access_token
 from ..fyers_client import get_previous_close, get_recent_intraday_candles, get_intraday_candles_for_range
 from ..broker_factory import create_broker
-from ..candidate_ranking import FILTER_WEIGHTS, build_sector_breakdown, rank_candidates, select_ranked_candidates
+from ..candidate_ranking import build_sector_breakdown
+from ..candidate_selection import select_candidates_first_come
 from ..symbols import get_nse500_sector_map
 
 MIN_GAP_PCT = 0.5
@@ -49,6 +50,17 @@ class Algo4OpeningRangeIndicators(Strategy):
         from ..strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
+        if not self.scan_enabled():
+            self.candidates = {}
+            self.candidate_details = {}
+            self.opening_candles.clear()
+            self.opening_indicators.clear()
+            self.planned_symbols.clear()
+            self.selected_symbols.clear()
+            self.scan_seen_symbols.clear()
+
+    def scan_enabled(self) -> bool:
+        return bool(self.settings.get("scan_enabled", True))
 
     def _load_previous_closes_background(self):
         try:
@@ -140,6 +152,9 @@ class Algo4OpeningRangeIndicators(Strategy):
         if len(history) > 120:
             del history[:-120]
         self.total_value[symbol] += float(candle["close"]) * float(candle.get("volume") or 0)
+
+        if not self.scan_enabled():
+            return
 
         if not self._is_collection_candle(candle["time"].strftime("%H:%M")):
             return
@@ -264,6 +279,17 @@ class Algo4OpeningRangeIndicators(Strategy):
         today = datetime.date.today()
         if self.entries_evaluated_today == today:
             return True
+        if not self.scan_enabled():
+            self.entries_evaluated_today = today
+            self.candidates = {}
+            self.candidate_details = {}
+            self.planned_symbols.clear()
+            self.selected_symbols.clear()
+            self._record_scan_results(
+                scan_status="disabled",
+                scan_message="Scanning is disabled in strategy settings.",
+            )
+            return True
         self._backfill_opening_window_from_history()
         self._build_candidates_from_collection()
         if not self._opening_data_ready():
@@ -271,12 +297,10 @@ class Algo4OpeningRangeIndicators(Strategy):
             return False
         self.entries_evaluated_today = today
 
-        ranked_candidates = rank_candidates(
+        selected_candidates = select_candidates_first_come(
             [self.candidate_details[symbol] for symbol in self.candidates],
             self.settings,
-            profile="filter",
         )
-        selected_candidates = select_ranked_candidates(ranked_candidates, self.settings)
         self.planned_symbols = {row["symbol"] for row in selected_candidates}
         for details in selected_candidates:
             symbol, side = details["symbol"], details["side"]
@@ -412,9 +436,9 @@ class Algo4OpeningRangeIndicators(Strategy):
 
     def _can_open_side(self, side: str) -> bool:
         state = self.broker.summary()
-        # Side limits are enforced once, before execution, by
-        # select_ranked_candidates(). Applying them again here made a valid
-        # ranked overflow candidate look like a false "slots_full" rejection.
+        # Side limits are enforced once, before execution, by the candidate
+        # selector. Applying them again here made a valid overflow candidate
+        # look like a false "slots_full" rejection.
         return state["trade_count_today"] < self.settings["max_trades_per_day"]
 
     def _has_open_position(self, symbol: str) -> bool:
@@ -458,15 +482,12 @@ class Algo4OpeningRangeIndicators(Strategy):
         candle_shape = "open ~= low" if side == "BUY" else "open ~= high"
         gap_pct = details.get("gap_pct")
         gap_text = f"{float(gap_pct):.2f}%" if gap_pct is not None else "--"
-        rank = details.get("rank")
-        score = details.get("composite_score")
-        ranking_text = f"rank #{rank}, score {float(score):.2f}/100" if rank and score is not None else "unranked"
         filter_text = ", ".join(enabled_filters) if enabled_filters else "no enabled indicator filters"
         if failed_filters:
             filter_text += f"; failed: {', '.join(failed_filters)}"
         return (
             f"{self.scan_candle_time()} signal candle {candle_shape}; gap {gap_text} between {MIN_GAP_PCT:.2f}% and {MAX_GAP_PCT:.2f}%; "
-            f"passed filters: {filter_text}; {ranking_text}; entered at {self._schedule_time(1)}."
+            f"passed filters: {filter_text}; entered at {self._schedule_time(1)}."
         )
 
     def _signal_snapshot(self, symbol: str, side: str, entry_price: float) -> dict:
@@ -483,8 +504,6 @@ class Algo4OpeningRangeIndicators(Strategy):
             "volume": details.get("volume"),
             "previous_close": details.get("prev_close"),
             "gap_pct": details.get("gap_pct"),
-            "rank": details.get("rank"),
-            "composite_score": details.get("composite_score"),
             "entry_ltp": entry_price,
         }
 
@@ -547,14 +566,6 @@ class Algo4OpeningRangeIndicators(Strategy):
             "sector_breakdown": build_sector_breakdown(rows),
             "scan_status": scan_status,
             "scan_message": scan_message,
-            "ranking": {
-                "method": "Weighted score after required filters pass. Missing score inputs contribute zero.",
-                "weights": FILTER_WEIGHTS,
-            },
-            "best_matches": sorted(
-                (row for row in rows if row.get("composite_score") is not None),
-                key=lambda row: row.get("rank", 999999),
-            )[:4],
             "condition_breakdown": self._condition_breakdown(rows),
             "warmup_loaded_symbols": len(self.warmup_loaded),
             "warmup_required_candles": {

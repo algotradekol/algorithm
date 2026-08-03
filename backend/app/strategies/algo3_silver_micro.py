@@ -87,6 +87,12 @@ class Algo3SilverMicro(Strategy):
     def reload_settings(self):
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
+        if not self.scan_enabled():
+            self._pending_setup = None
+            self._pending_entry = None
+
+    def scan_enabled(self) -> bool:
+        return bool(self.settings.get("scan_enabled", True))
 
     def refresh_market_data(self):
         with self._history_lock:
@@ -124,6 +130,8 @@ class Algo3SilverMicro(Strategy):
             now = now.astimezone(IST).replace(tzinfo=None)
         self._last_tick_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
         self._last_tick_ltp = float(ltp)
+        if not self.scan_enabled():
+            return
         self._maybe_execute_pending_entry(symbol, float(ltp), timestamp)
 
     def on_candle_close(self, symbol: str, candle: dict, indicators: dict):
@@ -133,7 +141,7 @@ class Algo3SilverMicro(Strategy):
         if candle_time.tzinfo is not None:
             candle_time = candle_time.astimezone(IST).replace(tzinfo=None)
         self._last_minute_candle_at = candle_time.isoformat()
-        self._ingest_minute_candle(candle, allow_signals=True)
+        self._ingest_minute_candle(candle, allow_signals=self.scan_enabled())
 
     def _ingest_minute_candle(self, candle: dict, allow_signals: bool):
         candle_time = candle["time"]

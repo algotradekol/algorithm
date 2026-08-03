@@ -139,6 +139,9 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
 
         <CashControl value={availableCash} setValue={setAvailableCash} onSave={saveAvailableCash} saving={cashSaving} />
         <FieldGroup title="Capital Settings" fields={CAPITAL_FIELDS} settings={settings} setSettings={setSettings} />
+        {(algoId === 'algo2' || algoId === 'algo3') && (
+          <ScanToggle algoId={algoId} settings={settings} setSettings={setSettings} />
+        )}
         <ExitModeSelect settings={settings} setSettings={setSettings} />
         <TrailingStopToggle settings={settings} setSettings={setSettings} />
         <FieldGroup title="Risk Settings" fields={RISK_FIELDS} settings={settings} setSettings={setSettings} />
@@ -194,6 +197,40 @@ function TestSchedule({ settings, setSettings }: { settings: Record<string, any>
         <span><span className="text-sm font-semibold text-gray-100">Test Schedule</span><span className="mt-1 block text-xs text-gray-500">Uses a future intraday candle for a paper-only pipeline check. Turn this off to restore the 09:15 production schedule.</span></span>
       </label>
       {enabled && <label className="mt-3 block"><div className="label">Test Window Start (IST)</div><input type="time" value={settings.test_candle_time || '11:10'} onChange={(e) => setSettings({ ...settings, test_candle_time: e.target.value })} className="control mt-1" /><p className="mt-1 text-xs text-[#f59e0b]">The strategy collects three closed 1-minute candles from this time, ranks the combined range, then enters during the next minute. It still compares against the previous-day close, so this is a systems test, not a valid opening-gap trade signal.</p></label>}
+    </div>
+  );
+}
+
+function ScanToggle({
+  algoId,
+  settings,
+  setSettings,
+}: {
+  algoId: string;
+  settings: Record<string, any>;
+  setSettings: (settings: Record<string, any>) => void;
+}) {
+  const enabled = Boolean(settings.scan_enabled);
+  const helper =
+    algoId === 'algo2'
+      ? 'When off, the Filter strategy will not run its scan or place new entries.'
+      : 'When off, Silver Micro will keep diagnostics and history warm, but it will not create new setups or entries.';
+
+  return (
+    <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3">
+      <label className="flex gap-3">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => setSettings({ ...settings, scan_enabled: e.target.checked })}
+          className="peer sr-only"
+        />
+        <span className="mt-1 h-5 w-9 shrink-0 rounded-full border border-[#1f2937] bg-gray-700 after:block after:h-4 after:w-4 after:translate-x-0.5 after:translate-y-0.5 after:rounded-full after:bg-gray-400 after:transition peer-checked:bg-[#22c55e] peer-checked:after:translate-x-4 peer-checked:after:bg-white" />
+        <span>
+          <span className="text-sm font-semibold text-gray-100">Enable Scanning</span>
+          <span className="mt-1 block text-xs text-gray-500">{helper}</span>
+        </span>
+      </label>
     </div>
   );
 }

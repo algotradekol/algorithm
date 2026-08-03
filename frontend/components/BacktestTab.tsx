@@ -164,7 +164,6 @@ function BacktestResult({ result }: { result: any }) {
                 <div className="font-semibold text-gray-100">{sector.sector}</div>
                 <div className="text-[11px] text-gray-500">{sector.direction} sector · {sector.rows} symbols</div>
               </div>
-              <div className="num text-right text-sm font-semibold text-gray-100">{number(sector.avg_score)}</div>
             </div>
             <div className="mt-2 h-1.5 overflow-hidden rounded-sm bg-[#020617]">
               <div className="h-full bg-[#22c55e]" style={{ width: `${Math.max(4, Math.min(100, Number(sector.alignment_strength || 0) * 100))}%` }} />
