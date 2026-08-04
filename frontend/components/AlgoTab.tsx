@@ -6,7 +6,7 @@ import ScanResultsPanel from './ScanResultsPanel';
 import { useWebSocket, WebSocketState } from '../lib/useWebSocket';
 import { PAGE_SIZE, PaginationControls } from './PaginationControls';
 
-const FALLBACK_POLL_MS = 30_000;
+const FALLBACK_POLL_MS = 5_000;
 
 export default function AlgoTab({
   algoId,
@@ -297,7 +297,7 @@ export default function AlgoTab({
       setError('This legacy position has no ID and cannot be exited from the dashboard.');
       return;
     }
-    const confirmed = window.confirm(`Exit ${position.symbol} now at the latest available Fyers price? This closes only this paper position.`);
+    const confirmed = window.confirm(`Exit ${position.symbol} now at the latest Fyers price? This closes the ${tradingMode === 'live' ? 'LIVE' : 'paper'} position immediately.`);
     if (!confirmed) return;
 
     setExitingPositionId(String(position.id));
@@ -444,7 +444,7 @@ export default function AlgoTab({
       <div className="grid gap-4">
         <section>
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Open Positions</h3>
-          <PositionsTable rows={openPositionRows} onExit={exitPosition} exitingPositionId={exitingPositionId} />
+          <PositionsTable rows={openPositionRows} onExit={exitPosition} exitingPositionId={exitingPositionId} tradingMode={tradingMode} />
         </section>
 
         <section>
@@ -552,10 +552,12 @@ function PositionsTable({
   rows,
   onExit,
   exitingPositionId,
+  tradingMode,
 }: {
   rows: any[];
   onExit: (row: any) => void;
   exitingPositionId: string | null;
+  tradingMode?: string;
 }) {
   const [page, setPage] = useState(0);
   const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
@@ -594,7 +596,7 @@ function PositionsTable({
                 <MobileField label="Trigger" value={formatTrigger(row.entry_trigger)} wide />
                 <MobileField label="Signal Audit" value={<SignalAudit row={row} />} wide />
               </div>
-              <ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} mobile />
+              <ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} tradingMode={tradingMode} mobile />
             </div>
           );
         })}
@@ -642,7 +644,7 @@ function PositionsTable({
                 <td className="table-cell min-w-[190px] text-gray-400"><SignalAudit row={row} /></td>
                 <td className="table-cell max-w-[300px] text-gray-400">{formatTrigger(row.entry_trigger)}</td>
                 <td className={`table-cell num font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
-                <td className="table-cell"><ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} /></td>
+                <td className="table-cell"><ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} tradingMode={tradingMode} /></td>
               </tr>
             );
           })}
@@ -654,16 +656,98 @@ function PositionsTable({
   );
 }
 
+function TradesTable({ rows }: { rows: any[] }) {
+  const [page, setPage] = useState(0);
+  const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
+  const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+  return (
+    <>
+      <div className="space-y-2 sm:hidden">
+        {!rows.length ? (
+          <p className="rounded border border-[#1f2937] bg-[#0d1117] p-3 text-sm text-gray-500">No closed trades yet</p>
+        ) : visibleRows.map((row, index) => (
+          <div key={row.id || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}`}>
+            <div className="flex items-center justify-between gap-3">
+              <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
+              <div className={`num flex items-center gap-1 text-base font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>
+                {Number(row.net_pnl || 0) > 0 && <i className="ri-arrow-up-circle-fill text-sm text-[#22c55e]" />}
+                {Number(row.net_pnl || 0) < 0 && <i className="ri-arrow-down-circle-fill text-sm text-[#ef4444]" />}
+                {formatMoney(row.net_pnl)}
+              </div>
+            </div>
+            <div className={`mt-1 inline-flex items-center gap-1 text-sm font-semibold ${row.side === "SELL" ? "text-[#ef4444]" : "text-[#22c55e]"}`}>
+              <i className={`${row.side === "SELL" ? "ri-indeterminate-circle-fill" : "ri-add-circle-fill"} text-sm`} />
+              {row.side === "SELL" ? "S" : "B"}
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
+              <MobileField label="Entry Time" value={formatDateTime(row.entry_time)} />
+              <MobileField label="Entry" value={formatNumber(row.entry_price)} />
+              <MobileField label="Exit Time" value={row.exit_time ? formatDateTime(row.exit_time) : "--"} />
+              <MobileField label="Exit" value={formatNumber(row.exit_price)} />
+              <MobileField label="Reason" value={formatReason(row.exit_reason)} />
+              <MobileField label="Gross" value={formatMoney(row.gross_pnl)} />
+              <MobileField label="Charges" value={formatMoney(row.total_charges)} />
+            </div>
+          </div>
+        ))}
+      </div>
+      <div className="hidden overflow-x-auto rounded border border-[#1f2937] sm:block">
+        <table className="w-full min-w-[1280px] border-collapse text-xs">
+        <thead className="bg-[#111827]">
+          <tr>
+            {["Symbol", "Side", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
+              <th key={column} className="table-cell label">{column}</th>
+            ))}
+          </tr>
+        </thead>
+        <tbody>
+          {!rows.length ? (
+            <tr className="bg-[#0d1117]">
+              <td colSpan={12} className="table-cell text-gray-500">No closed trades yet</td>
+            </tr>
+          ) : visibleRows.map((row, index) => (
+            <tr key={row.id || index} className={index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}>
+              <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
+              <td className={`table-cell font-semibold ${row.side === "SELL" ? "text-[#ef4444]" : "text-[#22c55e]"}`}>
+                <i className={`${row.side === "SELL" ? "ri-indeterminate-circle-fill" : "ri-add-circle-fill"} mr-1 text-sm`} />
+                {row.side === "SELL" ? "S" : "B"}
+              </td>
+              <td className="table-cell num text-gray-400">{formatDateTime(row.entry_time)}</td>
+              <td className="table-cell num text-gray-100">{formatNumber(row.entry_price)}</td>
+              <td className="table-cell num text-gray-400">{row.exit_time ? formatDateTime(row.exit_time) : "--"}</td>
+              <td className="table-cell num text-gray-100">{formatNumber(row.exit_price)}</td>
+              <td className={`table-cell font-semibold ${reasonColor(row.exit_reason)}`}>
+                {reasonIcon(row.exit_reason)}
+                {formatReason(row.exit_reason)}
+              </td>
+              <td className="table-cell min-w-[190px] text-gray-400"><SignalAudit row={row} /></td>
+              <td className="table-cell max-w-[300px] text-gray-400">{formatTrigger(row.entry_trigger)}</td>
+              <td className={`table-cell num ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
+              <td className="table-cell num text-gray-100">{formatMoney(row.total_charges)}</td>
+              <td className={`table-cell num font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>{formatMoney(row.net_pnl)}</td>
+            </tr>
+          ))}
+        </tbody>
+      </table>
+      </div>
+      <PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} />
+    </>
+  );
+}
+
+
 function ManualExitButton({
   row,
   onExit,
   exitingPositionId,
   mobile = false,
+  tradingMode,
 }: {
   row: any;
   onExit: (row: any) => void;
   exitingPositionId: string | null;
   mobile?: boolean;
+  tradingMode?: string;
 }) {
   if (row.is_broker_order || row.position_source === 'fyers_order') {
     return (
@@ -694,7 +778,7 @@ function ManualExitButton({
       onClick={() => onExit(row)}
       disabled={!row.id || exiting}
       className={`${mobile ? 'mt-3 w-full' : ''} min-h-9 rounded border border-[#ef4444]/70 px-2.5 py-1.5 text-xs font-semibold text-[#ef4444] transition hover:bg-[#ef4444]/10 disabled:cursor-not-allowed disabled:opacity-50`}
-      title="Close this paper position at the latest Fyers price"
+      title={tradingMode === 'live' ? 'Close this LIVE position via Fyers market order' : 'Close this paper position at the latest Fyers price'}
     >
       <i className="ri-close-circle-fill mr-1 text-sm" />
       {exiting ? 'Exiting...' : 'Exit'}
@@ -714,18 +798,6 @@ function PositionSourceBadge({ row }: { row: any }) {
       <i className={`${fromFyersOrder ? 'ri-time-fill' : fromFyersApp ? 'ri-smartphone-fill' : 'ri-robot-2-fill'} mr-1 text-xs`} />
       {fromFyersOrder ? 'FYERS Order' : fromFyersApp ? 'FYERS App' : 'Algorithm'}
     </span>
-  );
-}
-              <td className={`table-cell num ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
-              <td className="table-cell num text-gray-100">{formatMoney(row.total_charges)}</td>
-              <td className={`table-cell num font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>{formatMoney(row.net_pnl)}</td>
-            </tr>
-          ))}
-        </tbody>
-      </table>
-      </div>
-      <PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} />
-    </>
   );
 }
 

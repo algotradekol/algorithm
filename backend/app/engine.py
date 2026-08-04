@@ -219,36 +219,6 @@ def _scheduler_loop():
                     _feed_retry_schedules.add(retry_key)
                     print(f"[engine] no market tick at {scan_time}; restarting Fyers live feed once before scheduled scan")
                     restart_live_feed(reason=f"scheduled_{scan_time}_no_first_tick")
-    """Runs alongside the tick handler -- checks the clock for the
-    9:16 entry trigger (algo1) and 3:15 square-off (both algos)."""
-    entries_fired_date: dict[str, datetime.date] = {}
-    entries_fired_schedule: dict[str, tuple[bool, str]] = {}
-    test_schedule_attempt_minute: dict[str, tuple[datetime.date, str]] = {}
-    squareoff_fired_date = None
-    token_refresh_fired_date = None
-    global _feed_retry_schedules
-
-    while True:
-        now = datetime.datetime.now(IST)
-        today = now.date()
-        current_time = now.strftime("%H:%M")
-
-        if current_time >= "08:30" and token_refresh_fired_date != today:
-            try_refresh_access_token(reason="scheduled_08_30")
-            token_refresh_fired_date = today
-
-        # A socket handshake is not market data. Retry once during whichever
-        # candle minute a production or UI test schedule is using if no tick
-        # has arrived today, leaving enough time to build that candle.
-        for strategy in STRATEGIES.values():
-            scan_time = getattr(strategy, "scan_candle_time", lambda: None)()
-            retry_key = (today, scan_time) if scan_time else None
-            if retry_key and current_time == scan_time and retry_key not in _feed_retry_schedules:
-                last_tick_at = _engine_status.get("last_tick_at") or ""
-                if not last_tick_at.startswith(today.isoformat()):
-                    _feed_retry_schedules.add(retry_key)
-                    print(f"[engine] no market tick at {scan_time}; restarting Fyers live feed once before scheduled scan")
-                    restart_live_feed(reason=f"scheduled_{scan_time}_no_first_tick")
 
         # Each opening strategy can opt into a one-off test schedule without
         # changing the production 09:15/09:16 defaults for the other strategy.

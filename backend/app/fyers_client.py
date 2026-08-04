@@ -1079,7 +1079,8 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
                     if subscription_sent:
                         return
                     try:
-                        socket.subscribe(symbols=symbols, data_type="SymbolUpdate")
+                        for i in range(0, len(symbols), 50):
+                            socket.subscribe(symbols=symbols[i:i+50], data_type="SymbolUpdate")
                         subscription_sent = True
                     except Exception as exc:
                         print("Fyers WS subscription error:", exc)
