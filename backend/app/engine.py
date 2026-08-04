@@ -150,6 +150,44 @@ def _on_tick(message: dict):
         strategy.check_exits()
 
 
+def _recover_scheduled_candle_from_buffer(strategy, scan_time: str, today: datetime.date) -> int:
+    """Replay an already-closed test candle into one strategy.
+
+    A test schedule can be saved after its target minute has started, or the
+    scheduler can be delayed while the feed thread is busy. The shared candle
+    aggregator still retains the exact one-minute OHLC bar, so use that before
+    falling back to a failed test instead of retrying forever.
+    """
+    seen_symbols = getattr(strategy, "scan_seen_symbols", set())
+    watchlist = set(getattr(strategy, "watchlist", []) or [])
+    recovered = 0
+    for symbol, state in list(aggregator.symbols.items()):
+        if watchlist and symbol not in watchlist:
+            continue
+        if symbol in seen_symbols:
+            continue
+        candle = next(
+            (
+                item
+                for item in reversed(list(state.closed_candles))
+                if item.get("time")
+                and item["time"].date() == today
+                and item["time"].strftime("%H:%M") == scan_time
+            ),
+            None,
+        )
+        if candle is None:
+            continue
+        strategy.on_candle_close(symbol, dict(candle), aggregator.get_indicators(symbol))
+        recovered += 1
+    if recovered:
+        print(
+            f"[engine] recovered {recovered} buffered {scan_time}:00 IST candles "
+            f"for scheduled test {strategy.algo_id}"
+        )
+    return recovered
+
+
 def _scheduler_loop():
     """Runs alongside the tick handler -- checks the clock for the
     9:16 entry trigger (algo1) and 3:15 square-off (both algos)."""
@@ -221,6 +259,7 @@ def _scheduler_loop():
                         f"[engine] scheduled test starting for {strategy.algo_id}: "
                         f"signal={scan_time}:00 IST evaluation={entry_time}:00 IST"
                     )
+                    _recover_scheduled_candle_from_buffer(strategy, scan_time, today)
                     try:
                         completed = strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
                     except Exception as exc:
@@ -231,13 +270,33 @@ def _scheduler_loop():
                                 mark_failed(str(exc))
                             except Exception as record_exc:
                                 print(f"[engine] could not record failed scan for {strategy.algo_id}: {record_exc}")
+                        entries_fired_date[strategy.algo_id] = today
+                        entries_fired_schedule[strategy.algo_id] = schedule
+                        completed_any = True
                         continue
                     if completed is False:
-                        pending.append(strategy.algo_id)
-                        print(
-                            f"[engine] scheduled test pending for {strategy.algo_id}; "
-                            "the configured live candle or previous-close data is not ready"
-                        )
+                        deadline_time = (
+                            datetime.datetime.strptime(scan_time, "%H:%M")
+                            + datetime.timedelta(minutes=2)
+                        ).strftime("%H:%M")
+                        actual_time = datetime.datetime.now(IST).strftime("%H:%M")
+                        if actual_time >= deadline_time:
+                            mark_missed = getattr(strategy, "mark_opening_scan_missed", None)
+                            if callable(mark_missed):
+                                mark_missed()
+                            entries_fired_date[strategy.algo_id] = today
+                            entries_fired_schedule[strategy.algo_id] = schedule
+                            completed_any = True
+                            print(
+                                f"[engine] scheduled test ended for {strategy.algo_id}; "
+                                f"the {scan_time}:00 IST candle was not usable by {deadline_time}:00 IST"
+                            )
+                        else:
+                            pending.append(strategy.algo_id)
+                            print(
+                                f"[engine] scheduled test pending for {strategy.algo_id}; "
+                                "the configured candle or previous-close data is not ready"
+                            )
                     else:
                         entries_fired_date[strategy.algo_id] = today
                         entries_fired_schedule[strategy.algo_id] = schedule

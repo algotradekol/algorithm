@@ -25,7 +25,7 @@ from ..broker_factory import create_broker
 from ..fyers_client import get_previous_close, get_intraday_candles_for_range
 from ..fyers_auth import get_stored_access_token
 from ..candidate_ranking import build_sector_breakdown
-from ..candidate_selection import select_candidates_first_come
+from ..candidate_selection import execute_candidates_first_come
 from ..symbols import get_nse500_sector_map
 GAP_LIMIT_PCT = 2.0
 TICK_SIZE = 0.05
@@ -342,16 +342,15 @@ class Algo1OpeningRange(Strategy):
             scan_message=(
                 f"Evaluating the {self._display_time(self.scan_candle_time())} IST signal candle. "
                 + (
-                    "Using the live collected candle and loaded previous-close data."
+                    "Using the live or buffered candle and loaded previous-close data."
                     if self.settings.get("test_schedule_enabled")
                     else "Recovering any missing candle and previous-close data before selection."
                 )
             ),
         )
-        # Scheduled tests are configured for a future intraday candle and must
-        # evaluate the live collector immediately. Backfilling all 500 symbols
-        # here can take several minutes and makes the test appear stuck. The
-        # production opening scan retains historical recovery for feed gaps.
+        # The scheduler recovers scheduled-test candles from the shared live
+        # buffer. Avoid a 500-symbol history sweep here because it can take
+        # several minutes; production retains historical recovery for gaps.
         if not self.settings.get("test_schedule_enabled"):
             self._backfill_opening_window_from_history()
         self._build_candidates_from_collection()
@@ -361,19 +360,23 @@ class Algo1OpeningRange(Strategy):
         self.entries_evaluated_today = today
 
         qualified = [
-            self.candidate_details[symbol]
-            for symbol in self.buy_candidates + self.sell_candidates
+            details for details in self.candidate_details.values()
+            if details.get("gap_passed")
         ]
-        selected = select_candidates_first_come(qualified, self.settings)
+        self.entry_failures = {}
+
+        def enter_candidate(row: dict) -> bool:
+            symbol = row["symbol"]
+            return self._enter(symbol, row["side"], get_ltp_fn(symbol))
+
+        selected, planned_symbols = execute_candidates_first_come(
+            qualified,
+            self.settings,
+            enter_candidate,
+            self.broker.summary(),
+        )
         buys = [row["symbol"] for row in selected if row["side"] == "BUY"]
         sells = [row["symbol"] for row in selected if row["side"] == "SELL"]
-
-        self.entry_failures = {}
-        planned_symbols = {row["symbol"] for row in selected}
-        for symbol in buys:
-            self._enter(symbol, "BUY", get_ltp_fn(symbol))
-        for symbol in sells:
-            self._enter(symbol, "SELL", get_ltp_fn(symbol))
         self._record_scan_results(buys, sells, planned_symbols=planned_symbols)
         return True
 
@@ -487,6 +490,7 @@ class Algo1OpeningRange(Strategy):
             details = self.candidate_details.get(symbol)
             if details is None:
                 has_candle = symbol in self.scan_seen_symbols
+                previous_close = self.prev_close.get(symbol)
                 row = {
                     "symbol": symbol,
                     "side": "WATCH",
@@ -494,7 +498,7 @@ class Algo1OpeningRange(Strategy):
                     "high": None,
                     "low": None,
                     "close": None,
-                    "prev_close": self.prev_close.get(symbol),
+                    "prev_close": previous_close,
                     "gap_pct": None,
                     "candle_received": has_candle,
                     "shape_passed": False,
@@ -502,7 +506,13 @@ class Algo1OpeningRange(Strategy):
                     "passed_indicators": False,
                     "indicator_results": {},
                     "selected_for_trade": False,
-                    "rejection_reason": "missing_previous_close" if has_candle else "missing_opening_candle",
+                    "rejection_reason": (
+                        "missing_opening_candle"
+                        if not has_candle
+                        else "missing_previous_close"
+                        if not previous_close
+                        else "candidate_not_evaluated"
+                    ),
                 }
             else:
                 row = dict(details)

@@ -8,7 +8,7 @@ from ..fyers_auth import get_stored_access_token
 from ..fyers_client import get_previous_close, get_recent_intraday_candles, get_intraday_candles_for_range
 from ..broker_factory import create_broker
 from ..candidate_ranking import build_sector_breakdown
-from ..candidate_selection import select_candidates_first_come
+from ..candidate_selection import execute_candidates_first_come
 from ..symbols import get_nse500_sector_map
 
 MIN_GAP_PCT = 0.5
@@ -40,6 +40,7 @@ class Algo4OpeningRangeIndicators(Strategy):
         self.opening_indicators: dict[str, dict] = {}
         self.selected_symbols: set[str] = set()
         self.planned_symbols: set[str] = set()
+        self.entry_failures: dict[str, str] = {}
         self.scan_seen_symbols: set[str] = set()
         self.entries_evaluated_today = None
         self._previous_close_load_lock = threading.Lock()
@@ -77,6 +78,7 @@ class Algo4OpeningRangeIndicators(Strategy):
         self.opening_indicators = {}
         self.planned_symbols = set()
         self.selected_symbols = set()
+        self.entry_failures = {}
         self.scan_seen_symbols = set()
         self.entries_evaluated_today = None
 
@@ -339,14 +341,14 @@ class Algo4OpeningRangeIndicators(Strategy):
             scan_message=(
                 f"Evaluating the {self._display_time(self.scan_candle_time())} IST signal candle. "
                 + (
-                    "Using the live collected candle and loaded previous-close data."
+                    "Using the live or buffered candle and loaded previous-close data."
                     if is_test_schedule
                     else "Recovering any missing candle and previous-close data before selection."
                 )
             ),
         )
-        # A scheduled test must complete from its live collected candle. Running
-        # a 500-symbol history sweep here makes a one-minute test take minutes.
+        # Scheduled tests use the shared live candle buffer. Running a
+        # 500-symbol history sweep here makes a one-minute test take minutes.
         if not is_test_schedule:
             self._backfill_opening_window_from_history()
         self._build_candidates_from_collection()
@@ -355,16 +357,24 @@ class Algo4OpeningRangeIndicators(Strategy):
             return False
         self.entries_evaluated_today = today
 
-        selected_candidates = select_candidates_first_come(
-            [self.candidate_details[symbol] for symbol in self.candidates],
-            self.settings,
-        )
-        self.planned_symbols = {row["symbol"] for row in selected_candidates}
-        for details in selected_candidates:
+        qualified = [
+            details for details in self.candidate_details.values()
+            if details.get("passed_indicators")
+        ]
+        self.entry_failures = {}
+
+        def enter_candidate(details: dict) -> bool:
             symbol, side = details["symbol"], details["side"]
             fallback_price = self.candidates[symbol][1]
             entry_price = get_ltp_fn(symbol) or fallback_price
-            self._enter(symbol, side, entry_price)
+            return self._enter(symbol, side, entry_price)
+
+        _, self.planned_symbols = execute_candidates_first_come(
+            qualified,
+            self.settings,
+            enter_candidate,
+            self.broker.summary(),
+        )
         self._record_scan_results()
         return True
 
@@ -505,12 +515,20 @@ class Algo4OpeningRangeIndicators(Strategy):
         return any(position["symbol"] == symbol for position in self.broker.open_positions())
 
     def _enter(self, symbol: str, side: str, entry_price: float):
-        if not entry_price or self.broker.already_traded_today(symbol) or not self._can_open_side(side):
-            return
+        if not entry_price:
+            self.entry_failures[symbol] = "entry_price_unavailable"
+            return False
+        if self.broker.already_traded_today(symbol):
+            self.entry_failures[symbol] = "already_traded_today"
+            return False
+        if not self._can_open_side(side):
+            self.entry_failures[symbol] = "daily_trade_cap_reached"
+            return False
 
         qty = int(self.settings["capital_per_trade"] // entry_price)
         if qty < 1:
-            return
+            self.entry_failures[symbol] = "capital_per_trade_below_share_price"
+            return False
 
         if side == "BUY":
             sl_price = entry_price * (1 - self.settings["sl_pct"] / 100)
@@ -524,9 +542,11 @@ class Algo4OpeningRangeIndicators(Strategy):
                 self._entry_trigger(symbol, side), self._signal_snapshot(symbol, side, entry_price),
             )
         except Exception as exc:
+            self.entry_failures[symbol] = "broker_open_failed"
             print(f"[{self.algo_id}] entry failed for {symbol}: {exc}")
-            return
+            return False
         self.selected_symbols.add(symbol)
+        return True
 
     def _entry_trigger(self, symbol: str, side: str) -> str:
         details = self.candidate_details.get(symbol, {})
@@ -575,6 +595,7 @@ class Algo4OpeningRangeIndicators(Strategy):
             details = self.candidate_details.get(symbol)
             if details is None:
                 has_candle = symbol in self.scan_seen_symbols
+                previous_close = self.prev_close.get(symbol)
                 row = {
                     "symbol": symbol,
                     "side": "WATCH",
@@ -582,7 +603,7 @@ class Algo4OpeningRangeIndicators(Strategy):
                     "high": None,
                     "low": None,
                     "close": None,
-                    "prev_close": self.prev_close.get(symbol),
+                    "prev_close": previous_close,
                     "gap_pct": None,
                     "candle_received": has_candle,
                     "shape_passed": False,
@@ -591,7 +612,13 @@ class Algo4OpeningRangeIndicators(Strategy):
                     "passed_indicators": False,
                     "indicator_results": {},
                     "selected_for_trade": False,
-                    "rejection_reason": "missing_previous_close" if has_candle else "missing_opening_candle",
+                    "rejection_reason": (
+                        "missing_opening_candle"
+                        if not has_candle
+                        else "missing_previous_close"
+                        if not previous_close
+                        else "candidate_not_evaluated"
+                    ),
                 }
             else:
                 row = dict(details)
@@ -599,7 +626,9 @@ class Algo4OpeningRangeIndicators(Strategy):
                 row["selected_for_trade"] = True
             else:
                 row["selected_for_trade"] = False
-                if symbol in self.planned_symbols:
+                if symbol in self.entry_failures:
+                    row["rejection_reason"] = self.entry_failures[symbol]
+                elif symbol in self.planned_symbols:
                     row["rejection_reason"] = "entry_not_opened"
                 elif row.get("passed_indicators"):
                     row["rejection_reason"] = "slots_full"
