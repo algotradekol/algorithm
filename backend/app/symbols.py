@@ -10,6 +10,8 @@ actually quote/execute.
 """
 import csv
 import io
+from pathlib import Path
+
 import requests
 
 from .config import FYERS_PROXY_URL
@@ -17,18 +19,15 @@ from .config import FYERS_PROXY_URL
 NIFTY500_CSV_URL = "https://www.niftyindices.com/IndexConstituent/ind_nifty500list.csv"
 FYERS_SYMBOL_MASTER_URL = "https://public.fyers.in/sym_details/NSE_CM.csv"
 FYERS_PROXIES = {"http": FYERS_PROXY_URL, "https": FYERS_PROXY_URL} if FYERS_PROXY_URL else None
+NIFTY500_FALLBACK_PATH = Path(__file__).with_name("data") / "ind_nifty500list.csv"
+MIN_VALID_CONSTITUENTS = 450
 
 _cache = {"watchlist": None, "date": None, "universe": None, "sector_map": None}
 
 
-def _load_universe() -> list[dict]:
-    headers = {"User-Agent": "Mozilla/5.0"}  # niftyindices.com blocks requests with no user-agent
-
-    nifty500 = requests.get(NIFTY500_CSV_URL, headers=headers, timeout=15)
-    nifty500.raise_for_status()
-    reader = csv.DictReader(io.StringIO(nifty500.text))
-
-    nifty500_rows = [
+def _parse_nifty500_csv(content: str) -> list[dict]:
+    reader = csv.DictReader(io.StringIO(content.lstrip("\ufeff")))
+    rows = [
         {
             "company_name": (row.get("Company Name") or "").strip(),
             "industry": (row.get("Industry") or "").strip(),
@@ -39,6 +38,38 @@ def _load_universe() -> list[dict]:
         for row in reader
         if (row.get("Symbol") or "").strip()
     ]
+    if len(rows) < MIN_VALID_CONSTITUENTS:
+        raise ValueError(f"NSE 500 CSV contained only {len(rows)} valid constituents")
+    return rows
+
+
+def _load_nifty500_rows() -> list[dict]:
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/124 Safari/537.36",
+        "Accept": "text/csv,text/plain,*/*",
+        "Referer": "https://www.niftyindices.com/indices/equity/broad-based-indices/nifty-500",
+    }
+    try:
+        response = requests.get(NIFTY500_CSV_URL, headers=headers, timeout=15)
+        response.raise_for_status()
+        rows = _parse_nifty500_csv(response.text)
+        print(f"[symbols] loaded {len(rows)} NSE 500 constituents from NSE Indices")
+        return rows
+    except (requests.RequestException, ValueError) as exc:
+        print(f"[symbols] NSE Indices download unavailable, using bundled snapshot: {exc}")
+
+    try:
+        rows = _parse_nifty500_csv(NIFTY500_FALLBACK_PATH.read_text(encoding="utf-8-sig"))
+    except (OSError, ValueError) as exc:
+        raise RuntimeError(
+            f"Unable to load NSE 500 constituents online or from {NIFTY500_FALLBACK_PATH}: {exc}"
+        ) from exc
+    print(f"[symbols] loaded {len(rows)} NSE 500 constituents from bundled snapshot")
+    return rows
+
+
+def _load_universe() -> list[dict]:
+    nifty500_rows = _load_nifty500_rows()
 
     fyers_symbols = {}
     try:
