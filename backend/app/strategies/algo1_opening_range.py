@@ -55,6 +55,8 @@ _PRELOAD_MAX_WORKERS = 12
 
 
 class Algo1OpeningRange(Strategy):
+    algo_id = "algo1"
+    display_name = "9:15 Opening Range"
 
     def __init__(self, watchlist: list[str]):
         self.watchlist = watchlist
