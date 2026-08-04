@@ -29,10 +29,6 @@ from ..candidate_selection import execute_candidates_first_come
 from ..symbols import get_nse500_sector_map
 GAP_LIMIT_PCT = 2.0
 TICK_SIZE = 0.05
-# A one-minute candle only exists for a symbol that traded during that minute.
-# This floor detects a dead/broken feed without requiring every NSE 500 symbol
-# to trade at the opening bell.
-MIN_OPENING_READY_SYMBOLS = 10
 
 
 class Algo1OpeningRange(Strategy):
@@ -376,23 +372,21 @@ class Algo1OpeningRange(Strategy):
         return True
 
     def _opening_data_ready(self) -> bool:
-        # A manually enabled Test Schedule is a paper-only pipeline check and
-        # can run from any received symbol. Production still needs a small
-        # non-zero sample to detect a dead or unhealthy market-data feed.
-        if self.settings.get("test_schedule_enabled"):
-            return bool(self.scan_seen_symbols and self.prev_close_ready_symbols)
-        return self._opening_ready_symbol_count() >= min(MIN_OPENING_READY_SYMBOLS, len(self.watchlist))
+        # Evaluate every complete symbol we have instead of blocking the whole
+        # scan because quieter symbols did not print during the signal minute.
+        # The funnel still reports missing rows for audit, and every available
+        # row must pass the normal shape/gap conditions before an entry.
+        return self._opening_ready_symbol_count() > 0
 
     def _opening_ready_symbol_count(self) -> int:
         return len(self.scan_seen_symbols & self.prev_close_ready_symbols)
 
     def _opening_data_message(self) -> str:
-        required = min(MIN_OPENING_READY_SYMBOLS, len(self.watchlist))
         return (
             "Opening scan was not eligible for entry: "
             f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} symbols for the {self._display_time(self.scan_candle_time())} IST signal candle and "
             f"matched {self._opening_ready_symbol_count()}/{len(self.watchlist)} symbols with previous closes "
-            f"(requires at least {required} ready symbols to detect a healthy feed). No late trades will be placed."
+            "(requires at least one symbol with both candle and previous-close data). No late trades will be placed."
         )
 
     def mark_opening_scan_missed(self):

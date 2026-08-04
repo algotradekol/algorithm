@@ -14,10 +14,6 @@ from ..symbols import get_nse500_sector_map
 MIN_GAP_PCT = 0.5
 MAX_GAP_PCT = 2.0
 TICK_SIZE = 0.05
-# A one-minute candle only exists for a symbol that traded during that minute.
-# Keep a small health floor, rather than incorrectly requiring all NSE 500
-# symbols to print an opening tick.
-MIN_OPENING_READY_SYMBOLS = 10
 
 
 class Algo4OpeningRangeIndicators(Strategy):
@@ -379,21 +375,20 @@ class Algo4OpeningRangeIndicators(Strategy):
         return True
 
     def _opening_data_ready(self) -> bool:
-        if self.settings.get("test_schedule_enabled"):
-            return bool(self._opening_ready_symbols())
-        return len(self._opening_ready_symbols()) >= min(MIN_OPENING_READY_SYMBOLS, len(self.watchlist))
+        # Partial universe coverage must not block otherwise valid first-come
+        # candidates. Missing symbols remain visible in the audit funnel.
+        return bool(self._opening_ready_symbols())
 
     def _opening_ready_symbols(self) -> set[str]:
         return self.scan_seen_symbols & set(self.prev_close)
 
     def _opening_data_message(self) -> str:
-        required = min(MIN_OPENING_READY_SYMBOLS, len(self.watchlist))
         ready_count = len(self._opening_ready_symbols())
         return (
             "Opening scan was not eligible for entry: "
             f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} symbols for the {self._display_time(self.scan_candle_time())} IST signal candle and "
             f"matched {ready_count}/{len(self.watchlist)} symbols with previous closes "
-            f"(requires at least {required} ready symbols to detect a healthy feed). No late trades will be placed."
+            "(requires at least one symbol with both candle and previous-close data). No late trades will be placed."
         )
 
     def mark_opening_scan_missed(self):
