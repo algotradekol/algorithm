@@ -48,16 +48,37 @@ class Algo4OpeningRangeIndicators(Strategy):
 
     def reload_settings(self):
         from ..strategy_settings import get_settings
+        previous_schedule = (
+            bool(self.settings.get("test_schedule_enabled")),
+            self.scan_candle_time(),
+        )
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
+        current_schedule = (
+            bool(self.settings.get("test_schedule_enabled")),
+            self.scan_candle_time(),
+        )
+        if current_schedule != previous_schedule:
+            self._reset_scan_run_state()
+            from ..engine import SCAN_RESULTS
+            SCAN_RESULTS.pop(self.algo_id, None)
+            print(
+                f"[{self.algo_id}] scan schedule changed from {previous_schedule} "
+                f"to {current_schedule}; cleared the previous scan-run state"
+            )
         if not self.scan_enabled():
-            self.candidates = {}
-            self.candidate_details = {}
-            self.opening_candles.clear()
-            self.opening_indicators.clear()
-            self.planned_symbols.clear()
-            self.selected_symbols.clear()
-            self.scan_seen_symbols.clear()
+            self._reset_scan_run_state()
+
+    def _reset_scan_run_state(self):
+        """Start a fresh scan without altering broker positions or trades."""
+        self.candidates = {}
+        self.candidate_details = {}
+        self.opening_candles = defaultdict(list)
+        self.opening_indicators = {}
+        self.planned_symbols = set()
+        self.selected_symbols = set()
+        self.scan_seen_symbols = set()
+        self.entries_evaluated_today = None
 
     def scan_enabled(self) -> bool:
         return bool(self.settings.get("scan_enabled", True))
@@ -136,7 +157,20 @@ class Algo4OpeningRangeIndicators(Strategy):
         entry_time = self._schedule_time(1)
         current_time = now.strftime("%H:%M")
         state = "waiting"
-        if self.entries_evaluated_today == now.date():
+        scan_status = None
+        scan_message = None
+        try:
+            from ..engine import SCAN_RESULTS
+            latest = SCAN_RESULTS.get(self.algo_id) or {}
+            scan_status = latest.get("scan_status")
+            scan_message = latest.get("scan_message")
+        except ImportError:
+            pass
+        if scan_status in {"incomplete", "missed_data", "error"}:
+            state = scan_status
+        elif scan_status == "evaluating":
+            state = "evaluating_entries"
+        elif self.entries_evaluated_today == now.date():
             state = "finished"
         elif current_time < candle_time:
             state = "waiting"
@@ -149,6 +183,7 @@ class Algo4OpeningRangeIndicators(Strategy):
             "candle_time": self._display_time(candle_time),
             "entry_time": self._display_time(entry_time),
             "state": state,
+            "message": scan_message,
         }
 
     def on_tick(self, symbol: str, ltp: float, timestamp):
@@ -298,7 +333,22 @@ class Algo4OpeningRangeIndicators(Strategy):
                 scan_message="Scanning is disabled in strategy settings.",
             )
             return True
-        self._backfill_opening_window_from_history()
+        is_test_schedule = bool(self.settings.get("test_schedule_enabled"))
+        self._record_scan_results(
+            scan_status="evaluating",
+            scan_message=(
+                f"Evaluating the {self._display_time(self.scan_candle_time())} IST signal candle. "
+                + (
+                    "Using the live collected candle and loaded previous-close data."
+                    if is_test_schedule
+                    else "Recovering any missing candle and previous-close data before selection."
+                )
+            ),
+        )
+        # A scheduled test must complete from its live collected candle. Running
+        # a 500-symbol history sweep here makes a one-minute test take minutes.
+        if not is_test_schedule:
+            self._backfill_opening_window_from_history()
         self._build_candidates_from_collection()
         if not self._opening_data_ready():
             self._record_scan_results(scan_status="incomplete", scan_message=self._opening_data_message())
@@ -339,10 +389,12 @@ class Algo4OpeningRangeIndicators(Strategy):
     def mark_opening_scan_missed(self):
         if self.entries_evaluated_today == datetime.date.today():
             return
+        self.entries_evaluated_today = datetime.date.today()
         self._record_scan_results(scan_status="missed_data", scan_message=self._opening_data_message())
 
     def mark_opening_scan_failed(self, error: str):
         """Expose a scheduler exception in the scan panel without placing trades."""
+        self.entries_evaluated_today = datetime.date.today()
         self._record_scan_results(
             scan_status="error",
             scan_message=f"Opening scan failed before any entry was placed: {error}",

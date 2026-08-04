@@ -217,6 +217,10 @@ def _scheduler_loop():
                     if test_schedule_attempt_minute.get(strategy.algo_id) == attempt_key:
                         continue
                     test_schedule_attempt_minute[strategy.algo_id] = attempt_key
+                    print(
+                        f"[engine] scheduled test starting for {strategy.algo_id}: "
+                        f"signal={scan_time}:00 IST evaluation={entry_time}:00 IST"
+                    )
                     try:
                         completed = strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
                     except Exception as exc:
@@ -230,10 +234,15 @@ def _scheduler_loop():
                         continue
                     if completed is False:
                         pending.append(strategy.algo_id)
+                        print(
+                            f"[engine] scheduled test pending for {strategy.algo_id}; "
+                            "the configured live candle or previous-close data is not ready"
+                        )
                     else:
                         entries_fired_date[strategy.algo_id] = today
                         entries_fired_schedule[strategy.algo_id] = schedule
                         completed_any = True
+                        print(f"[engine] scheduled test completed for {strategy.algo_id}")
                 continue
             if strategy.entry_window(current_time):
                 try:

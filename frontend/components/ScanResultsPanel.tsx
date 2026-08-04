@@ -80,10 +80,10 @@ export default function ScanResultsPanel({
     return (
       <section className="rounded border border-[#1f2937] bg-[#111827] p-3 text-sm text-gray-500">
         {schedule?.enabled && <TestScheduleStatus schedule={schedule} />}
-        <div>{results?.message || 'Scan results will appear here at 9:16 AM when the market opens.'}</div>
+        <div>{results?.message || 'The 09:15:00 signal is evaluated from 09:16:00 IST.'}</div>
         {schedule?.enabled && (
           <p className="mt-2 text-xs text-[#93c5fd]">
-            Scheduled test is turned on, so the scanner is waiting for the configured signal candle instead of the default 09:15 opening candle.
+            The configured test candle is the signal; evaluation starts at the next minute shown above.
           </p>
         )}
       </section>

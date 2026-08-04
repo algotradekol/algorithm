@@ -614,13 +614,21 @@ def reset_algo_settings(algo_id: str, _user=Depends(require_auth)):
 def get_scan_results(algo_id: str, _user=Depends(require_auth)):
     from .engine import SCAN_RESULTS
     strategy = get_strategy_or_raise(algo_id)
+    schedule_status = getattr(strategy, "schedule_status", None)
+    schedule = schedule_status(datetime.datetime.now(IST)) if schedule_status else {"enabled": False}
+    if schedule.get("enabled"):
+        default_message = (
+            f"Scheduled test is waiting for the {schedule['candle_time']} IST signal candle; "
+            f"entry evaluation starts at {schedule['entry_time']} IST."
+        )
+    else:
+        default_message = "No scan run yet today. The 09:15:00 signal is evaluated from 09:16:00 IST."
     result = SCAN_RESULTS.get(algo_id, {
         "algo_id": algo_id,
-        "message": "No scan run yet today. Results appear at 9:16 AM."
+        "message": default_message,
     })
-    schedule_status = getattr(strategy, "schedule_status", None)
     if schedule_status:
-        result = {**result, "schedule": schedule_status(datetime.datetime.now(IST))}
+        result = {**result, "schedule": schedule}
     return result
 
 
