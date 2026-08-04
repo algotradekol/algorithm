@@ -594,15 +594,22 @@ class Algo4OpeningRangeIndicators(Strategy):
         for symbol in self.watchlist:
             details = self.candidate_details.get(symbol)
             if details is None:
-                has_candle = symbol in self.scan_seen_symbols
+                observed_candles = self.opening_candles.get(symbol, [])
+                observed_candle = (
+                    self._combined_opening_candle(observed_candles)
+                    if observed_candles
+                    else None
+                )
+                has_candle = observed_candle is not None
                 previous_close = self.prev_close.get(symbol)
                 row = {
                     "symbol": symbol,
                     "side": "WATCH",
-                    "open": None,
-                    "high": None,
-                    "low": None,
-                    "close": None,
+                    "open": observed_candle.get("open") if observed_candle else None,
+                    "high": observed_candle.get("high") if observed_candle else None,
+                    "low": observed_candle.get("low") if observed_candle else None,
+                    "close": observed_candle.get("close") if observed_candle else None,
+                    "volume": observed_candle.get("volume") if observed_candle else None,
                     "prev_close": previous_close,
                     "gap_pct": None,
                     "candle_received": has_candle,

@@ -247,7 +247,7 @@ export default function ScanResultsPanel({
                 <td className="table-cell num text-gray-100">{formatNumber(row.high)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.low)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.prev_close)}</td>
-                <td className="table-cell num text-gray-100">{formatNumber(row.gap_pct)}%</td>
+                <td className="table-cell num text-gray-100">{formatPercent(row.gap_pct)}</td>
                 {['vwap', 'rsi', 'adx', 'supertrend', 'volume'].map((name) => (
                   <IndicatorCell key={name} result={row.indicator_results?.[name]} />
                 ))}
@@ -475,9 +475,15 @@ function label(column: string) {
 }
 
 function formatNumber(value: any) {
+  if (value === null || value === undefined || value === '') return '--';
   const number = Number(value);
-  if (!Number.isFinite(number)) return '-';
+  if (!Number.isFinite(number)) return '--';
   return number.toLocaleString('en-IN', { maximumFractionDigits: 2 });
+}
+
+function formatPercent(value: any) {
+  const formatted = formatNumber(value);
+  return formatted === '--' ? formatted : `${formatted}%`;
 }
 
 function formatScore(value: any) {
