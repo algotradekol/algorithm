@@ -583,6 +583,7 @@ function PositionsTable({
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
                 <MobileField label="Source" value={<PositionSourceBadge row={row} />} wide />
+                <MobileField label="Entry Time" value={formatDateTime(row.entry_time)} wide />
                 <MobileField label="Qty" value={row.qty} />
                 <MobileField label="Entry" value={formatNumber(row.entry_price)} />
                 <MobileField label="LTP" value={Number.isFinite(ltp) ? formatNumber(ltp) : '--'} />
@@ -602,7 +603,7 @@ function PositionsTable({
         <table className="w-full min-w-[1180px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
+            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
               <th key={column} className="table-cell label">{column}</th>
             ))}
           </tr>
@@ -631,6 +632,7 @@ function PositionsTable({
                   {row.side === 'SELL' ? 'S' : 'B'}
                 </td>
                 <td className="table-cell num text-gray-100">{row.qty}</td>
+                <td className="table-cell num text-gray-400">{formatDateTime(row.entry_time)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.entry_price)}</td>
                 <td className="table-cell num text-gray-100">{Number.isFinite(ltp) ? formatNumber(ltp) : '--'}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.high_price ?? row.highest_price)}</td>
@@ -714,69 +716,6 @@ function PositionSourceBadge({ row }: { row: any }) {
     </span>
   );
 }
-
-function TradesTable({ rows }: { rows: any[] }) {
-  const [page, setPage] = useState(0);
-  const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
-  const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
-  return (
-    <>
-      <div className="space-y-2 sm:hidden">
-        {!rows.length ? <p className="rounded border border-[#1f2937] bg-[#0d1117] p-3 text-sm text-gray-500">No closed trades yet</p> : visibleRows.map((row, index) => (
-          <div key={row.id || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
-            <div className="flex items-center justify-between gap-3">
-              <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
-              <div className={`num flex items-center gap-1 text-base font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>
-                {Number(row.net_pnl || 0) > 0 && <i className="ri-arrow-up-circle-fill text-sm text-[#22c55e]" />}
-                {Number(row.net_pnl || 0) < 0 && <i className="ri-arrow-down-circle-fill text-sm text-[#ef4444]" />}
-                {formatMoney(row.net_pnl)}
-              </div>
-            </div>
-            <div className={`mt-1 inline-flex items-center gap-1 text-sm font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
-              <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} text-sm`} />
-              {row.side === 'SELL' ? 'S' : 'B'}
-            </div>
-            <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
-              <MobileField label="Entry" value={formatNumber(row.entry_price)} />
-              <MobileField label="Exit" value={formatNumber(row.exit_price)} />
-              <MobileField label="Reason" value={formatReason(row.exit_reason)} />
-              <MobileField label="Trigger" value={formatTrigger(row.entry_trigger)} wide />
-              <MobileField label="Signal Audit" value={<SignalAudit row={row} />} wide />
-              <MobileField label="Gross" value={formatMoney(row.gross_pnl)} />
-              <MobileField label="Charges" value={formatMoney(row.total_charges)} />
-            </div>
-          </div>
-        ))}
-      </div>
-      <div className="hidden overflow-x-auto rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1080px] border-collapse text-xs">
-        <thead className="bg-[#111827]">
-          <tr>
-            {['Symbol', 'Side', 'Entry', 'Exit', 'Reason', 'Signal Audit', 'Trigger', 'Gross', 'Charges', 'Net'].map((column) => (
-              <th key={column} className="table-cell label">{column}</th>
-            ))}
-          </tr>
-        </thead>
-        <tbody>
-          {!rows.length ? (
-            <tr className="bg-[#0d1117]">
-              <td colSpan={10} className="table-cell text-gray-500">No closed trades yet</td>
-            </tr>
-          ) : visibleRows.map((row, index) => (
-            <tr key={row.id || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
-              <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
-              <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
-                <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} mr-1 text-sm`} />
-                {row.side === 'SELL' ? 'S' : 'B'}
-              </td>
-              <td className="table-cell num text-gray-100">{formatNumber(row.entry_price)}</td>
-              <td className="table-cell num text-gray-100">{formatNumber(row.exit_price)}</td>
-              <td className={`table-cell font-semibold ${reasonColor(row.exit_reason)}`}>
-                {reasonIcon(row.exit_reason)}
-                {formatReason(row.exit_reason)}
-              </td>
-              <td className="table-cell min-w-[190px] text-gray-400"><SignalAudit row={row} /></td>
-              <td className="table-cell max-w-[300px] text-gray-400">{formatTrigger(row.entry_trigger)}</td>
               <td className={`table-cell num ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
               <td className="table-cell num text-gray-100">{formatMoney(row.total_charges)}</td>
               <td className={`table-cell num font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>{formatMoney(row.net_pnl)}</td>

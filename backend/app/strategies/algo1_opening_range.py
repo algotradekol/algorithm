@@ -16,24 +16,45 @@ Mode is MIS/intraday funded via margin -- this paper version doesn't
 model margin/leverage explicitly (see paper_broker.py notes), it just
 tracks the ₹50,000-per-trade capital allocation and P&L against it.
 """
+"""
+algo1_opening_range.py
+
+Implements the spec exactly as given:
+- 9:15 hrs 1-min candle: open == low -> BUY candidate (if gap from
+  prev close <= 2%); open == high -> SELL candidate (same gap check)
+- Entry at 9:16 hrs, market price
+- Target 2%, SL 1%, capital ₹50,000 per trade
+- Max 10 trades total: 5 buy + 5 sell; if one side is short on
+  qualifying candidates, the other side's overflow candidates fill
+  the remaining slots up to 10 total (ASSUMPTION: candidates are
+  processed in watchlist order -- change SORT_KEY below if you want
+  them prioritized by gap size instead)
+
+Mode is MIS/intraday funded via margin -- this paper version doesn't
+model margin/leverage explicitly (see paper_broker.py notes), it just
+tracks the ₹50,000-per-trade capital allocation and P&L against it.
+"""
 import datetime
 import threading
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from .base import Strategy
 from ..broker_factory import create_broker
-from ..fyers_client import get_previous_close, get_intraday_candles_for_range
+from ..fyers_client import get_previous_close, get_intraday_candles_for_range, get_live_ltp_batch
 from ..fyers_auth import get_stored_access_token
 from ..candidate_ranking import build_sector_breakdown
 from ..candidate_selection import execute_candidates_first_come
 from ..symbols import get_nse500_sector_map
 GAP_LIMIT_PCT = 2.0
 TICK_SIZE = 0.05
+# Concurrency for the 9:16 history backfill. IO-bound HTTP requests release
+# the GIL, so more workers here only means more parallel network calls —
+# CPU usage on Railway stays flat. Fyers allows ~10-50 req/s; 20 is safe.
+_BACKFILL_MAX_WORKERS = 20
+_PRELOAD_MAX_WORKERS = 12
 
 
 class Algo1OpeningRange(Strategy):
-    algo_id = "algo1"
-    display_name = "UN1 9:15 v15 — Simple"
 
     def __init__(self, watchlist: list[str]):
         self.watchlist = watchlist
@@ -106,7 +127,7 @@ class Algo1OpeningRange(Strategy):
             # A sequential 500-symbol history preload can still be running at
             # 09:16 after a restart. Keep concurrency deliberately modest to
             # finish pre-market without flooding the broker API.
-            with ThreadPoolExecutor(max_workers=6) as pool:
+            with ThreadPoolExecutor(max_workers=_PRELOAD_MAX_WORKERS) as pool:
                 futures = {pool.submit(get_previous_close, symbol): symbol for symbol in self.watchlist}
                 for future in as_completed(futures):
                     symbol = futures[future]
@@ -331,7 +352,7 @@ class Algo1OpeningRange(Strategy):
             ]
             return symbol, window
 
-        with ThreadPoolExecutor(max_workers=6) as pool:
+        with ThreadPoolExecutor(max_workers=_BACKFILL_MAX_WORKERS) as pool:
             futures = {pool.submit(load_symbol, symbol): symbol for symbol in symbols_to_verify}
             for future in as_completed(futures):
                 symbol, window = future.result()
@@ -353,52 +374,120 @@ class Algo1OpeningRange(Strategy):
             print(f"[algo1] verified opening candles for {filled}/{len(symbols_to_verify)} symbols from intraday history")
         return filled
 
+    def _prefetch_missing_ltps(self, candidates: list[dict], get_ltp_fn) -> dict[str, float]:
+        """Batch-fetch LTPs via the Fyers quotes API for symbols not yet in the live feed."""
+        missing = [row["symbol"] for row in candidates if not get_ltp_fn(row["symbol"])]
+        if not missing:
+            return {}
+        try:
+            result = get_live_ltp_batch(missing)
+            if result:
+                print(
+                    f"[algo1] fetched fallback LTP for "
+                    f"{len(result)}/{len(missing)} symbols via quotes API"
+                )
+            return result
+        except Exception as exc:
+            print(f"[algo1] quotes-API LTP fallback failed: {exc}")
+            return {}
+
     def evaluate_entries(self, get_ltp_fn):
-        """Called at the next-minute entry check after the opening signal candle closes."""
+        """Two-phase first-come-first-serve entry evaluation.
+
+        Phase 1 (immediate, ~0s): evaluate every symbol whose 9:15 candle
+        already arrived via the live feed.  These are the fastest arrivals
+        and get the first trade slots.
+
+        Phase 2 (backfill, ~8-15s): fetch Fyers intraday history for the
+        symbols the live feed missed.  Any remaining open slots are filled
+        from those in encounter order.
+
+        Both phases use the Fyers quotes API as an LTP fallback so that a
+        missing recent tick never blocks a valid entry in live mode.
+        """
         today = datetime.date.today()
         if self.entries_evaluated_today == today:
             return True
+
         is_test_schedule = bool(self.settings.get("test_schedule_enabled"))
         self._record_scan_results(
             [], [],
             scan_status="evaluating",
             scan_message=(
-                f"Evaluating the {self._display_time(self.scan_candle_time())} IST signal candle. "
-                + (
-                    "Using the live or buffered candle data already received for this scheduled test."
-                    if is_test_schedule
-                    else "Recovering any missing candle and previous-close data before selection."
-                )
+                f"Phase 1: immediately evaluating {self._display_time(self.scan_candle_time())} IST "
+                "live-feed candles — placing trades on first-come-first-served matches now."
             ),
         )
-        # Scheduled tests verify only symbols already observed by the live
-        # buffer; the real opening scan also recovers missing symbols.
-        self._backfill_opening_window_from_history(include_missing=not is_test_schedule)
+
+        # ── Phase 1: immediate ─────────────────────────────────────────────
+        # Evaluate whatever the live WebSocket already delivered.  Do NOT wait
+        # for the history backfill — these symbols arrived first and are served
+        # first.
+        self.entry_failures = {}
         self._build_candidates_from_collection()
+        phase1_qualified = [
+            d for d in self.candidate_details.values() if d.get("gap_passed")
+        ]
+        all_attempted: set[str] = set()
+
+        if phase1_qualified:
+            fallback_ltp1 = self._prefetch_missing_ltps(phase1_qualified, get_ltp_fn)
+
+            def enter_phase1(row: dict) -> bool:
+                ltp = get_ltp_fn(row["symbol"]) or fallback_ltp1.get(row["symbol"])
+                return self._enter(row["symbol"], row["side"], ltp)
+
+            _, attempted1 = execute_candidates_first_come(
+                phase1_qualified, self.settings, enter_phase1, self.broker.summary()
+            )
+            all_attempted |= attempted1
+            print(
+                f"[algo1] phase-1 done: {len(phase1_qualified)} live-feed candidates evaluated, "
+                f"{len(self.selected_symbols)} trade(s) placed so far"
+            )
+
+        # ── Phase 2: backfill + remaining slots ────────────────────────────
+        summary = self.broker.summary()
+        total_cap = max(0, int(self.settings.get("max_trades_per_day", 10)))
+        trades_so_far = max(0, int(summary.get("trade_count_today") or 0))
+        slots_left = total_cap - trades_so_far
+
+        if slots_left > 0:
+            # Fetch history candles for symbols the live feed never delivered.
+            # Scheduled tests use only buffered data; production fetches everything.
+            filled = self._backfill_opening_window_from_history(
+                include_missing=not is_test_schedule
+            )
+            if filled or not phase1_qualified:
+                # Rebuild candidates now that history data is in.
+                self._build_candidates_from_collection()
+                phase2_qualified = [
+                    d for d in self.candidate_details.values() if d.get("gap_passed")
+                ]
+                if phase2_qualified:
+                    fallback_ltp2 = self._prefetch_missing_ltps(phase2_qualified, get_ltp_fn)
+
+                    def enter_phase2(row: dict) -> bool:
+                        ltp = get_ltp_fn(row["symbol"]) or fallback_ltp2.get(row["symbol"])
+                        return self._enter(row["symbol"], row["side"], ltp)
+
+                    _, attempted2 = execute_candidates_first_come(
+                        phase2_qualified, self.settings, enter_phase2, self.broker.summary()
+                    )
+                    all_attempted |= attempted2
+                    print(
+                        f"[algo1] phase-2 done: {len(phase2_qualified)} backfilled candidates evaluated, "
+                        f"{len(self.selected_symbols)} total trade(s) placed"
+                    )
+
         if not self._opening_data_ready():
             self._record_scan_results([], [], scan_status="incomplete", scan_message=self._opening_data_message())
             return False
+
         self.entries_evaluated_today = today
-
-        qualified = [
-            details for details in self.candidate_details.values()
-            if details.get("gap_passed")
-        ]
-        self.entry_failures = {}
-
-        def enter_candidate(row: dict) -> bool:
-            symbol = row["symbol"]
-            return self._enter(symbol, row["side"], get_ltp_fn(symbol))
-
-        selected, planned_symbols = execute_candidates_first_come(
-            qualified,
-            self.settings,
-            enter_candidate,
-            self.broker.summary(),
-        )
-        buys = [row["symbol"] for row in selected if row["side"] == "BUY"]
-        sells = [row["symbol"] for row in selected if row["side"] == "SELL"]
-        self._record_scan_results(buys, sells, planned_symbols=planned_symbols)
+        buys_selected = [s for s, side in self.selected_sides.items() if side == "BUY"]
+        sells_selected = [s for s, side in self.selected_sides.items() if side == "SELL"]
+        self._record_scan_results(buys_selected, sells_selected, planned_symbols=all_attempted)
         return True
 
     def _opening_data_ready(self) -> bool:
@@ -436,42 +525,6 @@ class Algo1OpeningRange(Strategy):
     def mark_opening_scan_failed(self, error: str):
         """Expose a scheduler exception in the scan panel without placing trades."""
         self.entries_evaluated_today = datetime.date.today()
-        self._record_scan_results(
-            [], [], scan_status="error",
-            scan_message=f"Opening scan failed before any entry was placed: {error}",
-        )
-
-    def _enter(self, symbol: str, side: str, entry_price: float):
-        if not entry_price:
-            self.entry_failures[symbol] = "entry_price_unavailable"
-            return False
-        if self.broker.already_traded_today(symbol):
-            self.entry_failures[symbol] = "already_traded_today"
-            return False
-        qty = int(self.settings["capital_per_trade"] // entry_price)
-        if qty < 1:
-            self.entry_failures[symbol] = "capital_per_trade_below_share_price"
-            return False
-        if side == "BUY":
-            sl_price = entry_price * (1 - self.settings["sl_pct"] / 100)
-            target_price = entry_price * (1 + self.settings["target_pct"] / 100)
-        else:
-            sl_price = entry_price * (1 + self.settings["sl_pct"] / 100)
-            target_price = entry_price * (1 - self.settings["target_pct"] / 100)
-        try:
-            self.broker.open_trade(
-                symbol, side, qty, entry_price, sl_price, target_price,
-                self._entry_trigger(symbol, side), self._signal_snapshot(symbol, side, entry_price),
-            )
-        except Exception as exc:
-            self.entry_failures[symbol] = "paper_broker_open_failed"
-            print(f"[algo1] paper entry failed for {symbol}: {exc}")
-            return False
-        self.selected_symbols.add(symbol)
-        self.selected_sides[symbol] = side
-        return True
-
-    def _entry_trigger(self, symbol: str, side: str) -> str:
         details = self.candidate_details.get(symbol, {})
         open_price = details.get("open")
         prev_close = details.get("prev_close")

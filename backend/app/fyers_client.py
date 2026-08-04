@@ -244,6 +244,59 @@ def _is_recent_token_row(token_row: dict | None, max_age_seconds: int) -> bool:
     return False
 
 
+def get_live_ltp_batch(symbols: list[str], mode: str | None = None) -> dict[str, float]:
+    """Fetch current LTP for multiple symbols in one (or a few) Fyers quotes API calls.
+
+    Fyers quotes endpoint accepts up to 50 symbols per call. Returns a dict of
+    {symbol: ltp} for every symbol that returned a valid price. Missing symbols
+    are simply absent from the result dict — callers must handle that.
+
+    This is used as a fallback at entry time when the live WebSocket has not
+    yet delivered a tick for a symbol (e.g. low-liquidity symbols at 9:16).
+    """
+    if not symbols:
+        return {}
+    try:
+        fyers = get_fyers_model(mode)
+    except Exception:
+        return {}
+
+    result: dict[str, float] = {}
+    # Fyers quotes API allows up to 50 symbols per call
+    BATCH_SIZE = 50
+    for i in range(0, len(symbols), BATCH_SIZE):
+        batch = symbols[i: i + BATCH_SIZE]
+        try:
+            response = fyers.quotes({"symbols": ",".join(batch)})
+            rows = []
+            if isinstance(response, dict):
+                rows = response.get("d") or response.get("data") or []
+            elif isinstance(response, list):
+                rows = response
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                # Fyers v3 wraps each symbol under a "v" key
+                inner = row.get("v") or row
+                sym = (
+                    str(inner.get("symbol") or row.get("symbol") or "").upper()
+                )
+                ltp_raw = (
+                    inner.get("lp")
+                    or inner.get("ltp")
+                    or inner.get("last_price")
+                    or inner.get("close_price")
+                )
+                if sym and ltp_raw is not None:
+                    try:
+                        result[sym] = float(ltp_raw)
+                    except (TypeError, ValueError):
+                        pass
+        except Exception as exc:
+            print(f"[fyers_client] batch quotes failed for chunk {i//BATCH_SIZE}: {exc}")
+    return result
+
+
 def get_previous_close(symbol: str) -> float | None:
     """Previous trading day's closing price, needed by Algo 1's gap check."""
     fyers = get_fyers_model()

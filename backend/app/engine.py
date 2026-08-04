@@ -219,12 +219,53 @@ def _scheduler_loop():
                     _feed_retry_schedules.add(retry_key)
                     print(f"[engine] no market tick at {scan_time}; restarting Fyers live feed once before scheduled scan")
                     restart_live_feed(reason=f"scheduled_{scan_time}_no_first_tick")
+    """Runs alongside the tick handler -- checks the clock for the
+    9:16 entry trigger (algo1) and 3:15 square-off (both algos)."""
+    entries_fired_date: dict[str, datetime.date] = {}
+    entries_fired_schedule: dict[str, tuple[bool, str]] = {}
+    test_schedule_attempt_minute: dict[str, tuple[datetime.date, str]] = {}
+    squareoff_fired_date = None
+    token_refresh_fired_date = None
+    global _feed_retry_schedules
+
+    while True:
+        now = datetime.datetime.now(IST)
+        today = now.date()
+        current_time = now.strftime("%H:%M")
+
+        if current_time >= "08:30" and token_refresh_fired_date != today:
+            try_refresh_access_token(reason="scheduled_08_30")
+            token_refresh_fired_date = today
+
+        # A socket handshake is not market data. Retry once during whichever
+        # candle minute a production or UI test schedule is using if no tick
+        # has arrived today, leaving enough time to build that candle.
+        for strategy in STRATEGIES.values():
+            scan_time = getattr(strategy, "scan_candle_time", lambda: None)()
+            retry_key = (today, scan_time) if scan_time else None
+            if retry_key and current_time == scan_time and retry_key not in _feed_retry_schedules:
+                last_tick_at = _engine_status.get("last_tick_at") or ""
+                if not last_tick_at.startswith(today.isoformat()):
+                    _feed_retry_schedules.add(retry_key)
+                    print(f"[engine] no market tick at {scan_time}; restarting Fyers live feed once before scheduled scan")
+                    restart_live_feed(reason=f"scheduled_{scan_time}_no_first_tick")
 
         # Each opening strategy can opt into a one-off test schedule without
         # changing the production 09:15/09:16 defaults for the other strategy.
         # Close the just-finished minute even for symbols that have not sent a
         # follow-up tick yet. This must happen before the 9:16 entry check.
         aggregator.flush_completed_candles(on_candle_close=_on_candle_close, now=now.replace(tzinfo=None))
+        # Verbose logging in the critical pre-market and entry window
+        if "09:14" <= current_time <= "09:17":
+            print(
+                f"[engine][{now.strftime('%H:%M:%S')} IST] scheduler tick — "
+                f"ticks_received={_engine_status.get('tick_count', 0)} "
+                f"symbols_with_ltp={len(last_ltp)} "
+                f"candles_closed={_engine_status.get('closed_candle_count', 0)} "
+                f"ws_connected={_engine_status.get('fyers_ws_connected')} "
+                f"strategies={list(STRATEGIES.keys())}"
+            )
+
         pending = []
         completed_any = False
         for strategy in STRATEGIES.values():
@@ -303,14 +344,17 @@ def _scheduler_loop():
                         completed_any = True
                         print(f"[engine] scheduled test completed for {strategy.algo_id}")
                 continue
+            # ── Production path: 09:16 entry window ──────────────────────────
             if strategy.entry_window(current_time):
+                print(
+                    f"[engine][{now.strftime('%H:%M:%S')} IST] ENTRY WINDOW OPEN for {strategy.algo_id} "
+                    f"(scan={scan_time} entry={entry_time}) — calling evaluate_entries()"
+                )
                 try:
                     completed = strategy.evaluate_entries(get_ltp_fn=lambda s: last_ltp.get(s))
                 except Exception as exc:
                     # A single strategy must never terminate the scheduler thread.
-                    # Keep the failure visible in its scan panel and let the other
-                    # strategies continue their own scheduled evaluations.
-                    print(f"[engine] opening scan failed for {strategy.algo_id}: {exc}")
+                    print(f"[engine][{now.strftime('%H:%M:%S')} IST] opening scan FAILED for {strategy.algo_id}: {exc}")
                     mark_failed = getattr(strategy, "mark_opening_scan_failed", None)
                     if callable(mark_failed):
                         try:
@@ -322,15 +366,25 @@ def _scheduler_loop():
                     continue
                 if completed is False:
                     pending.append(strategy.algo_id)
+                    print(
+                        f"[engine][{now.strftime('%H:%M:%S')} IST] evaluate_entries returned False for "
+                        f"{strategy.algo_id} — will retry next scheduler tick"
+                    )
                 else:
                     entries_fired_date[strategy.algo_id] = today
                     entries_fired_schedule[strategy.algo_id] = schedule
                     completed_any = True
+                    print(
+                        f"[engine][{now.strftime('%H:%M:%S')} IST] evaluate_entries COMPLETED for {strategy.algo_id}"
+                    )
             elif strategy.entry_window_elapsed(current_time):
                 strategy.mark_opening_scan_missed()
                 entries_fired_date[strategy.algo_id] = today
                 entries_fired_schedule[strategy.algo_id] = schedule
-                print(f"[engine] entry window elapsed without complete data for {strategy.algo_id}; no late entries were placed")
+                print(
+                    f"[engine][{now.strftime('%H:%M:%S')} IST] entry window elapsed for {strategy.algo_id}; "
+                    "no late entries placed"
+                )
         if pending:
             print(f"[engine] opening scan waiting for complete market data: {', '.join(pending)}")
         if completed_any:
@@ -350,7 +404,7 @@ def _scheduler_loop():
                 print(f"[engine] EOD calendar snapshot failed: {exc}")
             squareoff_fired_date = today
 
-        time.sleep(15)
+        time.sleep(5)
 
 
 def _live_feed_watchdog_loop():
@@ -384,7 +438,7 @@ def _live_feed_watchdog_loop():
                 restart_live_feed(reason="watchdog_stale_or_missing_tick")
         except Exception as exc:
             print(f"[engine] live-feed watchdog error: {exc}")
-        time.sleep(15)
+        time.sleep(5)
 
 
 def start_live_feed_if_ready(force: bool = False) -> bool:
