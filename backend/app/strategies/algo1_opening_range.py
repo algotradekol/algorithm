@@ -332,18 +332,24 @@ class Algo1OpeningRange(Strategy):
         today = datetime.date.today()
         if self.entries_evaluated_today == today:
             return True
+        is_test_schedule = bool(self.settings.get("test_schedule_enabled"))
         self._record_scan_results(
             [], [],
             scan_status="evaluating",
             scan_message=(
                 f"Evaluating the {self._display_time(self.scan_candle_time())} IST signal candle. "
-                "Recovering any missing candle and previous-close data before selection."
+                + (
+                    "Using the live or buffered candle data already received for this scheduled test."
+                    if is_test_schedule
+                    else "Recovering any missing candle and previous-close data before selection."
+                )
             ),
         )
-        # Live ticks do not guarantee that every symbol trades during the exact
-        # signal minute. Merge the shared live buffer with FYERS history for both
-        # production and scheduled tests before treating a candle as missing.
-        self._backfill_opening_window_from_history()
+        # A 500-symbol history sweep can take several minutes and block the
+        # scheduler past the test entry minute. Scheduled tests use the candle
+        # recovered from the shared live buffer by the engine instead.
+        if not is_test_schedule:
+            self._backfill_opening_window_from_history()
         self._build_candidates_from_collection()
         if not self._opening_data_ready():
             self._record_scan_results([], [], scan_status="incomplete", scan_message=self._opening_data_message())
