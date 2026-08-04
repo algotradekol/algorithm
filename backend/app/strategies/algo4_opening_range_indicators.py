@@ -33,6 +33,7 @@ class Algo4OpeningRangeIndicators(Strategy):
         self.candidates: dict[str, tuple[str, float]] = {}
         self.candidate_details: dict[str, dict] = {}
         self.opening_candles: dict[str, list[dict]] = defaultdict(list)
+        self.history_verified_opening_symbols: set[str] = set()
         self.opening_indicators: dict[str, dict] = {}
         self.selected_symbols: set[str] = set()
         self.planned_symbols: set[str] = set()
@@ -71,6 +72,7 @@ class Algo4OpeningRangeIndicators(Strategy):
         self.candidates = {}
         self.candidate_details = {}
         self.opening_candles = defaultdict(list)
+        self.history_verified_opening_symbols = set()
         self.opening_indicators = {}
         self.planned_symbols = set()
         self.selected_symbols = set()
@@ -221,6 +223,35 @@ class Algo4OpeningRangeIndicators(Strategy):
         self.candidate_details = {}
         for symbol, candles in self.opening_candles.items():
             candle = self._combined_opening_candle(candles)
+            unresolved_flat_bar = (
+                abs(float(candle["high"]) - float(candle["low"])) <= 1e-9
+                and symbol not in self.history_verified_opening_symbols
+            )
+            if unresolved_flat_bar:
+                prev_close = self.prev_close.get(symbol)
+                self.candidate_details[symbol] = {
+                    "symbol": symbol,
+                    "sector": self.sector_map.get(symbol),
+                    "side": "WATCH",
+                    "open": candle["open"],
+                    "high": candle["high"],
+                    "low": candle["low"],
+                    "close": candle["close"],
+                    "prev_close": prev_close,
+                    "gap_pct": (
+                        abs(float(candle["open"]) - float(prev_close)) / float(prev_close) * 100
+                        if prev_close else 0
+                    ),
+                    "candle_received": True,
+                    "window_candle_count": candle["window_candle_count"],
+                    "shape_passed": False,
+                    "gap_passed": False,
+                    "passed_indicators": False,
+                    "indicator_results": {},
+                    "selected_for_trade": False,
+                    "rejection_reason": "awaiting_completed_history_candle",
+                }
+                continue
             side, details = self._signal_details(symbol, candle, self.opening_indicators.get(symbol, {}))
             if not details:
                 continue
@@ -257,18 +288,28 @@ class Algo4OpeningRangeIndicators(Strategy):
             )
         return merged
 
-    def _backfill_opening_window_from_history(self) -> int:
+    def _opening_candle_needs_history(self, symbol: str) -> bool:
+        """Return true when the local signal bar is absent or only one price was observed."""
+        candles = self.opening_candles.get(symbol, [])
+        if not candles:
+            return True
+        candle = candles[0]
+        return abs(float(candle["high"]) - float(candle["low"])) <= 1e-9
+
+    def _backfill_opening_window_from_history(self, *, include_missing: bool = True) -> int:
         if not get_stored_access_token():
             return 0
 
         today = datetime.date.today()
         start_time = self.scan_candle_time()
         end_time = self._schedule_time(1)
-        missing_symbols = [
+        symbols_to_verify = [
             symbol for symbol in self.watchlist
-            if len(self.opening_candles.get(symbol, [])) < 1
+            if symbol not in self.history_verified_opening_symbols
+            and self._opening_candle_needs_history(symbol)
+            and (include_missing or bool(self.opening_candles.get(symbol)))
         ]
-        if not missing_symbols:
+        if not symbols_to_verify:
             return 0
 
         filled = 0
@@ -287,7 +328,7 @@ class Algo4OpeningRangeIndicators(Strategy):
             return symbol, history, window
 
         with ThreadPoolExecutor(max_workers=6) as pool:
-            futures = {pool.submit(load_symbol, symbol): symbol for symbol in missing_symbols}
+            futures = {pool.submit(load_symbol, symbol): symbol for symbol in symbols_to_verify}
             for future in as_completed(futures):
                 symbol, history, window = future.result()
                 if not self.prev_close.get(symbol):
@@ -300,20 +341,22 @@ class Algo4OpeningRangeIndicators(Strategy):
                 if not window:
                     continue
                 self._merge_opening_history(symbol, history)
-                if len(window) > len(self.opening_candles.get(symbol, [])):
-                    self.opening_candles[symbol] = window
-                    self.scan_seen_symbols.add(symbol)
-                    latest = window[-1]
-                    day_candles = [candle for candle in self.candles[symbol] if candle["time"].date() == today]
-                    total_volume = sum(float(candle.get("volume") or 0) for candle in day_candles)
-                    total_value = sum(float(candle["close"]) * float(candle.get("volume") or 0) for candle in day_candles)
-                    self.opening_indicators[symbol] = {
-                        "last_ltp": float(latest["close"]),
-                        "vwap": total_value / total_volume if total_volume else None,
-                    }
-                    filled += 1
+                # The completed history candle is authoritative even when a
+                # one-tick websocket bar has the same one-row list length.
+                self.opening_candles[symbol] = window
+                self.history_verified_opening_symbols.add(symbol)
+                self.scan_seen_symbols.add(symbol)
+                latest = window[-1]
+                day_candles = [candle for candle in self.candles[symbol] if candle["time"].date() == today]
+                total_volume = sum(float(candle.get("volume") or 0) for candle in day_candles)
+                total_value = sum(float(candle["close"]) * float(candle.get("volume") or 0) for candle in day_candles)
+                self.opening_indicators[symbol] = {
+                    "last_ltp": float(latest["close"]),
+                    "vwap": total_value / total_volume if total_volume else None,
+                }
+                filled += 1
         if filled:
-            print(f"[{self.algo_id}] backfilled opening candles for {filled}/{len(missing_symbols)} symbols from intraday history")
+            print(f"[{self.algo_id}] verified opening candles for {filled}/{len(symbols_to_verify)} symbols from intraday history")
         return filled
 
     def evaluate_entries(self, get_ltp_fn):
@@ -343,10 +386,9 @@ class Algo4OpeningRangeIndicators(Strategy):
                 )
             ),
         )
-        # Scheduled tests use the shared live candle buffer. Running a
-        # 500-symbol history sweep here makes a one-minute test take minutes.
-        if not is_test_schedule:
-            self._backfill_opening_window_from_history()
+        # Scheduled tests verify only symbols already observed by the live
+        # buffer; the real opening scan also recovers missing symbols.
+        self._backfill_opening_window_from_history(include_missing=not is_test_schedule)
         self._build_candidates_from_collection()
         if not self._opening_data_ready():
             self._record_scan_results(scan_status="incomplete", scan_message=self._opening_data_message())
@@ -380,7 +422,14 @@ class Algo4OpeningRangeIndicators(Strategy):
         return bool(self._opening_ready_symbols())
 
     def _opening_ready_symbols(self) -> set[str]:
-        return self.scan_seen_symbols & set(self.prev_close)
+        return {
+            symbol
+            for symbol in self.scan_seen_symbols & set(self.prev_close)
+            if (
+                symbol in self.history_verified_opening_symbols
+                or not self._opening_candle_needs_history(symbol)
+            )
+        }
 
     def _opening_data_message(self) -> str:
         ready_count = len(self._opening_ready_symbols())
@@ -388,7 +437,8 @@ class Algo4OpeningRangeIndicators(Strategy):
             "Opening scan was not eligible for entry: "
             f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} symbols for the {self._display_time(self.scan_candle_time())} IST signal candle and "
             f"matched {ready_count}/{len(self.watchlist)} symbols with previous closes "
-            "(requires at least one symbol with both candle and previous-close data). No late trades will be placed."
+            "(requires at least one symbol with completed OHLC and previous-close data). "
+            "One-tick flat bars are retried from FYERS history instead of being treated as real flat candles."
         )
 
     def mark_opening_scan_missed(self):

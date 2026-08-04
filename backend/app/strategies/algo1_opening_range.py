@@ -46,6 +46,7 @@ class Algo1OpeningRange(Strategy):
         self.sell_candidates: list[str] = []
         self.candidate_details: dict[str, dict] = {}
         self.opening_candles: dict[str, list[dict]] = defaultdict(list)
+        self.history_verified_opening_symbols: set[str] = set()
         self.scan_seen_symbols: set[str] = set()
         self.prev_close_ready_symbols: set[str] = set()
         self.open_extreme_symbols: set[str] = set()
@@ -87,6 +88,7 @@ class Algo1OpeningRange(Strategy):
         self.sell_candidates = []
         self.candidate_details = {}
         self.opening_candles = defaultdict(list)
+        self.history_verified_opening_symbols = set()
         self.scan_seen_symbols = set()
         self.prev_close_ready_symbols = set()
         self.open_extreme_symbols = set()
@@ -238,6 +240,9 @@ class Algo1OpeningRange(Strategy):
             # is evaluated first.
             flat_shape = buy_shape and sell_shape
             gap_pct = abs(open_price - prev_close) / prev_close * 100
+            awaiting_completed_candle = (
+                flat_shape and symbol not in self.history_verified_opening_symbols
+            )
             self.candidate_details[symbol] = {
                 "symbol": symbol,
                 "sector": self.sector_map.get(symbol),
@@ -256,7 +261,15 @@ class Algo1OpeningRange(Strategy):
                 "passed_indicators": True,
                 "indicator_results": {},
                 "selected_for_trade": False,
-                "rejection_reason": "flat_ambiguous_opening_window" if flat_shape else ("failed_opening_shape" if not (buy_shape or sell_shape) else "failed_gap_filter"),
+                "rejection_reason": (
+                    "awaiting_completed_history_candle"
+                    if awaiting_completed_candle
+                    else "flat_ambiguous_opening_window"
+                    if flat_shape
+                    else "failed_opening_shape"
+                    if not (buy_shape or sell_shape)
+                    else "failed_gap_filter"
+                ),
             }
 
             if flat_shape:
@@ -272,7 +285,15 @@ class Algo1OpeningRange(Strategy):
                     self.sell_candidates.append(symbol)
                     self.candidate_details[symbol].update({"side": "SELL", "gap_passed": True, "rejection_reason": None})
 
-    def _backfill_opening_window_from_history(self) -> int:
+    def _opening_candle_needs_history(self, symbol: str) -> bool:
+        """Return true when the local signal bar is absent or only one price was observed."""
+        candles = self.opening_candles.get(symbol, [])
+        if not candles:
+            return True
+        candle = candles[0]
+        return abs(float(candle["high"]) - float(candle["low"])) <= 1e-9
+
+    def _backfill_opening_window_from_history(self, *, include_missing: bool = True) -> int:
         """Use the day-session history API to recover symbols whose live feed
         missed part of the opening window.
 
@@ -288,11 +309,13 @@ class Algo1OpeningRange(Strategy):
         filled = 0
         start_time = self.scan_candle_time()
         end_time = self._schedule_time(1)
-        missing_symbols = [
+        symbols_to_verify = [
             symbol for symbol in self.watchlist
-            if len(self.opening_candles.get(symbol, [])) < 1
+            if symbol not in self.history_verified_opening_symbols
+            and self._opening_candle_needs_history(symbol)
+            and (include_missing or bool(self.opening_candles.get(symbol)))
         ]
-        if not missing_symbols:
+        if not symbols_to_verify:
             return 0
 
         def load_symbol(symbol: str):
@@ -309,7 +332,7 @@ class Algo1OpeningRange(Strategy):
             return symbol, window
 
         with ThreadPoolExecutor(max_workers=6) as pool:
-            futures = {pool.submit(load_symbol, symbol): symbol for symbol in missing_symbols}
+            futures = {pool.submit(load_symbol, symbol): symbol for symbol in symbols_to_verify}
             for future in as_completed(futures):
                 symbol, window = future.result()
                 if not self.prev_close.get(symbol):
@@ -319,12 +342,15 @@ class Algo1OpeningRange(Strategy):
                             self.prev_close[symbol] = previous_close
                     except Exception as exc:
                         print(f"[algo1] could not backfill previous close for {symbol}: {exc}")
-                if window and len(window) > len(self.opening_candles.get(symbol, [])):
+                if window:
+                    # The completed history candle is authoritative even when a
+                    # one-tick websocket bar has the same one-row list length.
                     self.opening_candles[symbol] = window
+                    self.history_verified_opening_symbols.add(symbol)
                     self.scan_seen_symbols.add(symbol)
                     filled += 1
         if filled:
-            print(f"[algo1] backfilled opening candles for {filled}/{len(missing_symbols)} symbols from intraday history")
+            print(f"[algo1] verified opening candles for {filled}/{len(symbols_to_verify)} symbols from intraday history")
         return filled
 
     def evaluate_entries(self, get_ltp_fn):
@@ -345,11 +371,9 @@ class Algo1OpeningRange(Strategy):
                 )
             ),
         )
-        # A 500-symbol history sweep can take several minutes and block the
-        # scheduler past the test entry minute. Scheduled tests use the candle
-        # recovered from the shared live buffer by the engine instead.
-        if not is_test_schedule:
-            self._backfill_opening_window_from_history()
+        # Scheduled tests verify only symbols already observed by the live
+        # buffer; the real opening scan also recovers missing symbols.
+        self._backfill_opening_window_from_history(include_missing=not is_test_schedule)
         self._build_candidates_from_collection()
         if not self._opening_data_ready():
             self._record_scan_results([], [], scan_status="incomplete", scan_message=self._opening_data_message())
@@ -385,14 +409,22 @@ class Algo1OpeningRange(Strategy):
         return self._opening_ready_symbol_count() > 0
 
     def _opening_ready_symbol_count(self) -> int:
-        return len(self.scan_seen_symbols & self.prev_close_ready_symbols)
+        return len({
+            symbol
+            for symbol in self.scan_seen_symbols & self.prev_close_ready_symbols
+            if (
+                symbol in self.history_verified_opening_symbols
+                or not self._opening_candle_needs_history(symbol)
+            )
+        })
 
     def _opening_data_message(self) -> str:
         return (
             "Opening scan was not eligible for entry: "
             f"received {len(self.scan_seen_symbols)}/{len(self.watchlist)} symbols for the {self._display_time(self.scan_candle_time())} IST signal candle and "
             f"matched {self._opening_ready_symbol_count()}/{len(self.watchlist)} symbols with previous closes "
-            "(requires at least one symbol with both candle and previous-close data). No late trades will be placed."
+            "(requires at least one symbol with completed OHLC and previous-close data). "
+            "One-tick flat bars are retried from FYERS history instead of being treated as real flat candles."
         )
 
     def mark_opening_scan_missed(self):
