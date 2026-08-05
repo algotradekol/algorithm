@@ -88,12 +88,14 @@ class LiveBroker(PaperBroker):
         super().close_trade(position, actual_exit_price, exit_reason, exit_time=actual_exit_time)
 
     def _place_live_order(self, symbol: str, side: str, qty: int) -> dict:
-        # Railway egress IP is registered as the Fyers app Secondary IP, so
-        # orders can egress directly from Railway and land at Fyers with a
-        # whitelisted source IP. Bypassing the GCP proxy avoids the silent
-        # Google-Cloud-edge drop of Railway's IP range that made every proxy
-        # attempt time out for ~48s per order.
-        fyers = get_fyers_model(use_proxy=False)
+        # Railway's egress IP pool has more entries than Fyers can whitelist
+        # (Fyers app accepts only 2 IPs total), so we route orders through
+        # the GCP Squid proxy so Fyers only ever sees one source IP
+        # (34.100.255.224 = the GCP proxy's public IP, set as Fyers Primary IP).
+        # Google Cloud silently drops Railway packets to the GCP VM directly,
+        # so LIVE_FYERS_PROXY_URL must point at a Cloudflare Tunnel hostname
+        # that terminates at the Squid box on the GCP VM.
+        fyers = get_fyers_model(use_proxy=True)
         # Fyers V3 place_order rejects with code -99 "Bad request" if any of
         # limitPrice / stopPrice / stopLoss / takeProfit are missing, even for
         # market orders where the value must be 0. isSliceOrder is not a real
