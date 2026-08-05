@@ -225,16 +225,6 @@ def _scheduler_loop():
         # Close the just-finished minute even for symbols that have not sent a
         # follow-up tick yet. This must happen before the 9:16 entry check.
         aggregator.flush_completed_candles(on_candle_close=_on_candle_close, now=now.replace(tzinfo=None))
-        # Verbose logging in the critical pre-market and entry window
-        if "09:14" <= current_time <= "09:17":
-            print(
-                f"[engine][{now.strftime('%H:%M:%S')} IST] scheduler tick — "
-                f"ticks_received={_engine_status.get('tick_count', 0)} "
-                f"symbols_with_ltp={len(last_ltp)} "
-                f"candles_closed={_engine_status.get('closed_candle_count', 0)} "
-                f"ws_connected={_engine_status.get('fyers_ws_connected')} "
-                f"strategies={list(STRATEGIES.keys())}"
-            )
 
         pending = []
         completed_any = False

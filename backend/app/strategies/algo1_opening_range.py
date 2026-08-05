@@ -545,8 +545,6 @@ class Algo1OpeningRange(Strategy):
                     filled += 1
                 else:
                     self.debug_logger.add_candle_missing(symbol)
-        if filled:
-            print(f"[algo1] verified opening candles for {filled}/{len(symbols_to_verify)} symbols from intraday history")
         return filled
 
     def _prefetch_missing_ltps(self, candidates: list[dict], get_ltp_fn) -> dict[str, float]:
@@ -658,10 +656,6 @@ class Algo1OpeningRange(Strategy):
                 phase1_qualified, self.settings, enter_phase1, self.broker.summary()
             )
             all_attempted |= attempted1
-            print(
-                f"[algo1] phase-1 done: {len(phase1_qualified)} live-feed candidates evaluated, "
-                f"{len(self.selected_symbols)} trade(s) placed so far"
-            )
 
         # ── Phase 2: backfill + remaining slots ────────────────────────────
         summary = self.broker.summary()
@@ -685,7 +679,6 @@ class Algo1OpeningRange(Strategy):
                         from ..fyers_client import get_live_ltp_batch
                         try:
                             fallback_ltps = get_live_ltp_batch(need_fetch)
-                            print(f"[algo1] test mode: fetched {len(fallback_ltps)}/{len(need_fetch)} missing LTPs via Quotes API")
                         except Exception as exc:
                             print(f"[algo1] test mode: Quotes API fallback failed: {exc}")
 
@@ -706,7 +699,6 @@ class Algo1OpeningRange(Strategy):
                         # Mark that this symbol was seen but has no LTP data
                         self.scan_seen_symbols.add(symbol)
                         self.debug_logger.add_candle_missing(symbol)
-                print(f"[algo1] test mode: filled {ltp_filled}/{len(missing)} missing symbols from live/preload/Quotes API")
                 filled = ltp_filled
             else:
                 # PRODUCTION MODE: fetch actual 9:15 OHLC from Fyers history API.
@@ -731,10 +723,6 @@ class Algo1OpeningRange(Strategy):
                         phase2_qualified, self.settings, enter_phase2, self.broker.summary()
                     )
                     all_attempted |= attempted2
-                    print(
-                        f"[algo1] phase-2 done: {len(phase2_qualified)} backfilled candidates evaluated, "
-                        f"{len(self.selected_symbols)} total trade(s) placed"
-                    )
 
         # Final rebuild for reporting: the previous-close background loader
         # and the live feed keep delivering data throughout the (sometimes
