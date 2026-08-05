@@ -408,7 +408,8 @@ def _parse_candle_ohlcv(candle: list | dict, symbol: str = "") -> dict | None:
     """Safely extract OHLCV from a Fyers candle array or dict.
 
     Validates that the extracted prices form a valid candle:
-    high >= open/close >= low. If validation fails, logs the issue and returns None.
+    high >= open/close >= low AND prices are in realistic range (e.g., not 50x apart in 1 min).
+    If validation fails, logs the issue and returns None.
     """
     try:
         # Try array format [ts, open, high, low, close, volume]
@@ -420,25 +421,35 @@ def _parse_candle_ohlcv(candle: list | dict, symbol: str = "") -> dict | None:
             close_price = float(candle[4])
             volume = float(candle[5] or 0)
 
-            # Sanity check: high >= max(open, close) and low <= min(open, close)
+            # Sanity check 1: high >= max(open, close) and low <= min(open, close)
             max_price = max(open_price, close_price)
             min_price = min(open_price, close_price)
 
-            if high_price >= max_price and low_price <= min_price and high_price >= low_price:
-                return {
-                    "ts": ts,
-                    "open": open_price,
-                    "high": high_price,
-                    "low": low_price,
-                    "close": close_price,
-                    "volume": volume,
-                }
-            else:
-                # Prices don't form valid OHLC - likely array indices are wrong
+            if not (high_price >= max_price and low_price <= min_price and high_price >= low_price):
                 print(f"[fyers_client] WARNING: {symbol} candle prices invalid: "
                       f"O={open_price} H={high_price} L={low_price} C={close_price}. "
                       f"Raw: {candle}")
                 return None
+
+            # Sanity check 2: Prices should be in same ballpark (within 50% for 1-min candle)
+            # If open is 4550 but close is 223804, array indices are definitely wrong
+            if open_price > 0 and close_price > 0:
+                price_ratio = max(open_price, close_price) / min(open_price, close_price)
+                if price_ratio > 1.5:  # More than 50% move in 1 minute is suspicious
+                    # This might be volume, OI, or corrupted data
+                    print(f"[fyers_client] WARNING: {symbol} candle has extreme move: "
+                          f"O={open_price} C={close_price} (ratio={price_ratio:.1f}x). "
+                          f"Raw: {candle}")
+                    return None
+
+            return {
+                "ts": ts,
+                "open": open_price,
+                "high": high_price,
+                "low": low_price,
+                "close": close_price,
+                "volume": volume,
+            }
 
         # Try dict format (in case Fyers API changed)
         if isinstance(candle, dict):
