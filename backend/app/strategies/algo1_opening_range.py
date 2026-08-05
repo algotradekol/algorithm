@@ -267,9 +267,15 @@ class Algo1OpeningRange(Strategy):
             # is evaluated first.
             flat_shape = buy_shape and sell_shape
             gap_pct = abs(open_price - prev_close) / prev_close * 100
-            awaiting_completed_candle = (
-                flat_shape and symbol not in self.history_verified_opening_symbols
-            )
+            gap_up = open_price >= prev_close
+
+            # A flat opening candle (open=high=low, single print at open) is
+            # resolved by the gap direction: gap-up → treat as BUY (open=low),
+            # gap-down → treat as SELL (open=high).
+            if flat_shape:
+                buy_shape = gap_up
+                sell_shape = not gap_up
+
             self.candidate_details[symbol] = {
                 "symbol": symbol,
                 "sector": self.sector_map.get(symbol),
@@ -282,25 +288,19 @@ class Algo1OpeningRange(Strategy):
                 "gap_pct": gap_pct,
                 "candle_received": True,
                 "window_candle_count": candle["window_candle_count"],
-                "shape_passed": (buy_shape or sell_shape) and not flat_shape,
-                "signal_shape": "flat_ambiguous" if flat_shape else ("open_equals_low" if buy_shape else "open_equals_high" if sell_shape else "neither"),
+                "shape_passed": buy_shape or sell_shape,
+                "signal_shape": "open_equals_low" if buy_shape else "open_equals_high" if sell_shape else "neither",
                 "gap_passed": False,
                 "passed_indicators": True,
                 "indicator_results": {},
                 "selected_for_trade": False,
                 "rejection_reason": (
-                    "awaiting_completed_history_candle"
-                    if awaiting_completed_candle
-                    else "flat_ambiguous_opening_window"
-                    if flat_shape
-                    else "failed_opening_shape"
+                    "failed_opening_shape"
                     if not (buy_shape or sell_shape)
                     else "failed_gap_filter"
                 ),
             }
 
-            if flat_shape:
-                continue
             if buy_shape:
                 self.open_extreme_symbols.add(symbol)
                 if gap_pct <= GAP_LIMIT_PCT:
