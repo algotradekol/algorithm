@@ -605,6 +605,14 @@ class Algo1OpeningRange(Strategy):
             return True
 
         is_test_schedule = bool(self.settings.get("test_schedule_enabled"))
+
+        # Build candidates FIRST so the initial broadcast reflects real state
+        # (open_extreme_symbols, buy/sell candidates, prev_close counts). Without
+        # this the frontend polls scan-results during phase 1 and sees a stale
+        # "0/N" for every condition until the scan finally completes 30-60s later.
+        self.entry_failures = {}
+        self._build_candidates_from_collection()
+
         self._record_scan_results(
             [], [],
             scan_status="evaluating",
@@ -618,8 +626,6 @@ class Algo1OpeningRange(Strategy):
         # Evaluate whatever the live WebSocket already delivered.  Do NOT wait
         # for the history backfill — these symbols arrived first and are served
         # first.
-        self.entry_failures = {}
-        self._build_candidates_from_collection()
         phase1_qualified = [
             d for d in self.candidate_details.values() if d.get("gap_passed")
         ]
@@ -721,6 +727,15 @@ class Algo1OpeningRange(Strategy):
             if filled or not phase1_qualified:
                 # Rebuild candidates now that history data is in.
                 self._build_candidates_from_collection()
+                # Broadcast the mid-scan state so the frontend funnel jumps
+                # from the phase-1 numbers to the phase-2 numbers immediately,
+                # instead of showing stale 0/N for 30-60s while orders slowly
+                # succeed or fail one at a time.
+                self._record_scan_results(
+                    [], [],
+                    scan_status="evaluating",
+                    scan_message="Phase 2: LTP/prev-close top-up complete; placing remaining trades.",
+                )
                 phase2_qualified = [
                     d for d in self.candidate_details.values() if d.get("gap_passed")
                 ]
