@@ -54,6 +54,124 @@ _BACKFILL_MAX_WORKERS = 50
 _PRELOAD_MAX_WORKERS = 12
 
 
+class ScanDebugLogger:
+    """Tracks symbol progression through scan stages for structured debugging."""
+    def __init__(self, watchlist_size: int):
+        self.total = watchlist_size
+        self.stage_data = {
+            "candles_received": {"count": 0, "symbols": []},
+            "candles_live": {"count": 0, "symbols": []},
+            "candles_backfilled": {"count": 0, "symbols": []},
+            "candles_test_ltp": {"count": 0, "symbols": []},
+            "candles_missing": {"count": 0, "symbols": []},
+            "prev_close_loaded": {"count": 0, "symbols": []},
+            "prev_close_missing": {"count": 0, "symbols": []},
+            "shape_passed": {"count": 0, "symbols": {"buy": [], "sell": []}},
+            "shape_failed_flat": {"count": 0, "symbols": []},
+            "shape_failed_neither": {"count": 0, "symbols": []},
+            "gap_passed": {"count": 0, "symbols": {"buy": [], "sell": []}},
+            "gap_failed": {"count": 0, "symbols": []},
+            "selected_trade": {"count": 0, "symbols": {"buy": [], "sell": []}},
+        }
+
+    def add_candle_received(self, symbol: str, source: str):
+        self.stage_data["candles_received"]["count"] += 1
+        self.stage_data[f"candles_{source}"]["count"] += 1
+        self.stage_data[f"candles_{source}"]["symbols"].append(symbol)
+
+    def add_candle_missing(self, symbol: str):
+        self.stage_data["candles_missing"]["count"] += 1
+        self.stage_data["candles_missing"]["symbols"].append(symbol)
+
+    def add_prev_close(self, symbol: str, has_it: bool):
+        if has_it:
+            self.stage_data["prev_close_loaded"]["count"] += 1
+            self.stage_data["prev_close_loaded"]["symbols"].append(symbol)
+        else:
+            self.stage_data["prev_close_missing"]["count"] += 1
+            self.stage_data["prev_close_missing"]["symbols"].append(symbol)
+
+    def add_shape_result(self, symbol: str, side: str, passed: bool, reason: str = ""):
+        if passed:
+            self.stage_data["shape_passed"]["count"] += 1
+            self.stage_data["shape_passed"]["symbols"][side.lower()].append(symbol)
+        else:
+            if reason == "flat":
+                self.stage_data["shape_failed_flat"]["count"] += 1
+            else:
+                self.stage_data["shape_failed_neither"]["count"] += 1
+            self.stage_data[f"shape_failed_{reason}"]["symbols"].append(symbol)
+
+    def add_gap_result(self, symbol: str, side: str, passed: bool):
+        if passed:
+            self.stage_data["gap_passed"]["count"] += 1
+            self.stage_data["gap_passed"]["symbols"][side.lower()].append(symbol)
+        else:
+            self.stage_data["gap_failed"]["count"] += 1
+            self.stage_data["gap_failed"]["symbols"].append(symbol)
+
+    def add_selected(self, symbol: str, side: str):
+        self.stage_data["selected_trade"]["count"] += 1
+        self.stage_data["selected_trade"]["symbols"][side.lower()].append(symbol)
+
+    def print_report(self):
+        """Print formatted debug report showing exactly where symbols failed."""
+        print("\n" + "="*80)
+        print("SCAN DEBUG REPORT - Symbol Progression Analysis")
+        print("="*80)
+
+        s = self.stage_data
+
+        print(f"\n📊 STAGE 1: Candle Collection (Total: {self.total})")
+        print(f"  ✓ Received candles: {s['candles_received']['count']}")
+        print(f"    ├─ From live feed: {s['candles_live']['count']}")
+        print(f"    ├─ Backfilled: {s['candles_backfilled']['count']}")
+        print(f"    └─ Test LTP: {s['candles_test_ltp']['count']}")
+        print(f"  ✗ Missing candles: {s['candles_missing']['count']}")
+        if s['candles_missing']['symbols']:
+            print(f"    └─ {', '.join(s['candles_missing']['symbols'][:10])}" +
+                  (f" +{len(s['candles_missing']['symbols'])-10} more" if len(s['candles_missing']['symbols']) > 10 else ""))
+
+        print(f"\n📊 STAGE 2: Previous Close Loading")
+        print(f"  ✓ Have prev_close: {s['prev_close_loaded']['count']}")
+        print(f"  ✗ Missing prev_close: {s['prev_close_missing']['count']}")
+        if s['prev_close_missing']['symbols']:
+            print(f"    └─ {', '.join(s['prev_close_missing']['symbols'][:10])}" +
+                  (f" +{len(s['prev_close_missing']['symbols'])-10} more" if len(s['prev_close_missing']['symbols']) > 10 else ""))
+
+        can_evaluate = s['candles_received']['count']
+        print(f"\n📊 STAGE 3: Shape Check (open == low/high?)")
+        print(f"  Base: {can_evaluate} symbols with both candle + prev_close")
+        print(f"  ✓ Passed: {s['shape_passed']['count']}")
+        print(f"    ├─ BUY (open==low): {len(s['shape_passed']['symbols']['buy'])}")
+        print(f"    └─ SELL (open==high): {len(s['shape_passed']['symbols']['sell'])}")
+        print(f"  ✗ Failed: {s['shape_failed_flat']['count'] + s['shape_failed_neither']['count']}")
+        print(f"    ├─ Flat candle (resolved by gap): {s['shape_failed_flat']['count']}")
+        print(f"    └─ Neither open==low nor ==high: {s['shape_failed_neither']['count']}")
+
+        print(f"\n📊 STAGE 4: Gap Filter (<= {GAP_LIMIT_PCT}%)")
+        print(f"  Base: {s['shape_passed']['count']} symbols with valid shape")
+        print(f"  ✓ Passed gap filter: {s['gap_passed']['count']}")
+        print(f"    ├─ BUY: {len(s['gap_passed']['symbols']['buy'])}")
+        print(f"    └─ SELL: {len(s['gap_passed']['symbols']['sell'])}")
+        print(f"  ✗ Failed gap filter: {s['gap_failed']['count']}")
+
+        print(f"\n📊 STAGE 5: Trade Selection")
+        print(f"  Base: {s['gap_passed']['count']} qualified candidates")
+        print(f"  ✓ Selected for trade: {s['selected_trade']['count']}")
+        print(f"    ├─ BUY: {len(s['selected_trade']['symbols']['buy'])}")
+        print(f"    └─ SELL: {len(s['selected_trade']['symbols']['sell'])}")
+        print(f"  ✗ Not selected (slots full): {s['gap_passed']['count'] - s['selected_trade']['count']}")
+
+        print(f"\n📈 FUNNEL EFFICIENCY")
+        print(f"  Candles → Shape: {s['shape_passed']['count']}/{s['candles_received']['count']} ({100*s['shape_passed']['count']/max(1,s['candles_received']['count']):.1f}%)")
+        print(f"  Shape → Gap: {s['gap_passed']['count']}/{s['shape_passed']['count']} ({100*s['gap_passed']['count']/max(1,s['shape_passed']['count']):.1f}%)")
+        print(f"  Gap → Selected: {s['selected_trade']['count']}/{s['gap_passed']['count']} ({100*s['selected_trade']['count']/max(1,s['gap_passed']['count']):.1f}%)")
+        print(f"  Overall: {s['selected_trade']['count']}/{self.total} ({100*s['selected_trade']['count']/max(1,self.total):.1f}%)")
+
+        print("="*80 + "\n")
+
+
 class Algo1OpeningRange(Strategy):
     algo_id = "algo1"
     display_name = "9:15 Opening Range"
@@ -84,6 +202,7 @@ class Algo1OpeningRange(Strategy):
         self._previous_close_loading = False
         self._ltp_load_lock = threading.Lock()
         self._ltp_loading = False
+        self.debug_logger = ScanDebugLogger(len(watchlist))
         # Load previous closes and LTPs in background to avoid blocking startup
         self.refresh_market_data()
 
@@ -122,6 +241,7 @@ class Algo1OpeningRange(Strategy):
         self.selected_sides = {}
         self.entry_failures = {}
         self.entries_evaluated_today = None
+        self.debug_logger = ScanDebugLogger(len(self.watchlist))
 
     def _load_previous_closes_background(self):
         """Load previous closes in a background thread to avoid blocking initialization."""
@@ -261,6 +381,7 @@ class Algo1OpeningRange(Strategy):
 
         self.scan_seen_symbols.add(symbol)
         self.opening_candles[symbol].append(candle)
+        self.debug_logger.add_candle_received(symbol, "live")
 
     def _combined_opening_candle(self, candles: list[dict]) -> dict:
         candle = candles[0]
@@ -281,7 +402,9 @@ class Algo1OpeningRange(Strategy):
         self.open_extreme_symbols = set()
         self.prev_close_ready_symbols = set()
         for symbol, candles in self.opening_candles.items():
+            # Log candle received
             prev_close = self.prev_close.get(symbol)
+            self.debug_logger.add_prev_close(symbol, bool(prev_close))
             if not prev_close:
                 continue
 
@@ -307,6 +430,14 @@ class Algo1OpeningRange(Strategy):
             if flat_shape:
                 buy_shape = gap_up
                 sell_shape = not gap_up
+
+            # Log shape check result
+            if buy_shape or sell_shape:
+                side = "buy" if buy_shape else "sell"
+                self.debug_logger.add_shape_result(symbol, side, True)
+            else:
+                self.debug_logger.add_shape_result(symbol, "none", False,
+                                                   "flat" if flat_shape else "neither")
 
             self.candidate_details[symbol] = {
                 "symbol": symbol,
@@ -337,12 +468,18 @@ class Algo1OpeningRange(Strategy):
                 self.open_extreme_symbols.add(symbol)
                 if gap_pct <= GAP_LIMIT_PCT:
                     self.buy_candidates.append(symbol)
+                    self.debug_logger.add_gap_result(symbol, "BUY", True)
                     self.candidate_details[symbol].update({"side": "BUY", "gap_passed": True, "rejection_reason": None})
+                else:
+                    self.debug_logger.add_gap_result(symbol, "BUY", False)
             elif sell_shape:
                 self.open_extreme_symbols.add(symbol)
                 if gap_pct <= GAP_LIMIT_PCT:
                     self.sell_candidates.append(symbol)
+                    self.debug_logger.add_gap_result(symbol, "SELL", True)
                     self.candidate_details[symbol].update({"side": "SELL", "gap_passed": True, "rejection_reason": None})
+                else:
+                    self.debug_logger.add_gap_result(symbol, "SELL", False)
 
     def _opening_candle_needs_history(self, symbol: str) -> bool:
         """Return true when the local signal bar is absent or only one price was observed."""
@@ -404,7 +541,10 @@ class Algo1OpeningRange(Strategy):
                     self.opening_candles[symbol] = window
                     self.history_verified_opening_symbols.add(symbol)
                     self.scan_seen_symbols.add(symbol)
+                    self.debug_logger.add_candle_received(symbol, "backfilled")
                     filled += 1
+                else:
+                    self.debug_logger.add_candle_missing(symbol)
         if filled:
             print(f"[algo1] verified opening candles for {filled}/{len(symbols_to_verify)} symbols from intraday history")
         return filled
@@ -463,6 +603,7 @@ class Algo1OpeningRange(Strategy):
 
         self.selected_symbols.add(symbol)
         self.selected_sides[symbol] = side
+        self.debug_logger.add_selected(symbol, side)
         print(f"[{self.algo_id}] ✅ entered {side} {symbol} @ {entry_price:.2f} qty={qty}")
         return True
 
@@ -559,10 +700,12 @@ class Algo1OpeningRange(Strategy):
                             "close": ltp, "volume": 0.0,
                         }]
                         self.scan_seen_symbols.add(symbol)
+                        self.debug_logger.add_candle_received(symbol, "test_ltp")
                         ltp_filled += 1
                     else:
                         # Mark that this symbol was seen but has no LTP data
                         self.scan_seen_symbols.add(symbol)
+                        self.debug_logger.add_candle_missing(symbol)
                 print(f"[algo1] test mode: filled {ltp_filled}/{len(missing)} missing symbols from live/preload/Quotes API")
                 filled = ltp_filled
             else:
@@ -610,6 +753,10 @@ class Algo1OpeningRange(Strategy):
         self.entries_evaluated_today = today
         buys_selected = [s for s, side in self.selected_sides.items() if side == "BUY"]
         sells_selected = [s for s, side in self.selected_sides.items() if side == "SELL"]
+
+        # Print structured debug report
+        self.debug_logger.print_report()
+
         self._record_scan_results(buys_selected, sells_selected, planned_symbols=all_attempted)
         return True
 
