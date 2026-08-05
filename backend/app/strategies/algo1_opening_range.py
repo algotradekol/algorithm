@@ -184,6 +184,7 @@ class Algo1OpeningRange(Strategy):
         self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
         self.prev_close: dict[str, float] = {}
         self.preloaded_ltps: dict[str, float] = {}
+        self.test_mode_ltps: dict[str, float] = {}  # Store LTPs from test mode candles
         self.buy_candidates: list[str] = []
         self.sell_candidates: list[str] = []
         self.candidate_details: dict[str, dict] = {}
@@ -241,6 +242,7 @@ class Algo1OpeningRange(Strategy):
         self.selected_sides = {}
         self.entry_failures = {}
         self.entries_evaluated_today = None
+        self.test_mode_ltps = {}
         self.debug_logger = ScanDebugLogger(len(self.watchlist))
 
     def _load_previous_closes_background(self):
@@ -649,7 +651,8 @@ class Algo1OpeningRange(Strategy):
             fallback_ltp1 = self._prefetch_missing_ltps(phase1_qualified, get_ltp_fn)
 
             def enter_phase1(row: dict) -> bool:
-                ltp = get_ltp_fn(row["symbol"]) or fallback_ltp1.get(row["symbol"])
+                ltp = (get_ltp_fn(row["symbol"]) or fallback_ltp1.get(row["symbol"])
+                       or self.test_mode_ltps.get(row["symbol"]))
                 return self._enter(row["symbol"], row["side"], ltp)
 
             _, attempted1 = execute_candidates_first_come(
@@ -692,6 +695,8 @@ class Algo1OpeningRange(Strategy):
                             "open": ltp, "high": ltp, "low": ltp,
                             "close": ltp, "volume": 0.0,
                         }]
+                        # Store LTP for later use during entry
+                        self.test_mode_ltps[symbol] = ltp
                         self.scan_seen_symbols.add(symbol)
                         self.debug_logger.add_candle_received(symbol, "test_ltp")
                         ltp_filled += 1
@@ -716,7 +721,8 @@ class Algo1OpeningRange(Strategy):
                     fallback_ltp2 = self._prefetch_missing_ltps(phase2_qualified, get_ltp_fn)
 
                     def enter_phase2(row: dict) -> bool:
-                        ltp = get_ltp_fn(row["symbol"]) or fallback_ltp2.get(row["symbol"])
+                        ltp = (get_ltp_fn(row["symbol"]) or fallback_ltp2.get(row["symbol"])
+                               or self.test_mode_ltps.get(row["symbol"]))
                         return self._enter(row["symbol"], row["side"], ltp)
 
                     _, attempted2 = execute_candidates_first_come(
