@@ -499,12 +499,22 @@ class Algo1OpeningRange(Strategy):
         if slots_left > 0:
             if is_test_schedule:
                 # TEST MODE: fill missing symbols using the current live LTP
-                # from the websocket — no history API calls needed.
+                # from the websocket + Quotes API — no history API calls needed.
+                missing = [s for s in self.watchlist if s not in self.opening_candles]
+                fallback_ltps = {}
+                if missing:
+                    need_fetch = [s for s in missing if not get_ltp_fn(s)]
+                    if need_fetch:
+                        from ..fyers_client import get_live_ltp_batch
+                        try:
+                            fallback_ltps = get_live_ltp_batch(need_fetch)
+                            print(f"[algo1] test mode: fetched {len(fallback_ltps)}/{len(need_fetch)} missing LTPs via Quotes API")
+                        except Exception as exc:
+                            print(f"[algo1] test mode: Quotes API fallback failed: {exc}")
+
                 ltp_filled = 0
-                for symbol in self.watchlist:
-                    if symbol in self.opening_candles:
-                        continue
-                    ltp = get_ltp_fn(symbol)
+                for symbol in missing:
+                    ltp = get_ltp_fn(symbol) or fallback_ltps.get(symbol)
                     if not ltp:
                         continue
                     # Create a flat candle from current LTP (open=high=low=close=ltp)
