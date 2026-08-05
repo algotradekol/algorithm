@@ -41,6 +41,12 @@ _engine_lock = threading.Lock()
 _feed_retry_schedules: set[tuple[datetime.date, str]] = set()
 _feed_watchdog_started = False
 _feed_watchdog_last_restart_at = 0.0
+# Reconnect backoff to avoid Fyers 429 (websocket handshake rate limit).
+# Fyers WS gives ~5 handshakes/min per client. Grows on each restart, resets
+# when a first tick actually arrives. Capped so we always try again eventually.
+_feed_reconnect_backoff_seconds = 60.0
+_FEED_RECONNECT_BACKOFF_MIN = 60.0
+_FEED_RECONNECT_BACKOFF_MAX = 900.0  # 15 minutes cap
 _engine_status = {
     "state": "new",
     "error": None,
@@ -66,10 +72,13 @@ def _utc_now() -> str:
 
 
 def _on_live_feed_status(status: dict):
-    global _live_feed_started
+    global _live_feed_started, _feed_reconnect_backoff_seconds
 
     connected = bool(status.get("connected"))
     error = status.get("error")
+    error_text = str(error or "").lower()
+    is_rate_limited = "429" in error_text or "too many requests" in error_text
+
     with _engine_lock:
         update = {
             "fyers_ws_connected": connected,
@@ -82,6 +91,20 @@ def _on_live_feed_status(status: dict):
         if status.get("first_tick_received") and not _engine_status.get("fyers_ws_first_tick_at"):
             update["fyers_ws_first_tick_at"] = _utc_now()
         _engine_status.update(update)
+
+    # A confirmed first tick means the current handshake was accepted by Fyers.
+    # Reset the exponential backoff so a real disconnect later isn't punished.
+    if status.get("first_tick_received"):
+        _feed_reconnect_backoff_seconds = _FEED_RECONNECT_BACKOFF_MIN
+
+    # 429 = we're hammering Fyers. Jump straight to the cap so the SDK's own
+    # reconnect=True does not immediately try again on top of our watchdog.
+    if is_rate_limited:
+        _feed_reconnect_backoff_seconds = _FEED_RECONNECT_BACKOFF_MAX
+        print(
+            f"[engine] Fyers WS 429 rate-limited; suppressing reconnects for "
+            f"{int(_FEED_RECONNECT_BACKOFF_MAX)}s"
+        )
 
     if not connected:
         with _live_feed_lock:
@@ -219,8 +242,16 @@ def _scheduler_loop():
                 last_tick_at = _engine_status.get("last_tick_at") or ""
                 if not last_tick_at.startswith(today.isoformat()):
                     _feed_retry_schedules.add(retry_key)
-                    print(f"[engine] no market tick at {scan_time}; restarting Fyers live feed once before scheduled scan")
-                    restart_live_feed(reason=f"scheduled_{scan_time}_no_first_tick")
+                    since_last = time.time() - _feed_watchdog_last_restart_at
+                    if since_last >= _feed_reconnect_backoff_seconds:
+                        print(f"[engine] no market tick at {scan_time}; restarting Fyers live feed once before scheduled scan")
+                        restart_live_feed(reason=f"scheduled_{scan_time}_no_first_tick")
+                    else:
+                        wait_left = int(_feed_reconnect_backoff_seconds - since_last)
+                        print(
+                            f"[engine] no market tick at {scan_time}; suppressing restart "
+                            f"({wait_left}s of Fyers rate-limit backoff remaining)"
+                        )
 
         # Each opening strategy can opt into a one-off test schedule without
         # changing the production 09:15/09:16 defaults for the other strategy.
@@ -381,9 +412,10 @@ def _live_feed_watchdog_loop():
 
     A websocket connection flag only means a socket was requested. The opening
     strategies need actual ticks to build their candle, so reconnect a stale
-    stream during NSE hours with a cooldown to avoid duplicate SDK sessions.
+    stream during NSE hours with an exponential backoff so we don't trigger
+    Fyers' 429 rate limit on the WS handshake.
     """
-    global _feed_watchdog_last_restart_at
+    global _feed_watchdog_last_restart_at, _feed_reconnect_backoff_seconds
 
     while True:
         try:
@@ -401,9 +433,24 @@ def _live_feed_watchdog_loop():
             market_open_at = now.replace(hour=9, minute=15, second=0, microsecond=0)
             opening_grace_elapsed = (now - market_open_at).total_seconds() >= 60
 
-            if market_open and opening_grace_elapsed and get_stored_access_token() and not tick_is_fresh and stale_seconds >= 60:
+            if (
+                market_open
+                and opening_grace_elapsed
+                and get_stored_access_token()
+                and not tick_is_fresh
+                and stale_seconds >= _feed_reconnect_backoff_seconds
+            ):
+                # Consume the backoff, then double it (capped) so repeated
+                # failures push us further apart instead of hammering Fyers.
                 _feed_watchdog_last_restart_at = time.time()
-                print("[engine] Fyers market tick is missing or stale; restarting live feed watchdog")
+                previous = _feed_reconnect_backoff_seconds
+                _feed_reconnect_backoff_seconds = min(
+                    _FEED_RECONNECT_BACKOFF_MAX, previous * 2
+                )
+                print(
+                    f"[engine] Fyers tick missing/stale; restarting live feed "
+                    f"(next backoff = {int(_feed_reconnect_backoff_seconds)}s)"
+                )
                 restart_live_feed(reason="watchdog_stale_or_missing_tick")
         except Exception as exc:
             print(f"[engine] live-feed watchdog error: {exc}")
@@ -478,7 +525,17 @@ def start_live_feed_if_ready(force: bool = False) -> bool:
         return True
 
 
-def restart_live_feed(reason: str = "manual") -> bool:
+def restart_live_feed(reason: str = "manual", ignore_backoff: bool = False) -> bool:
+    """Restart the Fyers WS. Respects the reconnect backoff unless the caller
+    is a human/UI action that opts in via ignore_backoff=True. Automated
+    callers (watchdog, scheduler, token refresh) must respect the cooldown so
+    Fyers does not respond with 429."""
+    if not ignore_backoff:
+        since_last = time.time() - _feed_watchdog_last_restart_at
+        if since_last < _feed_reconnect_backoff_seconds:
+            wait_left = int(_feed_reconnect_backoff_seconds - since_last)
+            print(f"[engine] restart_live_feed skipped ({reason}): {wait_left}s backoff remaining")
+            return False
     print(f"[engine] restarting Fyers live feed ({reason})")
     return start_live_feed_if_ready(force=True)
 
@@ -611,7 +668,9 @@ def try_refresh_access_token(reason: str = "manual_or_startup") -> bool:
                 "last_token_refresh_error": None,
             })
         print(f"[engine] Fyers access token refreshed via refresh token ({reason})")
-        restart_live_feed(reason=f"token_refresh_{reason}")
+        # A brand new token invalidates whatever 429 backoff we were sitting in
+        # (Fyers rate-limits by session, not by token), so let this bypass.
+        restart_live_feed(reason=f"token_refresh_{reason}", ignore_backoff=True)
         return True
     except Exception as exc:
         with _engine_lock:
@@ -666,7 +725,9 @@ def apply_trading_mode(mode: str) -> dict:
     with _engine_lock:
         _engine_status["trading_mode"] = normalized_mode
 
-    restart_live_feed(reason=f"trading_mode_{normalized_mode}")
+    # Mode switch is a human UI action and uses a different token/client_id,
+    # so it must not be silently skipped by any live 429 backoff cooldown.
+    restart_live_feed(reason=f"trading_mode_{normalized_mode}", ignore_backoff=True)
     result = {
         "trading_mode": normalized_mode,
         "message": f"Trading mode switched to {normalized_mode}.",

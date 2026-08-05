@@ -1280,7 +1280,11 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
 
     def on_error(message):
         print("Fyers WS error:", message)
-        report_status(connected=False, error=str(message), message="Fyers websocket error")
+        text = str(message)
+        classified = "Fyers websocket error"
+        if "429" in text or "Too Many Requests" in text:
+            classified = "Fyers WS 429 rate-limited (handshake throttled)"
+        report_status(connected=False, error=text, message=classified)
 
     def on_close(message):
         nonlocal subscription_sent
@@ -1293,7 +1297,10 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
         access_token=f"{get_fyers_config()['client_id']}:{token}",
         log_path="",
         litemode=False,
-        reconnect=True,
+        # SDK auto-reconnect stacks with our watchdog and produces Fyers-side
+        # 429 (Too Many Requests) on the WS handshake. We handle reconnects
+        # ourselves with exponential backoff in engine._live_feed_watchdog_loop.
+        reconnect=False,
         write_to_file=False,
         on_connect=on_open,
         on_message=on_message,

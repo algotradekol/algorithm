@@ -418,7 +418,9 @@ def fyers_callback(auth_code: str = None, code: str = None, state: str | None = 
     store_broker_tokens(response, mode=callback_mode)
     clear_pending_fyers_login_mode()
     clear_pending_fyers_login_origin()
-    restart_live_feed(reason=f"fyers_oauth_callback:{callback_mode}")
+    # Fresh OAuth-minted token; bypass any live 429 backoff so the new
+    # session starts immediately.
+    restart_live_feed(reason=f"fyers_oauth_callback:{callback_mode}", ignore_backoff=True)
     audit_log("fyers", "oauth callback completed", mode=callback_mode)
     return RedirectResponse(f"{redirect_base}/dashboard?fyers_login=success")
 
