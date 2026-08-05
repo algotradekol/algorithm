@@ -456,11 +456,32 @@ class Algo1OpeningRange(Strategy):
         slots_left = total_cap - trades_so_far
 
         if slots_left > 0:
-            # Fetch history candles for symbols the live feed never delivered.
-            # Scheduled tests use only buffered data; production fetches everything.
-            filled = self._backfill_opening_window_from_history(
-                include_missing=True
-            )
+            if is_test_schedule:
+                # TEST MODE: fill missing symbols using the current live LTP
+                # from the websocket — no history API calls needed.
+                ltp_filled = 0
+                for symbol in self.watchlist:
+                    if symbol in self.opening_candles:
+                        continue
+                    ltp = get_ltp_fn(symbol)
+                    if not ltp:
+                        continue
+                    # Create a flat candle from current LTP (open=high=low=close=ltp)
+                    self.opening_candles[symbol] = [{
+                        "time": datetime.datetime.now().replace(second=0, microsecond=0),
+                        "open": ltp, "high": ltp, "low": ltp,
+                        "close": ltp, "volume": 0.0,
+                    }]
+                    self.scan_seen_symbols.add(symbol)
+                    ltp_filled += 1
+                print(f"[algo1] test mode: filled {ltp_filled} missing symbols from live LTP")
+                filled = ltp_filled
+            else:
+                # PRODUCTION MODE: fetch actual 9:15 OHLC from Fyers history API.
+                filled = self._backfill_opening_window_from_history(
+                    include_missing=True
+                )
+
             if filled or not phase1_qualified:
                 # Rebuild candidates now that history data is in.
                 self._build_candidates_from_collection()
