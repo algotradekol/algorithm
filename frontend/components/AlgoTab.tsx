@@ -81,7 +81,7 @@ export default function AlgoTab({
 
   const loadData = useCallback(async () => {
     const requestId = ++dataRequestId.current;
-    log(`📡 polling ${algoId} (req#${requestId})`);
+    // Polling logs removed - see backend debug report instead
     const [summaryResult, positionsResult, tradesResult, scanResult, feedResult] = await Promise.allSettled([
       api.summary(algoId), api.positions(algoId), api.trades(algoId), api.scanResults(algoId),
       algoId === 'algo3' ? api.feedStatus(algoId) : Promise.resolve(null),
@@ -121,7 +121,7 @@ export default function AlgoTab({
       const status = scan?.scan_status ?? scan?.status ?? 'unknown';
       const count = Array.isArray(scan?.rows) ? scan.rows.length : (scan?.total_symbols ?? '?');
       const phase = scan?.phase ?? '';
-      log(`🔍 scan: status=${status} rows=${count} phase=${phase}`, scan);
+      // Scan logs removed - see backend debug report instead
       setScanResults(scan);
     } else {
       logErr(`scanResults failed:`, (scanResult as PromiseRejectedResult).reason);
@@ -221,7 +221,7 @@ export default function AlgoTab({
 
   useEffect(() => {
     let cancelled = false;
-    log(`🚀 AlgoTab mounted for ${algoId} — starting ${FALLBACK_POLL_MS/1000}s polling`);
+    // Mount logs removed - see backend debug report instead
     loadData();
     const interval = setInterval(() => {
       if (!document.hidden && !cancelled) {
@@ -297,7 +297,7 @@ export default function AlgoTab({
 
   const handleWsMessage = useCallback((message: any) => {
     if (message.event === 'price_update') {
-      log(`💹 WS tick: ${message.symbol} ltp=${message.ltp}`);
+      // WS tick logs removed - too noisy
       setPositions((current) => current.map((position) => (
         position.symbol === message.symbol ? {
           ...position,
