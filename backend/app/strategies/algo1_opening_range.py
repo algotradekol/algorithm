@@ -40,7 +40,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from .base import Strategy
 from ..broker_factory import create_broker
-from ..fyers_client import get_previous_close, get_intraday_candles_for_range, get_single_minute_candle, get_live_ltp_batch
+from ..fyers_client import get_previous_close, get_intraday_candles_for_range, get_single_minute_candle, get_live_ltp_batch, get_live_quotes_batch
 from ..fyers_auth import get_stored_access_token
 from ..candidate_ranking import build_sector_breakdown
 from ..candidate_selection import execute_candidates_first_come
@@ -114,62 +114,45 @@ class ScanDebugLogger:
         self.stage_data["selected_trade"]["count"] += 1
         self.stage_data["selected_trade"]["symbols"][side.lower()].append(symbol)
 
-    def print_report(self):
-        """Print formatted debug report showing exactly where symbols failed."""
-        print("\n" + "="*80)
-        print("SCAN DEBUG REPORT - Symbol Progression Analysis")
-        print("="*80)
-
+    def one_line_summary(self) -> str:
+        """Single-line funnel: which stage killed the trades."""
         s = self.stage_data
+        candles = s['candles_received']['count']
+        return (
+            f"[algo1] FUNNEL "
+            f"universe={self.total} | "
+            f"candles={candles} (live={s['candles_live']['count']} "
+            f"bf={s['candles_backfilled']['count']} "
+            f"ltp={s['candles_test_ltp']['count']} "
+            f"miss={s['candles_missing']['count']}) | "
+            f"prev_close={s['prev_close_loaded']['count']}/{candles} "
+            f"(miss={s['prev_close_missing']['count']}) | "
+            f"shape_ok={s['shape_passed']['count']} "
+            f"(buy={len(s['shape_passed']['symbols']['buy'])} "
+            f"sell={len(s['shape_passed']['symbols']['sell'])}) | "
+            f"gap_ok={s['gap_passed']['count']} | "
+            f"selected={s['selected_trade']['count']}"
+        )
 
-        print(f"\n📊 STAGE 1: Candle Collection (Total: {self.total})")
-        print(f"  ✓ Received candles: {s['candles_received']['count']}")
-        print(f"    ├─ From live feed: {s['candles_live']['count']}")
-        print(f"    ├─ Backfilled: {s['candles_backfilled']['count']}")
-        print(f"    └─ Test LTP: {s['candles_test_ltp']['count']}")
-        print(f"  ✗ Missing candles: {s['candles_missing']['count']}")
-        if s['candles_missing']['symbols']:
-            print(f"    └─ {', '.join(s['candles_missing']['symbols'][:10])}" +
-                  (f" +{len(s['candles_missing']['symbols'])-10} more" if len(s['candles_missing']['symbols']) > 10 else ""))
+    def diagnose_bottleneck(self) -> str:
+        """One line telling you exactly where the funnel died."""
+        s = self.stage_data
+        if s['candles_received']['count'] == 0:
+            return "NO CANDLES — check Fyers websocket, backfill, and LTP preload"
+        if s['prev_close_loaded']['count'] == 0:
+            return "NO PREV_CLOSE — background loader not done or Fyers history API failing"
+        if s['shape_passed']['count'] == 0:
+            return f"SHAPE FAILED — {s['shape_failed_flat']['count']} flat + {s['shape_failed_neither']['count']} neither open==low nor ==high"
+        if s['gap_passed']['count'] == 0:
+            return f"GAP FAILED — all {s['shape_passed']['count']} symbols had gap > {GAP_LIMIT_PCT}%"
+        if s['selected_trade']['count'] == 0:
+            return f"NO ENTRIES — {s['gap_passed']['count']} qualified but broker.open_trade never succeeded (check entry_failures)"
+        return f"OK — {s['selected_trade']['count']} trades placed"
 
-        print(f"\n📊 STAGE 2: Previous Close Loading")
-        print(f"  ✓ Have prev_close: {s['prev_close_loaded']['count']}")
-        print(f"  ✗ Missing prev_close: {s['prev_close_missing']['count']}")
-        if s['prev_close_missing']['symbols']:
-            print(f"    └─ {', '.join(s['prev_close_missing']['symbols'][:10])}" +
-                  (f" +{len(s['prev_close_missing']['symbols'])-10} more" if len(s['prev_close_missing']['symbols']) > 10 else ""))
-
-        can_evaluate = s['candles_received']['count']
-        print(f"\n📊 STAGE 3: Shape Check (open == low/high?)")
-        print(f"  Base: {can_evaluate} symbols with both candle + prev_close")
-        print(f"  ✓ Passed: {s['shape_passed']['count']}")
-        print(f"    ├─ BUY (open==low): {len(s['shape_passed']['symbols']['buy'])}")
-        print(f"    └─ SELL (open==high): {len(s['shape_passed']['symbols']['sell'])}")
-        print(f"  ✗ Failed: {s['shape_failed_flat']['count'] + s['shape_failed_neither']['count']}")
-        print(f"    ├─ Flat candle (resolved by gap): {s['shape_failed_flat']['count']}")
-        print(f"    └─ Neither open==low nor ==high: {s['shape_failed_neither']['count']}")
-
-        print(f"\n📊 STAGE 4: Gap Filter (<= {GAP_LIMIT_PCT}%)")
-        print(f"  Base: {s['shape_passed']['count']} symbols with valid shape")
-        print(f"  ✓ Passed gap filter: {s['gap_passed']['count']}")
-        print(f"    ├─ BUY: {len(s['gap_passed']['symbols']['buy'])}")
-        print(f"    └─ SELL: {len(s['gap_passed']['symbols']['sell'])}")
-        print(f"  ✗ Failed gap filter: {s['gap_failed']['count']}")
-
-        print(f"\n📊 STAGE 5: Trade Selection")
-        print(f"  Base: {s['gap_passed']['count']} qualified candidates")
-        print(f"  ✓ Selected for trade: {s['selected_trade']['count']}")
-        print(f"    ├─ BUY: {len(s['selected_trade']['symbols']['buy'])}")
-        print(f"    └─ SELL: {len(s['selected_trade']['symbols']['sell'])}")
-        print(f"  ✗ Not selected (slots full): {s['gap_passed']['count'] - s['selected_trade']['count']}")
-
-        print(f"\n📈 FUNNEL EFFICIENCY")
-        print(f"  Candles → Shape: {s['shape_passed']['count']}/{s['candles_received']['count']} ({100*s['shape_passed']['count']/max(1,s['candles_received']['count']):.1f}%)")
-        print(f"  Shape → Gap: {s['gap_passed']['count']}/{s['shape_passed']['count']} ({100*s['gap_passed']['count']/max(1,s['shape_passed']['count']):.1f}%)")
-        print(f"  Gap → Selected: {s['selected_trade']['count']}/{s['gap_passed']['count']} ({100*s['selected_trade']['count']/max(1,s['gap_passed']['count']):.1f}%)")
-        print(f"  Overall: {s['selected_trade']['count']}/{self.total} ({100*s['selected_trade']['count']/max(1,self.total):.1f}%)")
-
-        print("="*80 + "\n")
+    def print_report(self):
+        """Compact one-liner + bottleneck diagnosis. Was 40 lines, now 2."""
+        print(self.one_line_summary())
+        print(f"[algo1] BOTTLENECK: {self.diagnose_bottleneck()}")
 
 
 class Algo1OpeningRange(Strategy):
@@ -547,8 +530,6 @@ class Algo1OpeningRange(Strategy):
                     filled += 1
                 else:
                     self.debug_logger.add_candle_missing(symbol)
-        if filled > 0:
-            print(f"✓ Backfill: {filled}/{len(symbols_to_verify)} symbols")
         return filled
 
     def _prefetch_missing_ltps(self, candidates: list[dict], get_ltp_fn) -> dict[str, float]:
@@ -558,11 +539,6 @@ class Algo1OpeningRange(Strategy):
             return {}
         try:
             result = get_live_ltp_batch(missing)
-            if result:
-                print(
-                    f"[algo1] fetched fallback LTP for "
-                    f"{len(result)}/{len(missing)} symbols via quotes API"
-                )
             return result
         except Exception as exc:
             print(f"[algo1] quotes-API LTP fallback failed: {exc}")
@@ -671,21 +647,50 @@ class Algo1OpeningRange(Strategy):
         if slots_left > 0:
             if is_test_schedule:
                 # TEST MODE: fill missing symbols using the current live LTP
-                # from the websocket, preload cache, or Quotes API.
+                # from the websocket, preload cache, or Quotes API. Also pull
+                # prev_close from the same Quotes call so the shape/gap check
+                # can actually run — background history preload frequently is
+                # not done when a test scan fires seconds after startup.
                 missing = [s for s in self.watchlist if s not in self.opening_candles]
-                fallback_ltps = {}
+                fallback_ltps: dict[str, float] = {}
+                fallback_prev_close: dict[str, float] = {}
                 if missing:
-                    # Try to get LTPs from: live feed (get_ltp_fn), preload cache, or Quotes API
                     need_fetch = [
                         s for s in missing
                         if not get_ltp_fn(s) and s not in self.preloaded_ltps
                     ]
                     if need_fetch:
-                        from ..fyers_client import get_live_ltp_batch
                         try:
-                            fallback_ltps = get_live_ltp_batch(need_fetch)
+                            quotes = get_live_quotes_batch(need_fetch)
+                            for sym, data in quotes.items():
+                                if "ltp" in data:
+                                    fallback_ltps[sym] = data["ltp"]
+                                if "prev_close" in data:
+                                    fallback_prev_close[sym] = data["prev_close"]
                         except Exception as exc:
                             print(f"[algo1] test mode: Quotes API fallback failed: {exc}")
+
+                # Also pull prev_close for symbols we already have LTP for but
+                # no prev_close in memory yet (background loader still running).
+                need_pc = [
+                    s for s in self.watchlist
+                    if s not in self.prev_close and s not in fallback_prev_close
+                    and (get_ltp_fn(s) or self.preloaded_ltps.get(s) or fallback_ltps.get(s))
+                ]
+                if need_pc:
+                    try:
+                        pc_quotes = get_live_quotes_batch(need_pc)
+                        for sym, data in pc_quotes.items():
+                            if "prev_close" in data:
+                                fallback_prev_close[sym] = data["prev_close"]
+                    except Exception as exc:
+                        print(f"[algo1] test mode: prev_close top-up failed: {exc}")
+
+                # Merge inline-fetched prev_close into self.prev_close so
+                # _build_candidates_from_collection can use them.
+                for sym, pc in fallback_prev_close.items():
+                    if pc and sym not in self.prev_close:
+                        self.prev_close[sym] = pc
 
                 ltp_filled = 0
                 for symbol in missing:
@@ -706,8 +711,6 @@ class Algo1OpeningRange(Strategy):
                         # Mark that this symbol was seen but has no LTP data
                         self.scan_seen_symbols.add(symbol)
                         self.debug_logger.add_candle_missing(symbol)
-                if ltp_filled > 0:
-                    print(f"✓ Test mode: {ltp_filled}/{len(missing)} symbols from LTP")
                 filled = ltp_filled
             else:
                 # PRODUCTION MODE: fetch actual 9:15 OHLC from Fyers history API.
@@ -752,19 +755,18 @@ class Algo1OpeningRange(Strategy):
         buys_selected = [s for s, side in self.selected_sides.items() if side == "BUY"]
         sells_selected = [s for s, side in self.selected_sides.items() if side == "SELL"]
 
-        # Print structured debug report
         self.debug_logger.print_report()
-
-        # Print concise summary for quick problem identification
-        print("\n" + "="*80)
-        print(f"[{self.algo_id}] SUMMARY: {len(self.selected_symbols)} trades | "
-              f"{len(self.buy_candidates)} BUY | {len(self.sell_candidates)} SELL")
+        failures_summary = ""
         if self.entry_failures:
-            failures = defaultdict(int)
+            fails: dict = defaultdict(int)
             for reason in self.entry_failures.values():
-                failures[reason] += 1
-            print(f"[{self.algo_id}] ENTRY FAILURES: {dict(failures)}")
-        print("="*80 + "\n")
+                fails[reason] += 1
+            failures_summary = f" | failures={dict(fails)}"
+        print(
+            f"[{self.algo_id}] RESULT: {len(self.selected_symbols)} trades "
+            f"({sum(1 for s in self.selected_sides.values() if s=='BUY')} BUY, "
+            f"{sum(1 for s in self.selected_sides.values() if s=='SELL')} SELL){failures_summary}"
+        )
 
         self._record_scan_results(buys_selected, sells_selected, planned_symbols=all_attempted)
         return True
@@ -921,7 +923,23 @@ class Algo1OpeningRange(Strategy):
         }
         from ..engine import SCAN_RESULTS
         from ..broadcaster import broadcast_sync
+        # Dedupe: skip re-broadcasting an unchanged "incomplete" retry so the
+        # frontend does not re-render every 5s while we wait for candles/prev_close.
+        prev = SCAN_RESULTS.get(self.algo_id) or {}
         SCAN_RESULTS[self.algo_id] = result
+        if scan_status == "incomplete" and prev.get("scan_status") == "incomplete":
+            def _funnel_key(r: dict) -> tuple:
+                return (
+                    r.get("scan_status"),
+                    r.get("buy_candidates"),
+                    r.get("sell_candidates"),
+                    r.get("buy_selected"),
+                    r.get("sell_selected"),
+                    sum(1 for row in (r.get("passed_opening_range") or []) if row.get("candle_received")),
+                    sum(1 for row in (r.get("passed_opening_range") or []) if row.get("prev_close")),
+                )
+            if _funnel_key(prev) == _funnel_key(result):
+                return
         broadcast_sync({"event": "scan_complete", "algo_id": self.algo_id, "results": result})
 
     def check_exits(self):

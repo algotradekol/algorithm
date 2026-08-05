@@ -297,6 +297,64 @@ def get_live_ltp_batch(symbols: list[str], mode: str | None = None) -> dict[str,
     return result
 
 
+def get_live_quotes_batch(symbols: list[str], mode: str | None = None) -> dict[str, dict]:
+    """Fetch LTP + previous close in one Fyers quotes call. Same API as
+    get_live_ltp_batch but returns {sym: {"ltp": x, "prev_close": y}} — used
+    as a fast inline fallback when the background prev-close preload has not
+    finished (typical in test-mode where the scan fires seconds after startup).
+    """
+    if not symbols:
+        return {}
+    try:
+        fyers = get_fyers_model(mode, use_proxy=False)
+    except Exception:
+        return {}
+
+    result: dict[str, dict] = {}
+    BATCH_SIZE = 50
+    for i in range(0, len(symbols), BATCH_SIZE):
+        batch = symbols[i: i + BATCH_SIZE]
+        try:
+            response = fyers.quotes({"symbols": ",".join(batch)})
+            rows = []
+            if isinstance(response, dict):
+                rows = response.get("d") or response.get("data") or []
+            elif isinstance(response, list):
+                rows = response
+            for row in rows:
+                if not isinstance(row, dict):
+                    continue
+                inner = row.get("v") or row
+                sym = str(inner.get("symbol") or row.get("symbol") or "").upper()
+                if not sym:
+                    continue
+                entry: dict = {}
+                ltp_raw = (
+                    inner.get("lp") or inner.get("ltp")
+                    or inner.get("last_price") or inner.get("close_price")
+                )
+                if ltp_raw is not None:
+                    try:
+                        entry["ltp"] = float(ltp_raw)
+                    except (TypeError, ValueError):
+                        pass
+                pc_raw = (
+                    inner.get("prev_close_price")
+                    or inner.get("prev_close")
+                    or inner.get("previous_close")
+                )
+                if pc_raw is not None:
+                    try:
+                        entry["prev_close"] = float(pc_raw)
+                    except (TypeError, ValueError):
+                        pass
+                if entry:
+                    result[sym] = entry
+        except Exception as exc:
+            print(f"[fyers_client] batch quotes+pc failed for chunk {i//BATCH_SIZE}: {exc}")
+    return result
+
+
 def get_previous_close(symbol: str) -> float | None:
     """Previous trading day's closing price, needed by Algo 1's gap check."""
     fyers = get_fyers_model(use_proxy=False)

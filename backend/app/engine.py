@@ -194,6 +194,8 @@ def _scheduler_loop():
     entries_fired_date: dict[str, datetime.date] = {}
     entries_fired_schedule: dict[str, tuple[bool, str]] = {}
     test_schedule_attempt_minute: dict[str, tuple[datetime.date, str]] = {}
+    # Dedupe noisy per-poll status prints so retry cycles do not spam the console.
+    last_pending_msg: dict[str, str] = {}
     squareoff_fired_date = None
     token_refresh_fired_date = None
     global _feed_retry_schedules
@@ -294,10 +296,13 @@ def _scheduler_loop():
                             )
                         else:
                             pending.append(strategy.algo_id)
-                            print(
-                                f"[engine] scheduled test pending for {strategy.algo_id}; "
-                                "the configured candle or previous-close data is not ready"
-                            )
+                            pending_msg = f"pending:{strategy.algo_id}:test"
+                            if last_pending_msg.get(strategy.algo_id) != pending_msg:
+                                last_pending_msg[strategy.algo_id] = pending_msg
+                                print(
+                                    f"[engine] scheduled test pending for {strategy.algo_id}; "
+                                    "waiting for candle or previous-close data (silent until resolved)"
+                                )
                     else:
                         entries_fired_date[strategy.algo_id] = today
                         entries_fired_schedule[strategy.algo_id] = schedule
@@ -326,10 +331,13 @@ def _scheduler_loop():
                     continue
                 if completed is False:
                     pending.append(strategy.algo_id)
-                    print(
-                        f"[engine][{now.strftime('%H:%M:%S')} IST] evaluate_entries returned False for "
-                        f"{strategy.algo_id} — will retry next scheduler tick"
-                    )
+                    pending_msg = f"pending:{strategy.algo_id}:prod"
+                    if last_pending_msg.get(strategy.algo_id) != pending_msg:
+                        last_pending_msg[strategy.algo_id] = pending_msg
+                        print(
+                            f"[engine] evaluate_entries pending for {strategy.algo_id} "
+                            "(silent until resolved)"
+                        )
                 else:
                     entries_fired_date[strategy.algo_id] = today
                     entries_fired_schedule[strategy.algo_id] = schedule
@@ -345,8 +353,9 @@ def _scheduler_loop():
                     f"[engine][{now.strftime('%H:%M:%S')} IST] entry window elapsed for {strategy.algo_id}; "
                     "no late entries placed"
                 )
-        if pending:
-            print(f"[engine] opening scan waiting for complete market data: {', '.join(pending)}")
+        # Individual pending prints above are already deduped; the aggregate
+        # line was the loudest source of 5-second console spam. Drop it.
+        _ = pending
         if completed_any:
             try:
                 from .calendar_store import save_dashboard_snapshot
