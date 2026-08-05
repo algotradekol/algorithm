@@ -88,7 +88,12 @@ class LiveBroker(PaperBroker):
         super().close_trade(position, actual_exit_price, exit_reason, exit_time=actual_exit_time)
 
     def _place_live_order(self, symbol: str, side: str, qty: int) -> dict:
-        fyers = get_fyers_model()
+        # GCP proxy is unreachable from Railway (silent SYN drop at GCP edge —
+        # confirmed via traceroute/connect-timeout). Fall back to a direct
+        # connection. This only works if the Fyers Live app does NOT have IP
+        # whitelisting enabled; if it does, orders will come back with an
+        # IP-related error and we'll need to fix the proxy path instead.
+        fyers = get_fyers_model(use_proxy=False)
         # Fyers V3 place_order rejects with code -99 "Bad request" if any of
         # limitPrice / stopPrice / stopLoss / takeProfit are missing, even for
         # market orders where the value must be 0. isSliceOrder is not a real
