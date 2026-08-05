@@ -174,10 +174,14 @@ class Algo1OpeningRange(Strategy):
 
     def entry_window(self, current_time: str) -> bool:
         entry = self._schedule_time(1)
-        return entry <= current_time < (datetime.datetime.strptime(entry, "%H:%M") + datetime.timedelta(minutes=1)).strftime("%H:%M")
+        # Keep the window open for 3 minutes so the history backfill (fetching
+        # 400+ symbols from Fyers intraday API) has time to complete before we
+        # give up. evaluate_entries() is idempotent — calling it multiple times
+        # is safe because entries_evaluated_today guards against double-entry.
+        return entry <= current_time < (datetime.datetime.strptime(entry, "%H:%M") + datetime.timedelta(minutes=3)).strftime("%H:%M")
 
     def entry_window_elapsed(self, current_time: str) -> bool:
-        deadline = self._schedule_time(2)
+        deadline = self._schedule_time(4)
         return current_time >= deadline
 
     def schedule_status(self, now: datetime.datetime) -> dict:
