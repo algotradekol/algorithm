@@ -547,6 +547,8 @@ class Algo1OpeningRange(Strategy):
                     filled += 1
                 else:
                     self.debug_logger.add_candle_missing(symbol)
+        if filled > 0:
+            print(f"✓ Backfill: {filled}/{len(symbols_to_verify)} symbols")
         return filled
 
     def _prefetch_missing_ltps(self, candidates: list[dict], get_ltp_fn) -> dict[str, float]:
@@ -704,6 +706,8 @@ class Algo1OpeningRange(Strategy):
                         # Mark that this symbol was seen but has no LTP data
                         self.scan_seen_symbols.add(symbol)
                         self.debug_logger.add_candle_missing(symbol)
+                if ltp_filled > 0:
+                    print(f"✓ Test mode: {ltp_filled}/{len(missing)} symbols from LTP")
                 filled = ltp_filled
             else:
                 # PRODUCTION MODE: fetch actual 9:15 OHLC from Fyers history API.
@@ -750,6 +754,17 @@ class Algo1OpeningRange(Strategy):
 
         # Print structured debug report
         self.debug_logger.print_report()
+
+        # Print concise summary for quick problem identification
+        print("\n" + "="*80)
+        print(f"[{self.algo_id}] SUMMARY: {len(self.selected_symbols)} trades | "
+              f"{len(self.buy_candidates)} BUY | {len(self.sell_candidates)} SELL")
+        if self.entry_failures:
+            failures = defaultdict(int)
+            for reason in self.entry_failures.values():
+                failures[reason] += 1
+            print(f"[{self.algo_id}] ENTRY FAILURES: {dict(failures)}")
+        print("="*80 + "\n")
 
         self._record_scan_results(buys_selected, sells_selected, planned_symbols=all_attempted)
         return True
