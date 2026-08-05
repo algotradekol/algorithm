@@ -555,6 +555,16 @@ class Algo1OpeningRange(Strategy):
                         f"{len(self.selected_symbols)} total trade(s) placed"
                     )
 
+        # Final rebuild for reporting: the previous-close background loader
+        # and the live feed keep delivering data throughout the (sometimes
+        # slow, e.g. when live order placement stalls) entry evaluation above.
+        # Without this, any symbol whose candle/prev_close arrived after the
+        # last rebuild but before we report would show as
+        # "candidate_not_evaluated" even though it now has everything needed
+        # for a real shape/gap verdict. This is a pure local recompute over
+        # data already fetched — no network calls, no effect on trades placed.
+        self._build_candidates_from_collection()
+
         if not self._opening_data_ready():
             self._record_scan_results([], [], scan_status="incomplete", scan_message=self._opening_data_message())
             return False
