@@ -15,6 +15,7 @@ import sys
 import base64
 import datetime
 import hashlib
+import time
 import requests
 
 from .audit_log import audit_log
@@ -86,7 +87,13 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
         exchange_transport="direct",
     )
     last_error: str | None = None
-    for app_id_hash in _candidate_app_id_hashes(mode):
+    candidates = _candidate_app_id_hashes(mode)
+    for index, app_id_hash in enumerate(candidates):
+        # Cloudflare fronts the Fyers auth API and blocks bursts of requests
+        # from the same IP. Space attempts out so a fallback retry isn't
+        # immediately 429'd for looking like a bot.
+        if index > 0:
+            time.sleep(2.0)
         audit_log(
             "fyers",
             "auth-code exchange attempt",
@@ -122,9 +129,10 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
             continue
         try:
             data = response.json()
-        except ValueError as exc:
+        except ValueError:
             content_type = response.headers.get("content-type", "unknown")
             last_error = f"non-json response (HTTP {response.status_code}, content-type {content_type})"
+            body_snippet = response.text[:500]
             audit_log(
                 "fyers",
                 "auth-code exchange returned non-json response",
@@ -134,8 +142,18 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
                 app_id_hash_prefix=app_id_hash[:12],
                 status_code=response.status_code,
                 content_type=content_type,
-                body=response.text[:500],
+                body=body_snippet,
             )
+            # Cloudflare 429 (bot detection). Continuing to retry the other
+            # appIdHash candidates makes it worse — every subsequent POST
+            # from the same IP within the rate window will get the same 429.
+            # Bail out early with a specific error so the user knows to wait.
+            if response.status_code == 429 or "cloudflare" in body_snippet.lower() or "ie6 oldie" in body_snippet:
+                raise RuntimeError(
+                    "Fyers auth-code exchange blocked by Cloudflare (HTTP 429). "
+                    "Wait 60 seconds and click Login to Fyers again — retrying "
+                    "the fallback hashes will keep hitting the same block."
+                )
             continue
         if response.ok and data.get("access_token"):
             return data
