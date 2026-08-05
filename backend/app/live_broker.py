@@ -89,16 +89,23 @@ class LiveBroker(PaperBroker):
 
     def _place_live_order(self, symbol: str, side: str, qty: int) -> dict:
         fyers = get_fyers_model()
+        # Fyers V3 place_order rejects with code -99 "Bad request" if any of
+        # limitPrice / stopPrice / stopLoss / takeProfit are missing, even for
+        # market orders where the value must be 0. isSliceOrder is not a real
+        # V3 field and can also trigger the same rejection — drop it.
         payload = {
             "symbol": symbol,
             "qty": int(qty),
-            "type": 2,  # market order
+            "type": 2,               # 1=Limit 2=Market 3=SL 4=SLM
             "side": 1 if side.upper() == "BUY" else -1,
             "productType": "INTRADAY",
+            "limitPrice": 0,
+            "stopPrice": 0,
             "validity": "DAY",
             "disclosedQty": 0,
             "offlineOrder": False,
-            "isSliceOrder": False,
+            "stopLoss": 0,
+            "takeProfit": 0,
         }
         response = fyers.place_order(payload)
         print(f"[live_broker] place_order {symbol} {side} x{qty}: {response}")

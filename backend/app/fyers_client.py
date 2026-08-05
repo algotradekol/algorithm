@@ -62,6 +62,27 @@ BROKER_ORDERS_CACHE_TTL_SECONDS = 10
 BROKER_ORDERS_STALE_TTL_SECONDS = 300
 FYERS_FUNDS_CACHE_TTL_SECONDS = 20
 FYERS_FUNDS_STALE_TTL_SECONDS = 300
+# After Fyers rate-limits us (HTTP 429 / "code 429"), block every REST call
+# for this many seconds so a polling frontend does not amplify the throttle
+# into a self-sustaining storm.
+FYERS_REST_RATE_LIMIT_COOLDOWN_SECONDS = 60.0
+_fyers_rest_ratelimit_until: dict[str, float] = {}
+
+
+def _is_rate_limited(response_or_exc) -> bool:
+    text = str(response_or_exc).lower()
+    return "429" in text or "too many requests" in text or "rate limit" in text
+
+
+def _mark_rest_rate_limited(mode: str) -> None:
+    _fyers_rest_ratelimit_until[mode] = time.monotonic() + FYERS_REST_RATE_LIMIT_COOLDOWN_SECONDS
+
+
+def _rest_cooldown_remaining(mode: str) -> float:
+    until = _fyers_rest_ratelimit_until.get(mode, 0.0)
+    return max(0.0, until - time.monotonic())
+
+
 _broker_positions_cache: dict[str, dict] = {}
 _broker_positions_locks = {
     "paper": threading.Lock(),
@@ -584,6 +605,19 @@ def get_wallet_balance(mode: str | None = None) -> dict:
         result.update({"cached": True, "stale": False, "syncing": False})
         return result
 
+    # Fyers rate-limited us recently on any REST endpoint; keep serving stale
+    # cache instead of another request that will also be throttled.
+    cooldown_left = _rest_cooldown_remaining(effective_mode)
+    if cooldown_left > 0 and cached:
+        result = copy.deepcopy(cached["result"])
+        result.update({
+            "cached": True,
+            "stale": True,
+            "syncing": False,
+            "warning": f"FYERS REST cooling down after 429; retrying in {int(cooldown_left)}s.",
+        })
+        return result
+
     lock = _fyers_funds_locks.setdefault(effective_mode, threading.Lock())
     if not lock.acquire(blocking=False):
         if cached and now - cached["cached_at"] <= FYERS_FUNDS_STALE_TTL_SECONDS:
@@ -644,6 +678,8 @@ def get_wallet_balance(mode: str | None = None) -> dict:
         }
         return result
     except Exception as exc:
+        if _is_rate_limited(exc):
+            _mark_rest_rate_limited(effective_mode)
         cached = _fyers_funds_cache.get(effective_mode)
         if cached and time.monotonic() - cached["cached_at"] <= FYERS_FUNDS_STALE_TTL_SECONDS:
             result = copy.deepcopy(cached["result"])
@@ -692,6 +728,19 @@ def get_broker_positions(mode: str | None = None) -> dict:
     if cached and now - cached["cached_at"] <= BROKER_POSITIONS_CACHE_TTL_SECONDS:
         result = copy.deepcopy(cached["result"])
         result.update({"cached": True, "stale": False, "syncing": False})
+        return result
+
+    # Serve stale cache during a live 429 cooldown instead of piling on more
+    # requests that will all be throttled and cause the cache never to update.
+    cooldown_left = _rest_cooldown_remaining(effective_mode)
+    if cooldown_left > 0 and cached:
+        result = copy.deepcopy(cached["result"])
+        result.update({
+            "cached": True,
+            "stale": True,
+            "syncing": False,
+            "warning": f"FYERS REST cooling down after 429; retrying in {int(cooldown_left)}s.",
+        })
         return result
 
     lock = _broker_positions_locks.setdefault(effective_mode, threading.Lock())
@@ -780,6 +829,8 @@ def get_broker_positions(mode: str | None = None) -> dict:
         )
         return result
     except Exception as exc:
+        if _is_rate_limited(exc):
+            _mark_rest_rate_limited(effective_mode)
         cached = _broker_positions_cache.get(effective_mode)
         if cached and time.monotonic() - cached["cached_at"] <= BROKER_POSITIONS_STALE_TTL_SECONDS:
             result = copy.deepcopy(cached["result"])
