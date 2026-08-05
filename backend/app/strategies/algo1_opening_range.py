@@ -65,6 +65,7 @@ class Algo1OpeningRange(Strategy):
         self.settings = get_settings(self.algo_id)
         self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
         self.prev_close: dict[str, float] = {}
+        self.preloaded_ltps: dict[str, float] = {}
         self.buy_candidates: list[str] = []
         self.sell_candidates: list[str] = []
         self.candidate_details: dict[str, dict] = {}
@@ -81,7 +82,9 @@ class Algo1OpeningRange(Strategy):
         self.entries_evaluated_today = None
         self._previous_close_load_lock = threading.Lock()
         self._previous_close_loading = False
-        # Load previous closes in background to avoid blocking startup
+        self._ltp_load_lock = threading.Lock()
+        self._ltp_loading = False
+        # Load previous closes and LTPs in background to avoid blocking startup
         self.refresh_market_data()
 
     def reload_settings(self):
@@ -146,13 +149,42 @@ class Algo1OpeningRange(Strategy):
             with self._previous_close_load_lock:
                 self._previous_close_loading = False
 
+    def _load_ltps_background(self):
+        """Preload live LTPs in a background thread to avoid blocking initialization."""
+        try:
+            if not get_stored_access_token():
+                print("[algo1] no Fyers access token yet, skipping LTP preload")
+                return
+            batch_size = 100
+            for i in range(0, len(self.watchlist), batch_size):
+                batch = self.watchlist[i:i+batch_size]
+                try:
+                    result = get_live_ltp_batch(batch)
+                    if result:
+                        self.preloaded_ltps.update(result)
+                except Exception as e:
+                    print(f"[algo1] couldn't fetch LTP batch {i//batch_size + 1}: {e}")
+            print(f"[algo1] LTPs loaded for {len(self.preloaded_ltps)}/{len(self.watchlist)} symbols")
+        except Exception as e:
+            print(f"[algo1] error in LTP preload: {e}")
+        finally:
+            with self._ltp_load_lock:
+                self._ltp_loading = False
+
     def refresh_market_data(self):
         """Retry preloading after a manual Fyers OAuth login supplies a token."""
         with self._previous_close_load_lock:
             if self._previous_close_loading or len(self.prev_close) >= len(self.watchlist):
-                return
-            self._previous_close_loading = True
-        threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
+                pass
+            else:
+                self._previous_close_loading = True
+                threading.Thread(target=self._load_previous_closes_background, daemon=True).start()
+        with self._ltp_load_lock:
+            if self._ltp_loading or len(self.preloaded_ltps) >= len(self.watchlist):
+                pass
+            else:
+                self._ltp_loading = True
+                threading.Thread(target=self._load_ltps_background, daemon=True).start()
 
     def set_previous_close(self, symbol: str, previous_close: float):
         """Use the broker's live previous-close field when the feed provides it."""
@@ -499,11 +531,15 @@ class Algo1OpeningRange(Strategy):
         if slots_left > 0:
             if is_test_schedule:
                 # TEST MODE: fill missing symbols using the current live LTP
-                # from the websocket + Quotes API — no history API calls needed.
+                # from the websocket, preload cache, or Quotes API.
                 missing = [s for s in self.watchlist if s not in self.opening_candles]
                 fallback_ltps = {}
                 if missing:
-                    need_fetch = [s for s in missing if not get_ltp_fn(s)]
+                    # Try to get LTPs from: live feed (get_ltp_fn), preload cache, or Quotes API
+                    need_fetch = [
+                        s for s in missing
+                        if not get_ltp_fn(s) and s not in self.preloaded_ltps
+                    ]
                     if need_fetch:
                         from ..fyers_client import get_live_ltp_batch
                         try:
@@ -514,18 +550,20 @@ class Algo1OpeningRange(Strategy):
 
                 ltp_filled = 0
                 for symbol in missing:
-                    ltp = get_ltp_fn(symbol) or fallback_ltps.get(symbol)
-                    if not ltp:
-                        continue
-                    # Create a flat candle from current LTP (open=high=low=close=ltp)
-                    self.opening_candles[symbol] = [{
-                        "time": datetime.datetime.now().replace(second=0, microsecond=0),
-                        "open": ltp, "high": ltp, "low": ltp,
-                        "close": ltp, "volume": 0.0,
-                    }]
-                    self.scan_seen_symbols.add(symbol)
-                    ltp_filled += 1
-                print(f"[algo1] test mode: filled {ltp_filled} missing symbols from live LTP + Quotes API")
+                    ltp = get_ltp_fn(symbol) or self.preloaded_ltps.get(symbol) or fallback_ltps.get(symbol)
+                    if ltp:
+                        # Create a flat candle from current LTP (open=high=low=close=ltp)
+                        self.opening_candles[symbol] = [{
+                            "time": datetime.datetime.now().replace(second=0, microsecond=0),
+                            "open": ltp, "high": ltp, "low": ltp,
+                            "close": ltp, "volume": 0.0,
+                        }]
+                        self.scan_seen_symbols.add(symbol)
+                        ltp_filled += 1
+                    else:
+                        # Mark that this symbol was seen but has no LTP data
+                        self.scan_seen_symbols.add(symbol)
+                print(f"[algo1] test mode: filled {ltp_filled}/{len(missing)} missing symbols from live/preload/Quotes API")
                 filled = ltp_filled
             else:
                 # PRODUCTION MODE: fetch actual 9:15 OHLC from Fyers history API.
