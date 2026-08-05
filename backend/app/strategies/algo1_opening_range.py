@@ -509,7 +509,9 @@ class Algo1OpeningRange(Strategy):
             for symbol in self.scan_seen_symbols & self.prev_close_ready_symbols
             if (
                 symbol in self.history_verified_opening_symbols
-                or not self._opening_candle_needs_history(symbol)
+                # A flat single-tick candle from the live feed is still a real
+                # data point — count it so the scan is never permanently stuck.
+                or symbol in self.opening_candles
             )
         })
 
@@ -531,15 +533,10 @@ class Algo1OpeningRange(Strategy):
     def mark_opening_scan_failed(self, error: str):
         """Expose a scheduler exception in the scan panel without placing trades."""
         self.entries_evaluated_today = datetime.date.today()
-        details = self.candidate_details.get(symbol, {})
-        open_price = details.get("open")
-        prev_close = details.get("prev_close")
-        gap_pct = details.get("gap_pct")
-        candle_shape = "open = low" if side == "BUY" else "open = high"
-        gap_text = f"{float(gap_pct):.2f}%" if gap_pct is not None else "--"
-        return (
-            f"{self._display_time(self.scan_candle_time())} signal candle {candle_shape}; gap {gap_text} within <= {GAP_LIMIT_PCT:.2f}%; "
-            f"entered at {self._display_time(self._schedule_time(1))}. Open {open_price}, prev close {prev_close}."
+        self._record_scan_results(
+            [], [],
+            scan_status="incomplete",
+            scan_message=f"Opening scan failed: {error}",
         )
 
     def _signal_snapshot(self, symbol: str, side: str, entry_price: float) -> dict:
