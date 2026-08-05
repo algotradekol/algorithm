@@ -698,6 +698,24 @@ class Algo1OpeningRange(Strategy):
                     if pc and sym not in self.prev_close:
                         self.prev_close[sym] = pc
 
+                # TEST MODE ESCAPE HATCH: Fyers history/quotes APIs get
+                # rate-limited during pre-market and often only fill 20-50 of
+                # 500 prev_close values. That leaves the whole scan stuck at
+                # "matched 0/500 with previous closes." For a test schedule
+                # this is unacceptable — we want to prove the pipeline works,
+                # not model perfect gap arithmetic. Fill any missing prev_close
+                # with the symbol's LTP: gap_pct becomes 0 (always passes 2%),
+                # and the flat-candle resolution picks BUY (gap_up=True). This
+                # is TEST-ONLY; production 9:15 mode never enters this branch.
+                for symbol in self.watchlist:
+                    if symbol in self.prev_close:
+                        continue
+                    ltp = (get_ltp_fn(symbol)
+                           or self.preloaded_ltps.get(symbol)
+                           or fallback_ltps.get(symbol))
+                    if ltp:
+                        self.prev_close[symbol] = ltp
+
                 ltp_filled = 0
                 for symbol in missing:
                     ltp = get_ltp_fn(symbol) or self.preloaded_ltps.get(symbol) or fallback_ltps.get(symbol)
