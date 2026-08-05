@@ -459,7 +459,7 @@ class Algo1OpeningRange(Strategy):
             # Fetch history candles for symbols the live feed never delivered.
             # Scheduled tests use only buffered data; production fetches everything.
             filled = self._backfill_opening_window_from_history(
-                include_missing=not is_test_schedule
+                include_missing=True
             )
             if filled or not phase1_qualified:
                 # Rebuild candidates now that history data is in.
