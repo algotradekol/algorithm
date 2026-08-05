@@ -365,12 +365,23 @@ def _run_job(
                         })
                     else:
                         row["selected_for_trade"] = False
-                        row["rejection_reason"] = "replay_cache_unavailable" if failed else "no_09_16_entry_candle"
+                        if failed:
+                            row["rejection_reason"] = "replay_cache_unavailable"
+                            activity_status = "CACHE_UNAVAILABLE"
+                        else:
+                            # _simulate_trade sets a specific failure reason
+                            # (no_09_16_entry_candle vs capital_per_trade_below_share_price).
+                            row["rejection_reason"] = row.pop("_simulation_failure_reason", "no_09_16_entry_candle")
+                            activity_status = (
+                                "NO_ENTRY_CANDLE"
+                                if row["rejection_reason"] == "no_09_16_entry_candle"
+                                else "CAPITAL_TOO_LOW"
+                            )
                         _append_replay_activity(job_id, {
                             "date": target_date.isoformat(),
                             "symbol": row["symbol"],
                             "side": row.get("side"),
-                            "status": "CACHE_UNAVAILABLE" if failed else "NO_ENTRY_CANDLE",
+                            "status": activity_status,
                         })
                     _increment(job_id, "replay_completed")
                     progress = _job_progress(job_id, "replay_completed")
@@ -483,11 +494,37 @@ def _simulate(algo_id: str, target_date: datetime.date, watchlist: list[str], hi
         if trade:
             trades.append(trade)
         row["selected_for_trade"] = bool(trade)
-        row["rejection_reason"] = None if trade else "no_09_16_entry_candle"
+        if trade:
+            row["rejection_reason"] = None
+        else:
+            # _simulate_trade attaches a specific reason; fall back to the
+            # legacy label if it did not (defensive).
+            row["rejection_reason"] = row.pop("_simulation_failure_reason", "no_09_16_entry_candle")
 
+    # A candidate that passed shape+gap+filters but was NOT selected either
+    # (a) lost to earlier candidates within its side cap, or
+    # (b) lost to the total daily cap being exhausted by the other side.
+    # Report distinctly so audit rows don't all show generic "slots_full".
+    total_cap = max(0, int(settings.get("max_trades_per_day", 10) or 10))
+    buy_cap = max(0, int(settings.get("max_buy_trades", total_cap) or total_cap))
+    sell_cap = max(0, int(settings.get("max_sell_trades", total_cap) or total_cap))
+    selected_buys = sum(1 for r in selected if str(r.get("side", "")).upper() == "BUY")
+    selected_sells = sum(1 for r in selected if str(r.get("side", "")).upper() == "SELL")
     for row in rows:
-        if row.get("side") and row.get("filters_passed") and row["symbol"] not in selected_symbols:
-            row["rejection_reason"] = "slots_full"
+        if not (row.get("side") and row.get("filters_passed") and row["symbol"] not in selected_symbols):
+            continue
+        side = str(row.get("side") or "").upper()
+        if side == "BUY" and selected_buys >= buy_cap:
+            row["rejection_reason"] = "buy_side_cap_reached"
+        elif side == "SELL" and selected_sells >= sell_cap:
+            row["rejection_reason"] = "sell_side_cap_reached"
+        elif len(selected) >= total_cap:
+            row["rejection_reason"] = "daily_cap_reached"
+        else:
+            # Cap was NOT hit — this candidate really should have been selected.
+            # This exposes a bug in _select_candidates ordering / dedup rather
+            # than being a real "slots full" event.
+            row["rejection_reason"] = "not_selected_despite_open_slot"
 
     summary = _performance_summary(trades)
     buys = len([trade for trade in trades if trade["side"] == "BUY"])
@@ -529,9 +566,23 @@ def _prepare_daily_result(
     candidates = [row for row in rows if row.get("side") and row.get("filters_passed")]
     selected = _select_candidates(candidates, settings)
     selected_symbols = {row["symbol"] for row in selected}
+    total_cap = max(0, int(settings.get("max_trades_per_day", 10) or 10))
+    buy_cap = max(0, int(settings.get("max_buy_trades", total_cap) or total_cap))
+    sell_cap = max(0, int(settings.get("max_sell_trades", total_cap) or total_cap))
+    selected_buys = sum(1 for r in selected if str(r.get("side", "")).upper() == "BUY")
+    selected_sells = sum(1 for r in selected if str(r.get("side", "")).upper() == "SELL")
     for row in rows:
-        if row.get("side") and row.get("filters_passed") and row["symbol"] not in selected_symbols:
-            row["rejection_reason"] = "slots_full"
+        if not (row.get("side") and row.get("filters_passed") and row["symbol"] not in selected_symbols):
+            continue
+        side = str(row.get("side") or "").upper()
+        if side == "BUY" and selected_buys >= buy_cap:
+            row["rejection_reason"] = "buy_side_cap_reached"
+        elif side == "SELL" and selected_sells >= sell_cap:
+            row["rejection_reason"] = "sell_side_cap_reached"
+        elif len(selected) >= total_cap:
+            row["rejection_reason"] = "daily_cap_reached"
+        else:
+            row["rejection_reason"] = "not_selected_despite_open_slot"
     return {
         "algo_id": algo_id,
         "date": target_date.isoformat(),
@@ -736,11 +787,15 @@ def _select_candidates(candidates: list[dict], settings: dict) -> list[dict]:
 def _simulate_trade(row: dict, history: list[dict], target_date: datetime.date, settings: dict, charges_config: dict) -> dict | None:
     entry_candle = next((candle for candle in history if candle["time"].date() == target_date and candle["time"].strftime("%H:%M") == ENTRY_TIME), None)
     if not entry_candle:
+        # Distinct reason so the caller can display it accurately instead of
+        # mis-attributing every simulation failure to "no_09_16_entry_candle".
+        row["_simulation_failure_reason"] = "no_09_16_entry_candle"
         return None
     side = row["side"]
     entry = float(entry_candle["open"])
     qty = int(float(settings["capital_per_trade"]) // entry)
     if qty < 1:
+        row["_simulation_failure_reason"] = "capital_per_trade_below_share_price"
         return None
     sl = entry * (1 - settings["sl_pct"] / 100) if side == "BUY" else entry * (1 + settings["sl_pct"] / 100)
     target = entry * (1 + settings["target_pct"] / 100) if side == "BUY" else entry * (1 - settings["target_pct"] / 100)
