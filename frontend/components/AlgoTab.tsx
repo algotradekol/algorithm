@@ -8,6 +8,12 @@ import { PAGE_SIZE, PaginationControls } from './PaginationControls';
 
 const FALLBACK_POLL_MS = 5_000;
 
+// ─── Debug logger (always on — remove later if too noisy) ──────────────────
+const _t = () => new Date().toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' });
+const log = (...args: any[]) => console.log(`[AlgoTab ${_t()}]`, ...args);
+const logWarn = (...args: any[]) => console.warn(`[AlgoTab ${_t()}]`, ...args);
+const logErr = (...args: any[]) => console.error(`[AlgoTab ${_t()}]`, ...args);
+
 export default function AlgoTab({
   algoId,
   displayName,
@@ -75,27 +81,58 @@ export default function AlgoTab({
 
   const loadData = useCallback(async () => {
     const requestId = ++dataRequestId.current;
+    log(`📡 polling ${algoId} (req#${requestId})`);
     const [summaryResult, positionsResult, tradesResult, scanResult, feedResult] = await Promise.allSettled([
       api.summary(algoId), api.positions(algoId), api.trades(algoId), api.scanResults(algoId),
       algoId === 'algo3' ? api.feedStatus(algoId) : Promise.resolve(null),
     ]);
-    if (requestId !== dataRequestId.current) return;
+    if (requestId !== dataRequestId.current) {
+      log(`⚡ stale req#${requestId} discarded`);
+      return;
+    }
 
-    if (summaryResult.status === 'fulfilled') setSummary(summaryResult.value);
+    if (summaryResult.status === 'fulfilled') {
+      setSummary(summaryResult.value);
+    } else {
+      logErr(`summary failed:`, (summaryResult as PromiseRejectedResult).reason);
+    }
+
     if (positionsResult.status === 'fulfilled') {
-      setPositions(positionsResult.value.map((position: any) => ({
+      const pos = positionsResult.value;
+      log(`📊 positions: ${pos.length} open`);
+      setPositions(pos.map((position: any) => ({
         ...position,
         ltp: position.ltp ?? position.last_ltp ?? position._last_ltp ?? position.entry_price,
         unrealized_pnl: position.unrealized_pnl ?? 0,
       })));
+    } else {
+      logErr(`positions failed:`, (positionsResult as PromiseRejectedResult).reason);
     }
-    if (tradesResult.status === 'fulfilled') setTrades(tradesResult.value);
-    if (scanResult.status === 'fulfilled') setScanResults(scanResult.value);
+
+    if (tradesResult.status === 'fulfilled') {
+      log(`📋 trades: ${tradesResult.value.length} closed`);
+      setTrades(tradesResult.value);
+    } else {
+      logErr(`trades failed:`, (tradesResult as PromiseRejectedResult).reason);
+    }
+
+    if (scanResult.status === 'fulfilled') {
+      const scan = scanResult.value;
+      const status = scan?.scan_status ?? scan?.status ?? 'unknown';
+      const count = Array.isArray(scan?.rows) ? scan.rows.length : (scan?.total_symbols ?? '?');
+      const phase = scan?.phase ?? '';
+      log(`🔍 scan: status=${status} rows=${count} phase=${phase}`, scan);
+      setScanResults(scan);
+    } else {
+      logErr(`scanResults failed:`, (scanResult as PromiseRejectedResult).reason);
+    }
+
     if (feedResult.status === 'fulfilled') setFeedStatus(feedResult.value);
 
     const failures = [summaryResult, positionsResult, tradesResult]
       .filter((result) => result.status === 'rejected')
       .map((result) => (result as PromiseRejectedResult).reason?.message || 'Request failed');
+    if (failures.length) logErr(`⚠️ ${failures.length} request(s) failed:`, failures);
     setError(failures[0] || '');
   }, [algoId, tradingMode]);
 
@@ -184,11 +221,20 @@ export default function AlgoTab({
 
   useEffect(() => {
     let cancelled = false;
+    log(`🚀 AlgoTab mounted for ${algoId} — starting ${FALLBACK_POLL_MS/1000}s polling`);
     loadData();
     const interval = setInterval(() => {
-      if (!document.hidden && !cancelled) loadData();
+      if (!document.hidden && !cancelled) {
+        loadData();
+      } else if (document.hidden) {
+        log(`🙈 tab hidden — skipping poll`);
+      }
     }, FALLBACK_POLL_MS);
-    return () => { cancelled = true; clearInterval(interval); };
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+      log(`🛑 AlgoTab unmounted for ${algoId}`);
+    };
   }, [loadData]);
 
   useEffect(() => {
@@ -251,6 +297,7 @@ export default function AlgoTab({
 
   const handleWsMessage = useCallback((message: any) => {
     if (message.event === 'price_update') {
+      log(`💹 WS tick: ${message.symbol} ltp=${message.ltp}`);
       setPositions((current) => current.map((position) => (
         position.symbol === message.symbol ? {
           ...position,
