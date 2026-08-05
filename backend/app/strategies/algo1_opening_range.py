@@ -40,7 +40,7 @@ from concurrent.futures import ThreadPoolExecutor, as_completed
 from collections import defaultdict
 from .base import Strategy
 from ..broker_factory import create_broker
-from ..fyers_client import get_previous_close, get_intraday_candles_for_range, get_live_ltp_batch
+from ..fyers_client import get_previous_close, get_intraday_candles_for_range, get_single_minute_candle, get_live_ltp_batch
 from ..fyers_auth import get_stored_access_token
 from ..candidate_ranking import build_sector_breakdown
 from ..candidate_selection import execute_candidates_first_come
@@ -50,7 +50,7 @@ TICK_SIZE = 0.05
 # Concurrency for the 9:16 history backfill. IO-bound HTTP requests release
 # the GIL, so more workers here only means more parallel network calls —
 # CPU usage on Railway stays flat. Fyers allows ~10-50 req/s; 20 is safe.
-_BACKFILL_MAX_WORKERS = 20
+_BACKFILL_MAX_WORKERS = 50
 _PRELOAD_MAX_WORKERS = 12
 
 
@@ -347,15 +347,12 @@ class Algo1OpeningRange(Strategy):
 
         def load_symbol(symbol: str):
             try:
-                history = get_intraday_candles_for_range(symbol, today, today)
+                # Use targeted single-minute fetch (2-min window) instead of
+                # the full-day history to avoid rate limits and be ~375x faster.
+                window = get_single_minute_candle(symbol, start_time)
             except Exception as exc:
-                print(f"[algo1] could not backfill opening candles for {symbol}: {exc}")
-                return symbol, []
-            window = [
-                candle for candle in history
-                if candle["time"].date() == today
-                and start_time <= candle["time"].strftime("%H:%M") < end_time
-            ]
+                print(f"[algo1] could not backfill opening candle for {symbol}: {exc}")
+                window = []
             return symbol, window
 
         with ThreadPoolExecutor(max_workers=_BACKFILL_MAX_WORKERS) as pool:

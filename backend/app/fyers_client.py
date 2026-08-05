@@ -404,6 +404,47 @@ def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_d
     ]
 
 
+def get_single_minute_candle(symbol: str, candle_time_str: str) -> list[dict]:
+    """Fetch only the single 1-minute candle at candle_time_str (HH:MM IST) for today.
+
+    Uses Unix epoch timestamps so Fyers returns only a 2-minute window instead
+    of the full trading day.  This makes the 500-symbol backfill ~375× faster
+    and avoids Fyers rate-limit errors.
+    """
+    fyers = get_fyers_model()
+    today = datetime.date.today()
+    # Build exact start/end timestamps in IST
+    candle_start = IST.localize(
+        datetime.datetime.combine(today, datetime.time(*map(int, candle_time_str.split(":"))))
+    )
+    # Fyers range_to is inclusive — request a 2-min window to be safe
+    candle_end = candle_start + datetime.timedelta(minutes=2)
+    response = fyers.history({
+        "symbol": symbol,
+        "resolution": "1",
+        "date_format": "0",  # Unix epoch
+        "range_from": str(int(candle_start.timestamp())),
+        "range_to": str(int(candle_end.timestamp())),
+        "cont_flag": "1",
+    })
+    candles = response.get("candles", [])
+    result = []
+    for candle in candles:
+        candle_ts = datetime.datetime.fromtimestamp(candle[0], tz=IST).replace(tzinfo=None)
+        if candle_ts.strftime("%H:%M") == candle_time_str:
+            result.append({
+                "time": candle_ts,
+                "open": float(candle[1]),
+                "high": float(candle[2]),
+                "low": float(candle[3]),
+                "close": float(candle[4]),
+                "volume": float(candle[5] or 0),
+            })
+    return result
+
+
+
+
 def get_wallet_balance(mode: str | None = None) -> dict:
     """Return FYERS funds information with a best-effort wallet summary."""
     effective_mode = mode or get_runtime_trading_mode()
