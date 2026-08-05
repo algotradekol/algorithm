@@ -394,7 +394,48 @@ class Algo1OpeningRange(Strategy):
             print(f"[algo1] quotes-API LTP fallback failed: {exc}")
             return {}
 
+    def _enter(self, symbol: str, side: str, entry_price: float) -> bool:
+        """Place a live/paper trade for symbol. Returns True on success."""
+        if not entry_price:
+            self.entry_failures[symbol] = "entry_price_unavailable"
+            return False
+        if self.broker.already_traded_today(symbol):
+            self.entry_failures[symbol] = "already_traded_today"
+            return False
+
+        capital = float(self.settings.get("capital_per_trade", 10000))
+        qty = int(capital // entry_price)
+        if qty < 1:
+            self.entry_failures[symbol] = "capital_per_trade_below_share_price"
+            return False
+
+        sl_pct = float(self.settings.get("sl_pct", 1.0))
+        target_pct = float(self.settings.get("target_pct", 2.0))
+        if side == "BUY":
+            sl_price = entry_price * (1 - sl_pct / 100)
+            target_price = entry_price * (1 + target_pct / 100)
+        else:
+            sl_price = entry_price * (1 + sl_pct / 100)
+            target_price = entry_price * (1 - target_pct / 100)
+
+        try:
+            self.broker.open_trade(
+                symbol, side, qty, entry_price, sl_price, target_price,
+                f"{self.scan_candle_time()} opening range {side}",
+                self._signal_snapshot(symbol, side, entry_price),
+            )
+        except Exception as exc:
+            self.entry_failures[symbol] = "broker_open_failed"
+            print(f"[{self.algo_id}] entry failed for {symbol}: {exc}")
+            return False
+
+        self.selected_symbols.add(symbol)
+        self.selected_sides[symbol] = side
+        print(f"[{self.algo_id}] ✅ entered {side} {symbol} @ {entry_price:.2f} qty={qty}")
+        return True
+
     def evaluate_entries(self, get_ltp_fn):
+
         """Two-phase first-come-first-serve entry evaluation.
 
         Phase 1 (immediate, ~0s): evaluate every symbol whose 9:15 candle
