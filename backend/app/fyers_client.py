@@ -404,6 +404,59 @@ def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_d
     ]
 
 
+def _parse_candle_ohlcv(candle: list | dict, symbol: str = "") -> dict | None:
+    """Safely extract OHLCV from a Fyers candle array or dict.
+
+    Validates that the extracted prices form a valid candle:
+    high >= open/close >= low. If validation fails, logs the issue and returns None.
+    """
+    try:
+        # Try array format [ts, open, high, low, close, volume]
+        if isinstance(candle, (list, tuple)) and len(candle) >= 6:
+            ts = candle[0]
+            open_price = float(candle[1])
+            high_price = float(candle[2])
+            low_price = float(candle[3])
+            close_price = float(candle[4])
+            volume = float(candle[5] or 0)
+
+            # Sanity check: high >= max(open, close) and low <= min(open, close)
+            max_price = max(open_price, close_price)
+            min_price = min(open_price, close_price)
+
+            if high_price >= max_price and low_price <= min_price and high_price >= low_price:
+                return {
+                    "ts": ts,
+                    "open": open_price,
+                    "high": high_price,
+                    "low": low_price,
+                    "close": close_price,
+                    "volume": volume,
+                }
+            else:
+                # Prices don't form valid OHLC - likely array indices are wrong
+                print(f"[fyers_client] WARNING: {symbol} candle prices invalid: "
+                      f"O={open_price} H={high_price} L={low_price} C={close_price}. "
+                      f"Raw: {candle}")
+                return None
+
+        # Try dict format (in case Fyers API changed)
+        if isinstance(candle, dict):
+            return {
+                "ts": candle.get("time") or candle.get("timestamp"),
+                "open": float(candle.get("open", 0)),
+                "high": float(candle.get("high", 0)),
+                "low": float(candle.get("low", 0)),
+                "close": float(candle.get("close", 0)),
+                "volume": float(candle.get("volume", 0)),
+            }
+    except (ValueError, TypeError, IndexError) as e:
+        print(f"[fyers_client] ERROR parsing candle for {symbol}: {e}")
+        return None
+
+    return None
+
+
 def get_single_minute_candle(symbol: str, candle_time_str: str) -> list[dict]:
     """Fetch only the single 1-minute candle at candle_time_str (HH:MM IST) for today.
 
@@ -430,15 +483,22 @@ def get_single_minute_candle(symbol: str, candle_time_str: str) -> list[dict]:
     candles = response.get("candles", [])
     result = []
     for candle in candles:
-        candle_ts = datetime.datetime.fromtimestamp(candle[0], tz=IST).replace(tzinfo=None)
+        parsed = _parse_candle_ohlcv(candle, symbol)
+        if parsed is None:
+            # Log first bad candle per symbol for debugging
+            if not result:  # Only log first rejected candle
+                print(f"[fyers_client] {symbol} @ {candle_time_str}: rejected invalid candle. "
+                      f"Raw: {candle}")
+            continue
+        candle_ts = datetime.datetime.fromtimestamp(parsed["ts"], tz=IST).replace(tzinfo=None)
         if candle_ts.strftime("%H:%M") == candle_time_str:
             result.append({
                 "time": candle_ts,
-                "open": float(candle[1]),
-                "high": float(candle[2]),
-                "low": float(candle[3]),
-                "close": float(candle[4]),
-                "volume": float(candle[5] or 0),
+                "open": parsed["open"],
+                "high": parsed["high"],
+                "low": parsed["low"],
+                "close": parsed["close"],
+                "volume": parsed["volume"],
             })
     return result
 
