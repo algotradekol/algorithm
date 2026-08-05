@@ -119,11 +119,26 @@ class LiveBroker(PaperBroker):
         return response if isinstance(response, dict) else {"raw": response}
 
     def _looks_successful(self, response: dict) -> bool:
+        # Fyers V3 order responses always include an "id" field, even when
+        # the order was REJECTED (e.g. code -99 "RED:'MIS' Orders are
+        # disallowed after system square off" still ships with id). Earlier
+        # revision treated presence of id as success and recorded phantom
+        # positions in the paper broker table for orders Fyers never opened.
+        # Trust only the explicit status string.
         if not isinstance(response, dict):
             return False
         status = str(response.get("s") or response.get("status") or "").lower()
+        if status in {"error", "err", "failed", "reject", "rejected"}:
+            return False
         if status in {"ok", "success", "accepted"}:
             return True
+        # No status field at all — fall back to the id heuristic, but only
+        # when there is no error/message field indicating a failure.
+        has_error_indicator = any(
+            response.get(k) for k in ("message", "error", "errmsg", "code")
+        )
+        if has_error_indicator:
+            return False
         return any(response.get(key) for key in ("id", "order_id", "orderId"))
 
     def _cap_qty_to_live_funds(self, requested_qty: int, entry_price: float) -> int:
