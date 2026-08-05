@@ -257,7 +257,7 @@ def get_live_ltp_batch(symbols: list[str], mode: str | None = None) -> dict[str,
     if not symbols:
         return {}
     try:
-        fyers = get_fyers_model(mode)
+        fyers = get_fyers_model(mode, use_proxy=False)
     except Exception:
         return {}
 
@@ -299,7 +299,7 @@ def get_live_ltp_batch(symbols: list[str], mode: str | None = None) -> dict[str,
 
 def get_previous_close(symbol: str) -> float | None:
     """Previous trading day's closing price, needed by Algo 1's gap check."""
-    fyers = get_fyers_model()
+    fyers = get_fyers_model(use_proxy=False)
     today = datetime.date.today()
     lookback = today - datetime.timedelta(days=10)  # covers weekends/holidays
     data = {
@@ -316,7 +316,7 @@ def get_previous_close(symbol: str) -> float | None:
 
 def get_price_history(symbol: str, resolution: str = "15", days: int = 5) -> dict:
     """Recent historical candles normalized for the frontend history tab."""
-    fyers = get_fyers_model()
+    fyers = get_fyers_model(use_proxy=False)
     today = datetime.date.today()
     start_date = today - datetime.timedelta(days=max(days, 1))
     data = {
@@ -351,7 +351,7 @@ def get_price_history(symbol: str, resolution: str = "15", days: int = 5) -> dic
 
 def get_recent_intraday_candles(symbol: str, resolution: str = "1", days: int = 5, limit: int = 120) -> list[dict]:
     """Recent completed intraday candles for indicator warmup before market open."""
-    fyers = get_fyers_model()
+    fyers = get_fyers_model(use_proxy=False)
     today = datetime.date.today()
     start_date = today - datetime.timedelta(days=max(days, 1))
     end_date = today - datetime.timedelta(days=1)
@@ -381,7 +381,7 @@ def get_recent_intraday_candles(symbol: str, resolution: str = "1", days: int = 
 
 def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_date: datetime.date, resolution: str = "1") -> list[dict]:
     """Fetch normalized intraday candles for an explicit historical range."""
-    fyers = get_fyers_model()
+    fyers = get_fyers_model(use_proxy=False)
     response = fyers.history({
         "symbol": symbol,
         "resolution": resolution,
@@ -411,7 +411,7 @@ def get_single_minute_candle(symbol: str, candle_time_str: str) -> list[dict]:
     of the full trading day.  This makes the 500-symbol backfill ~375× faster
     and avoids Fyers rate-limit errors.
     """
-    fyers = get_fyers_model()
+    fyers = get_fyers_model(use_proxy=False)
     today = datetime.date.today()
     # Build exact start/end timestamps in IST
     candle_start = IST.localize(

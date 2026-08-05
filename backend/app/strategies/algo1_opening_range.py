@@ -525,7 +525,7 @@ class Algo1OpeningRange(Strategy):
                     }]
                     self.scan_seen_symbols.add(symbol)
                     ltp_filled += 1
-                print(f"[algo1] test mode: filled {ltp_filled} missing symbols from live LTP")
+                print(f"[algo1] test mode: filled {ltp_filled} missing symbols from live LTP + Quotes API")
                 filled = ltp_filled
             else:
                 # PRODUCTION MODE: fetch actual 9:15 OHLC from Fyers history API.
