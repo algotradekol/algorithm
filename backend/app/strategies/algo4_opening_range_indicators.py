@@ -90,7 +90,11 @@ class Algo4OpeningRangeIndicators(Strategy):
                 return
             def load_symbol(symbol: str):
                 try:
-                    warmup = get_recent_intraday_candles(symbol, resolution="1", days=7, limit=120)
+                    # Was days=7 limit=120 — 501 symbols × 120 candles × ~250B
+                    # was pushing the container past Railway's 1GB limit and
+                    # triggering OOM restarts every ~15s during startup.
+                    # 60 recent candles is plenty for a 20-period EMA warmup.
+                    warmup = get_recent_intraday_candles(symbol, resolution="1", days=2, limit=60)
                     if warmup:
                         return symbol, warmup, float(warmup[-1]["close"])
                     else:
@@ -280,7 +284,7 @@ class Algo4OpeningRangeIndicators(Strategy):
                 merged += 1
         if merged:
             self.candles[symbol].sort(key=lambda candle: candle["time"])
-            self.candles[symbol] = self.candles[symbol][-120:]
+            self.candles[symbol] = self.candles[symbol][-60:]
             self.total_value[symbol] = sum(
                 float(candle["close"]) * float(candle.get("volume") or 0)
                 for candle in self.candles[symbol]

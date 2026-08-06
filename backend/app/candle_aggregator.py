@@ -19,7 +19,11 @@ class SymbolState:
         self.volume = 0
         self.cum_volume_traded = 0
         self.cum_turnover = 0.0  # for VWAP: sum(price * volume)
-        self.closed_candles = deque(maxlen=50)  # keeps last 50 1-min candles
+        # 10 candles is enough for _recover_scheduled_candle_from_buffer and
+        # the shape-check history checks. Was 50 — with 501 symbols that alone
+        # added ~6 MB. Combined with algo2 warmup (was 15 MB), was crossing
+        # Railway's 1 GB container limit and OOM-killing the container.
+        self.closed_candles = deque(maxlen=10)
         self.ema20 = None
         self.last_ltp = None
         self.last_volume_total = None  # Fyers sends cumulative day volume per tick
