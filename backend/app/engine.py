@@ -353,7 +353,13 @@ def _scheduler_loop():
             # evaluate moment (WS candles + immediate Fyers history) is
             # used for trades. Symbols still missing at that moment are
             # audited as missing — no fabrication, no long wait.
-            entry_delay_min = 2 if test_schedule_enabled else 1
+            # Fyers history API returns a PARTIAL flat candle (open=high=low
+            # =close) if you query before the minute is fully indexed on
+            # their side — typically 3-5 minutes after the candle closes.
+            # 2 minutes was too short and produced fake-flat-candle scans.
+            # Production 09:15 still fires at +1 min because Fyers bulk-
+            # indexes the 09:15 candle at market open (no lag there).
+            entry_delay_min = 5 if test_schedule_enabled else 1
             entry_time = None
             if scan_time:
                 try:

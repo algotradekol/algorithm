@@ -532,8 +532,24 @@ class Algo1OpeningRange(Strategy):
                     except Exception as exc:
                         print(f"[algo1] could not backfill previous close for {symbol}: {exc}")
                 if window:
-                    # The completed history candle is authoritative even when a
-                    # one-tick websocket bar has the same one-row list length.
+                    # Reject flat candles as "still being indexed by Fyers".
+                    # Fyers returns a partial candle where open=high=low=close
+                    # when the minute has closed but hasn't been fully
+                    # aggregated (typical 1-3 min after close). Accepting
+                    # these produces fake signals (all rows pass shape trivially
+                    # via flat resolution). Instead, treat as still-missing so
+                    # the next scheduler tick retries the backfill.
+                    first_candle = window[0]
+                    is_flat = (
+                        abs(float(first_candle["high"]) - float(first_candle["low"])) < 1e-9
+                        and abs(float(first_candle["open"]) - float(first_candle["close"])) < 1e-9
+                    )
+                    if is_flat:
+                        # Don't add to history_verified — leaves it eligible
+                        # for retry on next scheduler iteration when Fyers
+                        # has hopefully finished indexing.
+                        self.debug_logger.add_candle_missing(symbol)
+                        continue
                     self.opening_candles[symbol] = window
                     self.history_verified_opening_symbols.add(symbol)
                     self.scan_seen_symbols.add(symbol)
