@@ -662,34 +662,81 @@ class Algo1OpeningRange(Strategy):
         slots_left = total_cap - trades_so_far
 
         if slots_left > 0:
-            # Test mode used to fabricate flat candles from LTP for pipeline
-            # verification. That produced fake signals when the strategy
-            # naively resolved flat candles by gap direction. Now both test
-            # and production use the SAME real-history backfill so test-mode
-            # OHLC exactly matches what Fyers shows for that minute — the
-            # filter is meaningful, and the difference between modes is only
-            # the broker (paper vs live) plus the arbitrary scan_candle_time.
+            # Try real Fyers history backfill first — real OHLC when Fyers
+            # has finalized the candle (usually true for production 09:15
+            # by 09:16, and for test times more than ~3 min old).
             filled = self._backfill_opening_window_from_history(
                 include_missing=True
             )
 
-            # Test mode still needs the inline prev_close top-up because the
-            # background loader is rate-limited by Fyers and often finishes
-            # only 20-50/500 before the test scan fires. Backfill provides
-            # the CANDLE; this loop provides prev_close.
+            # Test-mode fallback: Fyers history often lags 1-3 minutes for
+            # the just-closed minute. Without a fallback, a scan scheduled
+            # at 11:44 for the 11:43 candle sees "missing_opening_candle"
+            # for all 500 symbols and the pipeline can't be verified.
+            # Fill any symbol still missing an opening candle with a
+            # LTP-fabricated flat candle so:
+            #   - The frontend table shows values instead of all "--"
+            #   - The pipeline continues end-to-end
+            #   - Shape check gap-direction resolution still applies to
+            #     flat candles ONLY in test mode (production still rejects
+            #     flat candles as flat_candle_incomplete_data — see the
+            #     ba466b2 fix in _build_candidates_from_collection).
+            # If Fyers eventually returns the real candle on a later scan
+            # retry, it replaces the fabricated one.
             if is_test_schedule:
+                # Inline prev_close via Quotes API for symbols missing it.
                 need_pc = [
                     s for s in self.watchlist
-                    if s not in self.prev_close and s in self.opening_candles
+                    if s not in self.prev_close
                 ]
+                fallback_ltps: dict[str, float] = {}
+                fallback_prev_close: dict[str, float] = {}
                 if need_pc:
                     try:
                         pc_quotes = get_live_quotes_batch(need_pc)
                         for sym, data in pc_quotes.items():
+                            if data.get("ltp"):
+                                fallback_ltps[sym] = float(data["ltp"])
                             if data.get("prev_close"):
+                                fallback_prev_close[sym] = float(data["prev_close"])
                                 self.prev_close[sym] = float(data["prev_close"])
                     except Exception as exc:
-                        print(f"[algo1] test mode: prev_close top-up failed: {exc}")
+                        print(f"[algo1] test mode: Quotes API fallback failed: {exc}")
+
+                # LTP-as-prev_close last-resort so gap check has a number.
+                for symbol in self.watchlist:
+                    if symbol in self.prev_close:
+                        continue
+                    ltp = (get_ltp_fn(symbol)
+                           or self.preloaded_ltps.get(symbol)
+                           or fallback_ltps.get(symbol))
+                    if ltp:
+                        self.prev_close[symbol] = ltp
+
+                # LTP-fabricated candle for symbols missing an opening
+                # candle (Fyers history didn't return yet). These flat
+                # candles will pass test-mode's shape check via gap
+                # direction, but PRODUCTION mode rejects them.
+                ltp_filled = 0
+                for symbol in self.watchlist:
+                    if symbol in self.opening_candles:
+                        continue
+                    ltp = (get_ltp_fn(symbol)
+                           or self.preloaded_ltps.get(symbol)
+                           or fallback_ltps.get(symbol))
+                    if ltp:
+                        self.opening_candles[symbol] = [{
+                            "time": datetime.datetime.now().replace(second=0, microsecond=0),
+                            "open": ltp, "high": ltp, "low": ltp,
+                            "close": ltp, "volume": 0.0,
+                        }]
+                        self.test_mode_ltps[symbol] = ltp
+                        self.scan_seen_symbols.add(symbol)
+                        self.debug_logger.add_candle_received(symbol, "test_ltp")
+                        ltp_filled += 1
+                if ltp_filled:
+                    filled = (filled or 0) + ltp_filled
+                    print(f"[algo1] test mode LTP fallback filled {ltp_filled} synthetic candles")
 
             if filled or not phase1_qualified:
                 # Rebuild candidates now that history data is in.
