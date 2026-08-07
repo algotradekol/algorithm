@@ -402,19 +402,30 @@ class Algo1OpeningRange(Strategy):
             # clearly printed at the low/high.
             buy_shape = abs(open_price - low) <= TICK_SIZE
             sell_shape = abs(open_price - high) <= TICK_SIZE
-            # A flat opening window satisfies both shapes. It has no
-            # directional information, so never let BUY win merely because it
-            # is evaluated first.
             flat_shape = buy_shape and sell_shape
             gap_pct = abs(open_price - prev_close) / prev_close * 100
             gap_up = open_price >= prev_close
 
-            # A flat opening candle (open=high=low, single print at open) is
-            # resolved by the gap direction: gap-up → treat as BUY (open=low),
-            # gap-down → treat as SELL (open=high).
+            # Flat-candle handling depends on mode:
+            #   - TEST mode: fabricated LTP-only candles are expected to be
+            #     flat by design (that's the pipeline verification path).
+            #     Resolve via gap direction so trades still fire.
+            #   - PRODUCTION 9:15 mode: a flat candle means the aggregator
+            #     saw ONE tick during the whole 09:15 minute (usually because
+            #     WS was disconnected). This is NOT a real "open==low" or
+            #     "open==high" signal — it's missing data. Reject and let
+            #     phase-2 history backfill supply the real OHLC.
+            is_test_schedule = bool(self.settings.get("test_schedule_enabled"))
             if flat_shape:
-                buy_shape = gap_up
-                sell_shape = not gap_up
+                if is_test_schedule:
+                    buy_shape = gap_up
+                    sell_shape = not gap_up
+                else:
+                    # Reject the flat candle so it fails the shape check.
+                    # The history backfill in phase 2 will replace it with
+                    # real OHLC and this row will be re-evaluated.
+                    buy_shape = False
+                    sell_shape = False
 
             # Log shape check result
             if buy_shape or sell_shape:
@@ -443,7 +454,7 @@ class Algo1OpeningRange(Strategy):
                 "indicator_results": {},
                 "selected_for_trade": False,
                 "rejection_reason": (
-                    "failed_opening_shape"
+                    ("flat_candle_incomplete_data" if flat_shape else "failed_opening_shape")
                     if not (buy_shape or sell_shape)
                     else "failed_gap_filter"
                 ),

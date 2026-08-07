@@ -41,6 +41,7 @@ _engine_lock = threading.Lock()
 _feed_retry_schedules: set[tuple[datetime.date, str]] = set()
 _feed_watchdog_started = False
 _feed_watchdog_last_restart_at = 0.0
+_position_ltp_poll_started = False
 # Reconnect strategy for the Fyers WebSocket. Two mechanisms stacked:
 #
 # 1) Exponential backoff — 5s, 10s, 20s, 40s, 60s between successive retries.
@@ -460,6 +461,93 @@ def _scheduler_loop():
         time.sleep(5)
 
 
+def _open_position_ltp_poll_loop():
+    """Keep open positions' LTP fresh when the Fyers WebSocket is dead.
+
+    Without this loop, if the WS drops (or Fyers closes it mid-session
+    with `code 200 Connection Closed`), positions on the dashboard get
+    stuck at their last-known LTP and check_exits stops firing because
+    no ticks arrive to trigger it. That means SL/Target won't hit until
+    a WS reconnect — potentially never in a single trading day.
+
+    This loop polls the Fyers Quotes REST API (which works independent
+    of the WS) every 10 seconds for the union of every open position
+    across all strategies, updates the shared last_ltp dict, pushes a
+    synthetic 'tick' through each strategy's on_tick + check_exits so
+    SL/Target logic fires normally. When the WS is healthy, this loop
+    is a no-op (WS ticks arrive faster than the poll interval so
+    last_ltp is always fresh).
+    """
+    from .fyers_client import get_live_ltp_batch
+
+    while True:
+        try:
+            now = datetime.datetime.now(IST)
+            market_open = "09:15" <= now.strftime("%H:%M") < "15:30"
+            if not market_open:
+                time.sleep(10)
+                continue
+
+            # Collect every open position across all strategies.
+            symbols_needing_ltp: set[str] = set()
+            for strategy in STRATEGIES.values():
+                try:
+                    for position in strategy.broker.open_positions():
+                        sym = position.get("symbol")
+                        if sym:
+                            symbols_needing_ltp.add(sym)
+                except Exception:
+                    continue
+
+            if not symbols_needing_ltp:
+                time.sleep(10)
+                continue
+
+            # A fresh WS tick within the last 10s means the WS is doing
+            # the job — skip the REST poll to save Fyers quota.
+            last_tick_at = _engine_status.get("last_tick_at")
+            if last_tick_at:
+                try:
+                    tick_time = datetime.datetime.fromisoformat(last_tick_at.replace("Z", "+00:00"))
+                    tick_age = (datetime.datetime.now(datetime.timezone.utc) - tick_time).total_seconds()
+                    if tick_age < 10:
+                        time.sleep(10)
+                        continue
+                except (TypeError, ValueError):
+                    pass
+
+            try:
+                ltps = get_live_ltp_batch(list(symbols_needing_ltp), mode="live")
+            except Exception as exc:
+                print(f"[engine] open-position LTP poll failed: {exc}")
+                time.sleep(10)
+                continue
+
+            for symbol, ltp in ltps.items():
+                if not ltp:
+                    continue
+                last_ltp[symbol] = ltp
+                # Push through each strategy the same way _on_tick would,
+                # so check_exits fires and update_position_range moves.
+                for strategy in STRATEGIES.values():
+                    watchlist = getattr(strategy, "watchlist", [])
+                    if watchlist and symbol not in watchlist:
+                        continue
+                    try:
+                        for position in strategy.broker.open_positions():
+                            if position["symbol"] == symbol:
+                                position["_last_ltp"] = ltp
+                                strategy.broker.update_position_range(position, ltp)
+                        strategy.check_exits()
+                    except Exception as exc:
+                        print(f"[engine] LTP-poll check_exits failed for {strategy.algo_id} {symbol}: {exc}")
+
+        except Exception as exc:
+            print(f"[engine] open-position LTP poll loop error: {exc}")
+
+        time.sleep(10)
+
+
 def _live_feed_watchdog_loop():
     """Keep a real market-data stream alive before a scheduled scan.
 
@@ -853,6 +941,10 @@ def start_engine():
         if not _feed_watchdog_started:
             threading.Thread(target=_live_feed_watchdog_loop, daemon=True).start()
             _feed_watchdog_started = True
+        global _position_ltp_poll_started
+        if not _position_ltp_poll_started:
+            threading.Thread(target=_open_position_ltp_poll_loop, daemon=True).start()
+            _position_ltp_poll_started = True
 
         try_refresh_access_token(reason="startup")
         if not start_live_feed_if_ready():
