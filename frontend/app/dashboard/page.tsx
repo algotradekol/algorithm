@@ -32,6 +32,7 @@ function DashboardContent() {
   const [ready, setReady] = useState(false);
   const [showFyersBanner, setShowFyersBanner] = useState(true);
   const [fyersLoginResult, setFyersLoginResult] = useState<'success' | 'failed' | null>(null);
+  const [fyersLoginReason, setFyersLoginReason] = useState<string | null>(null);
   const [istTime, setIstTime] = useState(formatIstTime());
   const [fyersStatus, setFyersStatus] = useState<{
     connected: boolean;
@@ -52,6 +53,9 @@ function DashboardContent() {
     fyers_ws_last_event_at?: string | null;
     fyers_ws_subscribed_symbols?: number;
     fyers_ws_first_tick_at?: string | null;
+    ws_reconnect_failure_count?: number;
+    ws_circuit_open_seconds_remaining?: number;
+    ws_next_backoff_seconds?: number;
     last_tick_at?: string | null;
     last_tick_symbol?: string | null;
     last_tick_ltp?: number | null;
@@ -97,9 +101,11 @@ function DashboardContent() {
     if (result !== 'success' && result !== 'failed') return;
 
     setFyersLoginResult(result);
+    setFyersLoginReason(searchParams.get('reason'));
     setShowFyersBanner(true);
     const nextParams = new URLSearchParams(searchParams.toString());
     nextParams.delete('fyers_login');
+    nextParams.delete('reason');
     const query = nextParams.toString();
     router.replace(query ? `/dashboard?${query}` : '/dashboard', { scroll: false });
   }, [router, searchParams]);
@@ -159,15 +165,36 @@ function DashboardContent() {
       <div className="mx-auto max-w-[1400px] px-3 py-3 sm:px-6 sm:py-4">
         {fyersLoginResult && showFyersBanner && (
           <div
-            className={`mb-3 flex items-center justify-between gap-3 rounded border px-3 py-2 ${
+            className={`mb-3 flex items-start justify-between gap-3 rounded border px-3 py-2 ${
               fyersLoginResult === 'success'
                 ? 'border-[#22c55e]/40 bg-[#22c55e]/10'
                 : 'border-[#ef4444]/40 bg-[#ef4444]/10'
             }`}
           >
-            <span className="text-sm text-gray-100">
-              {fyersLoginResult === 'success' ? 'Fyers login successful' : 'Fyers login failed, try again'}
-            </span>
+            <div className="flex-1">
+              <div className="text-sm text-gray-100">
+                {fyersLoginResult === 'success'
+                  ? 'Fyers login successful'
+                  : 'Fyers login failed'}
+              </div>
+              {fyersLoginResult === 'failed' && fyersLoginReason && (
+                <div className="mt-1 text-xs text-gray-300 break-words">
+                  {fyersLoginReason}
+                  {(fyersLoginReason.includes('429')
+                    || fyersLoginReason.toLowerCase().includes('cloudflare')
+                    || fyersLoginReason.toLowerCase().includes('too many')) && (
+                    <span className="ml-2 rounded bg-[#f59e0b]/20 px-1.5 py-0.5 text-[10px] uppercase tracking-wider text-[#fbbf24]">
+                      Wait 5–10 min and retry
+                    </span>
+                  )}
+                </div>
+              )}
+              {fyersLoginResult === 'failed' && !fyersLoginReason && (
+                <div className="mt-1 text-xs text-gray-400">
+                  Try again in 60 seconds. If it keeps failing, wait 5–10 minutes for Cloudflare rate limit to clear.
+                </div>
+              )}
+            </div>
             <button
               onClick={() => setShowFyersBanner(false)}
               className="text-xs uppercase tracking-wider text-gray-500 hover:text-gray-100"
@@ -350,9 +377,36 @@ function LiveDiagnostics({ engineStatus }: { engineStatus: any }) {
       />
       <DiagnosticItem
         label="Fyers WS"
-        value={engineStatus?.fyers_ws_connected ? 'Connected' : 'Disconnected'}
-        tone={engineStatus?.fyers_ws_connected ? 'text-[#22c55e]' : 'text-[#ef4444]'}
-        detail={engineStatus?.fyers_ws_error ? String(engineStatus.fyers_ws_error).slice(0, 80) : engineStatus?.fyers_ws_first_tick_at ? `First tick ${formatRelativeTime(engineStatus.fyers_ws_first_tick_at)}` : 'Socket open; no market tick yet'}
+        value={(() => {
+          if (engineStatus?.fyers_ws_connected) return 'Connected';
+          const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
+          if (circuit > 0) {
+            const m = Math.floor(circuit / 60);
+            const s = circuit % 60;
+            return m > 0 ? `Paused ${m}m ${s}s` : `Paused ${s}s`;
+          }
+          return 'Disconnected';
+        })()}
+        tone={(() => {
+          if (engineStatus?.fyers_ws_connected) return 'text-[#22c55e]';
+          const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
+          if (circuit > 0) return 'text-[#f59e0b]';
+          return 'text-[#ef4444]';
+        })()}
+        detail={(() => {
+          const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
+          const failures = engineStatus?.ws_reconnect_failure_count ?? 0;
+          const nextBackoff = engineStatus?.ws_next_backoff_seconds ?? 0;
+          const err = engineStatus?.fyers_ws_error;
+          if (circuit > 0) {
+            return `Circuit breaker open after ${failures} failures. Auto-retry in ${Math.floor(circuit / 60)}m ${circuit % 60}s. Positions monitored via REST poll (10s).`;
+          }
+          if (err && !engineStatus?.fyers_ws_connected) {
+            return `${String(err).slice(0, 120)}${failures > 0 ? ` (attempt ${failures + 1}, next backoff ${nextBackoff}s)` : ''}`;
+          }
+          if (engineStatus?.fyers_ws_first_tick_at) return `First tick ${formatRelativeTime(engineStatus.fyers_ws_first_tick_at)}`;
+          return 'Socket open; no market tick yet';
+        })()}
       />
       <DiagnosticItem
         label="Last Tick"

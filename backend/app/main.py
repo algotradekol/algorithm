@@ -385,6 +385,19 @@ def ai_chat(payload: dict, _user=Depends(require_auth)):
         raise HTTPException(status_code=500, detail=str(exc))
 
 
+def _fyers_login_failed_redirect(redirect_base: str, reason: str) -> RedirectResponse:
+    """Redirect back to the dashboard with a URL-encoded error reason so the
+    frontend can show the user WHY login failed (Cloudflare 429, token
+    exchange rejected, config error, etc.) instead of the generic
+    'try again' banner."""
+    from urllib.parse import quote_plus
+    # Short reason label + one-line human-readable explanation combined.
+    encoded = quote_plus(reason[:400])
+    return RedirectResponse(
+        f"{redirect_base}/dashboard?fyers_login=failed&reason={encoded}"
+    )
+
+
 @app.get("/api/fyers/callback")
 def fyers_callback(auth_code: str = None, code: str = None, state: str | None = None, mode: str | None = None):
     received_code = auth_code or code
@@ -392,11 +405,17 @@ def fyers_callback(auth_code: str = None, code: str = None, state: str | None = 
     redirect_base = frontend_origin.rstrip("/")
     if not received_code:
         clear_pending_fyers_login_origin()
-        return RedirectResponse(f"{redirect_base}/dashboard?fyers_login=failed")
+        return _fyers_login_failed_redirect(
+            redirect_base,
+            "Fyers OAuth callback did not include an auth_code — the login popup was closed before completion.",
+        )
     if fyersModel is None:
         print("[fyers] OAuth callback received, but fyers_apiv3 is not installed.")
         clear_pending_fyers_login_origin()
-        return RedirectResponse(f"{redirect_base}/dashboard?fyers_login=failed")
+        return _fyers_login_failed_redirect(
+            redirect_base,
+            "Backend server error: fyers_apiv3 package is not installed. Contact the app operator.",
+        )
     callback_mode = normalize_trading_mode(state or mode or get_pending_fyers_login_mode() or get_runtime_trading_mode())
     fyers_config = get_fyers_config(callback_mode)
     audit_log(
@@ -414,7 +433,7 @@ def fyers_callback(auth_code: str = None, code: str = None, state: str | None = 
         audit_log("fyers", "oauth callback exchange failed", mode=callback_mode, error=str(exc))
         clear_pending_fyers_login_mode()
         clear_pending_fyers_login_origin()
-        return RedirectResponse(f"{redirect_base}/dashboard?fyers_login=failed")
+        return _fyers_login_failed_redirect(redirect_base, str(exc))
     store_broker_tokens(response, mode=callback_mode)
     clear_pending_fyers_login_mode()
     clear_pending_fyers_login_origin()
