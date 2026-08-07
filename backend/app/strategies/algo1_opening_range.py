@@ -662,96 +662,34 @@ class Algo1OpeningRange(Strategy):
         slots_left = total_cap - trades_so_far
 
         if slots_left > 0:
-            if is_test_schedule:
-                # TEST MODE: fill missing symbols using the current live LTP
-                # from the websocket, preload cache, or Quotes API. Also pull
-                # prev_close from the same Quotes call so the shape/gap check
-                # can actually run — background history preload frequently is
-                # not done when a test scan fires seconds after startup.
-                missing = [s for s in self.watchlist if s not in self.opening_candles]
-                fallback_ltps: dict[str, float] = {}
-                fallback_prev_close: dict[str, float] = {}
-                if missing:
-                    need_fetch = [
-                        s for s in missing
-                        if not get_ltp_fn(s) and s not in self.preloaded_ltps
-                    ]
-                    if need_fetch:
-                        try:
-                            quotes = get_live_quotes_batch(need_fetch)
-                            for sym, data in quotes.items():
-                                if "ltp" in data:
-                                    fallback_ltps[sym] = data["ltp"]
-                                if "prev_close" in data:
-                                    fallback_prev_close[sym] = data["prev_close"]
-                        except Exception as exc:
-                            print(f"[algo1] test mode: Quotes API fallback failed: {exc}")
+            # Test mode used to fabricate flat candles from LTP for pipeline
+            # verification. That produced fake signals when the strategy
+            # naively resolved flat candles by gap direction. Now both test
+            # and production use the SAME real-history backfill so test-mode
+            # OHLC exactly matches what Fyers shows for that minute — the
+            # filter is meaningful, and the difference between modes is only
+            # the broker (paper vs live) plus the arbitrary scan_candle_time.
+            filled = self._backfill_opening_window_from_history(
+                include_missing=True
+            )
 
-                # Also pull prev_close for symbols we already have LTP for but
-                # no prev_close in memory yet (background loader still running).
+            # Test mode still needs the inline prev_close top-up because the
+            # background loader is rate-limited by Fyers and often finishes
+            # only 20-50/500 before the test scan fires. Backfill provides
+            # the CANDLE; this loop provides prev_close.
+            if is_test_schedule:
                 need_pc = [
                     s for s in self.watchlist
-                    if s not in self.prev_close and s not in fallback_prev_close
-                    and (get_ltp_fn(s) or self.preloaded_ltps.get(s) or fallback_ltps.get(s))
+                    if s not in self.prev_close and s in self.opening_candles
                 ]
                 if need_pc:
                     try:
                         pc_quotes = get_live_quotes_batch(need_pc)
                         for sym, data in pc_quotes.items():
-                            if "prev_close" in data:
-                                fallback_prev_close[sym] = data["prev_close"]
+                            if data.get("prev_close"):
+                                self.prev_close[sym] = float(data["prev_close"])
                     except Exception as exc:
                         print(f"[algo1] test mode: prev_close top-up failed: {exc}")
-
-                # Merge inline-fetched prev_close into self.prev_close so
-                # _build_candidates_from_collection can use them.
-                for sym, pc in fallback_prev_close.items():
-                    if pc and sym not in self.prev_close:
-                        self.prev_close[sym] = pc
-
-                # TEST MODE ESCAPE HATCH: Fyers history/quotes APIs get
-                # rate-limited during pre-market and often only fill 20-50 of
-                # 500 prev_close values. That leaves the whole scan stuck at
-                # "matched 0/500 with previous closes." For a test schedule
-                # this is unacceptable — we want to prove the pipeline works,
-                # not model perfect gap arithmetic. Fill any missing prev_close
-                # with the symbol's LTP: gap_pct becomes 0 (always passes 2%),
-                # and the flat-candle resolution picks BUY (gap_up=True). This
-                # is TEST-ONLY; production 9:15 mode never enters this branch.
-                for symbol in self.watchlist:
-                    if symbol in self.prev_close:
-                        continue
-                    ltp = (get_ltp_fn(symbol)
-                           or self.preloaded_ltps.get(symbol)
-                           or fallback_ltps.get(symbol))
-                    if ltp:
-                        self.prev_close[symbol] = ltp
-
-                ltp_filled = 0
-                for symbol in missing:
-                    ltp = get_ltp_fn(symbol) or self.preloaded_ltps.get(symbol) or fallback_ltps.get(symbol)
-                    if ltp:
-                        # Create a flat candle from current LTP (open=high=low=close=ltp)
-                        self.opening_candles[symbol] = [{
-                            "time": datetime.datetime.now().replace(second=0, microsecond=0),
-                            "open": ltp, "high": ltp, "low": ltp,
-                            "close": ltp, "volume": 0.0,
-                        }]
-                        # Store LTP for later use during entry
-                        self.test_mode_ltps[symbol] = ltp
-                        self.scan_seen_symbols.add(symbol)
-                        self.debug_logger.add_candle_received(symbol, "test_ltp")
-                        ltp_filled += 1
-                    else:
-                        # Mark that this symbol was seen but has no LTP data
-                        self.scan_seen_symbols.add(symbol)
-                        self.debug_logger.add_candle_missing(symbol)
-                filled = ltp_filled
-            else:
-                # PRODUCTION MODE: fetch actual 9:15 OHLC from Fyers history API.
-                filled = self._backfill_opening_window_from_history(
-                    include_missing=True
-                )
 
             if filled or not phase1_qualified:
                 # Rebuild candidates now that history data is in.
