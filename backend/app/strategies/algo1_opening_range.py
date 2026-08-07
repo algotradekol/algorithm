@@ -843,6 +843,32 @@ class Algo1OpeningRange(Strategy):
             "One-tick flat bars are retried from FYERS history instead of being treated as real flat candles."
         )
 
+    def mark_collecting_candle(self):
+        """Broadcast an early 'collecting_candle' status the moment the scan
+        minute starts, so the frontend banner shows the app is actively
+        working during the 60-second candle-collection window. Without this
+        the UI displays stale yesterday's scan results and the user has no
+        indication anything is happening until evaluate_entries fires at
+        the end of the minute.
+        """
+        # Do not overwrite a completed or in-progress scan result with a
+        # 'collecting_candle' placeholder — only broadcast when we're in a
+        # neutral state (nothing recorded yet today, or last-recorded was
+        # yesterday).
+        today = datetime.date.today()
+        if self.entries_evaluated_today == today:
+            return
+        candle_display = self._display_time(self.scan_candle_time())
+        entry_display = self._display_time(self._schedule_time(1))
+        self._record_scan_results(
+            [], [],
+            scan_status="collecting_candle",
+            scan_message=(
+                f"Collecting the {candle_display} IST signal candle. "
+                f"Trades evaluate at {entry_display} IST."
+            ),
+        )
+
     def mark_opening_scan_missed(self):
         if self.entries_evaluated_today == datetime.date.today():
             return

@@ -276,6 +276,9 @@ def _scheduler_loop():
     test_schedule_attempt_minute: dict[str, tuple[datetime.date, str]] = {}
     # Dedupe noisy per-poll status prints so retry cycles do not spam the console.
     last_pending_msg: dict[str, str] = {}
+    # Track (date, algo_id) for the "collecting_candle" broadcast so we only
+    # push it once per scan-day per strategy, not every 5s during the minute.
+    collecting_broadcast: set[tuple[datetime.date, str]] = set()
     squareoff_fired_date = None
     token_refresh_fired_date = None
     global _feed_retry_schedules
@@ -306,6 +309,23 @@ def _scheduler_loop():
                             f"[engine] no market tick at {scan_time}; restart skipped "
                             "by backoff/circuit — scan will run on LTP fallback"
                         )
+
+            # Broadcast a visible "collecting_candle" status when the scan
+            # minute starts, so the frontend banner shows the app is working
+            # instead of just displaying yesterday's stale scan results while
+            # the 60-second candle-collection window ticks.
+            broadcast_key = (today, strategy.algo_id)
+            if (
+                scan_time
+                and current_time == scan_time
+                and broadcast_key not in collecting_broadcast
+                and hasattr(strategy, "mark_collecting_candle")
+            ):
+                collecting_broadcast.add(broadcast_key)
+                try:
+                    strategy.mark_collecting_candle()
+                except Exception as exc:
+                    print(f"[engine] mark_collecting_candle failed for {strategy.algo_id}: {exc}")
 
         # Each opening strategy can opt into a one-off test schedule without
         # changing the production 09:15/09:16 defaults for the other strategy.
