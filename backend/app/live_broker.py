@@ -208,6 +208,58 @@ class LiveBroker(PaperBroker):
         print(f"[live_broker] place_limit {symbol} {side} x{qty} @limit={limit_price}: {response}")
         return response if isinstance(response, dict) else {"raw": response}
 
+    def apply_trailing_stop(self, position: dict, ltp: float, settings: dict) -> dict:
+        """Extend PaperBroker's trailing-stop logic to ALSO update the hard
+        SL order at Fyers whenever the trailed SL moves. Without this, the
+        Fyers-side SL stays at its original level while our database shows
+        a tighter trailed SL — a real crash would still exit at the OLD SL,
+        defeating the point of trailing."""
+        previous_sl = float(position.get("sl_price") or 0)
+        updated = super().apply_trailing_stop(position, ltp, settings)
+        new_sl = float(updated.get("sl_price") or 0)
+        # Only push to Fyers if the SL actually moved and we have a live
+        # SL order id to modify.
+        if new_sl == previous_sl or new_sl <= 0:
+            return updated
+        snapshot = updated.get("signal_snapshot") or position.get("signal_snapshot") or {}
+        sl_order_id = snapshot.get("fyers_sl_order_id")
+        if not sl_order_id:
+            # No hard SL to sync — soft-SL-only position.
+            return updated
+        try:
+            modify_response = self._modify_slm_order(sl_order_id, new_sl)
+            if self._looks_successful(modify_response):
+                print(
+                    f"[live_broker] trailed hard SL {position.get('symbol')} "
+                    f"order {sl_order_id} -> {new_sl:.2f}"
+                )
+            else:
+                print(
+                    f"[live_broker] trailed SL modify REJECTED for "
+                    f"{position.get('symbol')} order {sl_order_id}: {modify_response}"
+                )
+        except Exception as exc:
+            print(
+                f"[live_broker] trailed SL modify failed for "
+                f"{position.get('symbol')}: {exc}"
+            )
+        return updated
+
+    def _modify_slm_order(self, order_id: str, new_stop_price: float) -> dict:
+        """Update the stopPrice of an existing SLM order at Fyers so a
+        trailing-SL adjustment is enforced server-side, not just in our db."""
+        fyers = get_fyers_model(use_proxy=True)
+        payload = {
+            "id": str(order_id),
+            "type": 4,                                # keep SLM
+            "limitPrice": 0,
+            "stopPrice": round(float(new_stop_price), 2),
+            "qty": 0,                                 # 0 = keep current qty
+        }
+        response = fyers.modify_order(payload)
+        print(f"[live_broker] modify_slm {order_id} @stop={new_stop_price}: {response}")
+        return response if isinstance(response, dict) else {"raw": response}
+
     def _cancel_fyers_order(self, order_id: str, reason: str = "") -> dict:
         try:
             fyers = get_fyers_model(use_proxy=True)
