@@ -59,6 +59,31 @@ class LiveBroker(PaperBroker):
         else:
             sl_price = actual_entry_price * (sl_price / entry_price) if entry_price else sl_price
             target_price = actual_entry_price * (target_price / entry_price) if entry_price else target_price
+
+        # ── HARD SL + TARGET AT FYERS ──────────────────────────────────
+        # Place protective orders IMMEDIATELY after entry fill so Fyers
+        # holds the SL/Target server-side. If our app crashes at any
+        # point, Fyers still auto-exits when either level is touched.
+        # Both orders are on the reverse side and MIS/INTRADAY so they're
+        # linked to the same intraday position.
+        entry_order_id = self._extract_order_id(order_response)
+        protective = self._place_protective_orders(
+            symbol=symbol,
+            entry_side=side,
+            qty=qty,
+            sl_price=sl_price,
+            target_price=target_price,
+        )
+        # Persist Fyers order IDs in signal_snapshot so the reconciliation
+        # thread can look them up and detect SL/Target fills without any
+        # in-memory dependency (survives container restarts).
+        merged_snapshot = dict(signal_snapshot or {})
+        merged_snapshot["fyers_entry_order_id"] = entry_order_id
+        merged_snapshot["fyers_sl_order_id"] = protective.get("sl_order_id")
+        merged_snapshot["fyers_target_order_id"] = protective.get("target_order_id")
+        merged_snapshot["fyers_sl_error"] = protective.get("sl_error")
+        merged_snapshot["fyers_target_error"] = protective.get("target_error")
+
         super().open_trade(
             symbol,
             side,
@@ -67,7 +92,7 @@ class LiveBroker(PaperBroker):
             sl_price,
             target_price,
             entry_trigger,
-            signal_snapshot,
+            merged_snapshot,
             entry_time=actual_entry_time,
         )
 
@@ -75,6 +100,17 @@ class LiveBroker(PaperBroker):
         side = position["side"]
         qty = int(position["qty"])
         exit_side = "SELL" if side == "BUY" else "BUY"
+
+        # Cancel any pending protective orders BEFORE placing the manual
+        # market exit. Otherwise the SL/Target order stays live at Fyers
+        # and can fire against our closed position — which Fyers would
+        # execute as a fresh reverse trade (accidental short/long).
+        snapshot = position.get("signal_snapshot") or {}
+        for order_id_key in ("fyers_sl_order_id", "fyers_target_order_id"):
+            protective_order_id = snapshot.get(order_id_key)
+            if protective_order_id:
+                self._cancel_fyers_order(protective_order_id, reason=f"close_trade:{exit_reason}")
+
         order_response = self._place_live_order(position["symbol"], exit_side, qty)
         if not self._looks_successful(order_response):
             raise RuntimeError(f"Fyers live exit order failed: {order_response}")
@@ -86,6 +122,191 @@ class LiveBroker(PaperBroker):
             fallback_price=exit_price,
         )
         super().close_trade(position, actual_exit_price, exit_reason, exit_time=actual_exit_time)
+
+    # ── Protective order helpers ──────────────────────────────────────
+    def _place_protective_orders(
+        self,
+        symbol: str,
+        entry_side: str,
+        qty: int,
+        sl_price: float,
+        target_price: float,
+    ) -> dict:
+        """Place SL (SLM) + Target (LIMIT) orders on the reverse side of
+        the entry. Returns Fyers order IDs (or None + error) for each."""
+        exit_side = "SELL" if entry_side.upper() == "BUY" else "BUY"
+        result = {
+            "sl_order_id": None,
+            "target_order_id": None,
+            "sl_error": None,
+            "target_error": None,
+        }
+
+        # Stop-Loss Market (type=4). Fires as market when stopPrice touched.
+        try:
+            sl_response = self._place_slm_order(symbol, exit_side, qty, sl_price)
+            if self._looks_successful(sl_response):
+                result["sl_order_id"] = self._extract_order_id(sl_response)
+            else:
+                result["sl_error"] = str(sl_response)
+                print(f"[live_broker] SL order rejected {symbol}: {sl_response}")
+        except Exception as exc:
+            result["sl_error"] = str(exc)
+            print(f"[live_broker] SL order exception {symbol}: {exc}")
+
+        # Take-profit Limit (type=1). Fills at target price if market reaches it.
+        try:
+            tp_response = self._place_limit_order(symbol, exit_side, qty, target_price)
+            if self._looks_successful(tp_response):
+                result["target_order_id"] = self._extract_order_id(tp_response)
+            else:
+                result["target_error"] = str(tp_response)
+                print(f"[live_broker] Target order rejected {symbol}: {tp_response}")
+        except Exception as exc:
+            result["target_error"] = str(exc)
+            print(f"[live_broker] Target order exception {symbol}: {exc}")
+
+        return result
+
+    def _place_slm_order(self, symbol: str, side: str, qty: int, stop_price: float) -> dict:
+        fyers = get_fyers_model(use_proxy=True)
+        payload = {
+            "symbol": symbol,
+            "qty": int(qty),
+            "type": 4,                        # SLM
+            "side": 1 if side.upper() == "BUY" else -1,
+            "productType": "INTRADAY",
+            "limitPrice": 0,
+            "stopPrice": round(float(stop_price), 2),
+            "validity": "DAY",
+            "disclosedQty": 0,
+            "offlineOrder": False,
+            "stopLoss": 0,
+            "takeProfit": 0,
+        }
+        response = fyers.place_order(payload)
+        print(f"[live_broker] place_slm {symbol} {side} x{qty} @stop={stop_price}: {response}")
+        return response if isinstance(response, dict) else {"raw": response}
+
+    def _place_limit_order(self, symbol: str, side: str, qty: int, limit_price: float) -> dict:
+        fyers = get_fyers_model(use_proxy=True)
+        payload = {
+            "symbol": symbol,
+            "qty": int(qty),
+            "type": 1,                        # LIMIT
+            "side": 1 if side.upper() == "BUY" else -1,
+            "productType": "INTRADAY",
+            "limitPrice": round(float(limit_price), 2),
+            "stopPrice": 0,
+            "validity": "DAY",
+            "disclosedQty": 0,
+            "offlineOrder": False,
+            "stopLoss": 0,
+            "takeProfit": 0,
+        }
+        response = fyers.place_order(payload)
+        print(f"[live_broker] place_limit {symbol} {side} x{qty} @limit={limit_price}: {response}")
+        return response if isinstance(response, dict) else {"raw": response}
+
+    def _cancel_fyers_order(self, order_id: str, reason: str = "") -> dict:
+        try:
+            fyers = get_fyers_model(use_proxy=True)
+            response = fyers.cancel_order({"id": str(order_id)})
+            print(f"[live_broker] cancel_order {order_id} ({reason}): {response}")
+            return response if isinstance(response, dict) else {"raw": response}
+        except Exception as exc:
+            print(f"[live_broker] cancel_order failed {order_id} ({reason}): {exc}")
+            return {"s": "error", "message": str(exc)}
+
+    def reconcile_open_positions(self) -> dict:
+        """Poll Fyers orderbook and detect SL/Target fills. For each fill:
+        close our position record + cancel the sibling protective order so
+        it doesn't accidentally reverse the position later. Meant to be
+        called every ~30 seconds by the engine background loop.
+
+        Returns a summary dict: {'reconciled': N, 'errors': M}.
+        """
+        summary = {"reconciled": 0, "errors": 0, "already_closed": 0}
+        open_positions = self.open_positions()
+        if not open_positions:
+            return summary
+
+        # Fetch the orderbook once and index by order_id for O(1) lookup.
+        try:
+            fyers = get_fyers_model(use_proxy=False)  # read-only, direct
+            response = fyers.orderbook()
+        except Exception as exc:
+            print(f"[live_broker] reconcile orderbook fetch failed: {exc}")
+            summary["errors"] += 1
+            return summary
+
+        orders_by_id: dict[str, dict] = {}
+        for row in self._iter_rows(response):
+            oid = self._extract_order_id(row)
+            if oid:
+                orders_by_id[oid] = row
+
+        for position in open_positions:
+            snapshot = position.get("signal_snapshot") or {}
+            sl_id = snapshot.get("fyers_sl_order_id")
+            tp_id = snapshot.get("fyers_target_order_id")
+            symbol = position.get("symbol")
+
+            filled_order = None
+            filled_reason = None
+            sibling_id = None
+
+            for oid, reason, sibling in (
+                (sl_id, "SL", tp_id),
+                (tp_id, "TARGET", sl_id),
+            ):
+                if not oid:
+                    continue
+                order = orders_by_id.get(str(oid))
+                if not order:
+                    continue
+                # Fyers orderbook status codes: 2 = FILLED / TRADED,
+                # 1 = CANCELLED, 5 = REJECTED, 4 = TRANSIT, 6 = PENDING.
+                status_code = self._safe_int(order.get("status"))
+                if status_code == 2:
+                    filled_order = order
+                    filled_reason = reason
+                    sibling_id = sibling
+                    break
+
+            if not filled_order:
+                continue
+
+            # Cancel the sibling protective order (if it's still open) so
+            # it doesn't fire against a flat position.
+            if sibling_id:
+                sibling_order = orders_by_id.get(str(sibling_id))
+                if sibling_order:
+                    sibling_status = self._safe_int(sibling_order.get("status"))
+                    if sibling_status in {4, 6}:  # transit / pending
+                        self._cancel_fyers_order(
+                            sibling_id,
+                            reason=f"{filled_reason}_hit_cancel_sibling",
+                        )
+
+            # Record the exit in our positions/trades tables via
+            # PaperBroker.close_trade, using the actual Fyers fill price
+            # from the filled order.
+            fill_price = self._extract_fill_price(filled_order, float(position.get("sl_price") if filled_reason == "SL" else position.get("target_price")))
+            try:
+                super().close_trade(
+                    position,
+                    fill_price,
+                    exit_reason=f"{filled_reason}_FYERS",
+                    exit_time=self._extract_fill_time(filled_order),
+                )
+                summary["reconciled"] += 1
+                print(f"[live_broker] reconciled {symbol} {filled_reason} @ {fill_price}")
+            except Exception as exc:
+                summary["errors"] += 1
+                print(f"[live_broker] reconcile close_trade failed for {symbol}: {exc}")
+
+        return summary
 
     def _place_live_order(self, symbol: str, side: str, qty: int) -> dict:
         # Railway's egress IP pool has more entries than Fyers can whitelist

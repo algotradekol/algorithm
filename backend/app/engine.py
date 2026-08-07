@@ -42,6 +42,7 @@ _feed_retry_schedules: set[tuple[datetime.date, str]] = set()
 _feed_watchdog_started = False
 _feed_watchdog_last_restart_at = 0.0
 _position_ltp_poll_started = False
+_live_broker_reconcile_started = False
 # Reconnect strategy for the Fyers WebSocket. Two mechanisms stacked:
 #
 # 1) Exponential backoff — 5s, 10s, 20s, 40s, 60s between successive retries.
@@ -479,6 +480,47 @@ def _scheduler_loop():
             squareoff_fired_date = today
 
         time.sleep(5)
+
+
+def _live_broker_reconcile_loop():
+    """Poll Fyers orderbook every 30s during market hours to detect
+    when hard SL or Target orders have filled. When a fill is detected,
+    the LiveBroker updates our positions/trades tables and cancels the
+    sibling protective order so it doesn't accidentally reverse the
+    position later.
+
+    Only runs against strategies whose broker is a LiveBroker instance
+    (paper mode is a no-op). Silently skipped when no open live
+    positions exist.
+    """
+    from .live_broker import LiveBroker
+
+    while True:
+        try:
+            now = datetime.datetime.now(IST)
+            market_open = "09:15" <= now.strftime("%H:%M") < "15:30"
+            if not market_open:
+                time.sleep(30)
+                continue
+
+            for strategy in STRATEGIES.values():
+                broker = getattr(strategy, "broker", None)
+                if not isinstance(broker, LiveBroker):
+                    continue
+                try:
+                    result = broker.reconcile_open_positions()
+                    if result.get("reconciled"):
+                        print(
+                            f"[engine] LiveBroker reconciled {result['reconciled']} positions "
+                            f"for {strategy.algo_id}"
+                        )
+                except Exception as exc:
+                    print(f"[engine] LiveBroker reconcile failed for {strategy.algo_id}: {exc}")
+
+        except Exception as exc:
+            print(f"[engine] LiveBroker reconcile loop error: {exc}")
+
+        time.sleep(30)
 
 
 def _open_position_ltp_poll_loop():
@@ -965,6 +1007,10 @@ def start_engine():
         if not _position_ltp_poll_started:
             threading.Thread(target=_open_position_ltp_poll_loop, daemon=True).start()
             _position_ltp_poll_started = True
+        global _live_broker_reconcile_started
+        if not _live_broker_reconcile_started:
+            threading.Thread(target=_live_broker_reconcile_loop, daemon=True).start()
+            _live_broker_reconcile_started = True
 
         try_refresh_access_token(reason="startup")
         if not start_live_feed_if_ready():
