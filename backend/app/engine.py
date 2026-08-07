@@ -345,16 +345,15 @@ def _scheduler_loop():
             )
             test_schedule_enabled = bool(strategy.settings.get("test_schedule_enabled"))
             scan_time = getattr(strategy, "scan_candle_time", lambda: None)()
-            # Test mode fires 5 minutes after the candle, not 1. The user
-            # sets a FUTURE test_candle_time expecting the app to wait
-            # for that minute to complete and then pull real Fyers OHLC.
-            # Fyers history API takes 2-5 minutes to index a just-closed
-            # candle, so waiting the full 5 min gives it high confidence
-            # of returning real data. Production 09:15 still fires at
-            # 09:16 (+1 min) because that candle is bulk-indexed at market
-            # open — no lag there. LTP-fabricated fallback was removed;
-            # symbols with no real candle simply get audited as missing.
-            entry_delay_min = 5 if test_schedule_enabled else 1
+            # Test mode fires 2 minutes after the candle (production 09:15
+            # still fires at +1 min = 09:16). +2 gives:
+            #   - +1 min: the candle minute itself finishes closing
+            #   - +1 min: brief buffer for WS-collected data to settle
+            # First-come-first-serve: whatever data is available at the
+            # evaluate moment (WS candles + immediate Fyers history) is
+            # used for trades. Symbols still missing at that moment are
+            # audited as missing — no fabrication, no long wait.
+            entry_delay_min = 2 if test_schedule_enabled else 1
             entry_time = None
             if scan_time:
                 try:
@@ -667,16 +666,23 @@ def _live_feed_watchdog_loop():
             elif backoff_wait > 0:
                 pass
             else:
-                _feed_watchdog_last_restart_at = time.time()
+                # NB: do NOT bump _feed_watchdog_last_restart_at before the
+                # call. restart_live_feed uses that same variable to decide
+                # whether backoff has elapsed, and bumping it here would
+                # cause every call to be "skipped: 59s backoff remaining"
+                # even when the watchdog already waited the required time.
+                # restart_live_feed will bump it itself if it actually
+                # kicks off a new connection.
                 next_backoff = _FEED_BACKOFF_SEQUENCE[
                     min(_feed_reconnect_failure_count, len(_FEED_BACKOFF_SEQUENCE) - 1)
                 ]
-                print(
-                    f"[engine] Fyers tick missing/stale; restarting live feed "
-                    f"(attempt #{_feed_reconnect_failure_count + 1}, "
-                    f"next backoff {next_backoff}s)"
-                )
-                restart_live_feed(reason="watchdog_stale_or_missing_tick")
+                started = restart_live_feed(reason="watchdog_stale_or_missing_tick")
+                if started:
+                    print(
+                        f"[engine] Fyers tick missing/stale; restarted live feed "
+                        f"(attempt #{_feed_reconnect_failure_count + 1}, "
+                        f"next backoff {next_backoff}s)"
+                    )
         except Exception as exc:
             print(f"[engine] live-feed watchdog error: {exc}")
         time.sleep(5)
