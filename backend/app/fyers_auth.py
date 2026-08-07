@@ -73,9 +73,24 @@ def _raise_for_fyers_step(response: requests.Response, step: str):
 
 
 def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
-    """Exchange an OAuth callback code directly with FYERS."""
+    """Exchange an OAuth callback code with FYERS.
+
+    Route selection: when a proxy is configured for this mode, try the proxy
+    FIRST. Railway's egress IPs get Cloudflare-429'd frequently at the auth
+    endpoint (Fyers auth is fronted by Cloudflare, which rate-limits by
+    source IP). The GCP proxy has a stable single IP that Cloudflare hasn't
+    flagged. If the proxy fails for any reason, fall back to direct so
+    login still works even if the tunnel is down.
+    """
     fyers_config = _fyers_config(mode)
     fyers_proxies = _fyers_proxies(mode)
+    # Build the transport-attempt list. Proxy first when available, then
+    # direct as a fallback. Both live and paper modes benefit.
+    attempts: list[tuple[bool, dict | None]] = []
+    if fyers_proxies:
+        attempts.append((True, fyers_proxies))
+    attempts.append((False, None))
+
     audit_log(
         "fyers",
         "auth-code exchange started",
@@ -84,96 +99,112 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
         client_id=fyers_config["client_id"],
         redirect_uri=fyers_config["redirect_uri"],
         live_order_proxy_configured=bool(fyers_proxies),
-        exchange_transport="direct",
+        exchange_transport="proxy_then_direct" if fyers_proxies else "direct",
     )
     last_error: str | None = None
     candidates = _candidate_app_id_hashes(mode)
-    for index, app_id_hash in enumerate(candidates):
-        # Cloudflare fronts the Fyers auth API and blocks bursts of requests
-        # from the same IP. Space attempts out so a fallback retry isn't
-        # immediately 429'd for looking like a bot.
-        if index > 0:
-            time.sleep(2.0)
-        audit_log(
-            "fyers",
-            "auth-code exchange attempt",
-            mode=mode or "runtime",
-            broker=get_active_broker_key(mode),
-            client_id=fyers_config["client_id"],
-            redirect_uri=fyers_config["redirect_uri"],
-            proxy_enabled=False,
-            app_id_hash_prefix=app_id_hash[:12],
-        )
-        request_kwargs = {
-            "headers": {"Content-Type": "application/json; charset=utf-8"},
-            "json": {
-                "grant_type": "authorization_code",
-                "appIdHash": app_id_hash,
-                "code": auth_code,
-            },
-            "timeout": 15,
-        }
-        try:
-            response = requests.post(AUTH_CODE_EXCHANGE_URL, **request_kwargs)
-        except requests.RequestException as exc:
-            last_error = str(exc)
+    for transport_index, (use_proxy, proxies_arg) in enumerate(attempts):
+        # Between transports (proxy → direct), give the destination a
+        # moment to avoid stacking any lingering CF rate window.
+        if transport_index > 0:
+            time.sleep(3.0)
+        transport_label = "proxy" if use_proxy else "direct"
+        cloudflare_blocked_this_transport = False
+        for index, app_id_hash in enumerate(candidates):
+            if cloudflare_blocked_this_transport:
+                break
+            # Space out retries within a single transport to dodge CF bot
+            # detection when trying multiple appIdHash variants.
+            if index > 0:
+                time.sleep(2.0)
             audit_log(
                 "fyers",
-                "auth-code exchange request failed",
+                "auth-code exchange attempt",
                 mode=mode or "runtime",
                 broker=get_active_broker_key(mode),
-                proxy_enabled=False,
+                client_id=fyers_config["client_id"],
+                redirect_uri=fyers_config["redirect_uri"],
+                proxy_enabled=use_proxy,
+                transport=transport_label,
                 app_id_hash_prefix=app_id_hash[:12],
-                error=str(exc),
             )
-            continue
-        try:
-            data = response.json()
-        except ValueError:
-            content_type = response.headers.get("content-type", "unknown")
-            last_error = f"non-json response (HTTP {response.status_code}, content-type {content_type})"
-            body_snippet = response.text[:500]
-            audit_log(
-                "fyers",
-                "auth-code exchange returned non-json response",
-                mode=mode or "runtime",
-                broker=get_active_broker_key(mode),
-                proxy_enabled=False,
-                app_id_hash_prefix=app_id_hash[:12],
-                status_code=response.status_code,
-                content_type=content_type,
-                body=body_snippet,
-            )
-            # Cloudflare 429 (bot detection). Continuing to retry the other
-            # appIdHash candidates makes it worse — every subsequent POST
-            # from the same IP within the rate window will get the same 429.
-            # Bail out early with a specific error so the user knows to wait.
-            if response.status_code == 429 or "cloudflare" in body_snippet.lower() or "ie6 oldie" in body_snippet:
-                raise RuntimeError(
-                    "Fyers auth-code exchange blocked by Cloudflare (HTTP 429). "
-                    "Wait 60 seconds and click Login to Fyers again — retrying "
-                    "the fallback hashes will keep hitting the same block."
+            request_kwargs = {
+                "headers": {"Content-Type": "application/json; charset=utf-8"},
+                "json": {
+                    "grant_type": "authorization_code",
+                    "appIdHash": app_id_hash,
+                    "code": auth_code,
+                },
+                "timeout": 15,
+            }
+            if proxies_arg:
+                request_kwargs["proxies"] = proxies_arg
+            try:
+                response = requests.post(AUTH_CODE_EXCHANGE_URL, **request_kwargs)
+            except requests.RequestException as exc:
+                last_error = str(exc)
+                audit_log(
+                    "fyers",
+                    "auth-code exchange request failed",
+                    mode=mode or "runtime",
+                    broker=get_active_broker_key(mode),
+                    proxy_enabled=use_proxy,
+                    transport=transport_label,
+                    app_id_hash_prefix=app_id_hash[:12],
+                    error=str(exc),
                 )
-            continue
-        if response.ok and data.get("access_token"):
-            return data
-        error_body = data.get("message") or data.get("error") or response.text[:500]
-        last_error = str(error_body)
-        audit_log(
-            "fyers",
-            "auth-code exchange rejected",
-            mode=mode or "runtime",
-            broker=get_active_broker_key(mode),
-            status_code=response.status_code,
-            app_id_hash_prefix=app_id_hash[:12],
-            proxy_enabled=False,
-            error=error_body,
-        )
-        if response.status_code not in {200, 201, 202, 204, 308}:
-            continue
+                # Proxy transport failed at TCP/HTTP level; break inner loop
+                # so we try the direct transport next instead of hammering
+                # a broken proxy with all four appIdHash variants.
+                if use_proxy:
+                    cloudflare_blocked_this_transport = True
+                continue
+            try:
+                data = response.json()
+            except ValueError:
+                content_type = response.headers.get("content-type", "unknown")
+                last_error = f"non-json response (HTTP {response.status_code}, content-type {content_type})"
+                body_snippet = response.text[:500]
+                audit_log(
+                    "fyers",
+                    "auth-code exchange returned non-json response",
+                    mode=mode or "runtime",
+                    broker=get_active_broker_key(mode),
+                    proxy_enabled=use_proxy,
+                    transport=transport_label,
+                    app_id_hash_prefix=app_id_hash[:12],
+                    status_code=response.status_code,
+                    content_type=content_type,
+                    body=body_snippet,
+                )
+                # Cloudflare 429 (bot detection). Break out of THIS transport's
+                # inner loop and switch to the other transport (proxy → direct
+                # or direct → done). Retrying same-transport candidates makes
+                # it worse — every subsequent POST gets the same 429.
+                if response.status_code == 429 or "cloudflare" in body_snippet.lower() or "ie6 oldie" in body_snippet:
+                    cloudflare_blocked_this_transport = True
+                continue
+            if response.ok and data.get("access_token"):
+                return data
+            error_body = data.get("message") or data.get("error") or response.text[:500]
+            last_error = str(error_body)
+            audit_log(
+                "fyers",
+                "auth-code exchange rejected",
+                mode=mode or "runtime",
+                broker=get_active_broker_key(mode),
+                status_code=response.status_code,
+                app_id_hash_prefix=app_id_hash[:12],
+                proxy_enabled=use_proxy,
+                transport=transport_label,
+                error=error_body,
+            )
+            if response.status_code not in {200, 201, 202, 204, 308}:
+                continue
     raise RuntimeError(
-        "Fyers auth-code exchange failed: "
-        f"{last_error or 'all appIdHash candidates were rejected'}"
+        "Fyers auth-code exchange failed after all transports and appIdHash "
+        f"candidates were rejected: {last_error or 'unknown error'}. "
+        "If this was a Cloudflare 429, wait 5-10 minutes and try Login again."
     )
 
 
