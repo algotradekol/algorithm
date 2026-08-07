@@ -345,12 +345,22 @@ def _scheduler_loop():
             )
             test_schedule_enabled = bool(strategy.settings.get("test_schedule_enabled"))
             scan_time = getattr(strategy, "scan_candle_time", lambda: None)()
+            # Test mode fires 5 minutes after the candle, not 1. The user
+            # sets a FUTURE test_candle_time expecting the app to wait
+            # for that minute to complete and then pull real Fyers OHLC.
+            # Fyers history API takes 2-5 minutes to index a just-closed
+            # candle, so waiting the full 5 min gives it high confidence
+            # of returning real data. Production 09:15 still fires at
+            # 09:16 (+1 min) because that candle is bulk-indexed at market
+            # open — no lag there. LTP-fabricated fallback was removed;
+            # symbols with no real candle simply get audited as missing.
+            entry_delay_min = 5 if test_schedule_enabled else 1
             entry_time = None
             if scan_time:
                 try:
                     entry_time = (
                         datetime.datetime.strptime(scan_time, "%H:%M")
-                        + datetime.timedelta(minutes=1)
+                        + datetime.timedelta(minutes=entry_delay_min)
                     ).strftime("%H:%M")
                 except ValueError:
                     entry_time = None
@@ -384,9 +394,14 @@ def _scheduler_loop():
                         completed_any = True
                         continue
                     if completed is False:
+                        # Deadline = entry_time + 2 min. In test mode with the
+                        # 3-min entry delay this is scan_time + 5 min total;
+                        # in production it stays scan_time + 3 min. Gives the
+                        # retry loop enough headroom for Fyers history to
+                        # finalize the candle.
                         deadline_time = (
                             datetime.datetime.strptime(scan_time, "%H:%M")
-                            + datetime.timedelta(minutes=2)
+                            + datetime.timedelta(minutes=entry_delay_min + 2)
                         ).strftime("%H:%M")
                         actual_time = datetime.datetime.now(IST).strftime("%H:%M")
                         if actual_time >= deadline_time:
