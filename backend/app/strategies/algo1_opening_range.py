@@ -45,6 +45,7 @@ from ..fyers_auth import get_stored_access_token
 from ..candidate_ranking import build_sector_breakdown
 from ..candidate_selection import execute_candidates_first_come
 from ..symbols import get_nse500_sector_map
+from ..margin_lookup import effective_multiplier
 GAP_LIMIT_PCT = 2.0
 TICK_SIZE = 0.05
 # Concurrency for the 9:16 history backfill. IO-bound HTTP requests release
@@ -581,7 +582,9 @@ class Algo1OpeningRange(Strategy):
             return False
 
         capital = float(self.settings.get("capital_per_trade", 10000))
-        margin = float(self.settings.get("margin_multiplier", 1) or 1)
+        # Margin is per-stock from the broker's approved-securities list, not a
+        # flat rate. The global margin_multiplier setting acts only as a ceiling.
+        margin = effective_multiplier(symbol, self.settings.get("margin_multiplier"))
         qty = int((capital * margin) // entry_price)
         if qty < 1:
             self.entry_failures[symbol] = "capital_per_trade_below_share_price"

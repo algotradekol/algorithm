@@ -7,7 +7,7 @@ type Field = [string, string, string];
 const CAPITAL_FIELDS: Field[] = [
   ['starting_capital', 'Starting Capital (Rs)', 'baseline capital shown in strategy summary'],
   ['capital_per_trade', 'Capital Per Trade (Rs)', 'paper capital allocated to one new trade'],
-  ['margin_multiplier', 'Margin Multiplier (x)', 'used for effective capital preview only'],
+  ['margin_multiplier', 'Margin Cap (x)', 'ceiling only. Actual leverage is per-stock from the broker approved list (1x–5x); this caps it. Keep at 5 to use each stock’s full approved margin.'],
 ];
 
 const RISK_FIELDS: Field[] = [
@@ -176,13 +176,14 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
 
       <aside className="panel p-4">
         <h3 className="text-base font-semibold text-gray-100">Live Strategy Preview</h3>
-        <p className="mt-2 text-xs text-gray-500">Uses assumed example price Rs 500.</p>
+        <p className="mt-2 text-xs text-gray-500">Assumes example price Rs 500 at full {Number(settings.margin_multiplier || 5)}x cap.</p>
         <div className="mt-4 divide-y divide-[#1f2937] border-y border-[#1f2937] text-sm">
-          <PreviewRow label="Position size" value={`${preview.positionSize.toLocaleString('en-IN')} qty`} />
-          <PreviewRow label="Effective capital with margin" value={formatMoney(preview.effectiveCapital)} />
+          <PreviewRow label="Position size (at cap)" value={`${preview.positionSize.toLocaleString('en-IN')} qty`} />
+          <PreviewRow label="Effective capital at cap" value={formatMoney(preview.effectiveCapital)} />
           <PreviewRow label="Max daily risk" value={formatMoney(preview.maxDailyRisk)} tone="text-[#ef4444]" />
           <PreviewRow label="Max daily reward" value={formatMoney(preview.maxDailyReward)} tone="text-[#22c55e]" />
         </div>
+        <p className="mt-3 text-xs text-gray-500">Actual quantity is sized per stock: capital × that stock’s broker-approved margin (1x–5x), so lower-margin names get proportionally fewer shares.</p>
       </aside>
     </section>
   );
@@ -465,7 +466,7 @@ function calculatePreview(settings: Record<string, number>) {
   const marginMultiplier = Number(settings.margin_multiplier || 0);
   const maxTrades = Number(settings.max_trades_per_day || 0);
   return {
-    positionSize: Math.floor(capitalPerTrade / assumedPrice),
+    positionSize: Math.floor((capitalPerTrade * (marginMultiplier || 1)) / assumedPrice),
     effectiveCapital: capitalPerTrade * marginMultiplier,
     maxDailyRisk: capitalPerTrade * Number(settings.sl_pct || 0) / 100 * maxTrades,
     maxDailyReward: capitalPerTrade * Number(settings.target_pct || 0) / 100 * maxTrades,

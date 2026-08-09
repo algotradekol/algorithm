@@ -10,6 +10,7 @@ from ..broker_factory import create_broker
 from ..candidate_ranking import build_sector_breakdown
 from ..candidate_selection import execute_candidates_first_come
 from ..symbols import get_nse500_sector_map
+from ..margin_lookup import effective_multiplier
 
 MIN_GAP_PCT = 0.5
 MAX_GAP_PCT = 2.0
@@ -591,7 +592,8 @@ class Algo4OpeningRangeIndicators(Strategy):
             self.entry_failures[symbol] = "daily_trade_cap_reached"
             return False
 
-        margin = float(self.settings.get("margin_multiplier", 1) or 1)
+        # Per-stock margin from the broker's approved list; global setting caps it.
+        margin = effective_multiplier(symbol, self.settings.get("margin_multiplier"))
         qty = int((self.settings["capital_per_trade"] * margin) // entry_price)
         if qty < 1:
             self.entry_failures[symbol] = "capital_per_trade_below_share_price"
