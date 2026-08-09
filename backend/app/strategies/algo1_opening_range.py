@@ -581,7 +581,8 @@ class Algo1OpeningRange(Strategy):
             return False
 
         capital = float(self.settings.get("capital_per_trade", 10000))
-        qty = int(capital // entry_price)
+        margin = float(self.settings.get("margin_multiplier", 1) or 1)
+        qty = int((capital * margin) // entry_price)
         if qty < 1:
             self.entry_failures[symbol] = "capital_per_trade_below_share_price"
             return False

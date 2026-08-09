@@ -43,7 +43,15 @@ class LiveBroker(PaperBroker):
         qty = self._cap_qty_to_live_funds(qty, entry_price)
         if qty < 1:
             raise RuntimeError("Fyers live order failed: available live funds are below the current share price.")
-        order_response = self._place_live_order(symbol, side, qty)
+        # Entry order type is driven by strategy settings (default LIMIT at LTP,
+        # per client spec). Read at call-time so a settings change takes effect
+        # on the next trade without a restart.
+        entry_order_type, entry_limit_price = self._entry_order_params(entry_price)
+        order_response = self._place_live_order(
+            symbol, side, qty,
+            order_type=entry_order_type,
+            limit_price=entry_limit_price,
+        )
         if not self._looks_successful(order_response):
             raise RuntimeError(f"Fyers live order failed: {order_response}")
         actual_entry_price, actual_entry_time = self._resolve_fill_details(
@@ -360,26 +368,23 @@ class LiveBroker(PaperBroker):
 
         return summary
 
-    def _place_live_order(self, symbol: str, side: str, qty: int) -> dict:
-        # Railway's egress IP pool has more entries than Fyers can whitelist
-        # (Fyers app accepts only 2 IPs total), so we route orders through
-        # the GCP Squid proxy so Fyers only ever sees one source IP
-        # (34.100.255.224 = the GCP proxy's public IP, set as Fyers Primary IP).
-        # Google Cloud silently drops Railway packets to the GCP VM directly,
-        # so LIVE_FYERS_PROXY_URL must point at a Cloudflare Tunnel hostname
-        # that terminates at the Squid box on the GCP VM.
+    def _place_live_order(
+        self,
+        symbol: str,
+        side: str,
+        qty: int,
+        order_type: str = "MARKET",
+        limit_price: float = 0.0,
+    ) -> dict:
         fyers = get_fyers_model(use_proxy=True)
-        # Fyers V3 place_order rejects with code -99 "Bad request" if any of
-        # limitPrice / stopPrice / stopLoss / takeProfit are missing, even for
-        # market orders where the value must be 0. isSliceOrder is not a real
-        # V3 field and can also trigger the same rejection — drop it.
+        is_limit = str(order_type).upper() == "LIMIT" and limit_price > 0
         payload = {
             "symbol": symbol,
             "qty": int(qty),
-            "type": 2,               # 1=Limit 2=Market 3=SL 4=SLM
+            "type": 1 if is_limit else 2,   # 1=Limit 2=Market 3=SL 4=SLM
             "side": 1 if side.upper() == "BUY" else -1,
             "productType": "INTRADAY",
-            "limitPrice": 0,
+            "limitPrice": round(float(limit_price), 2) if is_limit else 0,
             "stopPrice": 0,
             "validity": "DAY",
             "disclosedQty": 0,
@@ -388,7 +393,7 @@ class LiveBroker(PaperBroker):
             "takeProfit": 0,
         }
         response = fyers.place_order(payload)
-        print(f"[live_broker] place_order {symbol} {side} x{qty}: {response}")
+        print(f"[live_broker] place_order {symbol} {side} x{qty} type={'LIMIT@'+str(payload['limitPrice']) if is_limit else 'MARKET'}: {response}")
         return response if isinstance(response, dict) else {"raw": response}
 
     def _looks_successful(self, response: dict) -> bool:
@@ -413,6 +418,18 @@ class LiveBroker(PaperBroker):
         if has_error_indicator:
             return False
         return any(response.get(key) for key in ("id", "order_id", "orderId"))
+
+    def _entry_order_params(self, entry_price: float) -> tuple[str, float]:
+        """Read order_type setting for this algo. Defaults to LIMIT at LTP."""
+        try:
+            from .strategy_settings import get_settings
+            settings = get_settings(self.algo_id)
+            order_type = str(settings.get("order_type", "LIMIT")).upper()
+        except Exception:
+            order_type = "LIMIT"
+        if order_type == "LIMIT":
+            return "LIMIT", float(entry_price)
+        return "MARKET", 0.0
 
     def _cap_qty_to_live_funds(self, requested_qty: int, entry_price: float) -> int:
         if requested_qty < 1 or entry_price <= 0:

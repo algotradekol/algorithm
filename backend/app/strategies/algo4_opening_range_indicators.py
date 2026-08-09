@@ -591,7 +591,8 @@ class Algo4OpeningRangeIndicators(Strategy):
             self.entry_failures[symbol] = "daily_trade_cap_reached"
             return False
 
-        qty = int(self.settings["capital_per_trade"] // entry_price)
+        margin = float(self.settings.get("margin_multiplier", 1) or 1)
+        qty = int((self.settings["capital_per_trade"] * margin) // entry_price)
         if qty < 1:
             self.entry_failures[symbol] = "capital_per_trade_below_share_price"
             return False

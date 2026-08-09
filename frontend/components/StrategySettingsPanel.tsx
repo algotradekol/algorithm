@@ -11,8 +11,8 @@ const CAPITAL_FIELDS: Field[] = [
 ];
 
 const RISK_FIELDS: Field[] = [
-  ['target_pct', 'Target % (per trade)', 'profit target from entry price'],
-  ['sl_pct', 'Stop Loss % (per trade)', 'stop loss from entry price'],
+  ['target_pct', 'Target % (per trade)', 'BUY: +value (e.g. +2). SELL: −value (e.g. −2). Sign is a display convention; magnitude is what applies.'],
+  ['sl_pct', 'Stop Loss % (per trade)', 'BUY: −value (e.g. −1). SELL: +value (e.g. +1). Sign is a display convention; magnitude is what applies.'],
   ['trailing_sl_trigger_pct', 'Trailing SL Trigger %', 'start trailing after price moves this much in favor'],
   ['trailing_sl_distance_pct', 'Trailing SL Distance %', 'trail stop this far behind the best favorable price'],
   ['max_trades_per_day', 'Max Trades Per Day', 'daily total trade cap'],
@@ -139,6 +139,7 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
 
         <CashControl value={availableCash} setValue={setAvailableCash} onSave={saveAvailableCash} saving={cashSaving} />
         <FieldGroup title="Capital Settings" fields={CAPITAL_FIELDS} settings={settings} setSettings={setSettings} />
+        <OrderTypeSelect settings={settings} setSettings={setSettings} />
         {(algoId === 'algo2' || algoId === 'algo3') && (
           <ScanToggle algoId={algoId} settings={settings} setSettings={setSettings} />
         )}
@@ -231,6 +232,46 @@ function ScanToggle({
           <span className="mt-1 block text-xs text-gray-500">{helper}</span>
         </span>
       </label>
+    </div>
+  );
+}
+
+function OrderTypeSelect({
+  settings,
+  setSettings,
+}: {
+  settings: Record<string, any>;
+  setSettings: (settings: Record<string, any>) => void;
+}) {
+  const current = String(settings.order_type || 'LIMIT').toUpperCase();
+  const options: [string, string, string][] = [
+    ['LIMIT', 'Limit @ LTP', 'Entry order is placed as LIMIT at the live LTP snapshot. Safer, but may go unfilled if price moves away before Fyers receives it.'],
+    ['MARKET', 'Market', 'Entry order is placed as MARKET. Guaranteed fill, but slippage on fast-moving stocks.'],
+  ];
+  return (
+    <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3">
+      <div className="label mb-3">Entry Order Type</div>
+      <div className="grid gap-2 sm:grid-cols-2">
+        {options.map(([value, label, helper]) => (
+          <label key={value} className={`rounded border p-3 ${
+            current === value ? 'border-[#3b82f6] bg-[#3b82f6]/10' : 'border-[#1f2937] bg-[#0d1117]'
+          }`}>
+            <div className="flex items-start gap-2">
+              <input
+                type="radio"
+                name="order_type"
+                checked={current === value}
+                onChange={() => setSettings({ ...settings, order_type: value })}
+                className="mt-1"
+              />
+              <span>
+                <span className="block text-sm font-semibold text-gray-100">{label}</span>
+                <span className="mt-1 block text-xs text-gray-500">{helper}</span>
+              </span>
+            </div>
+          </label>
+        ))}
+      </div>
     </div>
   );
 }
@@ -403,8 +444,10 @@ function FieldGroup({
 function NumberField({ fieldKey, label, helper, settings, setSettings }: { fieldKey: string; label: string; helper: string; settings: Record<string, any>; setSettings: (settings: Record<string, any>) => void }) {
   const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume']);
   const rupeeFields = new Set(['starting_capital', 'capital_per_trade', 'min_total_value', 'ltp_min', 'ltp_max']);
+  const signedFields = new Set(['sl_pct', 'target_pct']);
   const step = integerFields.has(fieldKey) ? '1' : rupeeFields.has(fieldKey) ? '0.01' : '0.0001';
-  return <label><div className="label">{label}</div><input type="number" step={step} min="0" value={Number.isFinite(settings[fieldKey]) ? settings[fieldKey] : 0} onChange={(e) => setSettings({ ...settings, [fieldKey]: Number(e.target.value) || 0 })} onBlur={(e) => setSettings({ ...settings, [fieldKey]: roundForField(fieldKey, Number(e.target.value) || 0) })} className="control mt-1 num" /><div className="mt-1 text-xs text-gray-500">{helper}</div></label>;
+  const allowNegative = signedFields.has(fieldKey);
+  return <label><div className="label">{label}</div><input type="number" step={step} {...(allowNegative ? {} : { min: '0' })} value={Number.isFinite(settings[fieldKey]) ? settings[fieldKey] : 0} onChange={(e) => setSettings({ ...settings, [fieldKey]: Number(e.target.value) || 0 })} onBlur={(e) => setSettings({ ...settings, [fieldKey]: roundForField(fieldKey, Math.abs(Number(e.target.value) || 0)) })} className="control mt-1 num" /><div className="mt-1 text-xs text-gray-500">{helper}</div></label>;
 }
 
 function PreviewRow({ label, value, tone = 'text-gray-100' }: { label: string; value: string; tone?: string }) {

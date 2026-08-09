@@ -35,7 +35,10 @@ DEFAULT_SETTINGS = {
     "filter_price_range": True,
     "test_schedule_enabled": False,
     "test_candle_time": "11:10",
+    "order_type": "LIMIT",
 }
+
+ORDER_TYPES = {"LIMIT", "MARKET"}
 
 STRATEGY_DEFAULT_OVERRIDES = {
     "algo1": {
@@ -104,6 +107,7 @@ BOOL_FIELDS = {
 TEXT_FIELDS = {
     "exit_mode",
     "test_candle_time",
+    "order_type",
 }
 
 # Rupee amounts are stored to paise precision. Percentages and multipliers are
@@ -142,6 +146,10 @@ def _normalize(settings: dict, algo_id: str) -> dict:
                 try:
                     datetime.datetime.strptime(normalized[key], "%H:%M")
                 except ValueError:
+                    normalized[key] = defaults[key]
+            if key == "order_type":
+                normalized[key] = normalized[key].upper()
+                if normalized[key] not in ORDER_TYPES:
                     normalized[key] = defaults[key]
         elif key in INT_FIELDS:
             normalized[key] = int(value)
