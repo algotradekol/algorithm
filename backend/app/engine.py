@@ -61,6 +61,20 @@ _FEED_CIRCUIT_OPEN_SECONDS = 900.0  # 15 minutes
 _feed_reconnect_failure_count = 0
 _feed_circuit_open_until = 0.0
 
+# On every Railway deploy the old container is killed abruptly and the new
+# container immediately tries a Fyers WS handshake — but Fyers has not yet
+# released the old connection for the same client_id, so it 429s the
+# handshake. A single 429 was tripping the 15-minute circuit breaker on
+# every push during market hours. Waiting ~45s after process start before
+# the first handshake gives Fyers time to release the old session and
+# avoids the deploy-race.
+_BOOT_WS_DELAY_SECONDS = 45.0
+_process_started_at = time.time()
+
+
+def _boot_grace_remaining() -> float:
+    return max(0.0, _BOOT_WS_DELAY_SECONDS - (time.time() - _process_started_at))
+
 
 def _current_backoff_seconds() -> float:
     """The wait time required between the last restart and the next one,
@@ -661,11 +675,16 @@ def _live_feed_watchdog_loop():
 
             circuit_wait = _circuit_open_remaining()
             backoff_wait = max(0.0, _current_backoff_seconds() - stale_seconds)
+            boot_wait = _boot_grace_remaining()
 
             if not (market_open and opening_grace_elapsed and get_stored_access_token()):
                 pass  # off-hours or no token, nothing to do
             elif tick_is_fresh:
                 pass  # feed is healthy
+            elif boot_wait > 0:
+                # Deploy-race guard: don't handshake while Fyers still holds
+                # the old container's WS. Silent — logs once from start_engine.
+                pass
             elif circuit_wait > 0:
                 # Silent — this can loop for 15 minutes; don't log every 5s.
                 pass
@@ -1040,7 +1059,17 @@ def start_engine():
             _live_broker_reconcile_started = True
 
         try_refresh_access_token(reason="startup")
-        if not start_live_feed_if_ready():
+        # Deploy-race guard: skip the immediate WS handshake during the boot
+        # grace window. The watchdog will pick it up automatically once the
+        # window elapses, using its normal backoff/circuit rules. If market
+        # is already closed there is no urgency either way.
+        boot_wait = _boot_grace_remaining()
+        if boot_wait > 0:
+            print(
+                f"[engine] deferring first WS handshake for {int(boot_wait)}s "
+                f"(boot grace to avoid deploy-race 429 from Fyers)"
+            )
+        elif not start_live_feed_if_ready():
             print("[engine] started without live feed; complete manual Fyers login to enable it")
         print(f"[engine] started in {get_runtime_trading_mode()} mode with {len(LIVE_FEED_SYMBOLS)} live symbols, {len(STRATEGIES)} strategies")
     except Exception as exc:
