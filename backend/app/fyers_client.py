@@ -556,9 +556,14 @@ def get_single_minute_candle(symbol: str, candle_time_str: str) -> list[dict]:
     """
     fyers = get_fyers_model(use_proxy=False)
     today = datetime.date.today()
-    # Build exact start/end timestamps in IST
-    candle_start = IST.localize(
-        datetime.datetime.combine(today, datetime.time(*map(int, candle_time_str.split(":"))))
+    # Build exact start/end timestamps in IST. IST is a zoneinfo.ZoneInfo
+    # (see app/timezone.py), NOT pytz — use tzinfo= kwarg, not .localize().
+    # The old .localize() call raised AttributeError on every symbol and
+    # collapsed the entire 9:15 backfill to 0 candles on 2026-08-10.
+    candle_start = datetime.datetime.combine(
+        today,
+        datetime.time(*map(int, candle_time_str.split(":"))),
+        tzinfo=IST,
     )
     # Fyers range_to is inclusive — request a 2-min window to be safe
     candle_end = candle_start + datetime.timedelta(minutes=2)
