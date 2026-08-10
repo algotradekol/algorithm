@@ -57,7 +57,10 @@ _live_broker_reconcile_started = False
 #    a successful first tick or by a human action (mode switch, fresh OAuth).
 _FEED_BACKOFF_SEQUENCE = (5, 10, 20, 40, 60)
 _FEED_MAX_CONSECUTIVE_FAILURES = 5
-_FEED_CIRCUIT_OPEN_SECONDS = 900.0  # 15 minutes
+_FEED_CIRCUIT_OPEN_SECONDS = 180.0  # 3 minutes — Fyers server-closes WS
+# every ~30s regardless of quota state, so a 15-min silence just costs us
+# signal candles for no upside. 3 min gives Fyers time to release the old
+# session on their side, then we resume via the normal backoff schedule.
 _feed_reconnect_failure_count = 0
 _feed_circuit_open_until = 0.0
 

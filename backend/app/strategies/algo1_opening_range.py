@@ -572,6 +572,9 @@ class Algo1OpeningRange(Strategy):
             print(f"[algo1] quotes-API LTP fallback failed: {exc}")
             return {}
 
+    def _has_open_position(self, symbol: str) -> bool:
+        return any(position["symbol"] == symbol for position in self.broker.open_positions())
+
     def _enter(self, symbol: str, side: str, entry_price: float) -> bool:
         """Place a live/paper trade for symbol. Returns True on success."""
         if not entry_price:
@@ -579,6 +582,14 @@ class Algo1OpeningRange(Strategy):
             return False
         if self.broker.already_traded_today(symbol):
             self.entry_failures[symbol] = "already_traded_today"
+            return False
+        # already_traded_today only sees CLOSED trades (populated on exit).
+        # Without this open-position check, a repeated test-schedule scan
+        # could enter the same symbol a second time while the first
+        # position is still open — happened on 2026-08-10 with IRB Infra
+        # and Inventurus Knowledge.
+        if self._has_open_position(symbol):
+            self.entry_failures[symbol] = "position_already_open"
             return False
 
         capital = float(self.settings.get("capital_per_trade", 10000))

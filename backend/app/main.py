@@ -438,8 +438,16 @@ def fyers_callback(auth_code: str = None, code: str = None, state: str | None = 
     clear_pending_fyers_login_mode()
     clear_pending_fyers_login_origin()
     # Fresh OAuth-minted token; bypass any live 429 backoff so the new
-    # session starts immediately.
-    restart_live_feed(reason=f"fyers_oauth_callback:{callback_mode}", ignore_backoff=True)
+    # session starts. Delayed 15s via Timer so Fyers releases the old WS
+    # session on their side before we handshake again — stacking a fresh
+    # handshake on top of a still-warm one triggered a 429+circuit-open
+    # storm on 2026-08-10 (Aug 10). Timer thread is daemon so shutdown
+    # isn't blocked.
+    threading.Timer(
+        15.0,
+        restart_live_feed,
+        kwargs={"reason": f"fyers_oauth_callback:{callback_mode}", "ignore_backoff": True},
+    ).start()
     audit_log("fyers", "oauth callback completed", mode=callback_mode)
     return RedirectResponse(f"{redirect_base}/dashboard?fyers_login=success")
 

@@ -14,6 +14,46 @@ from .fyers_client import get_fyers_model, get_wallet_balance
 from .paper_broker import PaperBroker
 
 
+# NSE equity tick size. Fyers V3 rejects prices that aren't a multiple of the
+# stock's tick with `code -50: LimitPrice not a multiple of tick size 0.0500`.
+# Nearly every NSE equity trades on 0.05 tick, so we round every stop/limit
+# price we send to Fyers to the nearest 0.05. A handful of low-price ETFs use
+# 0.01 — rounding those to 0.05 is coarser than optimal but never invalid.
+_TICK_SIZE = 0.05
+
+# When a stop-loss order gets triggered, market may already have gapped past
+# the stop. Fyers V3 requires limitPrice > 0 for SL-M orders (`code -50:
+# limitPrice: Must be greater than or equal to 0.0025`), so we send it as
+# SL-Limit with the limit sitting 0.5% beyond the stop in the fill direction
+# (below the stop for a SELL exit, above the stop for a BUY exit). That gives
+# the order enough slack to fill through normal gap-through moves while still
+# not accepting catastrophic slippage.
+_SL_LIMIT_SLIPPAGE_PCT = 0.5
+
+
+def _round_to_tick(price: float, tick: float = _TICK_SIZE) -> float:
+    """Round `price` to the nearest multiple of `tick`. Never returns 0 for a
+    positive input — Fyers rejects both non-tick multiples and zero prices."""
+    if price is None or price <= 0:
+        return 0.0
+    return round(round(float(price) / tick) * tick, 2)
+
+
+def _sl_limit_price(stop_price: float, exit_side: str) -> float:
+    """Compute the LIMIT companion price for an SL-Limit order.
+
+    exit_side is the side of the PROTECTIVE order:
+      - 'SELL' exits a long position -> limit sits BELOW stop so a
+        downward gap still fills.
+      - 'BUY' exits a short position -> limit sits ABOVE stop so an
+        upward gap still fills.
+    """
+    if stop_price is None or stop_price <= 0:
+        return 0.0
+    factor = 1.0 - (_SL_LIMIT_SLIPPAGE_PCT / 100.0) if exit_side.upper() == "SELL" else 1.0 + (_SL_LIMIT_SLIPPAGE_PCT / 100.0)
+    return _round_to_tick(float(stop_price) * factor)
+
+
 class LiveBroker(PaperBroker):
     def state_table_name(self) -> str:
         return "live_algo_state"
@@ -151,41 +191,64 @@ class LiveBroker(PaperBroker):
         }
 
         # Stop-Loss Market (type=4). Fires as market when stopPrice touched.
-        try:
-            sl_response = self._place_slm_order(symbol, exit_side, qty, sl_price)
-            if self._looks_successful(sl_response):
-                result["sl_order_id"] = self._extract_order_id(sl_response)
-            else:
-                result["sl_error"] = str(sl_response)
-                print(f"[live_broker] SL order rejected {symbol}: {sl_response}")
-        except Exception as exc:
-            result["sl_error"] = str(exc)
-            print(f"[live_broker] SL order exception {symbol}: {exc}")
+        sl_id, sl_err = self._place_with_retry(
+            "SL", symbol,
+            lambda: self._place_slm_order(symbol, exit_side, qty, sl_price),
+        )
+        result["sl_order_id"] = sl_id
+        result["sl_error"] = sl_err
 
         # Take-profit Limit (type=1). Fills at target price if market reaches it.
-        try:
-            tp_response = self._place_limit_order(symbol, exit_side, qty, target_price)
-            if self._looks_successful(tp_response):
-                result["target_order_id"] = self._extract_order_id(tp_response)
-            else:
-                result["target_error"] = str(tp_response)
-                print(f"[live_broker] Target order rejected {symbol}: {tp_response}")
-        except Exception as exc:
-            result["target_error"] = str(exc)
-            print(f"[live_broker] Target order exception {symbol}: {exc}")
+        tp_id, tp_err = self._place_with_retry(
+            "Target", symbol,
+            lambda: self._place_limit_order(symbol, exit_side, qty, target_price),
+        )
+        result["target_order_id"] = tp_id
+        result["target_error"] = tp_err
 
         return result
 
+    def _place_with_retry(self, label: str, symbol: str, fn) -> tuple[str | None, str | None]:
+        """Call `fn` once; if the response isn't successful, sleep 5s and try
+        one more time. Returns (order_id, error_str). Covers transient 429s
+        after our tick-rounding + limitPrice fixes reduced the reject rate
+        to near-zero — retry is the second layer of protection."""
+        for attempt in (1, 2):
+            try:
+                response = fn()
+                if self._looks_successful(response):
+                    return self._extract_order_id(response), None
+                error = str(response)
+                if attempt == 1:
+                    print(f"[live_broker] {label} order attempt {attempt} rejected {symbol}, retrying in 5s: {response}")
+                    time.sleep(5)
+                    continue
+                print(f"[live_broker] {label} order rejected {symbol} after retry: {response}")
+                return None, error
+            except Exception as exc:
+                error = str(exc)
+                if attempt == 1:
+                    print(f"[live_broker] {label} order attempt {attempt} exception {symbol}, retrying in 5s: {exc}")
+                    time.sleep(5)
+                    continue
+                print(f"[live_broker] {label} order exception {symbol} after retry: {exc}")
+                return None, error
+        return None, "unreachable"
+
     def _place_slm_order(self, symbol: str, side: str, qty: int, stop_price: float) -> dict:
         fyers = get_fyers_model(use_proxy=True)
+        # Fyers V3 requires limitPrice > 0 even on SL-M — see _sl_limit_price
+        # docstring for why we send a 0.5%-slack limit rather than 0.
+        rounded_stop = _round_to_tick(stop_price)
+        limit_price = _sl_limit_price(rounded_stop, side)
         payload = {
             "symbol": symbol,
             "qty": int(qty),
-            "type": 4,                        # SLM
+            "type": 4,                        # SL-M (Fyers now treats it as SL-Limit under the hood)
             "side": 1 if side.upper() == "BUY" else -1,
             "productType": "INTRADAY",
-            "limitPrice": 0,
-            "stopPrice": round(float(stop_price), 2),
+            "limitPrice": limit_price,
+            "stopPrice": rounded_stop,
             "validity": "DAY",
             "disclosedQty": 0,
             "offlineOrder": False,
@@ -193,18 +256,19 @@ class LiveBroker(PaperBroker):
             "takeProfit": 0,
         }
         response = fyers.place_order(payload)
-        print(f"[live_broker] place_slm {symbol} {side} x{qty} @stop={stop_price}: {response}")
+        print(f"[live_broker] place_slm {symbol} {side} x{qty} @stop={rounded_stop} limit={limit_price}: {response}")
         return response if isinstance(response, dict) else {"raw": response}
 
     def _place_limit_order(self, symbol: str, side: str, qty: int, limit_price: float) -> dict:
         fyers = get_fyers_model(use_proxy=True)
+        rounded_limit = _round_to_tick(limit_price)
         payload = {
             "symbol": symbol,
             "qty": int(qty),
             "type": 1,                        # LIMIT
             "side": 1 if side.upper() == "BUY" else -1,
             "productType": "INTRADAY",
-            "limitPrice": round(float(limit_price), 2),
+            "limitPrice": rounded_limit,
             "stopPrice": 0,
             "validity": "DAY",
             "disclosedQty": 0,
@@ -213,7 +277,7 @@ class LiveBroker(PaperBroker):
             "takeProfit": 0,
         }
         response = fyers.place_order(payload)
-        print(f"[live_broker] place_limit {symbol} {side} x{qty} @limit={limit_price}: {response}")
+        print(f"[live_broker] place_limit {symbol} {side} x{qty} @limit={rounded_limit}: {response}")
         return response if isinstance(response, dict) else {"raw": response}
 
     def apply_trailing_stop(self, position: dict, ltp: float, settings: dict) -> dict:
@@ -234,8 +298,11 @@ class LiveBroker(PaperBroker):
         if not sl_order_id:
             # No hard SL to sync — soft-SL-only position.
             return updated
+        # Exit side is the OPPOSITE of the position's entry side.
+        entry_side = str(updated.get("side") or position.get("side") or "").upper()
+        exit_side = "SELL" if entry_side == "BUY" else "BUY"
         try:
-            modify_response = self._modify_slm_order(sl_order_id, new_sl)
+            modify_response = self._modify_slm_order(sl_order_id, new_sl, exit_side)
             if self._looks_successful(modify_response):
                 print(
                     f"[live_broker] trailed hard SL {position.get('symbol')} "
@@ -253,19 +320,26 @@ class LiveBroker(PaperBroker):
             )
         return updated
 
-    def _modify_slm_order(self, order_id: str, new_stop_price: float) -> dict:
+    def _modify_slm_order(self, order_id: str, new_stop_price: float, exit_side: str) -> dict:
         """Update the stopPrice of an existing SLM order at Fyers so a
-        trailing-SL adjustment is enforced server-side, not just in our db."""
+        trailing-SL adjustment is enforced server-side, not just in our db.
+
+        Must also pass exit_side so the paired limitPrice is recomputed —
+        Fyers rejects the modify with the same code -50 as fresh placement
+        if limitPrice is 0 or not on tick, so we round + slippage-buffer here
+        exactly like _place_slm_order does."""
         fyers = get_fyers_model(use_proxy=True)
+        rounded_stop = _round_to_tick(new_stop_price)
+        limit_price = _sl_limit_price(rounded_stop, exit_side)
         payload = {
             "id": str(order_id),
-            "type": 4,                                # keep SLM
-            "limitPrice": 0,
-            "stopPrice": round(float(new_stop_price), 2),
+            "type": 4,                                # keep SL-M
+            "limitPrice": limit_price,
+            "stopPrice": rounded_stop,
             "qty": 0,                                 # 0 = keep current qty
         }
         response = fyers.modify_order(payload)
-        print(f"[live_broker] modify_slm {order_id} @stop={new_stop_price}: {response}")
+        print(f"[live_broker] modify_slm {order_id} @stop={rounded_stop} limit={limit_price}: {response}")
         return response if isinstance(response, dict) else {"raw": response}
 
     def _cancel_fyers_order(self, order_id: str, reason: str = "") -> dict:
@@ -278,6 +352,110 @@ class LiveBroker(PaperBroker):
             print(f"[live_broker] cancel_order failed {order_id} ({reason}): {exc}")
             return {"s": "error", "message": str(exc)}
 
+    # Positions younger than this get skipped by the external-close sync so a
+    # brand-new entry doesn't get wrongly closed before Fyers' positions
+    # endpoint has caught up with the fresh fill.
+    _EXTERNAL_CLOSE_MIN_AGE_SECONDS = 60.0
+
+    def _sync_externally_closed_positions(
+        self, open_positions: list[dict], summary: dict
+    ) -> list[dict]:
+        """Cross-check our open DB positions against Fyers' current position
+        book. Any symbol we still have open that Fyers reports as flat
+        (net_qty == 0 or missing) has been closed outside the app — mark it
+        closed with reason MANUAL_EXTERNAL_EXIT so check_exits won't fire a
+        duplicate MARKET order and accidentally open a reverse position.
+
+        Returns the list of positions still open after sync (i.e. those
+        Fyers agrees are still live) so the caller can continue with normal
+        SL/Target detection on just those rows.
+        """
+        try:
+            from .fyers_client import get_broker_positions, get_live_ltp_batch
+            result = get_broker_positions("live")
+        except Exception as exc:
+            print(f"[live_broker] position-sync fetch failed: {exc}")
+            summary["errors"] += 1
+            return open_positions  # can't sync -> pass through
+
+        if not isinstance(result, dict) or not result.get("available"):
+            # Fyers unavailable / cache stale — safer to skip than false-close.
+            return open_positions
+
+        fyers_by_symbol: dict[str, dict] = {}
+        for row in result.get("positions") or []:
+            symbol = str(row.get("symbol") or "").strip()
+            if not symbol:
+                continue
+            try:
+                net_qty = float(row.get("net_qty", 0) or 0)
+            except (TypeError, ValueError):
+                net_qty = 0.0
+            fyers_by_symbol[symbol] = {"net_qty": net_qty, "row": row}
+
+        remaining: list[dict] = []
+        now_utc = datetime.datetime.now(datetime.timezone.utc)
+        for position in open_positions:
+            symbol = str(position.get("symbol") or "").strip()
+            entry_raw = position.get("entry_time") or ""
+            # Skip freshly-opened positions — Fyers' positions() endpoint can
+            # take up to a minute to reflect a just-filled entry.
+            try:
+                entry_dt = datetime.datetime.fromisoformat(str(entry_raw).replace("Z", "+00:00"))
+                if entry_dt.tzinfo is None:
+                    entry_dt = entry_dt.replace(tzinfo=datetime.timezone.utc)
+                age_seconds = (now_utc - entry_dt).total_seconds()
+            except (TypeError, ValueError):
+                age_seconds = self._EXTERNAL_CLOSE_MIN_AGE_SECONDS + 1
+
+            fyers_row = fyers_by_symbol.get(symbol)
+            fyers_holds_it = fyers_row is not None and abs(fyers_row["net_qty"]) >= 1
+
+            if fyers_holds_it or age_seconds < self._EXTERNAL_CLOSE_MIN_AGE_SECONDS:
+                remaining.append(position)
+                continue
+
+            # Fyers is flat on this symbol but we still show it open. Close
+            # in our DB at the last known LTP (approximation — actual exit
+            # price would need per-order lookup) and cancel any resting SL/
+            # Target orders to be safe.
+            print(
+                f"[live_broker] external-close detected {symbol}: "
+                f"Fyers net_qty=0, age={int(age_seconds)}s — marking "
+                f"MANUAL_EXTERNAL_EXIT"
+            )
+            snapshot = position.get("signal_snapshot") or {}
+            for order_key in ("fyers_sl_order_id", "fyers_target_order_id"):
+                oid = snapshot.get(order_key)
+                if oid:
+                    self._cancel_fyers_order(oid, reason="manual_external_exit_cleanup")
+
+            # Use current LTP as the best available exit price. This won't
+            # match Fyers' actual manual-exit fill exactly but it's close
+            # enough for P&L bookkeeping — a wrong closed-position record
+            # is still much better than an orphaned open that triggers a
+            # reverse trade later.
+            try:
+                ltp_map = get_live_ltp_batch([symbol])
+                exit_price = float(ltp_map.get(symbol) or position.get("entry_price") or 0)
+            except Exception:
+                exit_price = float(position.get("entry_price") or 0)
+
+            try:
+                super().close_trade(
+                    position,
+                    exit_price,
+                    exit_reason="MANUAL_EXTERNAL_EXIT",
+                )
+                summary["externally_closed"] += 1
+            except Exception as exc:
+                print(f"[live_broker] external-close DB write failed for {symbol}: {exc}")
+                summary["errors"] += 1
+                # Keep in remaining so we retry next cycle rather than losing track.
+                remaining.append(position)
+
+        return remaining
+
     def reconcile_open_positions(self) -> dict:
         """Poll Fyers orderbook and detect SL/Target fills. For each fill:
         close our position record + cancel the sibling protective order so
@@ -286,12 +464,22 @@ class LiveBroker(PaperBroker):
 
         Returns a summary dict: {'reconciled': N, 'errors': M}.
         """
-        summary = {"reconciled": 0, "errors": 0, "already_closed": 0}
+        summary = {"reconciled": 0, "errors": 0, "already_closed": 0, "externally_closed": 0}
         open_positions = self.open_positions()
         if not open_positions:
             return summary
 
-        # Fetch the orderbook once and index by order_id for O(1) lookup.
+        # Step 1 — detect positions closed externally at Fyers (user hit Exit
+        # in the Fyers app, EOD square-off, whatever). Without this, our
+        # check_exits loop can later fire a MARKET exit for a position that
+        # is already flat at Fyers — which Fyers then executes as a NEW
+        # reverse trade (accidental short/long). Happened all day on 2026-08-10.
+        remaining_open = self._sync_externally_closed_positions(open_positions, summary)
+        if not remaining_open:
+            return summary
+        open_positions = remaining_open
+
+        # Step 2 — fetch the orderbook once and index by order_id for O(1) lookup.
         try:
             fyers = get_fyers_model(use_proxy=False)  # read-only, direct
             response = fyers.orderbook()
@@ -384,7 +572,7 @@ class LiveBroker(PaperBroker):
             "type": 1 if is_limit else 2,   # 1=Limit 2=Market 3=SL 4=SLM
             "side": 1 if side.upper() == "BUY" else -1,
             "productType": "INTRADAY",
-            "limitPrice": round(float(limit_price), 2) if is_limit else 0,
+            "limitPrice": _round_to_tick(limit_price) if is_limit else 0,
             "stopPrice": 0,
             "validity": "DAY",
             "disclosedQty": 0,

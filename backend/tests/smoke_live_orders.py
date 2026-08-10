@@ -53,6 +53,9 @@ class FakeFyers:
     def orderbook(self):
         return {"s": "ok", "orderBook": self.rec["orderbook"]}
 
+    def positions(self):
+        return {"s": "ok", "netPositions": self.rec.get("net_positions", [])}
+
 
 PASS, FAIL = "\033[92mPASS\033[0m", "\033[91mFAIL\033[0m"
 _failures = 0
@@ -186,6 +189,152 @@ def test_trailing_sl_syncs_to_fyers():
         m = rec["modified"][0]
         check("modify keeps SL-M (type 4)", m["type"] == 4)
         check("modify new stopPrice = trailed SL", m["stopPrice"] == 870.00, f"stopPrice={m['stopPrice']}")
+        check("modify carries limitPrice > 0 (Fyers V3)", m["limitPrice"] > 0, f"limitPrice={m['limitPrice']}")
+
+
+# ── 7. tick rounding + SL-M limitPrice > 0 (2026-08-10 bugs) ──────────
+def test_tick_rounding_and_slm_limit():
+    print("\n7. Tick rounding + SL-M limitPrice > 0 (regression from 2026-08-10)")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+    # These are the exact prices Fyers rejected today. Every rounded output
+    # must be a multiple of 0.05, and every SL-M limit must be > 0.
+    cases = [
+        # (symbol, exit_side, sl_price, target_price)
+        ("NSE:ABCAPITAL-EQ", "SELL", 404.217, 416.466),
+        ("NSE:ASHOKLEY-EQ",  "SELL", 175.923, 181.254),
+        ("NSE:AEGISVOPAK-EQ","SELL", 281.9025, 290.445),
+        ("NSE:APTUS-EQ",     "BUY",  260.782, 253.036),
+    ]
+    for symbol, exit_side, sl, tp in cases:
+        rec["placed"].clear()
+        broker._place_slm_order(symbol, exit_side, 1, sl)
+        broker._place_limit_order(symbol, exit_side, 1, tp)
+        slm, tp_ord = rec["placed"][0], rec["placed"][1]
+        # Every price sent to Fyers must be a multiple of 0.05
+        for label, val in [("SLM stop", slm["stopPrice"]), ("SLM limit", slm["limitPrice"]), ("Target limit", tp_ord["limitPrice"])]:
+            multiplier = round(val / 0.05)
+            valid = abs(val - multiplier * 0.05) < 1e-6
+            check(f"{symbol} {label}={val} is multiple of 0.05", valid)
+        check(f"{symbol} SLM limitPrice > 0 (Fyers V3 requires)", slm["limitPrice"] > 0, f"got {slm['limitPrice']}")
+        # SL-limit slack direction: SELL exit -> limit BELOW stop; BUY exit -> limit ABOVE stop
+        if exit_side == "SELL":
+            check(f"{symbol} SELL-exit SL limit < stop", slm["limitPrice"] < slm["stopPrice"])
+        else:
+            check(f"{symbol} BUY-exit SL limit > stop", slm["limitPrice"] > slm["stopPrice"])
+
+
+# ── 8. external-close sync (2026-08-10 accidental-reverse bug) ────────
+def test_external_close_sync():
+    print("\n8. External-close sync — Fyers-flat position gets closed in DB, no MARKET fire")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": [], "net_positions": []}
+    broker = make_broker(rec)
+
+    # Mock: get_broker_positions returns EMPTY (Fyers is flat on IRB)
+    import app.fyers_client as fc
+    fc.get_broker_positions = lambda mode: {
+        "available": True, "cached": False, "positions": rec["net_positions"],
+    }
+    fc.get_live_ltp_batch = lambda syms: {s: 19.60 for s in syms}
+
+    # Simulate: our DB says IRB is open, entered 2 minutes ago (past the 60s grace)
+    import datetime as dt
+    old_entry = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=120)).isoformat()
+    position = {
+        "symbol": "NSE:IRBINFRA-EQ", "side": "SELL", "qty": 63,
+        "entry_price": 19.53, "sl_price": 19.73, "target_price": 19.14,
+        "entry_time": old_entry,
+        "signal_snapshot": {"fyers_sl_order_id": "SL-IRB", "fyers_target_order_id": "TP-IRB"},
+    }
+    broker.open_positions = lambda: [position]
+    closed = []
+    import app.paper_broker as pb
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: closed.append((exit_reason, pos["symbol"]))
+
+    summary = broker.reconcile_open_positions()
+    check("externally-closed position marked in DB",
+          len(closed) == 1 and closed[0] == ("MANUAL_EXTERNAL_EXIT", "NSE:IRBINFRA-EQ"),
+          f"closed={closed}")
+    check("resting SL order cancelled at Fyers",
+          any(c.get("id") == "SL-IRB" for c in rec["cancelled"]))
+    check("resting Target order cancelled at Fyers",
+          any(c.get("id") == "TP-IRB" for c in rec["cancelled"]))
+    check("summary.externally_closed = 1", summary.get("externally_closed") == 1)
+
+
+# ── 8b. sync does NOT touch fresh positions (< 60s old) ────────────────
+def test_external_close_grace():
+    print("\n8b. External-close sync respects 60s grace on fresh entries")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": [], "net_positions": []}
+    broker = make_broker(rec)
+    import app.fyers_client as fc
+    fc.get_broker_positions = lambda mode: {"available": True, "cached": False, "positions": []}
+    fc.get_live_ltp_batch = lambda syms: {s: 100.0 for s in syms}
+
+    import datetime as dt
+    fresh_entry = dt.datetime.now(dt.timezone.utc).isoformat()  # just now
+    position = {"symbol": "NSE:FRESH-EQ", "side": "BUY", "qty": 1,
+                "entry_price": 100.0, "entry_time": fresh_entry, "signal_snapshot": {}}
+    broker.open_positions = lambda: [position]
+    closed = []
+    import app.paper_broker as pb
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: closed.append(exit_reason)
+    broker.reconcile_open_positions()
+    check("fresh position NOT wrongly closed (grace period)", len(closed) == 0, f"closed={closed}")
+
+
+# ── 9. algo1 _has_open_position guard (re-entry prevention) ────────────
+def test_algo1_open_position_guard():
+    print("\n9. algo1 refuses to re-enter a symbol that is already open")
+    from app.strategies.algo1_opening_range import Algo1OpeningRange
+
+    strat = object.__new__(Algo1OpeningRange)
+    strat.algo_id = "algo1"
+    strat.entry_failures = {}
+    strat.settings = {"capital_per_trade": 10000, "margin_multiplier": 5,
+                      "sl_pct": 1.0, "target_pct": 2.0}
+    strat.selected_symbols = set()
+    strat.selected_sides = {}
+    strat.debug_logger = type("X", (), {"add_selected": lambda self, *a, **kw: None})()
+
+    class FakeBroker:
+        def __init__(self):
+            self.open_pos = []
+            self.traded = set()
+        def open_positions(self):
+            return self.open_pos
+        def already_traded_today(self, s):
+            return s in self.traded
+    fb = FakeBroker()
+    fb.open_pos = [{"symbol": "NSE:IRBINFRA-EQ", "side": "SELL"}]
+    strat.broker = fb
+
+    result = strat._enter("NSE:IRBINFRA-EQ", "SELL", 19.55)
+    check("re-entry blocked when position already open",
+          result is False and strat.entry_failures.get("NSE:IRBINFRA-EQ") == "position_already_open",
+          f"result={result}, failures={strat.entry_failures}")
+
+
+# ── 10. protective-order retry succeeds on second attempt ─────────────
+def test_protective_retry():
+    print("\n10. Protective-order retry — first attempt fails, second succeeds")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+    attempts = {"n": 0}
+    def flaky():
+        attempts["n"] += 1
+        if attempts["n"] == 1:
+            return {"s": "error", "code": -99, "message": "transient 429"}
+        return {"s": "ok", "id": "SL-RETRY-OK"}
+    import time as _t
+    orig_sleep = _t.sleep
+    _t.sleep = lambda s: None  # skip 5s wait in test
+    try:
+        oid, err = broker._place_with_retry("SL", "NSE:TEST-EQ", flaky)
+    finally:
+        _t.sleep = orig_sleep
+    check("retry attempted twice", attempts["n"] == 2, f"attempts={attempts['n']}")
+    check("retry returns success order_id", oid == "SL-RETRY-OK" and err is None, f"oid={oid}, err={err}")
 
 
 def main():
@@ -197,6 +346,11 @@ def main():
     test_market_mode()
     test_oco_reconcile()
     test_trailing_sl_syncs_to_fyers()
+    test_tick_rounding_and_slm_limit()
+    test_external_close_sync()
+    test_external_close_grace()
+    test_algo1_open_position_guard()
+    test_protective_retry()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")
