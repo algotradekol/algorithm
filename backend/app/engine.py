@@ -376,7 +376,12 @@ def _scheduler_loop():
             # 2 minutes was too short and produced fake-flat-candle scans.
             # Production 09:15 still fires at +1 min because Fyers bulk-
             # indexes the 09:15 candle at market open (no lag there).
-            entry_delay_min = 5 if test_schedule_enabled else 1
+            # Test schedules wait for Fyers to index the signal-minute candle
+            # into their history endpoint. 3 min is the low end of the 3-5 min
+            # indexing window per prior observation — trades off some safety
+            # for faster feedback in test runs. Production 09:15 keeps +1 min
+            # because Fyers bulk-indexes at market open (no lag there).
+            entry_delay_min = 3 if test_schedule_enabled else 1
             entry_time = None
             if scan_time:
                 try:
