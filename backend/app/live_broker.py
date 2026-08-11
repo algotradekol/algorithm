@@ -354,8 +354,21 @@ class LiveBroker(PaperBroker):
 
     # Positions younger than this get skipped by the external-close sync so a
     # brand-new entry doesn't get wrongly closed before Fyers' positions
-    # endpoint has caught up with the fresh fill.
-    _EXTERNAL_CLOSE_MIN_AGE_SECONDS = 60.0
+    # endpoint has caught up with the fresh fill. Bumped from 60s -> 300s
+    # after 2026-08-11 09:19 IST: the endpoint returned net_qty=0 for
+    # ABCAPITAL (age=62s) and ABLBL (age=88s) on real 9:15 entries, then
+    # correctly reported open_position_count=2 at 09:20:31 and continuously
+    # after. The false-close cancelled the protective SL+Target orders and
+    # left both positions unprotected at Fyers. 5 minutes covers observed
+    # Fyers indexing lag with headroom.
+    _EXTERNAL_CLOSE_MIN_AGE_SECONDS = 300.0
+
+    # Second layer of defense: require the Fyers positions endpoint to report
+    # net_qty=0 for a symbol on TWO consecutive polls before we treat it as
+    # externally closed. A single flaky/inconsistent response can no longer
+    # trigger the cancel-siblings + mark-closed cascade. Cleared to 0 whenever
+    # Fyers confirms the position is still held.
+    _EXTERNAL_CLOSE_CONFIRM_POLLS = 2
 
     def _sync_externally_closed_positions(
         self, open_positions: list[dict], summary: dict
@@ -411,7 +424,27 @@ class LiveBroker(PaperBroker):
             fyers_row = fyers_by_symbol.get(symbol)
             fyers_holds_it = fyers_row is not None and abs(fyers_row["net_qty"]) >= 1
 
-            if fyers_holds_it or age_seconds < self._EXTERNAL_CLOSE_MIN_AGE_SECONDS:
+            # Confirmation counter — Fyers positions endpoint has been observed
+            # to return net_qty=0 momentarily even for held positions (indexing
+            # lag around 09:15 open). We require N consecutive zero-polls before
+            # trusting the "flat" signal.
+            if not hasattr(self, "_external_zero_poll_count"):
+                self._external_zero_poll_count = {}
+            if fyers_holds_it:
+                self._external_zero_poll_count.pop(symbol, None)
+            else:
+                self._external_zero_poll_count[symbol] = (
+                    self._external_zero_poll_count.get(symbol, 0) + 1
+                )
+            zero_polls = self._external_zero_poll_count.get(symbol, 0)
+            confirmed_flat = zero_polls >= self._EXTERNAL_CLOSE_CONFIRM_POLLS
+
+            if fyers_holds_it or age_seconds < self._EXTERNAL_CLOSE_MIN_AGE_SECONDS or not confirmed_flat:
+                if not fyers_holds_it and age_seconds >= self._EXTERNAL_CLOSE_MIN_AGE_SECONDS and not confirmed_flat:
+                    print(
+                        f"[live_broker] external-close pending confirmation for {symbol}: "
+                        f"zero-poll {zero_polls}/{self._EXTERNAL_CLOSE_CONFIRM_POLLS}, age={int(age_seconds)}s"
+                    )
                 remaining.append(position)
                 continue
 
@@ -448,6 +481,9 @@ class LiveBroker(PaperBroker):
                     exit_reason="MANUAL_EXTERNAL_EXIT",
                 )
                 summary["externally_closed"] += 1
+                # Successful close — drop the confirmation counter so we start
+                # fresh if the same symbol is re-entered later in the session.
+                self._external_zero_poll_count.pop(symbol, None)
             except Exception as exc:
                 print(f"[live_broker] external-close DB write failed for {symbol}: {exc}")
                 summary["errors"] += 1

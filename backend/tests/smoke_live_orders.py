@@ -226,7 +226,7 @@ def test_tick_rounding_and_slm_limit():
 
 # ── 8. external-close sync (2026-08-10 accidental-reverse bug) ────────
 def test_external_close_sync():
-    print("\n8. External-close sync — Fyers-flat position gets closed in DB, no MARKET fire")
+    print("\n8. External-close sync — past-grace position, 2 zero-polls -> closed & cleaned")
     rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": [], "net_positions": []}
     broker = make_broker(rec)
 
@@ -237,9 +237,9 @@ def test_external_close_sync():
     }
     fc.get_live_ltp_batch = lambda syms: {s: 19.60 for s in syms}
 
-    # Simulate: our DB says IRB is open, entered 2 minutes ago (past the 60s grace)
+    # Position aged 10 minutes (well past the 300s grace)
     import datetime as dt
-    old_entry = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=120)).isoformat()
+    old_entry = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=600)).isoformat()
     position = {
         "symbol": "NSE:IRBINFRA-EQ", "side": "SELL", "qty": 63,
         "entry_price": 19.53, "sl_price": 19.73, "target_price": 19.14,
@@ -251,20 +251,107 @@ def test_external_close_sync():
     import app.paper_broker as pb
     pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: closed.append((exit_reason, pos["symbol"]))
 
-    summary = broker.reconcile_open_positions()
-    check("externally-closed position marked in DB",
+    # First reconcile call: 1st zero-poll. Should NOT close yet (needs 2 consecutive).
+    summary1 = broker.reconcile_open_positions()
+    check("first empty-poll does NOT close (needs 2 consecutive)",
+          len(closed) == 0 and summary1.get("externally_closed", 0) == 0,
+          f"closed after poll #1: {closed}")
+    # Second reconcile call: 2nd consecutive zero-poll. Now confirmed flat.
+    summary2 = broker.reconcile_open_positions()
+    check("second consecutive empty-poll closes the position",
           len(closed) == 1 and closed[0] == ("MANUAL_EXTERNAL_EXIT", "NSE:IRBINFRA-EQ"),
           f"closed={closed}")
     check("resting SL order cancelled at Fyers",
           any(c.get("id") == "SL-IRB" for c in rec["cancelled"]))
     check("resting Target order cancelled at Fyers",
           any(c.get("id") == "TP-IRB" for c in rec["cancelled"]))
-    check("summary.externally_closed = 1", summary.get("externally_closed") == 1)
+    check("summary.externally_closed = 1", summary2.get("externally_closed") == 1)
+
+
+# ── 8c. 2026-08-11 regression: 62s-old position must NOT be closed ────
+def test_external_close_2026_08_11_regression():
+    print("\n8c. 2026-08-11 REGRESSION — fresh 9:15 entry, Fyers momentarily reports qty=0, must NOT close")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": [], "net_positions": []}
+    broker = make_broker(rec)
+
+    # Mock Fyers: returns qty=0 momentarily (as happened at 09:19:00 today for ABCAPITAL).
+    import app.fyers_client as fc
+    fc.get_broker_positions = lambda mode: {
+        "available": True, "cached": False, "positions": [],
+    }
+    fc.get_live_ltp_batch = lambda syms: {s: 407.75 for s in syms}
+
+    # Position entered 62 seconds ago — the exact age from today's log where
+    # false-close cancelled the protective orders on a real 9:15 trade.
+    import datetime as dt
+    entry = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=62)).isoformat()
+    position = {
+        "symbol": "NSE:ABCAPITAL-EQ", "side": "SELL", "qty": 1,
+        "entry_price": 407.75, "sl_price": 411.85, "target_price": 399.60,
+        "entry_time": entry,
+        "signal_snapshot": {"fyers_sl_order_id": "SL-ABCAP", "fyers_target_order_id": "TP-ABCAP"},
+    }
+    broker.open_positions = lambda: [position]
+    closed = []
+    cancelled = []
+    import app.paper_broker as pb
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: closed.append((exit_reason, pos["symbol"]))
+    orig_cancel = broker._cancel_fyers_order
+    broker._cancel_fyers_order = lambda oid, reason="": cancelled.append(oid) or {"s": "ok"}
+
+    # Simulate two reconcile cycles both seeing qty=0. Age 62s is < 300s grace.
+    broker.reconcile_open_positions()
+    broker.reconcile_open_positions()
+
+    check("62s-old position NOT closed (below 300s grace)", len(closed) == 0, f"closed={closed}")
+    check("SL order NOT cancelled (position still held)", "SL-ABCAP" not in cancelled, f"cancelled={cancelled}")
+    check("Target order NOT cancelled (position still held)", "TP-ABCAP" not in cancelled, f"cancelled={cancelled}")
+
+
+# ── 8d. Single flaky zero-poll on old position does NOT close ─────────
+def test_external_close_single_flaky_poll():
+    print("\n8d. Old position + single flaky qty=0 poll -> NOT closed (confirmation required)")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": [], "net_positions": []}
+    broker = make_broker(rec)
+
+    import app.fyers_client as fc
+    call_count = {"n": 0}
+    def flaky_positions(mode):
+        # Poll #1: empty (flaky). Poll #2: reports the position back.
+        call_count["n"] += 1
+        if call_count["n"] == 1:
+            return {"available": True, "positions": []}
+        return {"available": True, "positions": [{"symbol": "NSE:XYZ-EQ", "net_qty": 10}]}
+    fc.get_broker_positions = flaky_positions
+    fc.get_live_ltp_batch = lambda syms: {s: 100.0 for s in syms}
+
+    import datetime as dt
+    old_entry = (dt.datetime.now(dt.timezone.utc) - dt.timedelta(seconds=600)).isoformat()
+    position = {
+        "symbol": "NSE:XYZ-EQ", "side": "BUY", "qty": 10,
+        "entry_price": 100.0, "entry_time": old_entry,
+        "signal_snapshot": {"fyers_sl_order_id": "SL-X", "fyers_target_order_id": "TP-X"},
+    }
+    broker.open_positions = lambda: [position]
+    closed = []
+    cancelled = []
+    import app.paper_broker as pb
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: closed.append(exit_reason)
+    broker._cancel_fyers_order = lambda oid, reason="": cancelled.append(oid) or {"s": "ok"}
+
+    # Poll #1: flaky empty -> counter goes to 1, NOT closed
+    broker.reconcile_open_positions()
+    check("after 1st flaky poll: not closed", len(closed) == 0, f"closed={closed}")
+    check("after 1st flaky poll: no order cancels", len(cancelled) == 0)
+    # Poll #2: real (Fyers holds it) -> counter resets to 0
+    broker.reconcile_open_positions()
+    check("after recovery poll: still not closed", len(closed) == 0, f"closed={closed}")
+    check("after recovery poll: still no cancels", len(cancelled) == 0)
 
 
 # ── 8b. sync does NOT touch fresh positions (< 60s old) ────────────────
 def test_external_close_grace():
-    print("\n8b. External-close sync respects 60s grace on fresh entries")
+    print("\n8b. External-close sync respects 300s grace on fresh entries")
     rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": [], "net_positions": []}
     broker = make_broker(rec)
     import app.fyers_client as fc
@@ -348,6 +435,8 @@ def main():
     test_trailing_sl_syncs_to_fyers()
     test_tick_rounding_and_slm_limit()
     test_external_close_sync()
+    test_external_close_2026_08_11_regression()
+    test_external_close_single_flaky_poll()
     test_external_close_grace()
     test_algo1_open_position_guard()
     test_protective_retry()
