@@ -381,6 +381,99 @@ class Algo1OpeningRange(Strategy):
             "window_candle_count": 1,
         }
 
+    def _evaluate_symbol_signal(self, symbol: str) -> dict | None:
+        """Per-symbol version of the shape+gap check. Used by the streaming
+        Phase 2 loop so we can decide-then-enter on each backfilled symbol
+        immediately, without waiting for all 500 to complete.
+
+        Side effects match _build_candidates_from_collection so both paths
+        produce identical candidate_details / buy_candidates / sell_candidates
+        state — the final _build_candidates_from_collection() call at the end
+        of evaluate_entries then re-derives everything for reporting.
+        Returns the candidate row if the symbol qualifies (shape+gap both
+        pass), else None. Rejected rows still get their audit trail written.
+        """
+        candles = self.opening_candles.get(symbol)
+        prev_close = self.prev_close.get(symbol)
+        self.debug_logger.add_prev_close(symbol, bool(prev_close))
+        if not candles or not prev_close:
+            return None
+
+        candle = self._combined_opening_candle(candles)
+        open_price, high, low = candle["open"], candle["high"], candle["low"]
+        self.prev_close_ready_symbols.add(symbol)
+
+        buy_shape = abs(open_price - low) <= TICK_SIZE
+        sell_shape = abs(open_price - high) <= TICK_SIZE
+        flat_shape = buy_shape and sell_shape
+        gap_pct = abs(open_price - prev_close) / prev_close * 100
+        gap_up = open_price >= prev_close
+
+        is_test_schedule = bool(self.settings.get("test_schedule_enabled"))
+        if flat_shape:
+            if is_test_schedule:
+                buy_shape = gap_up
+                sell_shape = not gap_up
+            else:
+                buy_shape = False
+                sell_shape = False
+
+        if buy_shape or sell_shape:
+            self.debug_logger.add_shape_result(
+                symbol, "buy" if buy_shape else "sell", True
+            )
+        else:
+            self.debug_logger.add_shape_result(
+                symbol, "none", False, "flat" if flat_shape else "neither"
+            )
+
+        row = {
+            "symbol": symbol,
+            "sector": self.sector_map.get(symbol),
+            "side": "WATCH",
+            "open": open_price,
+            "high": high,
+            "low": low,
+            "close": candle["close"],
+            "prev_close": prev_close,
+            "gap_pct": gap_pct,
+            "candle_received": True,
+            "window_candle_count": candle["window_candle_count"],
+            "shape_passed": buy_shape or sell_shape,
+            "signal_shape": "open_equals_low" if buy_shape else "open_equals_high" if sell_shape else "neither",
+            "gap_passed": False,
+            "passed_indicators": True,
+            "indicator_results": {},
+            "selected_for_trade": False,
+            "rejection_reason": (
+                ("flat_candle_incomplete_data" if flat_shape else "failed_opening_shape")
+                if not (buy_shape or sell_shape)
+                else "failed_gap_filter"
+            ),
+        }
+
+        if buy_shape:
+            self.open_extreme_symbols.add(symbol)
+            if gap_pct <= GAP_LIMIT_PCT:
+                if symbol not in self.buy_candidates:
+                    self.buy_candidates.append(symbol)
+                self.debug_logger.add_gap_result(symbol, "BUY", True)
+                row.update({"side": "BUY", "gap_passed": True, "rejection_reason": None})
+            else:
+                self.debug_logger.add_gap_result(symbol, "BUY", False)
+        elif sell_shape:
+            self.open_extreme_symbols.add(symbol)
+            if gap_pct <= GAP_LIMIT_PCT:
+                if symbol not in self.sell_candidates:
+                    self.sell_candidates.append(symbol)
+                self.debug_logger.add_gap_result(symbol, "SELL", True)
+                row.update({"side": "SELL", "gap_passed": True, "rejection_reason": None})
+            else:
+                self.debug_logger.add_gap_result(symbol, "SELL", False)
+
+        self.candidate_details[symbol] = row
+        return row if row.get("gap_passed") else None
+
     def _build_candidates_from_collection(self):
         self.buy_candidates = []
         self.sell_candidates = []
@@ -560,6 +653,144 @@ class Algo1OpeningRange(Strategy):
                     self.debug_logger.add_candle_missing(symbol)
         return filled
 
+    def _stream_backfill_and_enter(
+        self,
+        get_ltp_fn,
+        existing_counts: dict,
+        already_attempted: set,
+    ) -> int:
+        """FCFS Phase 2 — streaming version.
+
+        Fires the same concurrent backfill workers as
+        _backfill_opening_window_from_history, but instead of waiting for
+        every symbol to finish then doing a batch evaluation, each symbol
+        gets evaluated + entered THE MOMENT its history REST call returns.
+        First N valid signals fill the daily slot cap; the moment we hit
+        the cap, remaining futures are cancelled so we don't waste more
+        Fyers REST budget.
+
+        Delivers what the client asked for on 2026-08-11: fastest matching
+        symbols win, not "wait 90s for all 500 to backfill then batch."
+
+        Returns the number of trades successfully placed in this phase.
+        """
+        if not get_stored_access_token():
+            return 0
+
+        total_cap = max(0, int(self.settings.get("max_trades_per_day", 10)))
+        buy_cap = max(0, int(self.settings.get("max_buy_trades", total_cap)))
+        sell_cap = max(0, int(self.settings.get("max_sell_trades", total_cap)))
+        total_count = max(0, int(existing_counts.get("trade_count_today") or 0))
+        buy_count = max(0, int(existing_counts.get("buy_count_today") or 0))
+        sell_count = max(0, int(existing_counts.get("sell_count_today") or 0))
+
+        if total_count >= total_cap:
+            return 0
+
+        start_time = self.scan_candle_time()
+        symbols_to_verify = [
+            symbol for symbol in self.watchlist
+            if symbol not in self.history_verified_opening_symbols
+            and self._opening_candle_needs_history(symbol)
+        ]
+        if not symbols_to_verify:
+            return 0
+
+        def load_symbol(symbol: str):
+            try:
+                window = get_single_minute_candle(symbol, start_time)
+            except Exception as exc:
+                print(f"[algo1] streaming backfill failed for {symbol}: {exc}")
+                window = []
+            fetched_prev_close = None
+            if not self.prev_close.get(symbol):
+                try:
+                    pc = get_previous_close(symbol)
+                    if pc:
+                        fetched_prev_close = pc
+                except Exception as exc:
+                    print(f"[algo1] streaming prev-close fetch failed for {symbol}: {exc}")
+            return symbol, window, fetched_prev_close
+
+        entered_this_phase = 0
+        with ThreadPoolExecutor(max_workers=_BACKFILL_MAX_WORKERS) as pool:
+            futures = {pool.submit(load_symbol, s): s for s in symbols_to_verify}
+            try:
+                for future in as_completed(futures):
+                    if total_count >= total_cap:
+                        # Slot cap reached — cancel remaining futures so we
+                        # stop hitting Fyers REST unnecessarily.
+                        for f in futures:
+                            if not f.done():
+                                f.cancel()
+                        break
+
+                    symbol, window, fetched_prev_close = future.result()
+
+                    if fetched_prev_close and not self.prev_close.get(symbol):
+                        self.prev_close[symbol] = fetched_prev_close
+
+                    if not window:
+                        self.debug_logger.add_candle_missing(symbol)
+                        continue
+
+                    # Reject flat candles as "still-indexing at Fyers".
+                    first_candle = window[0]
+                    is_flat = (
+                        abs(float(first_candle["high"]) - float(first_candle["low"])) < 1e-9
+                        and abs(float(first_candle["open"]) - float(first_candle["close"])) < 1e-9
+                    )
+                    if is_flat:
+                        self.debug_logger.add_candle_missing(symbol)
+                        continue
+
+                    self.opening_candles[symbol] = window
+                    self.history_verified_opening_symbols.add(symbol)
+                    self.scan_seen_symbols.add(symbol)
+                    self.debug_logger.add_candle_received(symbol, "backfilled")
+
+                    # Evaluate JUST this one symbol.
+                    verdict = self._evaluate_symbol_signal(symbol)
+                    if not verdict:
+                        continue
+
+                    side = str(verdict.get("side") or "").upper()
+                    if symbol in already_attempted:
+                        continue
+                    # Respect side caps — if the matching side is full, this
+                    # symbol just doesn't get in. We don't defer for later
+                    # overflow because in streaming we can't peek ahead;
+                    # remaining symbols may or may not need the free side.
+                    if side == "BUY" and buy_count >= buy_cap:
+                        continue
+                    if side == "SELL" and sell_count >= sell_cap:
+                        continue
+
+                    already_attempted.add(symbol)
+                    ltp = get_ltp_fn(symbol)
+                    if not ltp:
+                        try:
+                            batch = get_live_ltp_batch([symbol])
+                            ltp = batch.get(symbol)
+                        except Exception:
+                            ltp = None
+
+                    if self._enter(symbol, side, ltp):
+                        entered_this_phase += 1
+                        total_count += 1
+                        if side == "BUY":
+                            buy_count += 1
+                        else:
+                            sell_count += 1
+                        print(
+                            f"[algo1] FCFS phase-2 entered {side} {symbol} "
+                            f"(slot {total_count}/{total_cap})"
+                        )
+            except Exception as exc:
+                print(f"[algo1] streaming Phase 2 error: {exc}")
+
+        return entered_this_phase
+
     def _prefetch_missing_ltps(self, candidates: list[dict], get_ltp_fn) -> dict[str, float]:
         """Batch-fetch LTPs via the Fyers quotes API for symbols not yet in the live feed."""
         missing = [row["symbol"] for row in candidates if not get_ltp_fn(row["symbol"])]
@@ -693,21 +924,28 @@ class Algo1OpeningRange(Strategy):
         slots_left = total_cap - trades_so_far
 
         if slots_left > 0:
-            # Real Fyers history backfill — this is the ONLY source in both
-            # test and production. Fyers history takes 2-5 minutes to
-            # finalize a just-closed candle; the scheduler now waits long
-            # enough (5-min delay for test schedules) so history should
-            # return real OHLC data. If a symbol still has no candle after
-            # backfill, it's genuinely missing — the audit row says so and
-            # the strategy simply doesn't trade it.
-            filled = self._backfill_opening_window_from_history(
-                include_missing=True
+            # ── Streaming FCFS Phase 2 (fix 13, 2026-08-11) ─────────────
+            # Each Fyers history REST call fires concurrently. As each one
+            # returns, we IMMEDIATELY evaluate that symbol's shape+gap and
+            # (if it qualifies) place the trade. Once daily slot cap is
+            # reached, remaining futures are cancelled. This delivers true
+            # first-come-first-serve during the backfill phase — whichever
+            # symbol's candle returns from Fyers first wins the slot, not
+            # "wait 60-120s for all 500 to complete then batch-evaluate."
+            self._record_scan_results(
+                [], [],
+                scan_status="evaluating",
+                scan_message="Phase 2 streaming: entering trades as each history-backfill arrives.",
+            )
+            entered_phase2 = self._stream_backfill_and_enter(
+                get_ltp_fn=get_ltp_fn,
+                existing_counts=summary,
+                already_attempted=all_attempted,
             )
 
-            # For test mode, top up any prev_close that's missing so the
-            # shape/gap check can actually run on symbols where history
-            # DID return real OHLC. This does NOT fabricate candles —
-            # only prev_close values for real candles that need it.
+            # Test mode: top up any prev_close that's still missing so the
+            # final funnel report is correct. Does NOT re-enter trades —
+            # streaming above already handled entries.
             if is_test_schedule:
                 need_pc = [
                     s for s in self.watchlist
@@ -721,34 +959,6 @@ class Algo1OpeningRange(Strategy):
                                 self.prev_close[sym] = float(data["prev_close"])
                     except Exception as exc:
                         print(f"[algo1] test mode: prev_close top-up failed: {exc}")
-
-            if filled or not phase1_qualified:
-                # Rebuild candidates now that history data is in.
-                self._build_candidates_from_collection()
-                # Broadcast the mid-scan state so the frontend funnel jumps
-                # from the phase-1 numbers to the phase-2 numbers immediately,
-                # instead of showing stale 0/N for 30-60s while orders slowly
-                # succeed or fail one at a time.
-                self._record_scan_results(
-                    [], [],
-                    scan_status="evaluating",
-                    scan_message="Phase 2: LTP/prev-close top-up complete; placing remaining trades.",
-                )
-                phase2_qualified = [
-                    d for d in self.candidate_details.values() if d.get("gap_passed")
-                ]
-                if phase2_qualified:
-                    fallback_ltp2 = self._prefetch_missing_ltps(phase2_qualified, get_ltp_fn)
-
-                    def enter_phase2(row: dict) -> bool:
-                        ltp = (get_ltp_fn(row["symbol"]) or fallback_ltp2.get(row["symbol"])
-                               or self.test_mode_ltps.get(row["symbol"]))
-                        return self._enter(row["symbol"], row["side"], ltp)
-
-                    _, attempted2 = execute_candidates_first_come(
-                        phase2_qualified, self.settings, enter_phase2, self.broker.summary()
-                    )
-                    all_attempted |= attempted2
 
         # Final rebuild for reporting: the previous-close background loader
         # and the live feed keep delivering data throughout the (sometimes

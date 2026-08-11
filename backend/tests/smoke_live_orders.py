@@ -424,6 +424,90 @@ def test_protective_retry():
     check("retry returns success order_id", oid == "SL-RETRY-OK" and err is None, f"oid={oid}, err={err}")
 
 
+# ── 11. Streaming FCFS Phase 2 (fix 13, 2026-08-11) ──────────────────
+def test_streaming_fcfs_phase2():
+    print("\n11. Streaming Phase 2 FCFS — first N matching wins, later ones skipped once cap hit")
+    from app.strategies.algo1_opening_range import Algo1OpeningRange
+    import time as _t
+
+    # Fake 20 symbols with staggered "arrival" via time.sleep in load_symbol
+    class FakeBroker:
+        def __init__(self):
+            self.trades = []
+        def summary(self):
+            return {"trade_count_today": 0, "buy_count_today": 0, "sell_count_today": 0,
+                    "cash": 1_000_000}
+        def open_positions(self): return []
+        def already_traded_today(self, s): return False
+        def open_trade(self, symbol, side, qty, entry, sl, target, trigger, snapshot, entry_time=None):
+            self.trades.append({"symbol": symbol, "side": side, "qty": qty, "entry": entry})
+
+    # Bypass Algo1OpeningRange __init__ (needs Fyers etc.)
+    strat = object.__new__(Algo1OpeningRange)
+    strat.algo_id = "algo1"
+    strat.watchlist = [f"NSE:STOCK{i:02d}-EQ" for i in range(20)]
+    strat.settings = {
+        "capital_per_trade": 10000, "margin_multiplier": 5,
+        "sl_pct": 1.0, "target_pct": 2.0,
+        "max_trades_per_day": 3, "max_buy_trades": 3, "max_sell_trades": 3,
+        "test_schedule_enabled": False,
+    }
+    strat.opening_candles = {}
+    strat.prev_close = {}
+    strat.history_verified_opening_symbols = set()
+    strat.scan_seen_symbols = set()
+    strat.open_extreme_symbols = set()
+    strat.prev_close_ready_symbols = set()
+    strat.selected_symbols = set()
+    strat.selected_sides = {}
+    strat.buy_candidates = []
+    strat.sell_candidates = []
+    strat.candidate_details = {}
+    strat.entry_failures = {}
+    strat.sector_map = {}
+    strat.test_mode_ltps = {}
+    class NoopLogger:
+        def __getattr__(self, name):
+            return lambda *a, **kw: None
+    strat.debug_logger = NoopLogger()
+    strat.broker = FakeBroker()
+
+    # scan_candle_time returns "09:15" (test_schedule_enabled=False -> production)
+    # _opening_candle_needs_history returns True for symbols not in opening_candles
+    # -> every symbol is a backfill candidate
+
+    # Stub get_stored_access_token to return truthy
+    import app.strategies.algo1_opening_range as algo1_mod
+    algo1_mod.get_stored_access_function = lambda: "FAKE"
+    algo1_mod.get_stored_access_token = lambda: "FAKE"
+
+    # Fake backfill: each symbol "arrives" with a valid open==low BUY candle,
+    # in order STOCK00, STOCK01, ..., STOCK19. Sleep 0 to keep test fast but
+    # let as_completed order be deterministic (submission order).
+    def fake_single_candle(symbol, candle_time):
+        # every symbol matches BUY shape: open == low
+        return [{"time": 1700000000, "open": 100.0, "high": 100.5, "low": 100.0, "close": 100.3, "volume": 1000}]
+    algo1_mod.get_single_minute_candle = fake_single_candle
+    algo1_mod.get_previous_close = lambda symbol: 99.5  # gap = 0.5%, within GAP_LIMIT_PCT
+    algo1_mod.get_live_ltp_batch = lambda syms: {s: 100.05 for s in syms}
+
+    entered = strat._stream_backfill_and_enter(
+        get_ltp_fn=lambda s: 100.05,
+        existing_counts={"trade_count_today": 0, "buy_count_today": 0, "sell_count_today": 0},
+        already_attempted=set(),
+    )
+    check("streaming entered exactly max_trades_per_day (3)", entered == 3, f"entered={entered}")
+    check("broker.trades has 3 rows", len(strat.broker.trades) == 3, f"got={len(strat.broker.trades)}")
+    check("all 3 are BUY side", all(t["side"] == "BUY" for t in strat.broker.trades))
+    check("side cap respected: no more than 3 BUY trades attempted",
+          sum(1 for t in strat.broker.trades if t["side"] == "BUY") <= 3)
+    # Confirm we DID NOT touch all 20 symbols — streaming should stop early.
+    # history_verified_opening_symbols is updated only for symbols we processed.
+    verified = len(strat.history_verified_opening_symbols)
+    check("streaming stopped early (verified < 20 symbols)",
+          verified < 20, f"verified={verified}/20 — cap reached, remaining cancelled")
+
+
 def main():
     print("=" * 66)
     print("  LIVE ORDER PIPELINE — OFFLINE SMOKE TEST (no Fyers, no DB)")
@@ -440,6 +524,7 @@ def main():
     test_external_close_grace()
     test_algo1_open_position_guard()
     test_protective_retry()
+    test_streaming_fcfs_phase2()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")
