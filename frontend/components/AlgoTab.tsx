@@ -375,7 +375,7 @@ export default function AlgoTab({
             Settings
           </button>
         </div>
-        <SettingsDrawer open={settingsOpen} algoId={algoId} onClose={() => setSettingsOpen(false)} />
+        <SettingsDrawer open={settingsOpen} algoId={algoId} tradingMode={tradingMode} onClose={() => setSettingsOpen(false)} />
         <div className="mt-4">
         <ScanResultsPanel
           algoId={algoId}
@@ -484,7 +484,7 @@ export default function AlgoTab({
         <MetricCard label="Live Net P&L" value={formatMoney(liveNetPnl)} pnl={liveNetPnl} important />
       </div>
 
-      <SettingsDrawer open={settingsOpen} algoId={algoId} onClose={() => setSettingsOpen(false)} />
+      <SettingsDrawer open={settingsOpen} algoId={algoId} tradingMode={tradingMode} onClose={() => setSettingsOpen(false)} />
 
       <ScanResultsPanel algoId={algoId} results={scanResults} openPositions={positions} onRefresh={loadData} />
 
@@ -551,7 +551,17 @@ function FeedStat({ label, value }: { label: string; value: any }) {
   );
 }
 
-function SettingsDrawer({ open, algoId, onClose }: { open: boolean; algoId: string; onClose: () => void }) {
+function SettingsDrawer({
+  open,
+  algoId,
+  tradingMode,
+  onClose,
+}: {
+  open: boolean;
+  algoId: string;
+  tradingMode?: 'paper' | 'live';
+  onClose: () => void;
+}) {
   return (
     <div className={`overflow-hidden transition-opacity duration-300 ${open ? 'opacity-100' : 'max-h-0 opacity-0'}`}>
       <div className="mt-4 rounded border border-[#1f2937] bg-[#0d1117] p-3">
