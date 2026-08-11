@@ -50,7 +50,8 @@ const EXIT_MODES = [
   ['fixed_target_trailing_sl', 'Fixed Target + Trailing SL', 'Exit at target, or let trailing SL protect profit if price reverses first.'],
 ];
 
-export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
+export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId: string; tradingMode?: 'paper' | 'live' }) {
+  const isLive = tradingMode === 'live';
   const [settings, setSettings] = useState<Record<string, any> | null>(null);
   const [availableCash, setAvailableCash] = useState('');
   const [cashSaving, setCashSaving] = useState(false);
@@ -137,8 +138,18 @@ export default function StrategySettingsPanel({ algoId }: { algoId: string }) {
         </div>
         {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
 
-        <CashControl value={availableCash} setValue={setAvailableCash} onSave={saveAvailableCash} saving={cashSaving} />
-        <FieldGroup title="Capital Settings" fields={CAPITAL_FIELDS} settings={settings} setSettings={setSettings} />
+        {!isLive && <CashControl value={availableCash} setValue={setAvailableCash} onSave={saveAvailableCash} saving={cashSaving} />}
+        <FieldGroup
+          title="Capital Settings"
+          fields={isLive ? CAPITAL_FIELDS.filter(([key]) => key !== 'starting_capital') : CAPITAL_FIELDS}
+          settings={settings}
+          setSettings={setSettings}
+        />
+        {isLive && (
+          <p className="mt-2 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
+            Live mode: wallet balance comes from Fyers in real time. "Available Cash" and "Starting Capital" are paper-mode-only and hidden here.
+          </p>
+        )}
         <OrderTypeSelect settings={settings} setSettings={setSettings} />
         {(algoId === 'algo2' || algoId === 'algo3') && (
           <ScanToggle algoId={algoId} settings={settings} setSettings={setSettings} />

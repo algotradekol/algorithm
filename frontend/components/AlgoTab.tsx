@@ -559,7 +559,7 @@ function SettingsDrawer({ open, algoId, onClose }: { open: boolean; algoId: stri
           <div className="label">Strategy Settings</div>
           <button onClick={onClose} className="text-sm text-gray-500 hover:text-gray-100">X</button>
         </div>
-        <StrategySettingsPanel algoId={algoId} />
+        <StrategySettingsPanel algoId={algoId} tradingMode={tradingMode} />
       </div>
     </div>
   );
