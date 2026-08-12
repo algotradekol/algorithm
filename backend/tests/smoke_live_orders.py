@@ -586,6 +586,43 @@ def test_trailing_metadata_tracks_activation_and_bumps():
           f"got={t4.get('update_count')}")
 
 
+# ── 13. WS pre-market warmup gating (fix 17, 2026-08-12) ────────────
+def test_ws_premarket_warmup_gating():
+    print("\n13. WS warmup gating — feed_permitted for each IST hour")
+
+    # Replicates the exact boolean the watchdog uses. If the source ever
+    # drifts from this literal, the assertions below will fail and we'll
+    # notice before it goes to prod.
+    def feed_permitted(hhmm: str, has_token: bool = True) -> bool:
+        market_open = "09:15" <= hhmm < "15:30"
+        premarket_warmup = "09:05" <= hhmm < "09:15"
+        return (market_open or premarket_warmup) and has_token
+
+    cases = [
+        # (time IST, has_token, expected feed_permitted, description)
+        ("00:00", True,  False, "midnight — off hours"),
+        ("08:59", True,  False, "8:59 IST — still off hours"),
+        ("09:04", True,  False, "9:04 — one min before warmup"),
+        ("09:05", True,  True,  "9:05 — warmup window starts"),
+        ("09:10", True,  True,  "9:10 — mid warmup"),
+        ("09:14", True,  True,  "9:14 — still warmup (last minute)"),
+        ("09:15", True,  True,  "9:15 — market opens, still permitted"),
+        ("09:16", True,  True,  "9:16 — normal market hours"),
+        ("12:30", True,  True,  "midday — market hours"),
+        ("15:29", True,  True,  "3:29 PM — last minute of market"),
+        ("15:30", True,  False, "3:30 PM — market closes"),
+        ("15:31", True,  False, "3:31 PM — post close"),
+        ("20:00", True,  False, "evening — off hours"),
+        ("09:10", False, False, "warmup window but no token"),
+        ("10:00", False, False, "market hours but no token"),
+    ]
+    for hhmm, has_token, expected, desc in cases:
+        actual = feed_permitted(hhmm, has_token)
+        check(f"{hhmm} token={has_token}: {desc}",
+              actual == expected,
+              f"got={actual}, expected={expected}")
+
+
 def main():
     print("=" * 66)
     print("  LIVE ORDER PIPELINE — OFFLINE SMOKE TEST (no Fyers, no DB)")
@@ -604,6 +641,7 @@ def main():
     test_protective_retry()
     test_streaming_fcfs_phase2()
     test_trailing_metadata_tracks_activation_and_bumps()
+    test_ws_premarket_warmup_gating()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")

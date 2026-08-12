@@ -669,6 +669,14 @@ def _live_feed_watchdog_loop():
         try:
             now = datetime.datetime.now(IST)
             market_open = "09:15" <= now.strftime("%H:%M") < "15:30"
+            # Pre-market warmup: allow WS attempts from 09:05 (10 min before
+            # market open) so a stable session exists by 09:15:00 and the
+            # 9:15 signal candle can be captured LIVE via WS rather than
+            # falling back to slow REST backfill. Before this, the 60s
+            # opening_grace_elapsed check blocked all attempts until 09:16 —
+            # meaning WS was guaranteed to be down during the 9:15 window.
+            premarket_warmup = "09:05" <= now.strftime("%H:%M") < "09:15"
+            feed_permitted = (market_open or premarket_warmup) and get_stored_access_token()
             last_tick_at = _engine_status.get("last_tick_at")
             tick_is_fresh = False
             if last_tick_at:
@@ -678,15 +686,13 @@ def _live_feed_watchdog_loop():
                 except (TypeError, ValueError):
                     tick_is_fresh = False
             stale_seconds = time.time() - _feed_watchdog_last_restart_at
-            market_open_at = now.replace(hour=9, minute=15, second=0, microsecond=0)
-            opening_grace_elapsed = (now - market_open_at).total_seconds() >= 60
 
             circuit_wait = _circuit_open_remaining()
             backoff_wait = max(0.0, _current_backoff_seconds() - stale_seconds)
             boot_wait = _boot_grace_remaining()
 
-            if not (market_open and opening_grace_elapsed and get_stored_access_token()):
-                pass  # off-hours or no token, nothing to do
+            if not feed_permitted:
+                pass  # off-hours (before 09:05 or after 15:30) or no token
             elif tick_is_fresh:
                 pass  # feed is healthy
             elif boot_wait > 0:
@@ -709,10 +715,12 @@ def _live_feed_watchdog_loop():
                 next_backoff = _FEED_BACKOFF_SEQUENCE[
                     min(_feed_reconnect_failure_count, len(_FEED_BACKOFF_SEQUENCE) - 1)
                 ]
-                started = restart_live_feed(reason="watchdog_stale_or_missing_tick")
+                reason = "watchdog_premarket_warmup" if premarket_warmup and not market_open else "watchdog_stale_or_missing_tick"
+                started = restart_live_feed(reason=reason)
                 if started:
+                    phase = "pre-market warmup" if premarket_warmup and not market_open else "market hours"
                     print(
-                        f"[engine] Fyers tick missing/stale; restarted live feed "
+                        f"[engine] Fyers WS restart during {phase} "
                         f"(attempt #{_feed_reconnect_failure_count + 1}, "
                         f"next backoff {next_backoff}s)"
                     )
