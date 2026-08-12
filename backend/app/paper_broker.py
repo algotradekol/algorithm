@@ -126,6 +126,20 @@ class PaperBroker:
         signal_snapshot: dict | None = None,
         entry_time: str | None = None,
     ):
+        # Stamp trailing-SL metadata into signal_snapshot so the dashboard
+        # can show initial SL vs current SL, when trailing first activated,
+        # and how many times SL was bumped. Kept in the JSONB blob to avoid
+        # a schema migration.
+        merged_snapshot = dict(signal_snapshot or {})
+        merged_snapshot.setdefault("initial_sl_price", float(sl_price))
+        merged_snapshot.setdefault("trailing", {
+            "activated": False,
+            "first_activated_at": None,
+            "last_updated_at": None,
+            "update_count": 0,
+            "last_sl_before_trail": float(sl_price),
+        })
+
         position_row = {
             "algo_id": self.algo_id,
             "symbol": symbol,
@@ -138,7 +152,7 @@ class PaperBroker:
             "lowest_price": entry_price,
             "trailing_sl_active": False,
             "entry_trigger": entry_trigger or "Strategy entry conditions matched",
-            "signal_snapshot": signal_snapshot,
+            "signal_snapshot": merged_snapshot,
             "status": "open",
             "entry_time": entry_time or datetime.datetime.now().isoformat(),
         }
@@ -175,7 +189,7 @@ class PaperBroker:
             "high_price": entry_price,
             "low_price": entry_price,
             "entry_trigger": entry_trigger or "Strategy entry conditions matched",
-            "signal_snapshot": signal_snapshot,
+            "signal_snapshot": merged_snapshot,
         })
 
     def update_position_range(self, position: dict, ltp: float) -> dict:
@@ -209,6 +223,7 @@ class PaperBroker:
         lowest = min(float(position.get("lowest_price") or entry), float(ltp))
         active = bool(position.get("trailing_sl_active"))
         updates = {"highest_price": highest, "lowest_price": lowest}
+        sl_moved = False  # true only when the SL numerically shifts
 
         if side == "BUY":
             move_pct = (highest - entry) / entry * 100
@@ -218,6 +233,7 @@ class PaperBroker:
                 if new_sl > current_sl:
                     updates["sl_price"] = new_sl
                     current_sl = new_sl
+                    sl_moved = True
         else:
             move_pct = (entry - lowest) / entry * 100
             if move_pct >= trigger_pct:
@@ -226,8 +242,42 @@ class PaperBroker:
                 if new_sl < current_sl:
                     updates["sl_price"] = new_sl
                     current_sl = new_sl
+                    sl_moved = True
 
         updates["trailing_sl_active"] = active
+
+        # Stamp trailing metadata into signal_snapshot so the dashboard can
+        # render "trailing activated at HH:MM, bumped N times, initial X ->
+        # current Y". Only writes back when something meaningful changed
+        # (first activation or an actual SL bump) to keep DB write volume
+        # low — this runs on every LTP tick.
+        merged_snapshot: dict | None = None
+        current_snapshot = dict(position.get("signal_snapshot") or {})
+        trailing_meta = dict(current_snapshot.get("trailing") or {})
+        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+        if active and not trailing_meta.get("first_activated_at"):
+            trailing_meta["first_activated_at"] = now_iso
+            trailing_meta["activated"] = True
+            merged_snapshot = current_snapshot  # need to write
+
+        if sl_moved:
+            trailing_meta["last_updated_at"] = now_iso
+            trailing_meta["update_count"] = int(trailing_meta.get("update_count") or 0) + 1
+            trailing_meta.setdefault("activated", True)
+            merged_snapshot = current_snapshot  # need to write
+
+        if merged_snapshot is not None:
+            merged_snapshot["trailing"] = trailing_meta
+            # Preserve initial_sl_price if it existed; older positions
+            # written before this feature won't have it — stamp it now
+            # using the SL that was in play when trailing first activated.
+            if "initial_sl_price" not in merged_snapshot:
+                merged_snapshot["initial_sl_price"] = float(
+                    position.get("sl_price") if not sl_moved else current_sl
+                )
+            updates["signal_snapshot"] = merged_snapshot
+
         run_with_supabase(
             lambda supabase: supabase.table(self.positions_table_name()).update(updates).eq("id", position["id"]).execute()
         )

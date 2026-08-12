@@ -25,9 +25,15 @@ from __future__ import annotations
 import sys
 
 import app.live_broker as lb
+import app.paper_broker as _pb_module
 import app.strategy_settings as ss
 from app.live_broker import LiveBroker
 from app.margin_lookup import effective_multiplier
+
+# Capture the ORIGINAL PaperBroker.apply_trailing_stop before any test can
+# monkey-patch it, so tests that need the real logic (e.g. trailing metadata
+# tracking) can restore it.
+_REAL_APPLY_TRAILING_STOP = _pb_module.PaperBroker.apply_trailing_stop
 
 
 # ── fakes ──────────────────────────────────────────────────────────────
@@ -508,6 +514,78 @@ def test_streaming_fcfs_phase2():
           verified < 20, f"verified={verified}/20 — cap reached, remaining cancelled")
 
 
+# ── 12. Trailing SL metadata stamping ────────────────────────────────
+def test_trailing_metadata_tracks_activation_and_bumps():
+    print("\n12. Trailing SL metadata — activation timestamp + update count in signal_snapshot")
+    import app.paper_broker as pb
+
+    # Test 6 (trailing SL syncs to Fyers) replaces PaperBroker.apply_trailing_stop
+    # with a lambda for its own assertions and doesn't restore it. Restore the
+    # real class method here so this test exercises the real logic.
+    pb.PaperBroker.apply_trailing_stop = _REAL_APPLY_TRAILING_STOP
+
+    # Stub Supabase writes so apply_trailing_stop can run without a real DB
+    captured_updates = []
+    pb.run_with_supabase = lambda fn: captured_updates.append("write") or type("R", (), {"data": []})()
+
+    broker = object.__new__(pb.PaperBroker)
+    broker.algo_id = "algo1"
+    broker.positions_table_name = lambda: "positions"
+
+    settings = {
+        "exit_mode": "fixed_target_trailing_sl",
+        "trailing_sl_enabled": True,
+        "trailing_sl_trigger_pct": 1.0,
+        "trailing_sl_distance_pct": 0.5,
+    }
+
+    # BUY at 100, initial SL at 99, trigger at +1% => 101
+    position = {
+        "id": "pos-1", "symbol": "NSE:TEST-EQ", "side": "BUY",
+        "entry_price": 100.0, "sl_price": 99.0, "target_price": 102.0,
+        "highest_price": 100.0, "lowest_price": 100.0,
+        "trailing_sl_active": False,
+        "signal_snapshot": {"initial_sl_price": 99.0, "trailing": {"activated": False, "update_count": 0}},
+    }
+
+    # Tick 1 — price at 100.5 (0.5% up). Below trigger, no activation.
+    p1 = broker.apply_trailing_stop(position, ltp=100.5, settings=settings)
+    check("tick #1 below trigger: no activation",
+          not p1["signal_snapshot"].get("trailing", {}).get("first_activated_at"),
+          f"trailing={p1['signal_snapshot'].get('trailing')}")
+    check("tick #1: update_count still 0",
+          p1["signal_snapshot"]["trailing"].get("update_count") == 0)
+
+    # Tick 2 — price at 101.5 (1.5% up). Triggers activation + first SL bump.
+    # highest becomes 101.5, new_sl = 101.5 * 0.995 = 100.9925 > 99 -> bump.
+    p2 = broker.apply_trailing_stop(p1, ltp=101.5, settings=settings)
+    t2 = p2["signal_snapshot"].get("trailing", {})
+    check("tick #2 first activation: first_activated_at set", bool(t2.get("first_activated_at")),
+          f"trailing={t2}")
+    check("tick #2 first bump: update_count == 1", t2.get("update_count") == 1,
+          f"got={t2.get('update_count')}")
+    check("tick #2: sl_price bumped above initial", p2["sl_price"] > 99.0,
+          f"sl_price={p2['sl_price']}")
+
+    # Tick 3 — price at 102 (higher). SL bumps again.
+    p3 = broker.apply_trailing_stop(p2, ltp=102.0, settings=settings)
+    t3 = p3["signal_snapshot"]["trailing"]
+    check("tick #3 second bump: update_count == 2", t3.get("update_count") == 2,
+          f"got={t3.get('update_count')}")
+    check("tick #3: first_activated_at is preserved", t3.get("first_activated_at") == t2.get("first_activated_at"))
+    check("tick #3: last_updated_at is fresher than first_activated_at OR equal",
+          t3.get("last_updated_at") >= t3.get("first_activated_at"))
+
+    # Tick 4 — price DROPS to 101.7 (still profitable but below prev high).
+    # highest stays at 102. new_sl computed from highest (unchanged) so SL
+    # does NOT move. update_count must NOT increment.
+    p4 = broker.apply_trailing_stop(p3, ltp=101.7, settings=settings)
+    t4 = p4["signal_snapshot"]["trailing"]
+    check("tick #4 no new high: update_count stays at 2 (no false bump)",
+          t4.get("update_count") == 2,
+          f"got={t4.get('update_count')}")
+
+
 def main():
     print("=" * 66)
     print("  LIVE ORDER PIPELINE — OFFLINE SMOKE TEST (no Fyers, no DB)")
@@ -525,6 +603,7 @@ def main():
     test_algo1_open_position_guard()
     test_protective_retry()
     test_streaming_fcfs_phase2()
+    test_trailing_metadata_tracks_activation_and_bumps()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")

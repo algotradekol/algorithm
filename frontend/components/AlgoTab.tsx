@@ -650,6 +650,7 @@ function PositionsTable({
                 <MobileField label="Position Low" value={formatNumber(row.low_price ?? row.lowest_price)} />
                 <MobileField label="SL" value={formatNumber(row.sl_price)} />
                 <MobileField label="Target" value={formatNumber(row.target_price)} />
+                <MobileField label="Trailing SL" value={<TrailingBadge row={row} />} wide />
                 <MobileField label="Trigger" value={formatTrigger(row.entry_trigger)} wide />
                 <MobileField label="Signal Audit" value={<SignalAudit row={row} />} wide />
               </div>
@@ -662,7 +663,7 @@ function PositionsTable({
         <table className="w-full min-w-[1180px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
+            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Trailing SL', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
               <th key={column} className="table-cell label">{column}</th>
             ))}
           </tr>
@@ -670,7 +671,7 @@ function PositionsTable({
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={15} className="table-cell text-gray-500">No open positions</td>
+              <td colSpan={17} className="table-cell text-gray-500">No open positions</td>
             </tr>
           ) : visibleRows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
@@ -698,6 +699,7 @@ function PositionsTable({
                 <td className="table-cell num text-gray-100">{formatNumber(row.low_price ?? row.lowest_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.sl_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.target_price)}</td>
+                <td className="table-cell min-w-[150px]"><TrailingBadge row={row} /></td>
                 <td className="table-cell min-w-[190px] text-gray-400"><SignalAudit row={row} /></td>
                 <td className="table-cell max-w-[300px] text-gray-400">{formatTrigger(row.entry_trigger)}</td>
                 <td className={`table-cell num font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
@@ -742,6 +744,7 @@ function TradesTable({ rows }: { rows: any[] }) {
               <MobileField label="Exit Time" value={row.exit_time ? formatDateTime(row.exit_time) : "--"} />
               <MobileField label="Exit" value={formatNumber(row.exit_price)} />
               <MobileField label="Reason" value={formatReason(row.exit_reason)} />
+              <MobileField label="Trailing SL" value={<TrailingBadge row={row} />} wide />
               <MobileField label="Gross" value={formatMoney(row.gross_pnl)} />
               <MobileField label="Charges" value={formatMoney(row.total_charges)} />
             </div>
@@ -752,7 +755,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <table className="w-full min-w-[1280px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {["Symbol", "Side", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
+            {["Symbol", "Side", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Trailing SL", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
               <th key={column} className="table-cell label">{column}</th>
             ))}
           </tr>
@@ -760,7 +763,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={12} className="table-cell text-gray-500">No closed trades yet</td>
+              <td colSpan={13} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
           ) : visibleRows.map((row, index) => (
             <tr key={row.id || index} className={index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}>
@@ -777,6 +780,7 @@ function TradesTable({ rows }: { rows: any[] }) {
                 {reasonIcon(row.exit_reason)}
                 {formatReason(row.exit_reason)}
               </td>
+              <td className="table-cell min-w-[150px]"><TrailingBadge row={row} /></td>
               <td className="table-cell min-w-[190px] text-gray-400"><SignalAudit row={row} /></td>
               <td className="table-cell max-w-[300px] text-gray-400">{formatTrigger(row.entry_trigger)}</td>
               <td className={`table-cell num ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
@@ -892,6 +896,59 @@ function SignalAudit({ row }: { row: any }) {
         <div>Entry LTP {formatNumber(signal.entry_ltp)}</div>
       </div>
     </details>
+  );
+}
+
+// Compact per-row indicator of trailing-SL activity. Reads the metadata
+// stamped into signal_snapshot by paper_broker.apply_trailing_stop.
+function TrailingBadge({ row }: { row: any }) {
+  const snap = row?.signal_snapshot;
+  if (!snap || typeof snap !== 'object') {
+    return <span className="text-xs text-gray-500">--</span>;
+  }
+  const trailing = snap.trailing;
+  const activated = !!(trailing && trailing.activated);
+  const initialSl = Number(snap.initial_sl_price);
+  const currentSl = Number(row?.sl_price);
+  const side = String(row?.side || '').toUpperCase();
+
+  if (!activated) {
+    return (
+      <span className="inline-flex items-center gap-1 text-xs text-gray-500">
+        <span className="h-1.5 w-1.5 rounded-full bg-gray-600" />
+        OFF
+      </span>
+    );
+  }
+
+  // Delta relative to the initial SL. For BUY exits the trailed SL rises
+  // (positive delta = protection tightened). For SELL exits it falls
+  // (delta shown as negative movement in absolute terms).
+  const delta = Number.isFinite(initialSl) && Number.isFinite(currentSl)
+    ? (side === 'SELL' ? initialSl - currentSl : currentSl - initialSl)
+    : null;
+  const deltaLabel = delta === null
+    ? ''
+    : ` (${delta >= 0 ? '+' : ''}${delta.toFixed(2)})`;
+  const arrow = side === 'SELL' ? '↓' : '↑';
+  const firstAt = trailing?.first_activated_at
+    ? new Date(trailing.first_activated_at).toLocaleTimeString('en-IN', {
+        hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata',
+      })
+    : null;
+  const bumps = Number(trailing?.update_count) || 0;
+
+  return (
+    <div className="text-xs text-gray-300">
+      <div className="flex items-center gap-1 font-semibold text-[#22c55e]">
+        <span className="h-1.5 w-1.5 rounded-full bg-[#22c55e]" />
+        {arrow} {Number.isFinite(currentSl) ? currentSl.toFixed(2) : '--'}
+        <span className="text-gray-400">{deltaLabel}</span>
+      </div>
+      <div className="mt-0.5 text-[10px] text-gray-500">
+        {firstAt ? `active ${firstAt}` : 'active'} · {bumps}x{Number.isFinite(initialSl) ? ` · init ${initialSl.toFixed(2)}` : ''}
+      </div>
+    </div>
   );
 }
 
