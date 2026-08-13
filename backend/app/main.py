@@ -23,7 +23,7 @@ except ImportError:  # pragma: no cover - keeps /health alive if SDK is missing
 
 from .config import ALLOWED_ORIGINS, APP_PIN, FRONTEND_URL, SUPABASE_JWT_SECRET
 from .auth import require_auth
-from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, last_ltp, restart_live_feed, start_engine, stop_live_feed, STRATEGIES
+from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, last_ltp, restart_live_feed, start_engine, stop_live_feed, STRATEGIES, _clear_token_expired
 from .charges import get_charges_config, set_charges_config
 from .audit_log import audit_log
 from .fyers_client import get_broker_orders, get_broker_positions, get_connection_status, get_price_history, get_wallet_balance
@@ -339,7 +339,12 @@ def update_runtime_trading_mode(payload: dict, _user=Depends(require_auth)):
         return result
     except RuntimeError as exc:
         message = str(exc)
-        status_code = 409 if "Close all open positions" in message else 400
+        if "cooldown" in message.lower():
+            status_code = 429
+        elif "Close all open positions" in message:
+            status_code = 409
+        else:
+            status_code = 400
         raise HTTPException(status_code=status_code, detail=message)
 
 
@@ -437,6 +442,9 @@ def fyers_callback(auth_code: str = None, code: str = None, state: str | None = 
     store_broker_tokens(response, mode=callback_mode)
     clear_pending_fyers_login_mode()
     clear_pending_fyers_login_origin()
+    # Fresh token minted — clear the "known expired" flag so watchdog can
+    # resume WS handshake attempts immediately.
+    _clear_token_expired(f"fresh OAuth callback ({callback_mode})")
     # Fresh OAuth-minted token; bypass any live 429 backoff so the new
     # session starts. Delayed 15s via Timer so Fyers releases the old WS
     # session on their side before we handshake again — stacking a fresh

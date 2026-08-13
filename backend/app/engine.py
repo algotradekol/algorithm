@@ -79,6 +79,56 @@ def _boot_grace_remaining() -> float:
     return max(0.0, _BOOT_WS_DELAY_SECONDS - (time.time() - _process_started_at))
 
 
+# Token-expired guard. Fyers returns {'type': 'cn', 'code': -99, 'message':
+# 'Token is expired'} on WS handshakes when the stored access token has
+# lapsed. Continuing to handshake with a known-expired token just burns
+# Fyers's per-account WS quota (2026-08-13 09:05-09:10 IST: 10+ wasted
+# attempts before the user's fresh login arrived). Whenever we see that
+# error, freeze all watchdog handshake attempts for this many seconds
+# or until a fresh OAuth callback resets the flag.
+_TOKEN_EXPIRED_HOLD_SECONDS = 600.0  # 10 min; long enough that user has to log in
+_token_known_expired_at = 0.0
+
+
+def _token_expired_hold_remaining() -> float:
+    if _token_known_expired_at <= 0:
+        return 0.0
+    return max(0.0, _TOKEN_EXPIRED_HOLD_SECONDS - (time.time() - _token_known_expired_at))
+
+
+def _mark_token_expired(reason: str = "") -> None:
+    """Called when Fyers replies 'Token is expired'. Blocks further WS
+    handshakes until either the hold expires or a fresh OAuth clears it."""
+    global _token_known_expired_at
+    if _token_known_expired_at == 0:
+        print(f"[engine] Fyers token flagged as EXPIRED ({reason}); pausing WS handshakes for {int(_TOKEN_EXPIRED_HOLD_SECONDS)}s or until fresh login")
+    _token_known_expired_at = time.time()
+
+
+def _clear_token_expired(reason: str = "") -> None:
+    """Called on successful OAuth callback / fresh-token store, or when
+    Fyers accepts a WS handshake (implicit proof the token is good)."""
+    global _token_known_expired_at
+    if _token_known_expired_at > 0:
+        print(f"[engine] Fyers token expired-flag cleared ({reason})")
+    _token_known_expired_at = 0.0
+
+
+# Mode-toggle cooldown. Rapid trading_mode toggles trigger back-to-back
+# restart_live_feed(ignore_backoff=True) calls that stack fresh handshakes
+# on top of a warm socket → Fyers 429s and the circuit opens. On 2026-08-13
+# the user toggled paper<->live 5 times in 7 minutes and burned quota.
+# Reject a toggle within this many seconds of the previous one.
+_MODE_TOGGLE_COOLDOWN_SECONDS = 30.0
+_last_mode_switch_at = 0.0
+
+
+def _mode_toggle_cooldown_remaining() -> float:
+    if _last_mode_switch_at <= 0:
+        return 0.0
+    return max(0.0, _MODE_TOGGLE_COOLDOWN_SECONDS - (time.time() - _last_mode_switch_at))
+
+
 def _current_backoff_seconds() -> float:
     """The wait time required between the last restart and the next one,
     based on how many consecutive failures we're in."""
@@ -146,6 +196,7 @@ def _on_live_feed_status(status: dict):
     error = status.get("error")
     error_text = str(error or "").lower()
     is_rate_limited = "429" in error_text or "too many requests" in error_text
+    is_token_expired = "token is expired" in error_text or "token expired" in error_text
 
     with _engine_lock:
         update = {
@@ -163,6 +214,10 @@ def _on_live_feed_status(status: dict):
     # Real tick arrived → Fyers is fine with us, close the circuit and reset backoff.
     if status.get("first_tick_received"):
         _reset_feed_circuit("first tick received")
+        _clear_token_expired("first tick received")
+
+    if is_token_expired:
+        _mark_token_expired("WS handshake reported token expired")
 
     # 429 counts as a failure AND immediately opens the circuit — we are being
     # explicitly told to back off, don't wait for the count to accumulate.
@@ -690,9 +745,16 @@ def _live_feed_watchdog_loop():
             circuit_wait = _circuit_open_remaining()
             backoff_wait = max(0.0, _current_backoff_seconds() - stale_seconds)
             boot_wait = _boot_grace_remaining()
+            token_expired_wait = _token_expired_hold_remaining()
 
             if not feed_permitted:
                 pass  # off-hours (before 09:05 or after 15:30) or no token
+            elif token_expired_wait > 0:
+                # Fyers said the token is expired — no point handshaking
+                # again until the user re-logs in. Silent (would spam every
+                # 5s otherwise); the mark_token_expired() print already
+                # fires once when detected.
+                pass
             elif tick_is_fresh:
                 pass  # feed is healthy
             elif boot_wait > 0:
@@ -968,6 +1030,7 @@ def try_refresh_access_token(reason: str = "manual_or_startup") -> bool:
 
 def apply_trading_mode(mode: str) -> dict:
     """Switch the active broker mode without restarting the process."""
+    global _last_mode_switch_at
     normalized_mode = normalize_trading_mode(mode)
     current_mode = get_runtime_trading_mode()
     if normalized_mode == current_mode:
@@ -975,6 +1038,16 @@ def apply_trading_mode(mode: str) -> dict:
             "trading_mode": current_mode,
             "message": f"Trading mode already set to {current_mode}.",
         }
+
+    # Cooldown guard: rapid toggles burn Fyers WS quota. If the previous
+    # toggle was within _MODE_TOGGLE_COOLDOWN_SECONDS, reject with the
+    # remaining time so the caller can show a friendly wait message.
+    cooldown_remaining = _mode_toggle_cooldown_remaining()
+    if cooldown_remaining > 0:
+        raise RuntimeError(
+            f"Mode toggle cooldown active — please wait {int(cooldown_remaining)}s "
+            "before switching again (prevents Fyers WS quota burn)."
+        )
 
     open_positions: dict[str, int] = {}
     for algo_id, strategy in STRATEGIES.items():
@@ -1012,9 +1085,17 @@ def apply_trading_mode(mode: str) -> dict:
     with _engine_lock:
         _engine_status["trading_mode"] = normalized_mode
 
+    _last_mode_switch_at = time.time()
     # Mode switch is a human UI action and uses a different token/client_id,
     # so it must not be silently skipped by any live 429 backoff cooldown.
-    restart_live_feed(reason=f"trading_mode_{normalized_mode}", ignore_backoff=True)
+    # Delayed 15s via Timer for the same reason as the OAuth callback path:
+    # stacking a fresh handshake on top of a still-warm socket triggers 429
+    # + circuit-open on Fyers's side.
+    threading.Timer(
+        15.0,
+        restart_live_feed,
+        kwargs={"reason": f"trading_mode_{normalized_mode}", "ignore_backoff": True},
+    ).start()
     result = {
         "trading_mode": normalized_mode,
         "message": f"Trading mode switched to {normalized_mode}.",

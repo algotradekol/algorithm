@@ -623,6 +623,66 @@ def test_ws_premarket_warmup_gating():
               f"got={actual}, expected={expected}")
 
 
+# ── 14. Token-expired guard (fix 18, from 2026-08-13 log) ────────────
+def test_token_expired_guard():
+    print("\n14. Token-expired guard — mark/clear + hold-remaining accounting")
+    import app.engine as eng
+    import time as _t
+
+    # Reset state so this test is independent of others.
+    eng._token_known_expired_at = 0.0
+
+    check("initial hold_remaining == 0", eng._token_expired_hold_remaining() == 0)
+
+    eng._mark_token_expired("test trigger")
+    r1 = eng._token_expired_hold_remaining()
+    check("after mark: hold_remaining > 0",
+          r1 > 0 and r1 <= eng._TOKEN_EXPIRED_HOLD_SECONDS,
+          f"got={r1}")
+
+    # Mark again — should NOT reset (idempotent within same expiry event).
+    # It DOES bump the timestamp to now, so remaining should still be near-max.
+    prev = eng._token_known_expired_at
+    _t.sleep(0.01)
+    eng._mark_token_expired("test trigger again")
+    check("second mark: timestamp bumped to fresher",
+          eng._token_known_expired_at >= prev)
+
+    eng._clear_token_expired("test fresh oauth")
+    check("after clear: hold_remaining == 0",
+          eng._token_expired_hold_remaining() == 0,
+          f"got={eng._token_expired_hold_remaining()}")
+    check("after clear: flag reset to 0",
+          eng._token_known_expired_at == 0.0)
+
+
+# ── 15. Mode-toggle cooldown (fix 19, from 2026-08-13 log) ───────────
+def test_mode_toggle_cooldown():
+    print("\n15. Mode-toggle cooldown — reject rapid toggles, allow after cooldown")
+    import app.engine as eng
+
+    # Reset state
+    eng._last_mode_switch_at = 0.0
+    check("initial cooldown_remaining == 0",
+          eng._mode_toggle_cooldown_remaining() == 0)
+
+    # Simulate a toggle happened just now
+    import time as _t
+    eng._last_mode_switch_at = _t.time()
+    r1 = eng._mode_toggle_cooldown_remaining()
+    check("after toggle: cooldown_remaining > 0",
+          r1 > 0 and r1 <= eng._MODE_TOGGLE_COOLDOWN_SECONDS,
+          f"got={r1}")
+
+    # Simulate cooldown fully elapsed (fake it by rewinding the timestamp)
+    eng._last_mode_switch_at = _t.time() - eng._MODE_TOGGLE_COOLDOWN_SECONDS - 1
+    check("after cooldown elapsed: cooldown_remaining == 0",
+          eng._mode_toggle_cooldown_remaining() == 0)
+
+    # Reset for clean state
+    eng._last_mode_switch_at = 0.0
+
+
 def main():
     print("=" * 66)
     print("  LIVE ORDER PIPELINE — OFFLINE SMOKE TEST (no Fyers, no DB)")
@@ -642,6 +702,8 @@ def main():
     test_streaming_fcfs_phase2()
     test_trailing_metadata_tracks_activation_and_bumps()
     test_ws_premarket_warmup_gating()
+    test_token_expired_guard()
+    test_mode_toggle_cooldown()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")

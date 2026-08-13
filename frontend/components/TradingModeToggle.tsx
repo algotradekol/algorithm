@@ -30,9 +30,27 @@ export default function TradingModeToggle({
     if (loading || nextMode === currentMode) {
       return;
     }
-    const confirmed = window.confirm(
-      `Switch trading mode to ${nextMode.toUpperCase()}? Open positions stay preserved in their current mode and the other mode gets its own broker state.`,
-    );
+
+    // Extra warning during Indian market hours (09:05-15:30 IST). Each toggle
+    // during market hours burns Fyers WS handshake quota — on 2026-08-13 the
+    // user toggled 5 times between 09:11 and 09:17 and it contributed to
+    // 429s that killed 9:15 trade execution.
+    const now = new Date();
+    const istOffsetMin = 5 * 60 + 30;
+    const utcMin = now.getUTCHours() * 60 + now.getUTCMinutes();
+    const istMin = (utcMin + istOffsetMin) % (24 * 60);
+    const inMarketHours = istMin >= (9 * 60 + 5) && istMin < (15 * 60 + 30);
+
+    let confirmMessage: string;
+    if (inMarketHours) {
+      confirmMessage =
+        `⚠️  Market hours (09:05-15:30 IST) — switching mode NOW burns Fyers WS quota and can 429 your live trades.\n\n` +
+        `Also: mode toggles have a 30-second cooldown — a second toggle within 30s will be rejected.\n\n` +
+        `Switch to ${nextMode.toUpperCase()} anyway?`;
+    } else {
+      confirmMessage = `Switch trading mode to ${nextMode.toUpperCase()}? Open positions stay preserved in their current mode and the other mode gets its own broker state.`;
+    }
+    const confirmed = window.confirm(confirmMessage);
     if (!confirmed) {
       return;
     }
