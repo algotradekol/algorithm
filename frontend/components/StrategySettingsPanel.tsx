@@ -151,6 +151,7 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
           </p>
         )}
         <OrderTypeSelect settings={settings} setSettings={setSettings} />
+        {isLive && <ParallelPaperToggle settings={settings} setSettings={setSettings} />}
         {(algoId === 'algo2' || algoId === 'algo3') && (
           <ScanToggle algoId={algoId} settings={settings} setSettings={setSettings} />
         )}
@@ -320,6 +321,35 @@ function ExitModeSelect({
         ))}
       </div>
     </div>
+  );
+}
+
+function ParallelPaperToggle({
+  settings,
+  setSettings,
+}: {
+  settings: Record<string, any>;
+  setSettings: (settings: Record<string, any>) => void;
+}) {
+  const on = Boolean(settings.parallel_paper_enabled);
+  return (
+    <label className="mt-5 flex gap-3 rounded border border-[#22c55e]/40 bg-[#22c55e]/5 p-3">
+      <input
+        type="checkbox"
+        checked={on}
+        onChange={(e) => setSettings({ ...settings, parallel_paper_enabled: e.target.checked })}
+        className="peer sr-only"
+      />
+      <span className="mt-1 h-5 w-9 shrink-0 rounded-full border border-[#1f2937] bg-gray-700 after:block after:h-4 after:w-4 after:translate-x-0.5 after:translate-y-0.5 after:rounded-full after:bg-gray-400 after:transition peer-checked:bg-[#22c55e] peer-checked:after:translate-x-4 peer-checked:after:bg-white" />
+      <span className="flex-1">
+        <span className="text-sm font-semibold text-gray-100">Parallel Paper Trading</span>
+        <span className="mt-1 block text-xs text-gray-500">
+          When ON, every LIVE entry also mirrors as a paper trade with fake money in the paper tables.
+          Compare live vs paper results side-by-side by toggling the Mode switch at the top — your
+          real live positions are untouched. Turn OFF if you don't want the extra paper simulations.
+        </span>
+      </span>
+    </label>
   );
 }
 

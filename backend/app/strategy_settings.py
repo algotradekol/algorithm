@@ -36,6 +36,12 @@ DEFAULT_SETTINGS = {
     "test_schedule_enabled": False,
     "test_candle_time": "11:10",
     "order_type": "LIMIT",
+    # When True AND active mode is LIVE, every algo entry ALSO simulates a
+    # paper trade with fake money in the paper tables. The paper trade uses
+    # the same signal + qty math but never hits Fyers — pure DB simulation.
+    # Provides a live-vs-paper side-by-side without disrupting live trading.
+    # Ignored when active mode is PAPER (paper is already the primary).
+    "parallel_paper_enabled": True,
 }
 
 ORDER_TYPES = {"LIMIT", "MARKET"}
@@ -91,6 +97,7 @@ INT_FIELDS = {
 
 BOOL_FIELDS = {
     "scan_enabled",
+    "parallel_paper_enabled",
     "filter_vwap",
     "filter_rsi",
     "filter_adx",

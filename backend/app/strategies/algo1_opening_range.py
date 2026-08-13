@@ -166,6 +166,10 @@ class Algo1OpeningRange(Strategy):
         from ..strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
         self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
+        # Optional shadow paper broker — active only when trading mode is
+        # LIVE and settings.parallel_paper_enabled is True. See _active_brokers.
+        self._shadow_paper_broker = None
+        self._rebuild_shadow_paper_broker()
         self.prev_close: dict[str, float] = {}
         self.preloaded_ltps: dict[str, float] = {}
         self.test_mode_ltps: dict[str, float] = {}  # Store LTPs from test mode candles
@@ -199,6 +203,8 @@ class Algo1OpeningRange(Strategy):
         )
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
+        # Rebuild shadow paper broker in case mode or parallel_paper_enabled changed.
+        self._rebuild_shadow_paper_broker()
         current_schedule = (
             bool(self.settings.get("test_schedule_enabled")),
             self.scan_candle_time(),
@@ -803,7 +809,40 @@ class Algo1OpeningRange(Strategy):
             print(f"[algo1] quotes-API LTP fallback failed: {exc}")
             return {}
 
+    def _rebuild_shadow_paper_broker(self) -> None:
+        """(Re)build the shadow paper broker based on current mode + setting.
+
+        Rules:
+        - Active mode LIVE + parallel_paper_enabled=True  -> shadow=PaperBroker
+        - Active mode LIVE + parallel_paper_enabled=False -> shadow=None
+        - Active mode PAPER                                -> shadow=None
+          (paper is already the primary broker; no need to duplicate it)
+        """
+        from ..runtime_mode import get_runtime_trading_mode
+        from ..paper_broker import PaperBroker
+        mode = get_runtime_trading_mode()
+        parallel_on = bool(self.settings.get("parallel_paper_enabled", False))
+        if mode == "live" and parallel_on:
+            self._shadow_paper_broker = PaperBroker(
+                algo_id=self.algo_id,
+                starting_capital=float(self.settings.get("starting_capital") or 500000),
+            )
+        else:
+            self._shadow_paper_broker = None
+
+    def _active_brokers(self) -> list:
+        """Every broker that should receive trade actions this tick. Primary
+        first, shadow (if any) second. Safe on bare instances (getattr)."""
+        brokers = [self.broker]
+        shadow = getattr(self, "_shadow_paper_broker", None)
+        if shadow is not None:
+            brokers.append(shadow)
+        return brokers
+
     def _has_open_position(self, symbol: str) -> bool:
+        # Only check the PRIMARY broker's open positions here. Shadow paper
+        # having a duplicate isn't relevant to whether the primary should
+        # re-enter — each broker tracks its own re-entry independently.
         return any(position["symbol"] == symbol for position in self.broker.open_positions())
 
     def _enter(self, symbol: str, side: str, entry_price: float) -> bool:
@@ -851,6 +890,22 @@ class Algo1OpeningRange(Strategy):
             self.entry_failures[symbol] = "broker_open_failed"
             print(f"[{self.algo_id}] entry failed for {symbol}: {exc}")
             return False
+
+        # Shadow paper: mirror the trade in the paper broker with the SAME
+        # entry/sl/target/qty. Never propagate errors from the shadow — a
+        # paper-side failure must NEVER break live trading. Use getattr so
+        # bare instances (tests) that skip __init__ don't crash here.
+        shadow = getattr(self, "_shadow_paper_broker", None)
+        if shadow is not None and not shadow.already_traded_today(symbol):
+            try:
+                shadow.open_trade(
+                    symbol, side, qty, entry_price, sl_price, target_price,
+                    f"{self.scan_candle_time()} opening range {side}",
+                    self._signal_snapshot(symbol, side, entry_price),
+                )
+                print(f"[{self.algo_id}] shadow-paper mirrored {side} {symbol} @ {entry_price:.2f} qty={qty}")
+            except Exception as exc:
+                print(f"[{self.algo_id}] shadow-paper mirror failed for {symbol} (non-fatal): {exc}")
 
         self.selected_symbols.add(symbol)
         self.selected_sides[symbol] = side
@@ -1192,26 +1247,43 @@ class Algo1OpeningRange(Strategy):
         broadcast_sync({"event": "scan_complete", "algo_id": self.algo_id, "results": result})
 
     def check_exits(self):
-        for position in self.broker.open_positions():
-            ltp = position.get("_last_ltp")  # engine sets this before calling check_exits
-            if not ltp:
-                continue
-            position = self.broker.apply_trailing_stop(position, ltp, self.settings)
-            side, sl, target = position["side"], position["sl_price"], position["target_price"]
-            use_target = self.broker.should_exit_at_target(self.settings)
-            if side == "BUY":
-                if ltp <= sl:
-                    self.broker.close_trade(position, ltp, "SL")
-                elif use_target and ltp >= target:
-                    self.broker.close_trade(position, ltp, "TARGET")
-            else:
-                if ltp >= sl:
-                    self.broker.close_trade(position, ltp, "SL")
-                elif use_target and ltp <= target:
-                    self.broker.close_trade(position, ltp, "TARGET")
+        # Run exit checks against BOTH the primary broker and the shadow
+        # paper broker (if active). Each broker has its own open positions.
+        for broker in self._active_brokers():
+            try:
+                for position in broker.open_positions():
+                    ltp = position.get("_last_ltp")  # engine sets this before calling check_exits
+                    if not ltp:
+                        continue
+                    position = broker.apply_trailing_stop(position, ltp, self.settings)
+                    side, sl, target = position["side"], position["sl_price"], position["target_price"]
+                    use_target = broker.should_exit_at_target(self.settings)
+                    if side == "BUY":
+                        if ltp <= sl:
+                            broker.close_trade(position, ltp, "SL")
+                        elif use_target and ltp >= target:
+                            broker.close_trade(position, ltp, "TARGET")
+                    else:
+                        if ltp >= sl:
+                            broker.close_trade(position, ltp, "SL")
+                        elif use_target and ltp <= target:
+                            broker.close_trade(position, ltp, "TARGET")
+            except Exception as exc:
+                # Never let a shadow-broker exception break the other broker's checks.
+                if broker is not self.broker:
+                    print(f"[{self.algo_id}] shadow check_exits error (non-fatal): {exc}")
+                else:
+                    raise
 
     def square_off_all(self):
-        for position in self.broker.open_positions():
-            ltp = position.get("_last_ltp", position["entry_price"])
-            self.broker.close_trade(position, ltp, "EOD_SQUAREOFF")
+        for broker in self._active_brokers():
+            try:
+                for position in broker.open_positions():
+                    ltp = position.get("_last_ltp", position["entry_price"])
+                    broker.close_trade(position, ltp, "EOD_SQUAREOFF")
+            except Exception as exc:
+                if broker is not self.broker:
+                    print(f"[{self.algo_id}] shadow square_off_all error (non-fatal): {exc}")
+                else:
+                    raise
 

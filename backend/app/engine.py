@@ -647,16 +647,23 @@ def _open_position_ltp_poll_loop():
                 time.sleep(10)
                 continue
 
-            # Collect every open position across all strategies.
+            # Collect every open position across all strategies AND all
+            # brokers (primary + shadow paper if parallel is on).
             symbols_needing_ltp: set[str] = set()
             for strategy in STRATEGIES.values():
-                try:
-                    for position in strategy.broker.open_positions():
-                        sym = position.get("symbol")
-                        if sym:
-                            symbols_needing_ltp.add(sym)
-                except Exception:
-                    continue
+                brokers = getattr(strategy, "_active_brokers", None)
+                if callable(brokers):
+                    broker_list = brokers()
+                else:
+                    broker_list = [strategy.broker]
+                for broker in broker_list:
+                    try:
+                        for position in broker.open_positions():
+                            sym = position.get("symbol")
+                            if sym:
+                                symbols_needing_ltp.add(sym)
+                    except Exception:
+                        continue
 
             if not symbols_needing_ltp:
                 time.sleep(10)
@@ -1078,6 +1085,11 @@ def apply_trading_mode(mode: str) -> dict:
             refresh_settings()
         starting_capital = float(getattr(strategy, "settings", {}).get("starting_capital") or 500000)
         strategy.broker = create_broker(algo_id=strategy.algo_id, starting_capital=starting_capital)
+        # Rebuild shadow paper broker under the new mode (paper mode: no
+        # shadow needed; live mode + parallel: shadow is a fresh PaperBroker).
+        rebuild_shadow = getattr(strategy, "_rebuild_shadow_paper_broker", None)
+        if callable(rebuild_shadow):
+            rebuild_shadow()
         refresh_market_data = getattr(strategy, "refresh_market_data", None)
         if callable(refresh_market_data):
             refresh_market_data()

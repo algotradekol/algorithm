@@ -683,6 +683,96 @@ def test_mode_toggle_cooldown():
     eng._last_mode_switch_at = 0.0
 
 
+# ── 16. Parallel paper mirroring (fix, 2026-08-13 evening) ───────────
+def test_parallel_paper_mirroring():
+    print("\n16. Parallel paper — shadow broker mirrors live trades AND runs its own exits")
+    from app.strategies.algo1_opening_range import Algo1OpeningRange
+
+    # Fake primary broker (live) and fake shadow broker (paper). Both accept
+    # open_trade / open_positions / already_traded_today / etc.
+    class RecordingBroker:
+        def __init__(self, label):
+            self.label = label
+            self.trades = []
+            self.open_pos = []
+            self.exits = []
+            self.traded_today = set()
+        def open_trade(self, symbol, side, qty, entry, sl, target, trigger, snapshot, entry_time=None):
+            self.trades.append({"symbol": symbol, "side": side, "qty": qty, "entry": entry, "sl": sl, "target": target})
+            self.traded_today.add(symbol)
+            self.open_pos.append({"symbol": symbol, "side": side, "sl_price": sl, "target_price": target, "entry_price": entry, "qty": qty, "id": f"{self.label}-1"})
+        def already_traded_today(self, s): return s in self.traded_today
+        def open_positions(self): return list(self.open_pos)
+        def summary(self): return {"trade_count_today": len(self.trades), "buy_count_today": 0, "sell_count_today": 0, "cash": 100000}
+        def apply_trailing_stop(self, pos, ltp, settings): return pos
+        def should_exit_at_target(self, s): return True
+        def close_trade(self, pos, price, reason, exit_time=None):
+            self.exits.append({"symbol": pos["symbol"], "reason": reason, "price": price})
+            self.open_pos = [p for p in self.open_pos if p["symbol"] != pos["symbol"]]
+
+    # Bypass Algo1 __init__
+    strat = object.__new__(Algo1OpeningRange)
+    strat.algo_id = "algo1"
+    strat.settings = {
+        "capital_per_trade": 10000, "margin_multiplier": 5,
+        "sl_pct": 1.0, "target_pct": 2.0,
+        "test_schedule_enabled": False, "test_candle_time": "11:10",
+        "parallel_paper_enabled": True,
+    }
+    strat.entry_failures = {}
+    strat.selected_symbols = set()
+    strat.selected_sides = {}
+    strat.candidate_details = {}
+    strat.opening_candles = {}
+    strat.sector_map = {}
+    strat.prev_close = {}
+    strat.test_mode_ltps = {}
+    class NoopLogger:
+        def __getattr__(self, name): return lambda *a, **kw: None
+    strat.debug_logger = NoopLogger()
+
+    live_broker = RecordingBroker("live")
+    shadow_broker = RecordingBroker("shadow-paper")
+    strat.broker = live_broker
+    strat._shadow_paper_broker = shadow_broker
+
+    # Sub 16a — entry mirrors to BOTH
+    ok = strat._enter("NSE:RELIANCE-EQ", "BUY", 1000.0)
+    check("_enter returned True (live succeeded)", ok is True)
+    check("primary (live) recorded 1 trade", len(live_broker.trades) == 1,
+          f"got={len(live_broker.trades)}")
+    check("shadow (paper) mirrored 1 trade", len(shadow_broker.trades) == 1,
+          f"got={len(shadow_broker.trades)}")
+    check("both trades have identical qty",
+          live_broker.trades[0]["qty"] == shadow_broker.trades[0]["qty"])
+    check("both trades have identical SL", live_broker.trades[0]["sl"] == shadow_broker.trades[0]["sl"])
+
+    # Sub 16b — _active_brokers returns both
+    brokers = strat._active_brokers()
+    check("_active_brokers returns 2 (primary + shadow)", len(brokers) == 2,
+          f"got={len(brokers)}")
+    check("_active_brokers[0] is primary", brokers[0] is live_broker)
+    check("_active_brokers[1] is shadow", brokers[1] is shadow_broker)
+
+    # Sub 16c — check_exits fires on BOTH when SL hits
+    live_broker.open_pos[0]["_last_ltp"] = 989.0   # below SL 990.0 -> triggers exit
+    shadow_broker.open_pos[0]["_last_ltp"] = 989.0
+    strat.check_exits()
+    check("primary SL fired", any(e["reason"] == "SL" for e in live_broker.exits),
+          f"live exits={live_broker.exits}")
+    check("shadow SL fired", any(e["reason"] == "SL" for e in shadow_broker.exits),
+          f"shadow exits={shadow_broker.exits}")
+
+    # Sub 16d — turning shadow off means only primary runs
+    strat._shadow_paper_broker = None
+    strat.entry_failures.clear()
+    strat.selected_symbols.clear()
+    ok = strat._enter("NSE:TCS-EQ", "SELL", 3000.0)
+    check("without shadow: primary got trade", len(live_broker.trades) == 2)
+    check("without shadow: shadow untouched", len(shadow_broker.trades) == 1,
+          f"got={len(shadow_broker.trades)}")
+
+
 def main():
     print("=" * 66)
     print("  LIVE ORDER PIPELINE — OFFLINE SMOKE TEST (no Fyers, no DB)")
@@ -704,6 +794,7 @@ def main():
     test_ws_premarket_warmup_gating()
     test_token_expired_guard()
     test_mode_toggle_cooldown()
+    test_parallel_paper_mirroring()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")
