@@ -176,26 +176,49 @@ def get_settings(algo_id: str) -> dict:
     return _normalize({}, algo_id)
 
 
-def update_settings(algo_id: str, settings: dict):
-    """Write updated settings back to Supabase."""
+# Fields added AFTER the initial Supabase schema. If the DB hasn't been
+# migrated to include one of these columns, we drop it from the upsert
+# payload and continue — no SQL migration required, at the cost of the
+# setting being ephemeral (falls back to the DEFAULT_SETTINGS value on
+# next read). Add to this set when introducing a new column that clients
+# might not have migrated yet.
+_NEW_COLUMNS_TOLERATE_MISSING = {
+    "order_type",             # added 2026-08-10
+    "parallel_paper_enabled", # added 2026-08-13
+}
+
+
+def _upsert_settings_with_fallback(algo_id: str, settings: dict) -> None:
+    """Try to write every setting; if Supabase rejects an unknown column,
+    strip that column from the payload and retry once. Prevents the whole
+    save from silently failing when a new field hasn't been migrated yet."""
     from .supabase_client import supabase
 
+    payload = {"algo_id": algo_id, **settings, "updated_at": "now()"}
+    try:
+        supabase.table("strategy_settings").upsert(payload).execute()
+        return
+    except Exception as exc:
+        text = str(exc).lower()
+        dropped = []
+        for col in list(_NEW_COLUMNS_TOLERATE_MISSING):
+            if col in text and col in payload:
+                payload.pop(col, None)
+                dropped.append(col)
+        if not dropped:
+            raise
+        print(f"[strategy_settings] Supabase rejected column(s) {dropped}; retrying without them. To make these persist, run: ALTER TABLE public.strategy_settings ADD COLUMN IF NOT EXISTS {dropped[0]} ...")
+        supabase.table("strategy_settings").upsert(payload).execute()
+
+
+def update_settings(algo_id: str, settings: dict):
+    """Write updated settings back to Supabase."""
     settings = _normalize(settings, algo_id)
-    supabase.table("strategy_settings").upsert({
-        "algo_id": algo_id,
-        **settings,
-        "updated_at": "now()",
-    }).execute()
+    _upsert_settings_with_fallback(algo_id, settings)
 
 
 def reset_settings(algo_id: str) -> dict:
     """Restore the strategy to its default Tradetron-style settings."""
-    from .supabase_client import supabase
-
     settings = _normalize({}, algo_id)
-    supabase.table("strategy_settings").upsert({
-        "algo_id": algo_id,
-        **settings,
-        "updated_at": "now()",
-    }).execute()
+    _upsert_settings_with_fallback(algo_id, settings)
     return settings
