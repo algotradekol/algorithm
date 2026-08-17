@@ -72,3 +72,18 @@ GEMINI_MODEL = os.environ.get("GEMINI_MODEL", "gemini-3.5-flash")
 SQUARE_OFF_TIME = "15:15"  # 3:15 PM, both algos exit everything by this time
 MARKET_OPEN_TIME = "09:15"
 ENTRY_CHECK_TIME = "09:16"  # algo 1 fires its entries at this time
+
+# Deployment-level tab/strategy hide-list. Same convention as
+# frontend's NEXT_PUBLIC_HIDDEN_TABS (comma-separated tab keys). A hidden
+# strategy tab is not just invisible in the UI — the backend also refuses
+# to load its strategy, so the client-side toggle can never accidentally
+# start it. Missing/empty = load everything (safe default).
+#
+# Tab-key → strategy mapping enforced in engine.py: simple→algo1,
+# filter→algo2, silver→algo3 (silver micro). Non-strategy tabs
+# (backtest, compare, history, calendar, charges) are UI-only.
+HIDDEN_TABS = {
+    key.strip().lower().replace(" ", "").replace("_", "").replace("-", "")
+    for key in os.environ.get("HIDDEN_TABS", "").split(",")
+    if key.strip()
+}

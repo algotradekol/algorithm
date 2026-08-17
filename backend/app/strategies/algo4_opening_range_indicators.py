@@ -368,6 +368,13 @@ class Algo4OpeningRangeIndicators(Strategy):
         today = datetime.date.today()
         if self.entries_evaluated_today == today:
             return True
+        if self.is_scan_skipped_today():
+            self.entries_evaluated_today = today
+            self._record_scan_results(
+                scan_status="skipped",
+                scan_message="Scan skipped for today by user request.",
+            )
+            return True
         if not self.scan_enabled():
             self.entries_evaluated_today = today
             self.candidates = {}

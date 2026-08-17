@@ -149,6 +149,11 @@ export const api = {
     authedFetch(`/api/algo/${algoId}/available-cash`, { method: 'PUT', body: JSON.stringify({ cash }) }),
   resetSettings: (algoId: string) =>
     authedFetch(`/api/algo/${algoId}/settings/reset`, { method: 'POST' }),
+  setScanSkippedToday: (algoId: string, skip: boolean) =>
+    authedFetch(`/api/algo/${algoId}/skip-today`, {
+      method: 'POST',
+      body: JSON.stringify({ skip }),
+    }),
   compare: () => authedFetch('/api/compare'),
   calendarDays: (days = 60) => authedFetch(`/api/calendar?days=${days}`),
   calendarDay: (date: string) => authedFetch(`/api/calendar/${encodeURIComponent(date)}`),
