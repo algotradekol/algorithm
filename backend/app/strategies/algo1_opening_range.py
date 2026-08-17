@@ -55,6 +55,18 @@ _BACKFILL_MAX_WORKERS = 50
 _PRELOAD_MAX_WORKERS = 12
 
 
+def _classify_rest_error(exc: Exception) -> str:
+    """Turn a raw REST exception into a short, funnel-friendly rejection reason."""
+    text = str(exc).lower()
+    if "429" in text or "rate limit" in text or "retry after" in text:
+        return "rest_backfill_rate_limited"
+    if "timeout" in text or "timed out" in text:
+        return "rest_backfill_timeout"
+    if "connection" in text or "unreachable" in text:
+        return "rest_backfill_network_error"
+    return "rest_backfill_failed"
+
+
 class ScanDebugLogger:
     """Tracks symbol progression through scan stages for structured debugging."""
     def __init__(self, watchlist_size: int):
@@ -186,6 +198,9 @@ class Algo1OpeningRange(Strategy):
         # Keep the scan audit honest: a candidate selected for an entry slot can
         # still fail to open if its live entry price is unavailable.
         self.entry_failures: dict[str, str] = {}
+        # Symbols whose Phase 2 REST backfill failed (429 / timeout / network),
+        # so the funnel can show the true reason instead of a misleading "slots_full".
+        self.phase2_backfill_failed: dict[str, str] = {}
         self.entries_evaluated_today = None
         self._previous_close_load_lock = threading.Lock()
         self._previous_close_loading = False
@@ -231,6 +246,7 @@ class Algo1OpeningRange(Strategy):
         self.selected_symbols = set()
         self.selected_sides = {}
         self.entry_failures = {}
+        self.phase2_backfill_failed = {}
         self.entries_evaluated_today = None
         self.test_mode_ltps = {}
         self.debug_logger = ScanDebugLogger(len(self.watchlist))
@@ -409,6 +425,40 @@ class Algo1OpeningRange(Strategy):
         open_price, high, low = candle["open"], candle["high"], candle["low"]
         self.prev_close_ready_symbols.add(symbol)
 
+        # Single-tick candle guard: O==H==L (and close==open) means Fyers
+        # delivered zero or a single stale tick during the minute. Trading
+        # on it is trading blind. The old test-mode fallback used to accept
+        # these by picking side from gap direction — that path caused live
+        # entries on garbage data during rate-limit events. Closed now.
+        is_single_tick = (
+            abs(high - low) <= 1e-9
+            and abs(open_price - candle["close"]) <= 1e-9
+        )
+        if is_single_tick:
+            gap_pct = abs(open_price - prev_close) / prev_close * 100 if prev_close else 0.0
+            self.debug_logger.add_shape_result(symbol, "none", False, "single_tick")
+            self.candidate_details[symbol] = {
+                "symbol": symbol,
+                "sector": self.sector_map.get(symbol),
+                "side": "WATCH",
+                "open": open_price,
+                "high": high,
+                "low": low,
+                "close": candle["close"],
+                "prev_close": prev_close,
+                "gap_pct": gap_pct,
+                "candle_received": True,
+                "window_candle_count": candle["window_candle_count"],
+                "shape_passed": False,
+                "signal_shape": "single_tick",
+                "gap_passed": False,
+                "passed_indicators": True,
+                "indicator_results": {},
+                "selected_for_trade": False,
+                "rejection_reason": "single_tick_candle",
+            }
+            return None
+
         buy_shape = abs(open_price - low) <= TICK_SIZE
         sell_shape = abs(open_price - high) <= TICK_SIZE
         flat_shape = buy_shape and sell_shape
@@ -417,12 +467,11 @@ class Algo1OpeningRange(Strategy):
 
         is_test_schedule = bool(self.settings.get("test_schedule_enabled"))
         if flat_shape:
-            if is_test_schedule:
-                buy_shape = gap_up
-                sell_shape = not gap_up
-            else:
-                buy_shape = False
-                sell_shape = False
+            # Near-flat but not single-tick (H-L within one tick). Still
+            # ambiguous which side to trade — reject in both live and
+            # test modes.
+            buy_shape = False
+            sell_shape = False
 
         if buy_shape or sell_shape:
             self.debug_logger.add_shape_result(
@@ -496,6 +545,41 @@ class Algo1OpeningRange(Strategy):
             candle = self._combined_opening_candle(candles)
             open_price, high, low = candle["open"], candle["high"], candle["low"]
             self.prev_close_ready_symbols.add(symbol)
+
+            # Single-tick candle guard (F1, 2026-08-17): O==H==L and O==C
+            # means Fyers delivered zero (or one stale) tick this minute.
+            # Reject in both live and test modes — the old test-mode
+            # fallback (pick side by gap direction) let garbage data
+            # produce real live trades during rate-limit events.
+            is_single_tick = (
+                abs(high - low) <= 1e-9
+                and abs(open_price - candle["close"]) <= 1e-9
+            )
+            if is_single_tick:
+                gap_pct = abs(open_price - prev_close) / prev_close * 100
+                self.debug_logger.add_shape_result(symbol, "none", False, "single_tick")
+                self.candidate_details[symbol] = {
+                    "symbol": symbol,
+                    "sector": self.sector_map.get(symbol),
+                    "side": "WATCH",
+                    "open": open_price,
+                    "high": high,
+                    "low": low,
+                    "close": candle["close"],
+                    "prev_close": prev_close,
+                    "gap_pct": gap_pct,
+                    "candle_received": True,
+                    "window_candle_count": candle["window_candle_count"],
+                    "shape_passed": False,
+                    "signal_shape": "single_tick",
+                    "gap_passed": False,
+                    "passed_indicators": True,
+                    "indicator_results": {},
+                    "selected_for_trade": False,
+                    "rejection_reason": "single_tick_candle",
+                }
+                continue
+
             # Use tick tolerance instead of exact float equality. Fyers history
             # often returns prices rounded to the instrument tick, and the live
             # feed can differ by tiny floating-point noise even when the candle
@@ -506,26 +590,14 @@ class Algo1OpeningRange(Strategy):
             gap_pct = abs(open_price - prev_close) / prev_close * 100
             gap_up = open_price >= prev_close
 
-            # Flat-candle handling depends on mode:
-            #   - TEST mode: fabricated LTP-only candles are expected to be
-            #     flat by design (that's the pipeline verification path).
-            #     Resolve via gap direction so trades still fire.
-            #   - PRODUCTION 9:15 mode: a flat candle means the aggregator
-            #     saw ONE tick during the whole 09:15 minute (usually because
-            #     WS was disconnected). This is NOT a real "open==low" or
-            #     "open==high" signal — it's missing data. Reject and let
-            #     phase-2 history backfill supply the real OHLC.
-            is_test_schedule = bool(self.settings.get("test_schedule_enabled"))
+            # Near-flat but not single-tick (H-L within one tick but not
+            # bit-identical). Still too ambiguous to choose a side — reject
+            # regardless of mode. The old test-mode gap-direction fallback
+            # was the specific bug that let MANAPPURAM/MOTHERSON single-tick
+            # candles trade on 2026-08-17.
             if flat_shape:
-                if is_test_schedule:
-                    buy_shape = gap_up
-                    sell_shape = not gap_up
-                else:
-                    # Reject the flat candle so it fails the shape check.
-                    # The history backfill in phase 2 will replace it with
-                    # real OHLC and this row will be re-evaluated.
-                    buy_shape = False
-                    sell_shape = False
+                buy_shape = False
+                sell_shape = False
 
             # Log shape check result
             if buy_shape or sell_shape:
@@ -703,11 +775,13 @@ class Algo1OpeningRange(Strategy):
             return 0
 
         def load_symbol(symbol: str):
+            fetch_error: str | None = None
             try:
                 window = get_single_minute_candle(symbol, start_time)
             except Exception as exc:
                 print(f"[algo1] streaming backfill failed for {symbol}: {exc}")
                 window = []
+                fetch_error = _classify_rest_error(exc)
             fetched_prev_close = None
             if not self.prev_close.get(symbol):
                 try:
@@ -716,7 +790,7 @@ class Algo1OpeningRange(Strategy):
                         fetched_prev_close = pc
                 except Exception as exc:
                     print(f"[algo1] streaming prev-close fetch failed for {symbol}: {exc}")
-            return symbol, window, fetched_prev_close
+            return symbol, window, fetched_prev_close, fetch_error
 
         entered_this_phase = 0
         with ThreadPoolExecutor(max_workers=_BACKFILL_MAX_WORKERS) as pool:
@@ -731,12 +805,16 @@ class Algo1OpeningRange(Strategy):
                                 f.cancel()
                         break
 
-                    symbol, window, fetched_prev_close = future.result()
+                    symbol, window, fetched_prev_close, fetch_error = future.result()
 
                     if fetched_prev_close and not self.prev_close.get(symbol):
                         self.prev_close[symbol] = fetched_prev_close
 
                     if not window:
+                        if fetch_error:
+                            if not hasattr(self, "phase2_backfill_failed"):
+                                self.phase2_backfill_failed = {}
+                            self.phase2_backfill_failed[symbol] = fetch_error
                         self.debug_logger.add_candle_missing(symbol)
                         continue
 
@@ -794,6 +872,17 @@ class Algo1OpeningRange(Strategy):
                         )
             except Exception as exc:
                 print(f"[algo1] streaming Phase 2 error: {exc}")
+                # Mark all unfinished futures as backfill-failed so the funnel
+                # shows the real reason (rest_backfill_error) instead of the
+                # misleading "slots_full" default. Use setattr fallback so the
+                # smoke test's stubbed strategy (which skips __init__) doesn't
+                # crash on a missing attribute here.
+                if not hasattr(self, "phase2_backfill_failed"):
+                    self.phase2_backfill_failed = {}
+                reason = _classify_rest_error(exc)
+                for f, sym in futures.items():
+                    if not f.done():
+                        self.phase2_backfill_failed.setdefault(sym, reason)
 
         return entered_this_phase
 
@@ -910,7 +999,7 @@ class Algo1OpeningRange(Strategy):
         self.selected_symbols.add(symbol)
         self.selected_sides[symbol] = side
         self.debug_logger.add_selected(symbol, side)
-        print(f"[{self.algo_id}] ✅ entered {side} {symbol} @ {entry_price:.2f} qty={qty}")
+        print(f"[{self.algo_id}] ENTERED {side} {symbol} @ {entry_price:.2f} qty={qty}")
         return True
 
     def evaluate_entries(self, get_ltp_fn):
@@ -1197,6 +1286,8 @@ class Algo1OpeningRange(Strategy):
                 row["rejection_reason"] = self.entry_failures[symbol]
             elif symbol in planned_symbols:
                 row["rejection_reason"] = "entry_not_opened"
+            elif symbol in self.phase2_backfill_failed:
+                row["rejection_reason"] = self.phase2_backfill_failed[symbol]
             elif row.get("gap_passed"):
                 # This candidate passed its conditions but was outside the
                 # configured total/side allocation for the opening scan.

@@ -138,8 +138,23 @@ async def websocket_endpoint(ws: WebSocket):
         if not token:
             raise ValueError("WebSocket authentication token is missing")
         jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"], audience="authenticated")
-    except Exception:
-        await ws.close(code=1008)
+    except WebSocketDisconnect:
+        # Client closed the socket before sending auth (tab close, refresh mid-handshake).
+        print("[ws] client disconnected during auth handshake")
+        return
+    except asyncio.TimeoutError:
+        print("[ws] auth timeout after 10s; closing socket")
+        try:
+            await ws.close(code=1008)
+        except (WebSocketDisconnect, RuntimeError):
+            pass
+        return
+    except Exception as exc:
+        print(f"[ws] auth failed: {type(exc).__name__}: {exc}")
+        try:
+            await ws.close(code=1008)
+        except (WebSocketDisconnect, RuntimeError):
+            pass
         return
     await manager.connect(ws, already_accepted=True)
     try:
@@ -302,14 +317,35 @@ def fyers_orders(mode: str | None = None, _user=Depends(require_auth)):
 
 
 @app.post("/api/fyers/disconnect")
-def fyers_disconnect(_user=Depends(require_auth)):
+def fyers_disconnect(force: bool = Query(False), _user=Depends(require_auth)):
+    # F14 recovery lock: if the engine is currently auto-recovering a
+    # transient WS drop, refuse a logout unless the caller explicitly says
+    # ?force=true. Prevents the client-panics-and-relogs cascade that
+    # kicked off 2026-08-17's rate-limit storm.
+    engine_status = get_engine_status()
+    if engine_status.get("auto_recovering") and not force:
+        eta = max(
+            int(engine_status.get("ws_circuit_open_seconds_remaining") or 0),
+            int(engine_status.get("ws_next_backoff_seconds") or 0),
+        )
+        raise HTTPException(
+            status_code=409,
+            detail={
+                "error": "recovery_in_progress",
+                "message": (
+                    "System is reconnecting to Fyers automatically. "
+                    "Wait a moment or pass ?force=true to override."
+                ),
+                "eta_seconds": eta,
+            },
+        )
     mode = get_runtime_trading_mode()
     broker = get_active_broker_key(mode)
     disconnect_broker_tokens(mode)
     clear_pending_fyers_login_mode()
     clear_pending_fyers_login_origin()
     stop_live_feed(reason="fyers_disconnect")
-    audit_log("fyers", "disconnect requested", mode=mode, broker=broker)
+    audit_log("fyers", "disconnect requested", mode=mode, broker=broker, forced=force)
     return {
         "status": "ok",
         "message": f"FYERS {mode} connection disconnected.",

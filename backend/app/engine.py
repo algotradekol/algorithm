@@ -63,6 +63,10 @@ _FEED_CIRCUIT_OPEN_SECONDS = 180.0  # 3 minutes — Fyers server-closes WS
 # session on their side, then we resume via the normal backoff schedule.
 _feed_reconnect_failure_count = 0
 _feed_circuit_open_until = 0.0
+# When the WS most recently transitioned from connected → disconnected.
+# The frontend uses this to debounce the "Disconnected" banner so a normal
+# 30s reconnect doesn't flash red at the user (F14, 2026-08-17).
+_feed_disconnected_since: float = 0.0
 
 # On every Railway deploy the old container is killed abruptly and the new
 # container immediately tries a Fyers WS handshake — but Fyers has not yet
@@ -198,7 +202,9 @@ def _on_live_feed_status(status: dict):
     is_rate_limited = "429" in error_text or "too many requests" in error_text
     is_token_expired = "token is expired" in error_text or "token expired" in error_text
 
+    global _feed_disconnected_since
     with _engine_lock:
+        was_connected = bool(_engine_status.get("fyers_ws_connected"))
         update = {
             "fyers_ws_connected": connected,
             "fyers_ws_error": None if connected else error,
@@ -210,6 +216,12 @@ def _on_live_feed_status(status: dict):
         if status.get("first_tick_received") and not _engine_status.get("fyers_ws_first_tick_at"):
             update["fyers_ws_first_tick_at"] = _utc_now()
         _engine_status.update(update)
+        # Track the disconnected-since timestamp so /api/engine/status can
+        # tell the frontend how long we've been down (F14 debounce).
+        if connected:
+            _feed_disconnected_since = 0.0
+        elif was_connected or _feed_disconnected_since == 0.0:
+            _feed_disconnected_since = time.time()
 
     # Real tick arrived → Fyers is fine with us, close the circuit and reset backoff.
     if status.get("first_tick_received"):
@@ -923,6 +935,20 @@ def stop_live_feed(reason: str = "manual") -> bool:
 
 def get_engine_status() -> dict:
     circuit_left = int(_circuit_open_remaining())
+    ws_connected = bool(_engine_status.get("fyers_ws_connected"))
+    live_feed_started = bool(_engine_status.get("live_feed_started"))
+    # F14: auto_recovering means "we're trying to be up and haven't given up
+    # yet" — the frontend uses this to show "Reconnecting…" instead of
+    # scaring the user with "Disconnected". A hard disconnect (live feed
+    # stopped by user / token expired hard) is NOT auto-recovering.
+    auto_recovering = (
+        (not ws_connected)
+        and live_feed_started
+        and (_feed_reconnect_failure_count > 0 or circuit_left > 0)
+    )
+    disconnected_since_s: int | None = None
+    if _feed_disconnected_since > 0 and not ws_connected:
+        disconnected_since_s = int(time.time() - _feed_disconnected_since)
     return {
         "state": _engine_status["state"],
         "error": _engine_status["error"],
@@ -930,6 +956,8 @@ def get_engine_status() -> dict:
         "ws_reconnect_failure_count": _feed_reconnect_failure_count,
         "ws_circuit_open_seconds_remaining": circuit_left,
         "ws_next_backoff_seconds": int(_current_backoff_seconds()),
+        "auto_recovering": auto_recovering,
+        "disconnected_since_seconds": disconnected_since_s,
         "last_token_refresh": _engine_status.get("last_token_refresh"),
         "last_token_refresh_error": _engine_status.get("last_token_refresh_error"),
         "live_feed_started": _engine_status.get("live_feed_started"),
