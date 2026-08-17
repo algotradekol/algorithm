@@ -92,6 +92,8 @@ class Algo3SilverMicro(Strategy):
             self._pending_entry = None
 
     def scan_enabled(self) -> bool:
+        if self.is_scan_skipped_today():
+            return False
         return bool(self.settings.get("scan_enabled", True))
 
     def refresh_market_data(self):

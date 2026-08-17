@@ -512,6 +512,7 @@ def algo_summary(algo_id: str, _user=Depends(require_auth)):
         "max_trades_per_day": settings.get("max_trades_per_day", 10),
         "max_buy_trades": settings.get("max_buy_trades", 5),
         "max_sell_trades": settings.get("max_sell_trades", 5),
+        "skipped_today": strategy.is_scan_skipped_today(),
     }
 
 
@@ -681,6 +682,33 @@ def reset_algo_settings(algo_id: str, _user=Depends(require_auth)):
     if strategy and hasattr(strategy, "reload_settings"):
         strategy.reload_settings()
     return settings
+
+
+@app.post("/api/algo/{algo_id}/skip-today")
+def skip_algo_scan_today(algo_id: str, payload: dict, _user=Depends(require_auth)):
+    """Toggle "skip today's scan" for a strategy. Resets automatically at
+    midnight IST because the date comparison stops matching."""
+    strategy = get_strategy_or_raise(algo_id)
+    skip = bool(payload.get("skip", True))
+    if skip:
+        strategy.skip_scan_date = datetime.date.today()
+        audit_log("strategy", "scan skipped for today", algo_id=algo_id)
+    else:
+        strategy.skip_scan_date = None
+        audit_log("strategy", "scan skip cleared", algo_id=algo_id)
+    return {
+        "algo_id": algo_id,
+        "skipped_today": strategy.is_scan_skipped_today(),
+    }
+
+
+@app.get("/api/algo/{algo_id}/skip-today")
+def get_skip_algo_scan_today(algo_id: str, _user=Depends(require_auth)):
+    strategy = get_strategy_or_raise(algo_id)
+    return {
+        "algo_id": algo_id,
+        "skipped_today": strategy.is_scan_skipped_today(),
+    }
 
 
 @app.get("/api/algo/{algo_id}/scan-results")

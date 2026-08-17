@@ -438,13 +438,25 @@ export default function AlgoTab({
           <h2 className="text-base font-semibold text-gray-100">{displayName}</h2>
           {description && <p className="mt-1 text-xs text-gray-500">{description}</p>}
         </div>
-        <button
-          onClick={() => setSettingsOpen((open) => !open)}
-          className="min-h-10 rounded border border-[#3b82f6] px-3 py-1.5 text-xs font-semibold text-[#3b82f6]"
-        >
-          Settings
-        </button>
+        <div className="flex flex-wrap items-center gap-2">
+          <SkipScanButton
+            algoId={algoId}
+            skippedToday={Boolean(summary?.skipped_today)}
+            onChange={(next) => setSummary((prev: any) => (prev ? { ...prev, skipped_today: next } : prev))}
+          />
+          <button
+            onClick={() => setSettingsOpen((open) => !open)}
+            className="min-h-10 rounded border border-[#3b82f6] px-3 py-1.5 text-xs font-semibold text-[#3b82f6]"
+          >
+            Settings
+          </button>
+        </div>
       </div>
+      {summary?.skipped_today && (
+        <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
+          Scan skipped for today. No entries will be evaluated until you re-enable it (auto-resets at midnight IST).
+        </p>
+      )}
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
       {/* F12: the three /api/fyers/* calls (funds, positions, orders) share
           the same warning string during a 429 cooldown — the old rendering
@@ -537,6 +549,56 @@ function SilverFeedPanel({ status }: { status: any }) {
         <span>Pending setup: {status?.pending_setup ? 'yes' : 'no'}</span>
         <span>Pending entry: {status?.pending_entry ? 'yes' : 'no'}</span>
       </div>
+    </div>
+  );
+}
+
+function SkipScanButton({
+  algoId,
+  skippedToday,
+  onChange,
+}: {
+  algoId: string;
+  skippedToday: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function toggle() {
+    if (busy) return;
+    const next = !skippedToday;
+    // Confirm ONLY when turning skip ON — undoing a skip is harmless
+    // and confirming that would just be annoying.
+    if (next && !window.confirm('Skip today\'s scan for this strategy? No new entries will be placed until midnight IST (or until you turn scan back on).')) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const res = await api.setScanSkippedToday(algoId, next);
+      onChange(Boolean(res?.skipped_today));
+    } catch (e: any) {
+      setError(e?.message || 'Failed to update scan-skip state');
+    } finally {
+      setBusy(false);
+    }
+  }
+  const tone = skippedToday
+    ? 'border-[#f59e0b] text-[#f59e0b]'
+    : 'border-[#374151] text-gray-400';
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <button
+        onClick={toggle}
+        disabled={busy}
+        title={skippedToday
+          ? 'Scan is skipped for today. Click to re-enable.'
+          : 'Skip today\'s scheduled scan so no new entries fire (resets at midnight IST).'}
+        className={`min-h-10 rounded border px-3 py-1.5 text-xs font-semibold disabled:cursor-wait ${tone}`}
+      >
+        {busy ? '...' : skippedToday ? 'Scan: Skipped Today' : 'Skip Scan Today'}
+      </button>
+      {error && <p className="m-0 max-w-xs text-right text-[10px] text-[#ef4444]">{error}</p>}
     </div>
   );
 }

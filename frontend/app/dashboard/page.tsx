@@ -15,7 +15,26 @@ import { clearPinToken } from '../../lib/pinAuth';
 import { api } from '../../lib/api';
 import { WebSocketState } from '../../lib/useWebSocket';
 
-const TABS = ['Simple', 'Filter', 'Silver Micro', 'Backtest', 'Compare', 'History', 'Calendar', 'Charges'] as const;
+const ALL_TABS = ['Simple', 'Filter', 'Silver Micro', 'Backtest', 'Compare', 'History', 'Calendar', 'Charges'] as const;
+type TabName = (typeof ALL_TABS)[number];
+
+// Comma-separated list of tab keys to hide, read from NEXT_PUBLIC_HIDDEN_TABS.
+// Keys are lowercased and space-stripped so "Silver Micro" matches "silvermicro"
+// or "silver micro" or "SILVER_MICRO". Missing/empty = show every tab (safe
+// default so a Vercel config typo can't blank the whole dashboard).
+const HIDDEN_TABS: Set<string> = new Set(
+  (process.env.NEXT_PUBLIC_HIDDEN_TABS || '')
+    .split(',')
+    .map((s) => s.trim().toLowerCase().replace(/[\s_-]+/g, ''))
+    .filter(Boolean),
+);
+function tabKey(name: string): string {
+  return name.toLowerCase().replace(/[\s_-]+/g, '');
+}
+function isTabHidden(name: string): boolean {
+  return HIDDEN_TABS.has(tabKey(name));
+}
+const TABS = ALL_TABS.filter((t) => !isTabHidden(t)) as readonly TabName[];
 
 function formatIstTime() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -28,7 +47,9 @@ function formatIstTime() {
 }
 
 function DashboardContent() {
-  const [tab, setTab] = useState<(typeof TABS)[number]>('Simple');
+  // Fall back to the first visible tab if "Simple" is hidden in this
+  // deployment. Prevents landing on a tab that renders nothing.
+  const [tab, setTab] = useState<TabName>((TABS[0] as TabName | undefined) || 'Simple');
   const [ready, setReady] = useState(false);
   const [showFyersBanner, setShowFyersBanner] = useState(true);
   const [fyersLoginResult, setFyersLoginResult] = useState<'success' | 'failed' | null>(null);
@@ -297,42 +318,48 @@ function DashboardContent() {
           </section>
         ) : (
           <>
-            <div className={tab === 'Simple' ? '' : 'hidden'}>
-              <AlgoTab
-                key={`algo1-${tradingMode}`}
-                algoId="algo1"
-                displayName="UN1 9:15 v15 - Simple"
-                description="Uses the 9:15 signal candle only. Open=low gives BUY, open=high gives SELL, max 2% opening gap, 9:16 entry, 2% target, 1% stop loss."
-                tradingMode={tradingMode}
-                fyersConnected={fyersConnectedForMode}
-                onWebSocketStatus={setWsStatus}
-              />
-            </div>
-            <div className={tab === 'Filter' ? '' : 'hidden'}>
-              <AlgoTab
-                key={`algo2-${tradingMode}`}
-                algoId="algo2"
-                displayName="UN1 9:15 v14 - Filter"
-                description="Uses the 9:15 signal candle only, then applies the UN1 v14 liquidity, volume, and price-range checks before the 9:16 entry. Advanced indicator filters remain optional in Settings."
-                tradingMode={tradingMode}
-                fyersConnected={fyersConnectedForMode}
-                onWebSocketStatus={setWsStatus}
-              />
-            </div>
-            <div className={tab === 'Silver Micro' ? '' : 'hidden'}>
-              <AlgoTab
-                key={`algo3-${tradingMode}`}
-                algoId="algo3"
-                displayName="Silver Micro - MCX:SILVERMIC26AUGFUT - 5m EMA/Volume"
-                description="Tracks MCX:SILVERMIC26AUGFUT on 5-minute candles. BUY when a green 5m candle closes above EMA20 with volume above volume EMA20, confirm on one of the subsequent green candles within the confirmation window, and enter on the next candle open. SELL mirrors the same logic. Reversal happens when the opposite side confirms."
-                tradingMode={tradingMode}
-                fyersConnected={fyersConnectedForMode}
-                onWebSocketStatus={setWsStatus}
-              />
-            </div>
-            {tab === 'Backtest' && <BacktestTab />}
-            {tab === 'Compare' && <CompareTab />}
-            {tab === 'History' && (
+            {!isTabHidden('Simple') && (
+              <div className={tab === 'Simple' ? '' : 'hidden'}>
+                <AlgoTab
+                  key={`algo1-${tradingMode}`}
+                  algoId="algo1"
+                  displayName="UN1 9:15 v15 - Simple"
+                  description="Uses the 9:15 signal candle only. Open=low gives BUY, open=high gives SELL, max 2% opening gap, 9:16 entry, 2% target, 1% stop loss."
+                  tradingMode={tradingMode}
+                  fyersConnected={fyersConnectedForMode}
+                  onWebSocketStatus={setWsStatus}
+                />
+              </div>
+            )}
+            {!isTabHidden('Filter') && (
+              <div className={tab === 'Filter' ? '' : 'hidden'}>
+                <AlgoTab
+                  key={`algo2-${tradingMode}`}
+                  algoId="algo2"
+                  displayName="UN1 9:15 v14 - Filter"
+                  description="Uses the 9:15 signal candle only, then applies the UN1 v14 liquidity, volume, and price-range checks before the 9:16 entry. Advanced indicator filters remain optional in Settings."
+                  tradingMode={tradingMode}
+                  fyersConnected={fyersConnectedForMode}
+                  onWebSocketStatus={setWsStatus}
+                />
+              </div>
+            )}
+            {!isTabHidden('Silver Micro') && (
+              <div className={tab === 'Silver Micro' ? '' : 'hidden'}>
+                <AlgoTab
+                  key={`algo3-${tradingMode}`}
+                  algoId="algo3"
+                  displayName="Silver Micro - MCX:SILVERMIC26AUGFUT - 5m EMA/Volume"
+                  description="Tracks MCX:SILVERMIC26AUGFUT on 5-minute candles. BUY when a green 5m candle closes above EMA20 with volume above volume EMA20, confirm on one of the subsequent green candles within the confirmation window, and enter on the next candle open. SELL mirrors the same logic. Reversal happens when the opposite side confirms."
+                  tradingMode={tradingMode}
+                  fyersConnected={fyersConnectedForMode}
+                  onWebSocketStatus={setWsStatus}
+                />
+              </div>
+            )}
+            {tab === 'Backtest' && !isTabHidden('Backtest') && <BacktestTab />}
+            {tab === 'Compare' && !isTabHidden('Compare') && <CompareTab />}
+            {tab === 'History' && !isTabHidden('History') && (
               <HistoryTab
                 tradingMode={tradingMode}
                 fyersConnected={fyersConnectedForMode}
@@ -348,8 +375,8 @@ function DashboardContent() {
                 }}
               />
             )}
-            {tab === 'Calendar' && <CalendarTab />}
-            {tab === 'Charges' && <ChargesPanel />}
+            {tab === 'Calendar' && !isTabHidden('Calendar') && <CalendarTab />}
+            {tab === 'Charges' && !isTabHidden('Charges') && <ChargesPanel />}
           </>
         )}
       </div>

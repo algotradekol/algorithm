@@ -23,7 +23,22 @@ from .fyers_auth import get_stored_access_token, refresh_access_token_from_refre
 from .strategies.algo1_opening_range import Algo1OpeningRange
 from .strategies.algo3_silver_micro import Algo3SilverMicro
 from .strategies.un1_915_filtered import UN1915Filtered
-from .config import ENTRY_CHECK_TIME, SQUARE_OFF_TIME
+from .config import ENTRY_CHECK_TIME, HIDDEN_TABS, SQUARE_OFF_TIME
+
+# Tab-key → algo_id map for the HIDDEN_TABS backend gate. Only strategy
+# tabs are here; UI-only tabs (backtest, compare, history, calendar,
+# charges) are not part of this map because they never load a strategy.
+_STRATEGY_TAB_MAP = {
+    "simple": "algo1",
+    "filter": "algo2",
+    "silvermicro": "algo3",
+    "silver": "algo3",
+}
+_HIDDEN_ALGO_IDS = {
+    _STRATEGY_TAB_MAP[key]
+    for key in HIDDEN_TABS
+    if key in _STRATEGY_TAB_MAP
+}
 from .runtime_mode import get_runtime_trading_mode, normalize_trading_mode, set_runtime_trading_mode
 
 aggregator = CandleAggregator()
@@ -1199,11 +1214,22 @@ def start_engine():
 
     try:
         watchlist = get_nse500_watchlist()
-        strategies = {
-            "algo1": Algo1OpeningRange(watchlist),
-            "algo2": UN1915Filtered(watchlist),
-            "algo3": Algo3SilverMicro(),
+        # Deployment-level strategy gate: HIDDEN_TABS env var can exclude
+        # strategies entirely so a client-only build never risks loading
+        # (or accidentally running) a strategy that isn't offered on that
+        # deployment. Missing/empty env = load all three (dev default).
+        all_strategy_ctors = {
+            "algo1": lambda: Algo1OpeningRange(watchlist),
+            "algo2": lambda: UN1915Filtered(watchlist),
+            "algo3": lambda: Algo3SilverMicro(),
         }
+        strategies = {
+            algo_id: ctor()
+            for algo_id, ctor in all_strategy_ctors.items()
+            if algo_id not in _HIDDEN_ALGO_IDS
+        }
+        if _HIDDEN_ALGO_IDS:
+            print(f"[engine] HIDDEN_TABS skipped strategies: {sorted(_HIDDEN_ALGO_IDS)}")
         live_feed_symbols = sorted({
             symbol
             for strategy in strategies.values()
