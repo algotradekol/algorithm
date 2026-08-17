@@ -6,13 +6,29 @@ import { getAuthToken } from '../lib/authToken';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
-export default function FyersLoginButton({ connected = false, mode = 'paper' }: { connected?: boolean; mode?: 'paper' | 'live' }) {
+export default function FyersLoginButton({
+  connected = false,
+  mode = 'paper',
+  autoRecovering = false,
+}: {
+  connected?: boolean;
+  mode?: 'paper' | 'live';
+  autoRecovering?: boolean;
+}) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const searchParams = useSearchParams();
   const connectedFromRedirect = searchParams.get('fyers_login') === 'success';
 
   async function handleClick() {
+    if (autoRecovering) {
+      // F14: block the user from initiating a new OAuth exchange while
+      // the backend is auto-reconnecting. On 2026-08-17 a re-login mid
+      // recovery invalidated the healing session and triggered the
+      // Cloudflare rate-limit cascade.
+      setError('Auto-reconnecting. Wait a moment before logging in again.');
+      return;
+    }
     if (!API_URL) {
       setError('NEXT_PUBLIC_API_URL is not configured');
       return;
@@ -53,17 +69,24 @@ export default function FyersLoginButton({ connected = false, mode = 'paper' }: 
     );
   }
 
+  const disabled = loading || autoRecovering;
+  const label = autoRecovering ? 'Reconnecting…' : loading ? 'Connecting...' : 'Login to Fyers';
+  const borderColor = autoRecovering || loading ? 'border-[#f59e0b] text-[#f59e0b]' : 'border-[#3b82f6] text-[#3b82f6]';
+  const icon = autoRecovering
+    ? 'ri-refresh-line text-[#f59e0b] animate-spin'
+    : loading
+      ? 'ri-error-warning-fill text-[#f59e0b]'
+      : 'ri-login-circle-fill text-[#3b82f6]';
   return (
     <div className="flex flex-col items-end gap-1">
       <button
         onClick={handleClick}
-        disabled={loading}
-        className={`inline-flex min-h-10 items-center gap-2 rounded border bg-transparent px-3 py-1.5 text-sm font-medium transition hover:bg-[#3b82f6] hover:text-white disabled:cursor-wait ${
-          loading ? 'border-[#f59e0b] text-[#f59e0b]' : 'border-[#3b82f6] text-[#3b82f6]'
-        }`}
+        disabled={disabled}
+        className={`inline-flex min-h-10 items-center gap-2 rounded border bg-transparent px-3 py-1.5 text-sm font-medium transition hover:bg-[#3b82f6] hover:text-white disabled:cursor-wait ${borderColor}`}
+        title={autoRecovering ? 'System is reconnecting to Fyers. No action needed.' : undefined}
       >
-        <i className={`${loading ? 'ri-error-warning-fill text-[#f59e0b]' : 'ri-login-circle-fill text-[#3b82f6]'} text-sm`} />
-        {loading ? 'Connecting...' : 'Login to Fyers'}
+        <i className={`${icon} text-sm`} />
+        {label}
       </button>
       {error && <p className="m-0 max-w-xs text-right text-xs text-[#ef4444]">{error}</p>}
     </div>

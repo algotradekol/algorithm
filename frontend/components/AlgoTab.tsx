@@ -446,21 +446,20 @@ export default function AlgoTab({
         </button>
       </div>
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
-      {walletStatusError && tradingMode === 'live' && fyersConnected && (
-        <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
-          {walletStatusError}
-        </p>
-      )}
-      {brokerPositionsError && tradingMode === 'live' && fyersConnected && (
-        <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
-          {brokerPositionsError}
-        </p>
-      )}
-      {brokerOrdersError && tradingMode === 'live' && fyersConnected && (
-        <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
-          {brokerOrdersError}
-        </p>
-      )}
+      {/* F12: the three /api/fyers/* calls (funds, positions, orders) share
+          the same warning string during a 429 cooldown — the old rendering
+          stacked three identical banners. Deduplicate by unique text. */}
+      {(() => {
+        if (tradingMode !== 'live' || !fyersConnected) return null;
+        const seen = new Set<string>();
+        const messages = [walletStatusError, brokerPositionsError, brokerOrdersError]
+          .filter((msg): msg is string => Boolean(msg) && !seen.has(msg) && (seen.add(msg), true));
+        return messages.map((msg, i) => (
+          <p key={i} className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
+            {msg}
+          </p>
+        ));
+      })()}
       {algoId === 'algo3' && <SilverFeedPanel status={feedStatus} />}
 
       <div className="grid grid-cols-3 gap-1.5 sm:gap-2 lg:grid-cols-6">

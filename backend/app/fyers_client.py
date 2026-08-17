@@ -230,6 +230,24 @@ def get_connection_status() -> dict:
             "trading_mode": effective_mode,
         }
 
+    # F7 (2026-08-17): a 429 from Fyers/Cloudflare during profile verify is
+    # a rate-limit, NOT an expired token. On 2026-08-17 morning the app was
+    # force-logging users out because the profile check ran into 429 and the
+    # response body carried a generic "invalid" message that fell through
+    # to the "expired" branch below. Return a degraded state instead so
+    # the token stays alive until Cloudflare cools down.
+    if _is_rate_limited(response):
+        return {
+            "connected": True,
+            "status": "degraded",
+            "message": "Fyers verification throttled by rate limit; keeping session alive.",
+            "refresh_token_present": refresh_token_present,
+            "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
+            "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
+            "broker": broker,
+            "trading_mode": effective_mode,
+        }
+
     return {
         "connected": False,
         "status": "expired",

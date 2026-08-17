@@ -15,12 +15,23 @@ import sys
 import base64
 import datetime
 import hashlib
+import threading
 import time
 import requests
 
 from .audit_log import audit_log
 from .runtime_mode import get_active_broker_key, get_fyers_config
 from .supabase_client import run_with_supabase
+
+# F5 (2026-08-17): serialize OAuth exchanges per mode so a client tab
+# storm can't fire multiple exchange_auth_code calls in parallel and
+# stack Cloudflare 429s on top of each other. On 2026-08-17 morning a
+# single "log in again" prompt kicked off 3 parallel exchanges within
+# 15s; Cloudflare blocked all three and every subsequent retry for
+# ~10 min.
+_exchange_lock = threading.Lock()
+_last_exchange_at: dict[str, float] = {}
+_MIN_SECONDS_BETWEEN_EXCHANGES = 30.0
 
 BASE = "https://api-t2.fyers.in/vagator/v2"
 TOKEN_URL = "https://api.fyers.in/api/v2/token"
@@ -82,6 +93,29 @@ def exchange_auth_code(auth_code: str, mode: str | None = None) -> dict:
     flagged. If the proxy fails for any reason, fall back to direct so
     login still works even if the tunnel is down.
     """
+    # F5 rate-limit self-defense: only one OAuth exchange per mode at a
+    # time, and refuse rapid retries within _MIN_SECONDS_BETWEEN_EXCHANGES.
+    # Prevents client double-clicks / tab storms from stacking 429s.
+    key = mode or "runtime"
+    with _exchange_lock:
+        last_at = _last_exchange_at.get(key, 0.0)
+        elapsed = time.time() - last_at
+        if elapsed < _MIN_SECONDS_BETWEEN_EXCHANGES:
+            wait = int(_MIN_SECONDS_BETWEEN_EXCHANGES - elapsed)
+            audit_log(
+                "fyers",
+                "auth-code exchange throttled",
+                mode=key,
+                broker=get_active_broker_key(mode),
+                seconds_since_last=int(elapsed),
+                wait_seconds=wait,
+            )
+            raise RuntimeError(
+                f"Fyers login attempted too soon after previous login "
+                f"({int(elapsed)}s ago). Wait {wait}s and try again."
+            )
+        _last_exchange_at[key] = time.time()
+
     fyers_config = _fyers_config(mode)
     fyers_proxies = _fyers_proxies(mode)
     # Build the transport-attempt list. Proxy first when available, then

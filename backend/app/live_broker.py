@@ -10,8 +10,11 @@ from __future__ import annotations
 import datetime
 import time
 
+from .audit_log import audit_log
 from .fyers_client import get_fyers_model, get_wallet_balance
 from .paper_broker import PaperBroker
+from .proxy_health import check_proxy_reachable
+from .runtime_mode import get_fyers_config, get_runtime_trading_mode
 
 
 # NSE equity tick size. Fyers V3 rejects prices that aren't a multiple of the
@@ -236,6 +239,9 @@ class LiveBroker(PaperBroker):
         return None, "unreachable"
 
     def _place_slm_order(self, symbol: str, side: str, qty: int, stop_price: float) -> dict:
+        preflight_error = self._proxy_preflight(symbol, side, qty, "place_slm")
+        if preflight_error:
+            return preflight_error
         fyers = get_fyers_model(use_proxy=True)
         # Fyers V3 requires limitPrice > 0 even on SL-M — see _sl_limit_price
         # docstring for why we send a 0.5%-slack limit rather than 0.
@@ -260,6 +266,9 @@ class LiveBroker(PaperBroker):
         return response if isinstance(response, dict) else {"raw": response}
 
     def _place_limit_order(self, symbol: str, side: str, qty: int, limit_price: float) -> dict:
+        preflight_error = self._proxy_preflight(symbol, side, qty, "place_limit")
+        if preflight_error:
+            return preflight_error
         fyers = get_fyers_model(use_proxy=True)
         rounded_limit = _round_to_tick(limit_price)
         payload = {
@@ -592,6 +601,51 @@ class LiveBroker(PaperBroker):
 
         return summary
 
+    def _proxy_preflight(self, symbol: str, side: str, qty: int, op: str) -> dict | None:
+        """Return a Fyers-style error dict if the proxy is configured but
+        unreachable; None when it's safe to place the order.
+
+        Applies to every live order path (entry, SL-M, limit). On 2026-08-17
+        a stale bore.pub port silently caused every order to fall through to
+        Railway's egress IP, producing 30 x code:-99 "Bad request" rejections
+        that took ~8 min to spot. Fail loud instead of leaking a
+        non-whitelisted egress IP.
+        """
+        mode = get_runtime_trading_mode()
+        try:
+            proxy_url = get_fyers_config(mode).get("proxy_url") or ""
+        except Exception as exc:
+            # Config unavailable (e.g. test environment with no Fyers env vars).
+            # Preflight can't meaningfully check; fall through to whatever the
+            # caller has stubbed. Production paths always have config populated.
+            print(f"[live_broker] preflight config unavailable ({exc}); skipping proxy check")
+            return None
+        proxy_reachable = True
+        proxy_error: str | None = None
+        if proxy_url:
+            proxy_reachable, proxy_error = check_proxy_reachable(proxy_url)
+        audit_log(
+            "fyers",
+            f"{op} preflight",
+            mode=mode,
+            broker="fyers_live",
+            proxy_configured=bool(proxy_url),
+            proxy_reachable=proxy_reachable,
+            proxy_error=proxy_error,
+            symbol=symbol,
+            side=side,
+            qty=qty,
+        )
+        if proxy_url and not proxy_reachable:
+            msg = (
+                f"Fyers proxy unreachable ({proxy_error}); refusing to place "
+                f"{op} for {symbol} to avoid leaking a non-whitelisted egress IP. "
+                f"Check bore/GCP proxy and Railway LIVE_FYERS_PROXY_URL env var."
+            )
+            print(f"[live_broker] {op} {symbol} {side} x{qty} REFUSED: {msg}")
+            return {"s": "error", "code": "proxy_unreachable", "message": msg}
+        return None
+
     def _place_live_order(
         self,
         symbol: str,
@@ -600,6 +654,10 @@ class LiveBroker(PaperBroker):
         order_type: str = "MARKET",
         limit_price: float = 0.0,
     ) -> dict:
+        preflight_error = self._proxy_preflight(symbol, side, qty, "place_order")
+        if preflight_error:
+            return preflight_error
+
         fyers = get_fyers_model(use_proxy=True)
         is_limit = str(order_type).upper() == "LIMIT" and limit_price > 0
         payload = {

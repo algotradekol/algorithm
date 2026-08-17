@@ -56,6 +56,8 @@ function DashboardContent() {
     ws_reconnect_failure_count?: number;
     ws_circuit_open_seconds_remaining?: number;
     ws_next_backoff_seconds?: number;
+    auto_recovering?: boolean;
+    disconnected_since_seconds?: number | null;
     last_tick_at?: string | null;
     last_tick_symbol?: string | null;
     last_tick_ltp?: number | null;
@@ -235,7 +237,11 @@ function DashboardContent() {
                 ));
               }}
             />
-            <FyersLoginButton connected={fyersConnectedForMode} mode={tradingMode} />
+            <FyersLoginButton
+              connected={fyersConnectedForMode}
+              mode={tradingMode}
+              autoRecovering={Boolean(engineStatus?.auto_recovering)}
+            />
             <button
               onClick={async () => { clearPinToken(); await supabase.auth.signOut(); router.replace('/login'); }}
               className="inline-flex min-h-10 items-center gap-1 text-sm text-gray-500 hover:text-gray-100"
@@ -385,12 +391,19 @@ function LiveDiagnostics({ engineStatus }: { engineStatus: any }) {
             const s = circuit % 60;
             return m > 0 ? `Paused ${m}m ${s}s` : `Paused ${s}s`;
           }
+          // F14: don't show "Disconnected" for transient hiccups (<60s).
+          // Fyers server-closes idle WS every ~30s, so brief drops are
+          // normal and shouldn't scare the user into clicking logout.
+          const downFor = engineStatus?.disconnected_since_seconds ?? 0;
+          if (engineStatus?.auto_recovering || downFor < 60) return 'Reconnecting…';
           return 'Disconnected';
         })()}
         tone={(() => {
           if (engineStatus?.fyers_ws_connected) return 'text-[#22c55e]';
           const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
           if (circuit > 0) return 'text-[#f59e0b]';
+          const downFor = engineStatus?.disconnected_since_seconds ?? 0;
+          if (engineStatus?.auto_recovering || downFor < 60) return 'text-[#f59e0b]';
           return 'text-[#ef4444]';
         })()}
         detail={(() => {
@@ -398,8 +411,12 @@ function LiveDiagnostics({ engineStatus }: { engineStatus: any }) {
           const failures = engineStatus?.ws_reconnect_failure_count ?? 0;
           const nextBackoff = engineStatus?.ws_next_backoff_seconds ?? 0;
           const err = engineStatus?.fyers_ws_error;
+          const downFor = engineStatus?.disconnected_since_seconds ?? 0;
           if (circuit > 0) {
             return `Circuit breaker open after ${failures} failures. Auto-retry in ${Math.floor(circuit / 60)}m ${circuit % 60}s. Positions monitored via REST poll (10s).`;
+          }
+          if (!engineStatus?.fyers_ws_connected && (engineStatus?.auto_recovering || downFor < 60)) {
+            return `Brief Fyers disconnects are normal (Fyers closes idle sockets every ~30s). Auto-reconnecting${downFor > 0 ? ` (${downFor}s)` : ''}.`;
           }
           if (err && !engineStatus?.fyers_ws_connected) {
             return `${String(err).slice(0, 120)}${failures > 0 ? ` (attempt ${failures + 1}, next backoff ${nextBackoff}s)` : ''}`;

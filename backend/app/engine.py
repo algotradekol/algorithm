@@ -61,8 +61,24 @@ _FEED_CIRCUIT_OPEN_SECONDS = 180.0  # 3 minutes — Fyers server-closes WS
 # every ~30s regardless of quota state, so a 15-min silence just costs us
 # signal candles for no upside. 3 min gives Fyers time to release the old
 # session on their side, then we resume via the normal backoff schedule.
+
+# F6 (2026-08-17): minimum delay between failure-triggered restart attempts.
+# Even when the backoff ladder says "5s", we won't restart faster than this
+# during a run of failures. Prevents the restart-storm behavior where
+# subscribe→close→subscribe cycles hit Fyers a dozen times per minute.
+_FEED_MIN_RESTART_INTERVAL_SECONDS = 30.0
+# F6: after the circuit closes (via first tick or human action), we require
+# this many seconds of stability before another failure is allowed to
+# re-open it. Stops the "recover → immediately re-fail → circuit opens
+# again" loop that stretched 2026-08-17 morning's outage.
+_FEED_POST_RECOVERY_GRACE_SECONDS = 60.0
+_feed_last_recovery_at = 0.0
 _feed_reconnect_failure_count = 0
 _feed_circuit_open_until = 0.0
+# When the WS most recently transitioned from connected → disconnected.
+# The frontend uses this to debounce the "Disconnected" banner so a normal
+# 30s reconnect doesn't flash red at the user (F14, 2026-08-17).
+_feed_disconnected_since: float = 0.0
 
 # On every Railway deploy the old container is killed abruptly and the new
 # container immediately tries a Fyers WS handshake — but Fyers has not yet
@@ -131,11 +147,15 @@ def _mode_toggle_cooldown_remaining() -> float:
 
 def _current_backoff_seconds() -> float:
     """The wait time required between the last restart and the next one,
-    based on how many consecutive failures we're in."""
+    based on how many consecutive failures we're in. Never returns less
+    than _FEED_MIN_RESTART_INTERVAL_SECONDS during a failure run (F6).
+    First attempt (zero failures) is exempt so a healthy start still fires
+    immediately."""
     if _feed_reconnect_failure_count <= 0:
         return float(_FEED_BACKOFF_SEQUENCE[0])
     idx = min(_feed_reconnect_failure_count - 1, len(_FEED_BACKOFF_SEQUENCE) - 1)
-    return float(_FEED_BACKOFF_SEQUENCE[idx])
+    ladder_value = float(_FEED_BACKOFF_SEQUENCE[idx])
+    return max(ladder_value, _FEED_MIN_RESTART_INTERVAL_SECONDS)
 
 
 def _circuit_open_remaining() -> float:
@@ -145,9 +165,10 @@ def _circuit_open_remaining() -> float:
 def _reset_feed_circuit(reason: str) -> None:
     """Close the circuit and clear the backoff counter — called on real tick
     or on explicit human action so the next restart can fire immediately."""
-    global _feed_reconnect_failure_count, _feed_circuit_open_until
+    global _feed_reconnect_failure_count, _feed_circuit_open_until, _feed_last_recovery_at
     if _feed_reconnect_failure_count > 0 or _feed_circuit_open_until > 0:
         print(f"[engine] Fyers WS reconnect state reset ({reason})")
+        _feed_last_recovery_at = time.time()
     _feed_reconnect_failure_count = 0
     _feed_circuit_open_until = 0.0
 
@@ -155,8 +176,21 @@ def _reset_feed_circuit(reason: str) -> None:
 def _record_feed_failure(reason: str) -> None:
     """Increment failure count and open the circuit if we've crossed the
     max-attempts threshold. Called from on_error / on_close and from the
-    30-second missing-first-tick detector."""
+    30-second missing-first-tick detector.
+
+    F6: during the post-recovery grace window we don't count failures at
+    all — this stops the "we just recovered, then failed again 5s later,
+    circuit opens instantly" oscillation that stretched 2026-08-17.
+    """
     global _feed_reconnect_failure_count, _feed_circuit_open_until
+    if _feed_last_recovery_at > 0:
+        since_recovery = time.time() - _feed_last_recovery_at
+        if since_recovery < _FEED_POST_RECOVERY_GRACE_SECONDS:
+            print(
+                f"[engine] Fyers WS failure ignored during {int(_FEED_POST_RECOVERY_GRACE_SECONDS)}s "
+                f"post-recovery grace ({reason}); {int(since_recovery)}s since last recovery"
+            )
+            return
     _feed_reconnect_failure_count += 1
     if _feed_reconnect_failure_count >= _FEED_MAX_CONSECUTIVE_FAILURES:
         _feed_circuit_open_until = time.time() + _FEED_CIRCUIT_OPEN_SECONDS
@@ -198,7 +232,9 @@ def _on_live_feed_status(status: dict):
     is_rate_limited = "429" in error_text or "too many requests" in error_text
     is_token_expired = "token is expired" in error_text or "token expired" in error_text
 
+    global _feed_disconnected_since
     with _engine_lock:
+        was_connected = bool(_engine_status.get("fyers_ws_connected"))
         update = {
             "fyers_ws_connected": connected,
             "fyers_ws_error": None if connected else error,
@@ -210,6 +246,12 @@ def _on_live_feed_status(status: dict):
         if status.get("first_tick_received") and not _engine_status.get("fyers_ws_first_tick_at"):
             update["fyers_ws_first_tick_at"] = _utc_now()
         _engine_status.update(update)
+        # Track the disconnected-since timestamp so /api/engine/status can
+        # tell the frontend how long we've been down (F14 debounce).
+        if connected:
+            _feed_disconnected_since = 0.0
+        elif was_connected or _feed_disconnected_since == 0.0:
+            _feed_disconnected_since = time.time()
 
     # Real tick arrived → Fyers is fine with us, close the circuit and reset backoff.
     if status.get("first_tick_received"):
@@ -232,9 +274,21 @@ def _on_live_feed_status(status: dict):
         )
         _record_feed_failure("rate_limited")
     elif not connected and error:
-        # Any other disconnect (close, error, missing first tick) adds to the
-        # circuit-breaker failure count.
-        _record_feed_failure(error_text[:60] or "disconnect")
+        # F4 (2026-08-17): before market open (09:15 IST) Fyers doesn't
+        # broadcast ticks, so the "no market tick within 30s" watchdog
+        # WILL fire — it's not a failure, it's the market being closed.
+        # Skip failure counting for that specific message during the
+        # 09:05-09:15 warmup window; otherwise the circuit breaker opens
+        # right when we need it warmed up.
+        now_ist = datetime.datetime.now(IST).strftime("%H:%M")
+        in_premarket = "09:05" <= now_ist < "09:15"
+        is_no_tick_watchdog = "no fyers market tick" in error_text or "not delivering market data" in error_text
+        if in_premarket and is_no_tick_watchdog:
+            print(f"[engine] Fyers WS no-tick during pre-market ({now_ist}) — expected, not counted as failure")
+        else:
+            # Any other disconnect (close, error, missing first tick) adds to
+            # the circuit-breaker failure count.
+            _record_feed_failure(error_text[:60] or "disconnect")
 
     if not connected:
         with _live_feed_lock:
@@ -923,6 +977,20 @@ def stop_live_feed(reason: str = "manual") -> bool:
 
 def get_engine_status() -> dict:
     circuit_left = int(_circuit_open_remaining())
+    ws_connected = bool(_engine_status.get("fyers_ws_connected"))
+    live_feed_started = bool(_engine_status.get("live_feed_started"))
+    # F14: auto_recovering means "we're trying to be up and haven't given up
+    # yet" — the frontend uses this to show "Reconnecting…" instead of
+    # scaring the user with "Disconnected". A hard disconnect (live feed
+    # stopped by user / token expired hard) is NOT auto-recovering.
+    auto_recovering = (
+        (not ws_connected)
+        and live_feed_started
+        and (_feed_reconnect_failure_count > 0 or circuit_left > 0)
+    )
+    disconnected_since_s: int | None = None
+    if _feed_disconnected_since > 0 and not ws_connected:
+        disconnected_since_s = int(time.time() - _feed_disconnected_since)
     return {
         "state": _engine_status["state"],
         "error": _engine_status["error"],
@@ -930,6 +998,8 @@ def get_engine_status() -> dict:
         "ws_reconnect_failure_count": _feed_reconnect_failure_count,
         "ws_circuit_open_seconds_remaining": circuit_left,
         "ws_next_backoff_seconds": int(_current_backoff_seconds()),
+        "auto_recovering": auto_recovering,
+        "disconnected_since_seconds": disconnected_since_s,
         "last_token_refresh": _engine_status.get("last_token_refresh"),
         "last_token_refresh_error": _engine_status.get("last_token_refresh_error"),
         "live_feed_started": _engine_status.get("live_feed_started"),
