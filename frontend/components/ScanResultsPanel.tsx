@@ -238,9 +238,32 @@ export default function ScanResultsPanel({
             </tr>
           </thead>
           <tbody>
-            {visible.map((row: any, index: number) => (
+            {visible.map((row: any, index: number) => {
+              // F11: flag rows where O==H==L — single-tick candles from
+              // WS drops or Fyers throttle. Trading logic already rejects
+              // them (F1); this badge just makes the data-quality issue
+              // visible at a glance so you know why so many rows are
+              // "WATCH" during a bad WS session.
+              const isSingleTick = (
+                row.open != null && row.high != null && row.low != null
+                && Number(row.open) === Number(row.high)
+                && Number(row.open) === Number(row.low)
+              );
+              return (
               <tr key={`${row.symbol}-${index}`} className={`${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'} border-l-2 ${rowBorder(row)}`}>
-                <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
+                <td className="table-cell font-mono text-gray-100">
+                  <span className="inline-flex items-center gap-1.5">
+                    {row.symbol}
+                    {isSingleTick && (
+                      <span
+                        title="Open == High == Low — Fyers delivered only one tick this minute (usually WS drop or throttle). Trade rejected."
+                        className="inline-flex items-center gap-0.5 rounded border border-[#f59e0b]/50 bg-[#f59e0b]/10 px-1 py-0.5 text-[9px] font-semibold uppercase text-[#f59e0b]"
+                      >
+                        <i className="ri-error-warning-fill" />1-tick
+                      </span>
+                    )}
+                  </span>
+                </td>
                 <td className="table-cell text-gray-400">{row.sector || '-'}</td>
                 <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>{row.side}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.open)}</td>
@@ -276,7 +299,8 @@ export default function ScanResultsPanel({
                   </div>
                 </td>
               </tr>
-            ))}
+              );
+            })}
           </tbody>
         </table>
           </div>
