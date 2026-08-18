@@ -815,14 +815,16 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
     # would remain the initial empty list.
     from app import engine
     from .backtest import start_backtest
-    from .strategies.algo3_silver_micro import SILVER_MICRO_SYMBOL
+    from .strategies.algo3_silver_micro import _resolve_silver_symbol
     algo_id = str(payload.get("algo_id") or "")
     # Accept date for existing clients while range-aware clients send both fields.
     start_date = str(payload.get("start_date") or payload.get("date") or "")
     end_date = str(payload.get("end_date") or start_date)
     try:
         if algo_id == "algo3":
-            return start_backtest(algo_id, start_date, end_date, [SILVER_MICRO_SYMBOL])
+            # Resolve at request time so backtests always target the current
+            # front-month contract, matching what live is trading.
+            return start_backtest(algo_id, start_date, end_date, [_resolve_silver_symbol()])
         return start_backtest(algo_id, start_date, end_date, engine.WATCHLIST)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

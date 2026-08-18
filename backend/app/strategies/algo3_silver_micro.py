@@ -48,13 +48,32 @@ from collections import deque
 from .base import Strategy
 from ..fyers_client import get_intraday_candles_for_range
 from ..broker_factory import create_broker
+from ..mcx_symbols import get_active_mcx_contract
 from ..strategy_settings import get_settings
 from ..timezone import IST
 
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
 BUCKET_MINUTES = 15
-SILVER_MICRO_SYMBOL = "MCX:SILVERMIC26AUGFUT"
+SILVER_MICRO_ROOT = "SILVERMIC"
+# Fallback if the MCX symbol-master download fails at boot AND the
+# in-memory cache is empty. Client confirmed the front-month contract
+# on 2026-08-18 is 31AUGFUT (matches Fyers naming: expiry-day + month).
+# Long-term the correct symbol comes from get_active_mcx_contract which
+# reads Fyers's live master file and picks the nearest expiry, so this
+# constant only matters when both network calls fail.
+SILVER_MICRO_SYMBOL = "MCX:SILVERMIC31AUGFUT"
+
+
+def _resolve_silver_symbol() -> str:
+    """Ask Fyers's MCX symbol master for the current front-month Silver
+    Micro contract so the strategy auto-rolls each month. Falls back to
+    the hardcoded SILVER_MICRO_SYMBOL only if the network fails."""
+    try:
+        return get_active_mcx_contract(SILVER_MICRO_ROOT)
+    except Exception as exc:
+        print(f"[algo3] active MCX contract lookup failed ({exc}); using fallback {SILVER_MICRO_SYMBOL}")
+        return SILVER_MICRO_SYMBOL
 
 
 def _ema_step(previous: float | None, value: float, period: int = EMA_PERIOD) -> float:
@@ -81,7 +100,9 @@ class Algo3SilverMicro(Strategy):
     display_name = "Silver Micro - 15m EMA breakout"
 
     def __init__(self, watchlist: list[str] | None = None):
-        self.symbol = (watchlist or [None])[0] if watchlist else SILVER_MICRO_SYMBOL
+        # Prefer an explicit override (used by backtest); otherwise resolve
+        # the live MCX front-month symbol so we auto-roll as contracts expire.
+        self.symbol = (watchlist or [None])[0] if watchlist else _resolve_silver_symbol()
         self.watchlist = [self.symbol] if self.symbol else []
         self.settings = get_settings(self.algo_id)
         self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])

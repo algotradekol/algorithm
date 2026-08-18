@@ -60,7 +60,7 @@ def get_active_mcx_contract(root: str) -> str:
 
     master_text = _download_symbol_master()
     if not master_text:
-        fallback = f"MCX:{root_key}26AUGFUT"
+        fallback = f"MCX:{root_key}31AUGFUT"
         audit_log("mcx_symbols", "using fallback MCX contract after master load failure", root=root_key, fallback=fallback)
         _cache["date"] = today
         _cache["symbols"][root_key] = fallback
@@ -87,7 +87,7 @@ def get_active_mcx_contract(root: str) -> str:
         })
 
     if not candidates:
-        fallback = f"MCX:{root_key}26AUGFUT"
+        fallback = f"MCX:{root_key}31AUGFUT"
         print(f"[mcx_symbols] could not resolve active MCX contract for {root_key}, falling back to {fallback}")
         _cache["date"] = today
         _cache["symbols"][root_key] = fallback
