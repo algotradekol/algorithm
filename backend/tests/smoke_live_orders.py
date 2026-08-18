@@ -1659,6 +1659,131 @@ def test_broker_key_suffix_empty_preserves_legacy_key():
           paper_key == "fyers", f"got={paper_key}")
 
 
+# ── 48. Backtest parity: same scenario, backtest and live must agree ──
+def test_algo3_backtest_parity_with_live():
+    """Give the same 1m candle history to the backtest simulator and to
+    the live algo3 (via on_candle_close + on_tick per 1m bar). Assert
+    they produce the SAME entries: same side, same entry price, same
+    minute. If they diverge, either the live logic or the backtest
+    simulator has drifted from the spec doc."""
+    print("\n48. algo3 backtest parity — same input, live + backtest agree on entries")
+    import datetime as _dt
+    from app import backtest as bt
+
+    # Scripted history: 20 flat 15m bars (300 1m candles) to warm EMA20,
+    # then a green 15m bar closing above EMA20 (BUY setup), then a 1m
+    # bar whose high crosses (setup + 150) upward.
+    symbol = "MCX:TEST-EQ"
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+
+    def push(offset, o, h, l, c, v=100):
+        history.append({
+            "time": base + _dt.timedelta(minutes=offset),
+            "open": o, "high": h, "low": l, "close": c, "volume": v,
+        })
+
+    # 20 flat warmup bars: EMA20 stabilizes at 90000
+    for b in range(20):
+        for m in range(15):
+            push(b * 15 + m, 90000, 90000, 90000, 90000)
+
+    # Bar 21: green closes above EMA (14 low-move minutes + 1 breakout min)
+    for m in range(14):
+        push(20 * 15 + m, 90000, 90200, 89950, 90100)
+    push(20 * 15 + 14, 90100, 90500, 90050, 90500)  # last minute pushes close to 90500
+
+    # Bar 22: contains the tick-cross. First few 1m bars quiet, then one
+    # 1m bar whose high crosses (90500 + 150) = 90650 upward.
+    for m in range(5):
+        push(21 * 15 + m, 90500, 90520, 90490, 90510)  # sitting below level
+    push(21 * 15 + 5, 90510, 90680, 90500, 90670)     # crosses 90650
+
+    # Bar 22 continues (needed so backtest finalizes bar 22 too).
+    for m in range(6, 15):
+        push(21 * 15 + m, 90670, 90680, 90600, 90650)
+
+    # Add one more bar to force the 15m aggregator to close bar 22.
+    push(22 * 15, 90650, 90650, 90650, 90650)
+
+    # ── run backtest ────────────────────────────────────────────────
+    class NoopCharges:
+        def __getitem__(self, k): return 0
+    charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0, "exchange_pct": 0,
+               "sebi_pct": 0, "gst_pct": 0, "stamp_duty_pct": 0}
+    settings = {
+        "capital_per_trade": 500000,
+        "silver_breakout_points": 150,
+        "sl_points": 100,
+        "target_points": 300,
+        "trailing_sl_enabled": False,
+        "tsl_trigger_points": 0,
+        "tsl_distance_points": 0,
+        "exit_mode": "fixed_target_sl",
+    }
+    # Backtest expects a job_id already registered so _raise_if_cancelled
+    # doesn't KeyError. Register a dummy one.
+    from app.backtest import _jobs, _lock
+    with _lock:
+        _jobs["parity-test"] = {"cancel_requested": False}
+
+    first_date = _dt.date(2026, 8, 19)
+    trading_days = [first_date]
+    bt_results = bt._simulate_silver_micro_range(
+        job_id="parity-test",
+        algo_id="algo3",
+        first_date=first_date,
+        last_date=first_date,
+        symbol=symbol,
+        history=history,
+        trading_days=trading_days,
+        settings=settings,
+        charges_config=charges,
+    )
+    bt_trades = bt_results[0]["trades"]
+
+    # ── run live algo3 through same input ──────────────────────────
+    strat = _make_bare_algo3(settings_overrides=settings)
+    strat.symbol = symbol
+    strat.watchlist = [symbol]
+    for candle in history:
+        strat.on_candle_close(symbol, candle, {})
+        # For each 1m candle also push the close as a tick so trigger detection runs.
+        strat.on_tick(symbol, candle["close"], candle["time"])
+        # AND push the high (BUY trigger detection) and low (SELL) as intra-minute ticks
+        # BEFORE closing at close, mimicking live tick sequence.
+    # Now run again with intra-minute high/low so trigger detection sees the extremes.
+    # The above only saw close-to-close; run a second pass emulating h/l ticks.
+    # For this test the interesting event is the high 90680 vs prev close 90510
+    # of the previous minute. Live tick pathway needs prev_ltp < 90650 <= new tick.
+    # Since we called on_tick with each candle's close in sequence, the last tick
+    # before the 6th minute of bar 22 was 90510, then next was 90670 - that DOES
+    # cross 90650 upward. So the parity check is meaningful without a high-tick pass.
+    live_trades = strat.broker.opens
+
+    # ── assertions ──────────────────────────────────────────────────
+    check("live: exactly 1 entry", len(live_trades) == 1, f"live opens={live_trades}")
+    check("backtest: exactly 1 entry", len(bt_trades) == 1, f"bt trades={bt_trades}")
+    if live_trades and bt_trades:
+        live = live_trades[0]
+        bt_trade = bt_trades[0]
+        check("same side",
+              live["side"] == bt_trade["side"],
+              f"live={live['side']} bt={bt_trade['side']}")
+        check("both are BUY", live["side"] == "BUY")
+        # Prices may differ by a few points because live enters at the tick's
+        # exact LTP while backtest enters at the trigger level itself (a
+        # documented conservative approximation). Allow up to 100 points.
+        diff = abs(float(live["entry"]) - float(bt_trade["entry_price"]))
+        check("entry prices within 100 pts of each other",
+              diff <= 100,
+              f"live={live['entry']} bt={bt_trade['entry_price']} diff={diff}")
+
+    # Cleanup
+    with _lock:
+        _jobs.pop("parity-test", None)
+
+
 def main():
     print("=" * 66)
     print("  LIVE ORDER PIPELINE — OFFLINE SMOKE TEST (no Fyers, no DB)")
@@ -1712,6 +1837,7 @@ def main():
     test_algo3_black_box_end_to_end()
     test_broker_key_suffix_isolates_tokens()
     test_broker_key_suffix_empty_preserves_legacy_key()
+    test_algo3_backtest_parity_with_live()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")

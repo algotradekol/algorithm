@@ -138,16 +138,22 @@ class Algo3SilverMicro(Strategy):
             end_date = datetime.date.today() - datetime.timedelta(days=1)
             start_date = end_date - datetime.timedelta(days=WARMUP_LOOKBACK_DAYS)
             history = get_intraday_candles_for_range(self.symbol, start_date, end_date)
-            self._warmup_minute_candles = len(history)
-            # Replay through the SAME aggregation + setup-update logic
-            # used live, but suppress entries. This leaves EMA20 and both
-            # setup levels populated with real yesterday-and-earlier data,
-            # satisfying spec point 4 (previous-day data carry).
-            for candle in history:
-                self._ingest_minute_candle(candle, allow_signals=False)
-            self._finalize_bar(allow_signals=False)
-            self._history_ready = True
-            self._history_error = None
+            # Preserve the last successful warmup count instead of blindly
+            # overwriting with 0 on a transient API failure — the diagnostic
+            # panel becomes useless if a later 0-result warmup wipes the
+            # earlier "loaded 6090 candles" number even though the deque
+            # (self._bars) still has all of them.
+            if history:
+                self._warmup_minute_candles = len(history)
+                self._history_ready = True
+                self._history_error = None
+                for candle in history:
+                    self._ingest_minute_candle(candle, allow_signals=False)
+                self._finalize_bar(allow_signals=False)
+            else:
+                # Only stamp 0 if we've never had a successful warmup yet.
+                if self._warmup_minute_candles == 0:
+                    self._history_error = "history call returned 0 candles"
             print(
                 f"[algo3] warmup loaded {len(history)} 1m candles → "
                 f"{len(self._bars)} 15m bars, EMA20={_fmt(self._ema20)}, "
