@@ -22,14 +22,23 @@ type TabName = (typeof ALL_TABS)[number];
 // Keys are lowercased and space-stripped so "Silver Micro" matches "silvermicro"
 // or "silver micro" or "SILVER_MICRO". Missing/empty = show every tab (safe
 // default so a Vercel config typo can't blank the whole dashboard).
+// Alias map: the env var accepts short forms in addition to the exact
+// tab name. Keep in sync with backend's _STRATEGY_TAB_MAP in engine.py.
+const TAB_ALIASES: Record<string, string> = {
+  silver: 'silvermicro',
+};
+function normalizeTabKey(raw: string): string {
+  const cleaned = raw.trim().toLowerCase().replace(/[\s_-]+/g, '');
+  return TAB_ALIASES[cleaned] || cleaned;
+}
 const HIDDEN_TABS: Set<string> = new Set(
   (process.env.NEXT_PUBLIC_HIDDEN_TABS || '')
     .split(',')
-    .map((s) => s.trim().toLowerCase().replace(/[\s_-]+/g, ''))
+    .map(normalizeTabKey)
     .filter(Boolean),
 );
 function tabKey(name: string): string {
-  return name.toLowerCase().replace(/[\s_-]+/g, '');
+  return normalizeTabKey(name);
 }
 function isTabHidden(name: string): boolean {
   return HIDDEN_TABS.has(tabKey(name));
