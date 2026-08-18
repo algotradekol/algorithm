@@ -11,6 +11,7 @@ import datetime
 import os
 
 from .config import (
+    BROKER_KEY_SUFFIX,
     LIVE_FYERS_CLIENT_ID,
     LIVE_FYERS_FY_ID,
     LIVE_FYERS_PIN,
@@ -210,7 +211,12 @@ def clear_pending_fyers_login_origin() -> None:
 
 
 def get_active_broker_key(mode: str | None = None) -> str:
-    return "fyers_live" if normalize_trading_mode(mode or get_runtime_trading_mode()) == "live" else "fyers"
+    base = "fyers_live" if normalize_trading_mode(mode or get_runtime_trading_mode()) == "live" else "fyers"
+    # Per-deployment suffix keeps token rows isolated when multiple
+    # backends share a Supabase (see config.BROKER_KEY_SUFFIX).
+    if BROKER_KEY_SUFFIX:
+        return f"{base}__{BROKER_KEY_SUFFIX}"
+    return base
 
 
 def get_fyers_config(mode: str | None = None) -> dict[str, str]:

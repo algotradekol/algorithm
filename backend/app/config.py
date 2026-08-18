@@ -87,3 +87,12 @@ HIDDEN_TABS = {
     for key in os.environ.get("HIDDEN_TABS", "").split(",")
     if key.strip()
 }
+
+# Multi-tenant token isolation (2026-08-19). When two backends share the
+# same Supabase (e.g. one runs Simple on the client's Fyers, another runs
+# Silver on the developer's Fyers), the broker_tokens table would collide
+# on a single "fyers_live" key. Set BROKER_KEY_SUFFIX per deployment
+# (e.g. "client", "dev") so each backend stores tokens under its own key
+# (e.g. "fyers_live__client"). Empty = no suffix, matches historical
+# single-backend behavior.
+BROKER_KEY_SUFFIX = os.environ.get("BROKER_KEY_SUFFIX", "").strip().lower().replace(" ", "").replace("-", "_")

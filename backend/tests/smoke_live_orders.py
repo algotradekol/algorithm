@@ -1632,6 +1632,57 @@ def test_algo3_black_box_end_to_end():
           f"opens={[o['side'] for o in strat.broker.opens]}")
 
 
+# ── 46-47. BROKER_KEY_SUFFIX — token isolation between backends ────────
+def test_broker_key_suffix_isolates_tokens():
+    print("\n46. BROKER_KEY_SUFFIX: two suffixes produce two distinct broker keys")
+    import importlib, os
+    from unittest.mock import patch
+    # Simulate the CLIENT backend
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "client"}, clear=False):
+        import app.config, app.runtime_mode
+        importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
+        client_key_live = app.runtime_mode.get_active_broker_key(mode="live")
+        client_key_paper = app.runtime_mode.get_active_broker_key(mode="paper")
+    # Simulate the DEV backend
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "dev"}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
+        dev_key_live = app.runtime_mode.get_active_broker_key(mode="live")
+        dev_key_paper = app.runtime_mode.get_active_broker_key(mode="paper")
+
+    check("client live key is fyers_live__client",
+          client_key_live == "fyers_live__client", f"got={client_key_live}")
+    check("dev live key is fyers_live__dev",
+          dev_key_live == "fyers_live__dev", f"got={dev_key_live}")
+    check("client and dev live keys differ (no collision)",
+          client_key_live != dev_key_live)
+    check("client paper key is fyers__client",
+          client_key_paper == "fyers__client", f"got={client_key_paper}")
+    check("dev paper key is fyers__dev",
+          dev_key_paper == "fyers__dev", f"got={dev_key_paper}")
+    # Restore empty suffix so subsequent tests aren't affected
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": ""}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
+
+
+def test_broker_key_suffix_empty_preserves_legacy_key():
+    print("\n47. BROKER_KEY_SUFFIX empty: keeps historical 'fyers_live' / 'fyers' keys")
+    import importlib, os
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": ""}, clear=False):
+        import app.config, app.runtime_mode
+        importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
+        live_key = app.runtime_mode.get_active_broker_key(mode="live")
+        paper_key = app.runtime_mode.get_active_broker_key(mode="paper")
+    check("empty suffix: live key stays 'fyers_live' (backward-compat)",
+          live_key == "fyers_live", f"got={live_key}")
+    check("empty suffix: paper key stays 'fyers' (backward-compat)",
+          paper_key == "fyers", f"got={paper_key}")
+
+
 def main():
     print("=" * 66)
     print("  LIVE ORDER PIPELINE — OFFLINE SMOKE TEST (no Fyers, no DB)")
@@ -1684,6 +1735,8 @@ def main():
     test_algo3_trailing_settings_convert_points_to_pct()
     test_algo3_scan_disabled_skips_triggers()
     test_algo3_black_box_end_to_end()
+    test_broker_key_suffix_isolates_tokens()
+    test_broker_key_suffix_empty_preserves_legacy_key()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")
