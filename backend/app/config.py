@@ -96,3 +96,12 @@ HIDDEN_TABS = {
 # (e.g. "fyers_live__client"). Empty = no suffix, matches historical
 # single-backend behavior.
 BROKER_KEY_SUFFIX = os.environ.get("BROKER_KEY_SUFFIX", "").strip().lower().replace(" ", "").replace("-", "_")
+
+# Explicit Silver Micro contract symbol override (2026-08-18). By default
+# algo3 asks Fyers's MCX symbol master for the nearest-expiry Silver Micro
+# contract (auto-rollover). Set this env var to force a specific contract
+# — useful when Fyers's "nearest expiry" pick differs from what the client
+# actually trades (e.g. Fyers lists a weekly variant expiring before the
+# monthly contract). Leave empty to keep auto-rollover.
+# Example: SILVER_MICRO_SYMBOL_OVERRIDE=MCX:SILVERMIC31AUGFUT
+SILVER_MICRO_SYMBOL_OVERRIDE = os.environ.get("SILVER_MICRO_SYMBOL_OVERRIDE", "").strip()

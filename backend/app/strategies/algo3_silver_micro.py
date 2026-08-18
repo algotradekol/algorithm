@@ -46,6 +46,7 @@ import threading
 from collections import deque
 
 from .base import Strategy
+from ..config import SILVER_MICRO_SYMBOL_OVERRIDE
 from ..fyers_client import get_intraday_candles_for_range
 from ..broker_factory import create_broker
 from ..mcx_symbols import get_active_mcx_contract
@@ -66,9 +67,22 @@ SILVER_MICRO_SYMBOL = "MCX:SILVERMIC31AUGFUT"
 
 
 def _resolve_silver_symbol() -> str:
-    """Ask Fyers's MCX symbol master for the current front-month Silver
-    Micro contract so the strategy auto-rolls each month. Falls back to
-    the hardcoded SILVER_MICRO_SYMBOL only if the network fails."""
+    """Pick the Silver Micro contract to trade.
+
+    Precedence:
+      1. SILVER_MICRO_SYMBOL_OVERRIDE env var (client's explicit choice)
+      2. Fyers MCX symbol master, nearest expiry (auto-rollover)
+      3. Hardcoded SILVER_MICRO_SYMBOL fallback (only if the network fails)
+
+    The env override exists because Fyers's "nearest expiry" pick can
+    differ from what the client actually trades — e.g. Fyers lists a
+    weekly Silver Micro variant that expires before the monthly contract
+    the client uses. On 2026-08-18 the client (Bumba Da) asked for
+    31AUGFUT even though Fyers's master listed 26AUGFUT as nearest.
+    """
+    if SILVER_MICRO_SYMBOL_OVERRIDE:
+        print(f"[algo3] using SILVER_MICRO_SYMBOL_OVERRIDE={SILVER_MICRO_SYMBOL_OVERRIDE}")
+        return SILVER_MICRO_SYMBOL_OVERRIDE
     try:
         return get_active_mcx_contract(SILVER_MICRO_ROOT)
     except Exception as exc:
