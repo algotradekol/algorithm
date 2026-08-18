@@ -205,6 +205,13 @@ def get_settings(algo_id: str) -> dict:
 _NEW_COLUMNS_TOLERATE_MISSING = {
     "order_type",             # added 2026-08-10
     "parallel_paper_enabled", # added 2026-08-13
+    # algo3 spec-doc rewrite (2026-08-19). Points-based risk fields
+    # replace percent fields for Silver Micro only.
+    "silver_breakout_points",
+    "sl_points",
+    "target_points",
+    "tsl_trigger_points",
+    "tsl_distance_points",
 }
 
 
