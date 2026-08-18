@@ -82,6 +82,10 @@ class ScanDebugLogger:
             "shape_passed": {"count": 0, "symbols": {"buy": [], "sell": []}},
             "shape_failed_flat": {"count": 0, "symbols": []},
             "shape_failed_neither": {"count": 0, "symbols": []},
+            # Added 2026-08-18: F1's single-tick rejection needed its own
+            # bucket. Without this, add_shape_result raised KeyError and
+            # crashed the entire scan at 09:16 on 2026-08-18.
+            "shape_failed_single_tick": {"count": 0, "symbols": []},
             "gap_passed": {"count": 0, "symbols": {"buy": [], "sell": []}},
             "gap_failed": {"count": 0, "symbols": []},
             "selected_trade": {"count": 0, "symbols": {"buy": [], "sell": []}},
@@ -113,7 +117,13 @@ class ScanDebugLogger:
                 self.stage_data["shape_failed_flat"]["count"] += 1
             else:
                 self.stage_data["shape_failed_neither"]["count"] += 1
-            self.stage_data[f"shape_failed_{reason}"]["symbols"].append(symbol)
+            bucket_key = f"shape_failed_{reason}" if reason else "shape_failed_neither"
+            # Defensive: if a new rejection reason gets introduced without a
+            # matching stage_data bucket, lazily create it instead of raising
+            # a KeyError that would crash the entire scan (2026-08-18 bug).
+            if bucket_key not in self.stage_data:
+                self.stage_data[bucket_key] = {"count": 0, "symbols": []}
+            self.stage_data[bucket_key]["symbols"].append(symbol)
 
     def add_gap_result(self, symbol: str, side: str, passed: bool):
         if passed:
