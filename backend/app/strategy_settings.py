@@ -85,6 +85,21 @@ STRATEGY_DEFAULT_OVERRIDES = {
     },
     "algo3": {
         "scan_enabled": False,
+        # Points-based per spec doc (2026-08-19 rewrite):
+        # - n: breakout offset above/below the stored setup close. Entry
+        #   fires when live LTP crosses (setup_close +/- n) in the setup
+        #   direction. Default 150 = doc's example value; user can tune.
+        # - sl_points / target_points: fixed rupee distance from entry.
+        # - tsl_trigger_points: how many points in profit before TSL
+        #   activates. tsl_distance_points: how far behind the current
+        #   high/low the TSL sits once active.
+        "silver_breakout_points": 150,
+        "sl_points": 100,
+        "target_points": 300,
+        "trailing_sl_enabled": False,
+        "tsl_trigger_points": 100,
+        "tsl_distance_points": 50,
+        "exit_mode": "fixed_target_trailing_sl",
     },
 }
 
@@ -93,6 +108,11 @@ INT_FIELDS = {
     "max_buy_trades",
     "max_sell_trades",
     "supertrend_period",
+    "silver_breakout_points",
+    "sl_points",
+    "target_points",
+    "tsl_trigger_points",
+    "tsl_distance_points",
 }
 
 BOOL_FIELDS = {

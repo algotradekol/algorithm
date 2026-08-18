@@ -358,8 +358,8 @@ function DashboardContent() {
                 <AlgoTab
                   key={`algo3-${tradingMode}`}
                   algoId="algo3"
-                  displayName="Silver Micro - MCX:SILVERMIC26AUGFUT - 5m EMA/Volume"
-                  description="Tracks MCX:SILVERMIC26AUGFUT on 5-minute candles. BUY when a green 5m candle closes above EMA20 with volume above volume EMA20, confirm on one of the subsequent green candles within the confirmation window, and enter on the next candle open. SELL mirrors the same logic. Reversal happens when the opposite side confirms."
+                  displayName="Silver Micro - MCX:SILVERMIC26AUGFUT - 15m EMA breakout"
+                  description="Tracks MCX:SILVERMIC26AUGFUT on 15-minute candles. BUY setup: a green candle closes above EMA20 — its close is stored as the BUY level (overwrites on each new qualifier). BUY trigger: live LTP crosses (setup close + n) in the upward direction; enter at LTP. SELL mirrors the same logic on red candles below EMA20 with (setup close - n). Reversal on opposite trigger. n is configurable (default 150 points)."
                   tradingMode={tradingMode}
                   fyersConnected={fyersConnectedForMode}
                   onWebSocketStatus={setWsStatus}
