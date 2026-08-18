@@ -60,17 +60,41 @@ export default function FyersLoginButton({
     }
   }
 
-  if (connected || connectedFromRedirect) {
+  // Confirmed connected for the CURRENT mode.
+  if (connected) {
     return (
-      <div className="flex items-center gap-2 text-sm text-gray-300">
+      <div
+        className="flex items-center gap-2 text-sm text-gray-300"
+        title={`Fyers ${mode.toUpperCase()} session is active. Toggle mode to switch accounts.`}
+      >
         <i className="ri-shield-check-fill text-sm text-[#22c55e]" />
-        Fyers Connected
+        Fyers Connected <span className="text-[10px] text-gray-500">({mode.toUpperCase()})</span>
+      </div>
+    );
+  }
+
+  // Just returned from OAuth callback; backend status hasn't refreshed yet.
+  // Show a transient "Verifying" state instead of falsely claiming connected
+  // — this was the 2026-08-18 bug: users on PAPER mode saw "Fyers Connected"
+  // for a LIVE-mode redirect even though no PAPER token existed.
+  if (connectedFromRedirect) {
+    return (
+      <div
+        className="flex items-center gap-2 text-sm text-[#f59e0b]"
+        title="Fyers OAuth callback succeeded — verifying session with backend."
+      >
+        <i className="ri-refresh-line text-sm text-[#f59e0b] animate-spin" />
+        Verifying Fyers session…
       </div>
     );
   }
 
   const disabled = loading || autoRecovering;
-  const label = autoRecovering ? 'Reconnecting…' : loading ? 'Connecting...' : 'Login to Fyers';
+  const label = autoRecovering
+    ? 'Reconnecting…'
+    : loading
+      ? 'Connecting...'
+      : `Login to Fyers (${mode.toUpperCase()})`;
   const borderColor = autoRecovering || loading ? 'border-[#f59e0b] text-[#f59e0b]' : 'border-[#3b82f6] text-[#3b82f6]';
   const icon = autoRecovering
     ? 'ri-refresh-line text-[#f59e0b] animate-spin'
