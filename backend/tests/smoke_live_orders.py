@@ -846,6 +846,386 @@ def test_single_tick_candle_rejection():
           f"got={row.get('rejection_reason')!r}")
 
 
+# ── 18. Every rejection reason used at runtime has a stage_data bucket ──
+def test_rejection_reason_buckets_exist():
+    """The 2026-08-18 outage was caused by a rejection reason string
+    ('single_tick') that had no matching stage_data bucket. Rather than
+    just cover that one string, statically enumerate every string ever
+    passed as the `reason` argument to add_shape_result and check each
+    has an initialized bucket. Adds ~zero cost as coverage grows."""
+    print("\n18. Rejection-reason buckets — every add_shape_result reason has a stage_data slot")
+    import re
+    from pathlib import Path
+    from app.strategies.algo1_opening_range import ScanDebugLogger
+
+    src_path = Path(__file__).resolve().parent.parent / "app" / "strategies" / "algo1_opening_range.py"
+    src = src_path.read_text(encoding="utf-8")
+    # Regex: add_shape_result(..., "reason") or add_shape_result(..., 'reason')
+    # Only literal strings — dynamic ones can't be checked statically anyway.
+    reasons = set()
+    for match in re.finditer(r"add_shape_result\([^)]*?[\"'](\w+)[\"']\s*\)", src):
+        reasons.add(match.group(1))
+    # The "passed" variant emits sides ("buy"/"sell"), not rejection reasons.
+    reasons -= {"buy", "sell", "none"}  # sides / neutral marker
+    # Also add "flat" and "neither" which are the historical baseline.
+    reasons |= {"flat", "neither"}
+    check("static scan found at least the known reasons",
+          "flat" in reasons and "neither" in reasons and "single_tick" in reasons,
+          f"found={sorted(reasons)}")
+
+    logger = ScanDebugLogger(1)
+    missing = []
+    for reason in reasons:
+        if reason in {"buy", "sell", "none"}:
+            continue
+        # add_shape_result now lazy-creates any missing bucket (defensive
+        # fix from 2026-08-18). We still want to fail loudly if the
+        # baseline dict is missing an entry — that's the class of bug.
+        bucket_key = f"shape_failed_{reason}"
+        if bucket_key not in logger.stage_data:
+            missing.append(bucket_key)
+    check("every rejection reason has a pre-defined stage_data bucket",
+          not missing,
+          f"missing buckets: {missing}" if missing else "all present")
+
+
+# ── 19-21. Proxy preflight (F2) ─────────────────────────────────────────
+def _build_broker_with_proxy_stub(proxy_reachable, proxy_url="http://user:pw@bore.pub:12345"):
+    """Shared fixture for the three proxy-preflight tests."""
+    from unittest.mock import patch
+    broker = object.__new__(lb.LiveBroker)
+    return broker, patch, proxy_reachable, proxy_url
+
+
+def test_proxy_preflight_refuses_when_unreachable():
+    print("\n19. Proxy preflight — refuses order when proxy is configured but unreachable")
+    from unittest.mock import patch
+    broker = object.__new__(lb.LiveBroker)
+    with patch.object(lb, "get_runtime_trading_mode", return_value="live"), \
+         patch.object(lb, "get_fyers_config", return_value={"proxy_url": "http://user:pw@bore.pub:99999"}), \
+         patch.object(lb, "check_proxy_reachable", return_value=(False, "timeout")), \
+         patch.object(lb, "get_fyers_model") as fake_fyers:
+        response = broker._place_live_order("NSE:TEST-EQ", "BUY", 10, "MARKET")
+    check("preflight returned error dict", isinstance(response, dict) and response.get("s") == "error",
+          f"got={response}")
+    check("error code is proxy_unreachable", response.get("code") == "proxy_unreachable",
+          f"got={response.get('code')}")
+    check("get_fyers_model NEVER called (short-circuited)", fake_fyers.call_count == 0,
+          f"call_count={fake_fyers.call_count}")
+
+
+def test_proxy_preflight_allows_when_reachable():
+    print("\n20. Proxy preflight — passes through when proxy is reachable")
+    from unittest.mock import patch, MagicMock
+    broker = object.__new__(lb.LiveBroker)
+    fake_client = MagicMock()
+    fake_client.place_order.return_value = {"s": "ok", "id": "OK-1"}
+    with patch.object(lb, "get_runtime_trading_mode", return_value="live"), \
+         patch.object(lb, "get_fyers_config", return_value={"proxy_url": "http://ok"}), \
+         patch.object(lb, "check_proxy_reachable", return_value=(True, None)), \
+         patch.object(lb, "get_fyers_model", return_value=fake_client):
+        response = broker._place_live_order("NSE:TEST-EQ", "BUY", 10, "MARKET")
+    check("order forwarded to Fyers", fake_client.place_order.called)
+    check("returned success", response.get("s") == "ok", f"got={response}")
+
+
+def test_proxy_preflight_no_proxy_configured():
+    print("\n21. Proxy preflight — no proxy configured skips check entirely")
+    from unittest.mock import patch, MagicMock
+    broker = object.__new__(lb.LiveBroker)
+    fake_client = MagicMock()
+    fake_client.place_order.return_value = {"s": "ok", "id": "OK-1"}
+    checked = []
+    def spy_check(url):
+        checked.append(url)
+        return (True, None)
+    with patch.object(lb, "get_runtime_trading_mode", return_value="paper"), \
+         patch.object(lb, "get_fyers_config", return_value={"proxy_url": ""}), \
+         patch.object(lb, "check_proxy_reachable", side_effect=spy_check), \
+         patch.object(lb, "get_fyers_model", return_value=fake_client):
+        response = broker._place_live_order("NSE:TEST-EQ", "BUY", 10, "MARKET")
+    check("check_proxy_reachable NOT called when proxy_url empty",
+          not checked, f"checked={checked}")
+    check("order still placed", response.get("s") == "ok")
+
+
+# ── 22-24. Skip-scan-today (new feature) ────────────────────────────────
+def test_skip_scan_today_short_circuits_algo1():
+    print("\n22. Skip scan today — algo1.evaluate_entries returns early without work")
+    import datetime
+    from app.strategies.algo1_opening_range import Algo1OpeningRange
+    strat = object.__new__(Algo1OpeningRange)
+    strat.algo_id = "algo1"
+    strat.entries_evaluated_today = None
+    strat.skip_scan_date = datetime.date.today()
+    # These attrs would be accessed if the short-circuit failed.
+    strat.settings = {"test_schedule_enabled": False}
+    called = []
+    strat._record_scan_results = lambda *a, **kw: called.append(("record", kw.get("scan_status")))
+
+    result = strat.evaluate_entries(get_ltp_fn=lambda s: 0.0)
+
+    check("evaluate_entries returned True (short-circuited)", result is True)
+    check("scan_status recorded as 'skipped'",
+          any(status == "skipped" for _, status in called),
+          f"called={called}")
+    check("entries_evaluated_today set (prevents re-runs same day)",
+          strat.entries_evaluated_today == datetime.date.today())
+
+
+def test_skip_scan_today_short_circuits_algo3():
+    print("\n23. Skip scan today — algo3.scan_enabled returns False")
+    import datetime
+    from app.strategies.algo3_silver_micro import Algo3SilverMicro
+    strat = object.__new__(Algo3SilverMicro)
+    strat.settings = {"scan_enabled": True}
+    strat.skip_scan_date = datetime.date.today()
+    check("scan_enabled False when skip_scan_date=today",
+          strat.scan_enabled() is False)
+    strat.skip_scan_date = None
+    check("scan_enabled True when skip cleared",
+          strat.scan_enabled() is True)
+
+
+def test_skip_scan_date_auto_resets():
+    print("\n24. Skip scan today — yesterday's skip date does NOT skip today's scan")
+    import datetime
+    from app.strategies.base import Strategy
+    # Strategy is abstract; make a minimal concrete instance.
+    class Dummy(Strategy):
+        def on_tick(self, *a, **kw): pass
+        def on_candle_close(self, *a, **kw): pass
+        def check_exits(self, *a, **kw): pass
+        def square_off_all(self, *a, **kw): pass
+    d = Dummy()
+    d.skip_scan_date = datetime.date.today() - datetime.timedelta(days=1)
+    check("yesterday's skip is not today's skip",
+          d.is_scan_skipped_today() is False)
+    d.skip_scan_date = datetime.date.today()
+    check("today's skip is today's skip",
+          d.is_scan_skipped_today() is True)
+
+
+# ── 25. F5 OAuth throttle ──────────────────────────────────────────────
+def test_oauth_throttle_serializes_exchanges():
+    print("\n25. F5 OAuth throttle — rapid re-exchange within 30s raises")
+    from unittest.mock import patch
+    import app.fyers_auth as fa
+    # Reset any prior state from earlier tests
+    fa._last_exchange_at.clear()
+    key = "test_mode"
+    with patch.object(fa, "_fyers_config", return_value={
+              "client_id": "X-100", "secret_key": "s",
+              "redirect_uri": "https://x", "proxy_url": None}), \
+         patch.object(fa, "_fyers_proxies", return_value=None):
+        # First call sets the lock timestamp. We need to force it to fail
+        # AFTER passing the throttle check but BEFORE hitting Fyers, so
+        # the timestamp gets set but no network happens.
+        with patch("app.fyers_auth.requests.post", side_effect=RuntimeError("stubbed")):
+            try:
+                fa.exchange_auth_code("code1", mode=key)
+            except Exception:
+                pass  # expected — we stubbed the network
+        first_ts = fa._last_exchange_at.get(key, 0)
+        check("first exchange recorded a timestamp", first_ts > 0)
+        # Second call within 30s must be rejected by the throttle,
+        # BEFORE the network stub gets a chance to fire.
+        with patch("app.fyers_auth.requests.post") as fake_post:
+            try:
+                fa.exchange_auth_code("code2", mode=key)
+                check("second rapid exchange raises", False, "no exception raised")
+            except RuntimeError as exc:
+                check("second rapid exchange raises RuntimeError",
+                      "too soon" in str(exc).lower() or "wait" in str(exc).lower(),
+                      f"msg={exc}")
+            check("network NOT hit on the throttled call",
+                  fake_post.call_count == 0, f"call_count={fake_post.call_count}")
+
+
+# ── 26. F7 429 vs token-expired distinction ────────────────────────────
+def test_connection_status_429_stays_degraded_not_expired():
+    print("\n26. F7 — HTTP 429 during profile verify returns 'degraded', NOT 'expired'")
+    from unittest.mock import patch, MagicMock
+    import app.fyers_client as fc
+
+    class FakeProfile:
+        def get_profile(self):
+            return {"s": "error", "code": -429, "message": "Bad request (code 429)"}
+
+    fake_token_row = {"access_token": "T", "refresh_token": "R"}
+    with patch.object(fc, "get_active_broker_key", return_value="fyers_live"), \
+         patch.object(fc, "get_stored_token_row", return_value=fake_token_row), \
+         patch.object(fc, "get_runtime_trading_mode", return_value="live"), \
+         patch.object(fc, "_is_recent_token_row", return_value=False), \
+         patch.object(fc, "get_fyers_model", return_value=FakeProfile()):
+        result = fc.get_connection_status()
+    check("connection reported 'degraded', not 'expired'",
+          result.get("status") == "degraded",
+          f"got status={result.get('status')!r} message={result.get('message')!r}")
+    check("connection stays 'connected'=True during 429",
+          result.get("connected") is True,
+          f"got connected={result.get('connected')}")
+
+
+# ── 27. F4 pre-market watchdog skip ────────────────────────────────────
+def test_pre_market_no_tick_not_counted_as_failure():
+    print("\n27. F4 — 'no market tick' fired before 09:15 IST does NOT increment failure counter")
+    import datetime as _dt
+    from unittest.mock import patch
+    import app.engine as eng
+    # Force IST clock to 09:07 so the pre-market branch fires.
+    eng._feed_reconnect_failure_count = 0
+    eng._feed_circuit_open_until = 0.0
+    eng._feed_disconnected_since = 0.0
+
+    class FakeIST(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _dt.datetime(2026, 8, 19, 9, 7, 0)
+
+    with patch.object(eng.datetime, "datetime", FakeIST):
+        eng._on_live_feed_status({
+            "connected": False,
+            "error": "No Fyers market tick received within 30 seconds of subscription",
+        })
+    check("pre-market no-tick did NOT increment failure counter",
+          eng._feed_reconnect_failure_count == 0,
+          f"got count={eng._feed_reconnect_failure_count}")
+
+    # Same message AFTER 09:15 SHOULD count.
+    class FakeIST_open(_dt.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return _dt.datetime(2026, 8, 19, 10, 30, 0)
+
+    with patch.object(eng.datetime, "datetime", FakeIST_open):
+        eng._on_live_feed_status({
+            "connected": False,
+            "error": "No Fyers market tick received within 30 seconds of subscription",
+        })
+    check("same message DURING market hours does count as failure",
+          eng._feed_reconnect_failure_count == 1,
+          f"got count={eng._feed_reconnect_failure_count}")
+    # Reset shared state
+    eng._feed_reconnect_failure_count = 0
+    eng._feed_circuit_open_until = 0.0
+
+
+# ── 28. F6 post-recovery grace ─────────────────────────────────────────
+def test_post_recovery_grace_ignores_immediate_failure():
+    print("\n28. F6 — failure within 60s of recovery is ignored (no counter bump)")
+    import time as _time
+    import app.engine as eng
+    eng._feed_reconnect_failure_count = 3
+    eng._feed_circuit_open_until = 0.0
+    eng._feed_last_recovery_at = 0.0
+    eng._reset_feed_circuit("test recovery")
+    check("recovery timestamp set", eng._feed_last_recovery_at > 0)
+    check("failure count reset to 0", eng._feed_reconnect_failure_count == 0)
+
+    # Simulate a failure immediately after recovery
+    eng._record_feed_failure("test immediate re-fail")
+    check("post-recovery grace ignored the failure (count still 0)",
+          eng._feed_reconnect_failure_count == 0,
+          f"got count={eng._feed_reconnect_failure_count}")
+
+    # Force recovery timestamp older than grace, failure should count again
+    eng._feed_last_recovery_at = _time.time() - (eng._FEED_POST_RECOVERY_GRACE_SECONDS + 1)
+    eng._record_feed_failure("test after grace elapsed")
+    check("failures resume counting after grace elapses",
+          eng._feed_reconnect_failure_count == 1,
+          f"got count={eng._feed_reconnect_failure_count}")
+    # Reset
+    eng._feed_reconnect_failure_count = 0
+    eng._feed_last_recovery_at = 0.0
+
+
+# ── 29. F6 minimum backoff floor ───────────────────────────────────────
+def test_current_backoff_respects_min_floor():
+    print("\n29. F6 — _current_backoff_seconds returns at least 30s during a failure run")
+    import app.engine as eng
+    eng._feed_reconnect_failure_count = 0
+    check("zero failures -> returns first ladder value (no floor)",
+          eng._current_backoff_seconds() == float(eng._FEED_BACKOFF_SEQUENCE[0]))
+    eng._feed_reconnect_failure_count = 1
+    check("after 1 failure -> floor enforced (5s ladder < 30s min)",
+          eng._current_backoff_seconds() >= eng._FEED_MIN_RESTART_INTERVAL_SECONDS,
+          f"got={eng._current_backoff_seconds()}")
+    eng._feed_reconnect_failure_count = 5
+    check("after 5 failures -> returns 60s ladder value (> floor)",
+          eng._current_backoff_seconds() == 60.0,
+          f"got={eng._current_backoff_seconds()}")
+    eng._feed_reconnect_failure_count = 0
+
+
+# ── 30. HIDDEN_TABS alias normalization ────────────────────────────────
+def test_hidden_tabs_env_normalizes_aliases():
+    print("\n30. HIDDEN_TABS parsing — normalizes case/spaces/aliases so 'silver' hides algo3")
+    # We test the config-layer parser directly since it's pure logic.
+    import os
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"HIDDEN_TABS": "Silver, filter, SILVER_MICRO"}, clear=False):
+        # Re-import config with the patched env
+        import importlib, app.config
+        importlib.reload(app.config)
+        parsed = app.config.HIDDEN_TABS
+    check('"Silver" normalized to "silver"', "silver" in parsed, f"got={parsed}")
+    check('"filter" preserved as "filter"', "filter" in parsed)
+    check('"SILVER_MICRO" normalized to "silvermicro"', "silvermicro" in parsed)
+    # Now test the engine's tab→algo map treats both 'silver' and 'silvermicro' as algo3
+    import importlib, app.engine
+    with patch.dict(os.environ, {"HIDDEN_TABS": "silver"}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.engine)
+        hidden_algos = app.engine._HIDDEN_ALGO_IDS
+    check('HIDDEN_TABS=silver hides algo3', "algo3" in hidden_algos,
+          f"hidden_algos={hidden_algos}")
+    # Cleanup: restore empty
+    with patch.dict(os.environ, {"HIDDEN_TABS": ""}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.engine)
+
+
+# ── 31. Flat-candle rejection through the batch path ───────────────────
+def test_flat_candle_batch_path_rejects():
+    print("\n31. Flat-candle rejection ALSO applies via _build_candidates_from_collection")
+    from app.strategies.algo1_opening_range import Algo1OpeningRange, ScanDebugLogger
+    strat = object.__new__(Algo1OpeningRange)
+    strat.algo_id = "algo1"
+    strat.watchlist = ["NSE:FLAT-EQ", "NSE:LEGIT-EQ"]
+    strat.settings = {"test_schedule_enabled": True}  # would have hit old test-mode fallback
+    strat.opening_candles = {
+        # Flat single-tick — would have wrongly traded under old test-mode logic
+        "NSE:FLAT-EQ": [{"time": 1, "open": 500.0, "high": 500.0, "low": 500.0, "close": 500.0, "volume": 1}],
+        # Real BUY signal — should still get through
+        "NSE:LEGIT-EQ": [{"time": 1, "open": 100.0, "high": 100.5, "low": 100.0, "close": 100.3, "volume": 1000}],
+    }
+    strat.prev_close = {"NSE:FLAT-EQ": 495.0, "NSE:LEGIT-EQ": 99.5}
+    strat.prev_close_ready_symbols = set()
+    strat.open_extreme_symbols = set()
+    strat.buy_candidates = []
+    strat.sell_candidates = []
+    strat.candidate_details = {}
+    strat.sector_map = {}
+    strat.debug_logger = ScanDebugLogger(2)
+
+    strat._build_candidates_from_collection()
+
+    flat_row = strat.candidate_details.get("NSE:FLAT-EQ") or {}
+    legit_row = strat.candidate_details.get("NSE:LEGIT-EQ") or {}
+    check("flat candle: rejection_reason='single_tick_candle' even in test mode",
+          flat_row.get("rejection_reason") == "single_tick_candle",
+          f"got={flat_row.get('rejection_reason')!r}")
+    check("flat candle: NOT selected for trade",
+          flat_row.get("selected_for_trade") is False)
+    check("legit candle: shape_passed",
+          legit_row.get("shape_passed") is True,
+          f"got={legit_row.get('shape_passed')!r}")
+    check("legit candle: side is BUY",
+          legit_row.get("side") == "BUY",
+          f"got={legit_row.get('side')!r}")
+
+
 def main():
     print("=" * 66)
     print("  LIVE ORDER PIPELINE — OFFLINE SMOKE TEST (no Fyers, no DB)")
@@ -869,6 +1249,20 @@ def main():
     test_mode_toggle_cooldown()
     test_parallel_paper_mirroring()
     test_single_tick_candle_rejection()
+    test_rejection_reason_buckets_exist()
+    test_proxy_preflight_refuses_when_unreachable()
+    test_proxy_preflight_allows_when_reachable()
+    test_proxy_preflight_no_proxy_configured()
+    test_skip_scan_today_short_circuits_algo1()
+    test_skip_scan_today_short_circuits_algo3()
+    test_skip_scan_date_auto_resets()
+    test_oauth_throttle_serializes_exchanges()
+    test_connection_status_429_stays_degraded_not_expired()
+    test_pre_market_no_tick_not_counted_as_failure()
+    test_post_recovery_grace_ignores_immediate_failure()
+    test_current_backoff_respects_min_floor()
+    test_hidden_tabs_env_normalizes_aliases()
+    test_flat_candle_batch_path_rejects()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")
