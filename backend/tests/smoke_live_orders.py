@@ -773,6 +773,79 @@ def test_parallel_paper_mirroring():
           f"got={len(shadow_broker.trades)}")
 
 
+# ── 17. Single-tick candle rejection (F1 regression from 2026-08-18) ─
+def test_single_tick_candle_rejection():
+    """The 2026-08-18 outage: F1 introduced a 'single_tick' rejection
+    reason but forgot to add the matching stage_data bucket, so the
+    first single-tick candle at 09:16 raised KeyError and killed the
+    whole scan.
+
+    This test hits _evaluate_symbol_signal with an O==H==L candle using
+    the REAL ScanDebugLogger (not NoopLogger). If the bucket is missing,
+    add_shape_result crashes and the test fails, catching the class of
+    bug before it ships.
+    """
+    print("\n17. Single-tick candle rejection — no KeyError, correct rejection reason")
+    from app.strategies.algo1_opening_range import Algo1OpeningRange, ScanDebugLogger
+
+    strat = object.__new__(Algo1OpeningRange)
+    strat.algo_id = "algo1"
+    strat.watchlist = ["NSE:FLAT-EQ"]
+    strat.settings = {
+        "capital_per_trade": 10000, "margin_multiplier": 5,
+        "sl_pct": 1.0, "target_pct": 2.0,
+        "test_schedule_enabled": False,
+    }
+    strat.opening_candles = {"NSE:FLAT-EQ": [{"time": 1700000000, "open": 500.0, "high": 500.0, "low": 500.0, "close": 500.0, "volume": 1}]}
+    strat.prev_close = {"NSE:FLAT-EQ": 495.0}
+    strat.prev_close_ready_symbols = set()
+    strat.open_extreme_symbols = set()
+    strat.buy_candidates = []
+    strat.sell_candidates = []
+    strat.candidate_details = {}
+    strat.sector_map = {}
+    # REAL debug logger — this is what triggered the 2026-08-18 KeyError.
+    strat.debug_logger = ScanDebugLogger(1)
+
+    verdict = None
+    try:
+        verdict = strat._evaluate_symbol_signal("NSE:FLAT-EQ")
+    except KeyError as exc:
+        check("no KeyError on single-tick candle", False, f"crashed with KeyError: {exc}")
+        return
+
+    check("no KeyError on single-tick candle", True)
+    check("single-tick candle returns None (rejected)", verdict is None, f"got={verdict}")
+    row = strat.candidate_details.get("NSE:FLAT-EQ") or {}
+    check("candidate_details tags reason as single_tick_candle",
+          row.get("rejection_reason") == "single_tick_candle",
+          f"got={row.get('rejection_reason')!r}")
+    check("candidate_details signal_shape is single_tick",
+          row.get("signal_shape") == "single_tick",
+          f"got={row.get('signal_shape')!r}")
+    check("not marked selected_for_trade",
+          row.get("selected_for_trade") is False)
+
+    # Also verify _build_candidates_from_collection handles it the same
+    # way (that path runs the batch-shape check on all symbols).
+    strat.candidate_details = {}
+    strat.buy_candidates = []
+    strat.sell_candidates = []
+    strat.open_extreme_symbols = set()
+    strat.prev_close_ready_symbols = set()
+    strat.debug_logger = ScanDebugLogger(1)
+    try:
+        strat._build_candidates_from_collection()
+    except KeyError as exc:
+        check("_build_candidates_from_collection: no KeyError", False, f"crashed: {exc}")
+        return
+    check("_build_candidates_from_collection: no KeyError", True)
+    row = strat.candidate_details.get("NSE:FLAT-EQ") or {}
+    check("_build path also tags single_tick_candle",
+          row.get("rejection_reason") == "single_tick_candle",
+          f"got={row.get('rejection_reason')!r}")
+
+
 def main():
     print("=" * 66)
     print("  LIVE ORDER PIPELINE — OFFLINE SMOKE TEST (no Fyers, no DB)")
@@ -795,6 +868,7 @@ def main():
     test_token_expired_guard()
     test_mode_toggle_cooldown()
     test_parallel_paper_mirroring()
+    test_single_tick_candle_rejection()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")
