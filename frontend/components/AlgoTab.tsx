@@ -439,10 +439,10 @@ export default function AlgoTab({
           {description && <p className="mt-1 text-xs text-gray-500">{description}</p>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <SkipScanButton
+          <ScanToggleButton
             algoId={algoId}
-            skippedToday={Boolean(summary?.skipped_today)}
-            onChange={(next) => setSummary((prev: any) => (prev ? { ...prev, skipped_today: next } : prev))}
+            enabled={summary?.scan_enabled !== false}
+            onChange={(next) => setSummary((prev: any) => (prev ? { ...prev, scan_enabled: next } : prev))}
           />
           <button
             onClick={() => setSettingsOpen((open) => !open)}
@@ -452,9 +452,9 @@ export default function AlgoTab({
           </button>
         </div>
       </div>
-      {summary?.skipped_today && (
+      {summary && summary.scan_enabled === false && (
         <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
-          Scan skipped for today. No entries will be evaluated until you re-enable it (auto-resets at midnight IST).
+          Scan is OFF for this strategy. No entries will be evaluated until you turn it back ON above.
         </p>
       )}
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
@@ -553,50 +553,49 @@ function SilverFeedPanel({ status }: { status: any }) {
   );
 }
 
-function SkipScanButton({
+function ScanToggleButton({
   algoId,
-  skippedToday,
+  enabled,
   onChange,
 }: {
   algoId: string;
-  skippedToday: boolean;
+  enabled: boolean;
   onChange: (next: boolean) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   async function toggle() {
     if (busy) return;
-    const next = !skippedToday;
-    // Confirm ONLY when turning skip ON — undoing a skip is harmless
-    // and confirming that would just be annoying.
-    if (next && !window.confirm('Skip today\'s scan for this strategy? No new entries will be placed until midnight IST (or until you turn scan back on).')) {
+    const next = !enabled;
+    // Confirm only when turning OFF — flipping back ON is harmless.
+    if (!next && !window.confirm('Turn scan OFF for this strategy? No entries will be evaluated until you turn it back ON — this setting persists across restarts and days.')) {
       return;
     }
     setBusy(true);
     setError('');
     try {
-      const res = await api.setScanSkippedToday(algoId, next);
-      onChange(Boolean(res?.skipped_today));
+      const res = await api.setScanEnabled(algoId, next);
+      onChange(res?.scan_enabled !== false);
     } catch (e: any) {
-      setError(e?.message || 'Failed to update scan-skip state');
+      setError(e?.message || 'Failed to update scan state');
     } finally {
       setBusy(false);
     }
   }
-  const tone = skippedToday
-    ? 'border-[#f59e0b] text-[#f59e0b]'
-    : 'border-[#374151] text-gray-400';
+  const tone = enabled
+    ? 'border-[#22c55e] text-[#22c55e]'
+    : 'border-[#f59e0b] text-[#f59e0b]';
   return (
     <div className="flex flex-col items-end gap-1">
       <button
         onClick={toggle}
         disabled={busy}
-        title={skippedToday
-          ? 'Scan is skipped for today. Click to re-enable.'
-          : 'Skip today\'s scheduled scan so no new entries fire (resets at midnight IST).'}
+        title={enabled
+          ? 'Scan is ON. Click to turn it OFF (persists until re-enabled).'
+          : 'Scan is OFF. Click to turn it back ON.'}
         className={`min-h-10 rounded border px-3 py-1.5 text-xs font-semibold disabled:cursor-wait ${tone}`}
       >
-        {busy ? '...' : skippedToday ? 'Scan: Skipped Today' : 'Skip Scan Today'}
+        {busy ? '...' : enabled ? 'Scan: ON' : 'Scan: OFF'}
       </button>
       {error && <p className="m-0 max-w-xs text-right text-[10px] text-[#ef4444]">{error}</p>}
     </div>

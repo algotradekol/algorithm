@@ -1030,12 +1030,12 @@ class Algo1OpeningRange(Strategy):
         today = datetime.date.today()
         if self.entries_evaluated_today == today:
             return True
-        if self.is_scan_skipped_today():
-            print(f"[{self.algo_id}] scan skipped for {today} (skip_scan_date set by user)")
+        if not bool(self.settings.get("scan_enabled", True)):
+            print(f"[{self.algo_id}] scan disabled via settings.scan_enabled=false")
             self._record_scan_results(
                 [], [],
-                scan_status="skipped",
-                scan_message="Scan skipped for today by user request. Toggle back on in the strategy tab if you change your mind.",
+                scan_status="disabled",
+                scan_message="Scan is turned OFF for this strategy. Toggle back on in the strategy tab to resume.",
             )
             self.entries_evaluated_today = today  # prevent re-runs later in the day
             return True

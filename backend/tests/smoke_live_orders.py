@@ -949,61 +949,38 @@ def test_proxy_preflight_no_proxy_configured():
     check("order still placed", response.get("s") == "ok")
 
 
-# ── 22-24. Skip-scan-today (new feature) ────────────────────────────────
-def test_skip_scan_today_short_circuits_algo1():
-    print("\n22. Skip scan today — algo1.evaluate_entries returns early without work")
+# ── 22-23. Persistent scan_enabled toggle (replaces skip-today) ──────
+def test_scan_disabled_short_circuits_algo1():
+    print("\n22. Scan OFF — algo1.evaluate_entries returns early without work")
     import datetime
     from app.strategies.algo1_opening_range import Algo1OpeningRange
     strat = object.__new__(Algo1OpeningRange)
     strat.algo_id = "algo1"
     strat.entries_evaluated_today = None
-    strat.skip_scan_date = datetime.date.today()
-    # These attrs would be accessed if the short-circuit failed.
-    strat.settings = {"test_schedule_enabled": False}
+    strat.settings = {"scan_enabled": False, "test_schedule_enabled": False}
     called = []
     strat._record_scan_results = lambda *a, **kw: called.append(("record", kw.get("scan_status")))
 
     result = strat.evaluate_entries(get_ltp_fn=lambda s: 0.0)
 
     check("evaluate_entries returned True (short-circuited)", result is True)
-    check("scan_status recorded as 'skipped'",
-          any(status == "skipped" for _, status in called),
+    check("scan_status recorded as 'disabled'",
+          any(status == "disabled" for _, status in called),
           f"called={called}")
     check("entries_evaluated_today set (prevents re-runs same day)",
           strat.entries_evaluated_today == datetime.date.today())
 
 
-def test_skip_scan_today_short_circuits_algo3():
-    print("\n23. Skip scan today — algo3.scan_enabled returns False")
-    import datetime
+def test_scan_disabled_short_circuits_algo3():
+    print("\n23. Scan OFF — algo3.scan_enabled() returns False")
     from app.strategies.algo3_silver_micro import Algo3SilverMicro
     strat = object.__new__(Algo3SilverMicro)
-    strat.settings = {"scan_enabled": True}
-    strat.skip_scan_date = datetime.date.today()
-    check("scan_enabled False when skip_scan_date=today",
+    strat.settings = {"scan_enabled": False}
+    check("scan_enabled False when settings.scan_enabled=False",
           strat.scan_enabled() is False)
-    strat.skip_scan_date = None
-    check("scan_enabled True when skip cleared",
+    strat.settings = {"scan_enabled": True}
+    check("scan_enabled True when settings.scan_enabled=True",
           strat.scan_enabled() is True)
-
-
-def test_skip_scan_date_auto_resets():
-    print("\n24. Skip scan today — yesterday's skip date does NOT skip today's scan")
-    import datetime
-    from app.strategies.base import Strategy
-    # Strategy is abstract; make a minimal concrete instance.
-    class Dummy(Strategy):
-        def on_tick(self, *a, **kw): pass
-        def on_candle_close(self, *a, **kw): pass
-        def check_exits(self, *a, **kw): pass
-        def square_off_all(self, *a, **kw): pass
-    d = Dummy()
-    d.skip_scan_date = datetime.date.today() - datetime.timedelta(days=1)
-    check("yesterday's skip is not today's skip",
-          d.is_scan_skipped_today() is False)
-    d.skip_scan_date = datetime.date.today()
-    check("today's skip is today's skip",
-          d.is_scan_skipped_today() is True)
 
 
 # ── 25. F5 OAuth throttle ──────────────────────────────────────────────
@@ -1276,7 +1253,6 @@ def _make_bare_algo3(settings_overrides=None):
     strat._history_ready = False
     strat._history_error = None
     strat._warmup_minute_candles = 0
-    strat.skip_scan_date = None
 
     class FakeBroker:
         def __init__(self):
@@ -1710,9 +1686,8 @@ def main():
     test_proxy_preflight_refuses_when_unreachable()
     test_proxy_preflight_allows_when_reachable()
     test_proxy_preflight_no_proxy_configured()
-    test_skip_scan_today_short_circuits_algo1()
-    test_skip_scan_today_short_circuits_algo3()
-    test_skip_scan_date_auto_resets()
+    test_scan_disabled_short_circuits_algo1()
+    test_scan_disabled_short_circuits_algo3()
     test_oauth_throttle_serializes_exchanges()
     test_connection_status_429_stays_degraded_not_expired()
     test_pre_market_no_tick_not_counted_as_failure()
