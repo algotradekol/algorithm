@@ -694,7 +694,11 @@ def set_algo_scan_enabled(algo_id: str, payload: dict, _user=Depends(require_aut
     enabled = bool(payload.get("enabled", True))
     current = get_settings(algo_id)
     current["scan_enabled"] = enabled
-    saved = update_settings(algo_id, current)
+    # update_settings returns None; the value we just set is what got saved
+    # (modulo Supabase-side column filtering, which strategy_settings itself
+    # handles). Read back via get_settings to be sure the DB round-trip agrees.
+    update_settings(algo_id, current)
+    saved = get_settings(algo_id)
     if hasattr(strategy, "reload_settings"):
         strategy.reload_settings()
     audit_log("strategy", "scan_enabled toggled", algo_id=algo_id, enabled=enabled)
