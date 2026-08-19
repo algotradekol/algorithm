@@ -168,7 +168,8 @@ export const api = {
   updateTradingMode: (mode: 'paper' | 'live') =>
     authedFetch('/api/runtime/trading-mode', { method: 'PUT', body: JSON.stringify({ trading_mode: mode }) }),
   fyersRefreshToken: () => authedFetch('/api/fyers/refresh-token', { method: 'POST' }),
-  fyersDisconnect: () => authedFetch('/api/fyers/disconnect', { method: 'POST' }),
+  fyersDisconnect: (force = false) =>
+    authedFetch(`/api/fyers/disconnect${force ? '?force=true' : ''}`, { method: 'POST' }),
   fyersTokenStatus: () => authedFetch('/api/fyers/token-status'),
   fyersFunds: fetchFyersFunds,
   fyersPositions: fetchFyersPositions,
