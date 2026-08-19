@@ -20,6 +20,16 @@ const RISK_FIELDS: Field[] = [
   ['max_sell_trades', 'Max Sell Trades Per Day', 'daily sell-side trade cap'],
 ];
 
+// algo3 (Silver Micro) uses POINTS instead of %, per spec doc. Separate
+// field list keeps the UI honest about units.
+const SILVER_RISK_FIELDS: Field[] = [
+  ['silver_breakout_points', 'Breakout Offset n (points)', 'Entry fires when live price crosses (setup close +/- n). Default 150.'],
+  ['target_points', 'Target (points from entry)', 'Fixed rupee distance in favor before exit.'],
+  ['sl_points', 'Stop Loss (points from entry)', 'Fixed rupee distance against before exit.'],
+  ['tsl_trigger_points', 'Trailing SL Trigger (points)', 'Profit in points before trailing activates.'],
+  ['tsl_distance_points', 'Trailing SL Distance (points)', 'How far behind the best favorable price the trailing stop sits once active.'],
+];
+
 const INDICATOR_FIELDS: Field[] = [
   ['rsi_buy_threshold', 'RSI Buy Threshold', 'Filter strategy buy confirmation threshold'],
   ['rsi_sell_threshold', 'RSI Sell Threshold', 'Filter strategy sell confirmation threshold'],
@@ -157,10 +167,15 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
         )}
         <ExitModeSelect settings={settings} setSettings={setSettings} />
         <TrailingStopToggle settings={settings} setSettings={setSettings} />
-        <FieldGroup title="Risk Settings" fields={RISK_FIELDS} settings={settings} setSettings={setSettings} />
+        <FieldGroup
+          title="Risk Settings"
+          fields={algoId === 'algo3' ? SILVER_RISK_FIELDS : RISK_FIELDS}
+          settings={settings}
+          setSettings={setSettings}
+        />
           {algoId === 'algo3' && (
             <div className="mt-5 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
-            Silver Micro now runs on MCX:SILVERMIC26AUGFUT and uses 5-minute candles. Capital, exit mode, and trailing stop settings still apply here.
+            Silver Micro runs on MCX:SILVERMIC26AUGFUT using 15-minute candles. Setup levels come from green/red candles crossing EMA20; entry fires when live price crosses setup close +/- n points (default 150). SL, target, and trailing SL are all in POINTS from entry (fields above).
             </div>
           )}
         {(algoId === 'algo1' || algoId === 'algo4') && <TestSchedule settings={settings} setSettings={setSettings} />}

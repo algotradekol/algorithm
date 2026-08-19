@@ -949,61 +949,38 @@ def test_proxy_preflight_no_proxy_configured():
     check("order still placed", response.get("s") == "ok")
 
 
-# ── 22-24. Skip-scan-today (new feature) ────────────────────────────────
-def test_skip_scan_today_short_circuits_algo1():
-    print("\n22. Skip scan today — algo1.evaluate_entries returns early without work")
+# ── 22-23. Persistent scan_enabled toggle (replaces skip-today) ──────
+def test_scan_disabled_short_circuits_algo1():
+    print("\n22. Scan OFF — algo1.evaluate_entries returns early without work")
     import datetime
     from app.strategies.algo1_opening_range import Algo1OpeningRange
     strat = object.__new__(Algo1OpeningRange)
     strat.algo_id = "algo1"
     strat.entries_evaluated_today = None
-    strat.skip_scan_date = datetime.date.today()
-    # These attrs would be accessed if the short-circuit failed.
-    strat.settings = {"test_schedule_enabled": False}
+    strat.settings = {"scan_enabled": False, "test_schedule_enabled": False}
     called = []
     strat._record_scan_results = lambda *a, **kw: called.append(("record", kw.get("scan_status")))
 
     result = strat.evaluate_entries(get_ltp_fn=lambda s: 0.0)
 
     check("evaluate_entries returned True (short-circuited)", result is True)
-    check("scan_status recorded as 'skipped'",
-          any(status == "skipped" for _, status in called),
+    check("scan_status recorded as 'disabled'",
+          any(status == "disabled" for _, status in called),
           f"called={called}")
     check("entries_evaluated_today set (prevents re-runs same day)",
           strat.entries_evaluated_today == datetime.date.today())
 
 
-def test_skip_scan_today_short_circuits_algo3():
-    print("\n23. Skip scan today — algo3.scan_enabled returns False")
-    import datetime
+def test_scan_disabled_short_circuits_algo3():
+    print("\n23. Scan OFF — algo3.scan_enabled() returns False")
     from app.strategies.algo3_silver_micro import Algo3SilverMicro
     strat = object.__new__(Algo3SilverMicro)
-    strat.settings = {"scan_enabled": True}
-    strat.skip_scan_date = datetime.date.today()
-    check("scan_enabled False when skip_scan_date=today",
+    strat.settings = {"scan_enabled": False}
+    check("scan_enabled False when settings.scan_enabled=False",
           strat.scan_enabled() is False)
-    strat.skip_scan_date = None
-    check("scan_enabled True when skip cleared",
+    strat.settings = {"scan_enabled": True}
+    check("scan_enabled True when settings.scan_enabled=True",
           strat.scan_enabled() is True)
-
-
-def test_skip_scan_date_auto_resets():
-    print("\n24. Skip scan today — yesterday's skip date does NOT skip today's scan")
-    import datetime
-    from app.strategies.base import Strategy
-    # Strategy is abstract; make a minimal concrete instance.
-    class Dummy(Strategy):
-        def on_tick(self, *a, **kw): pass
-        def on_candle_close(self, *a, **kw): pass
-        def check_exits(self, *a, **kw): pass
-        def square_off_all(self, *a, **kw): pass
-    d = Dummy()
-    d.skip_scan_date = datetime.date.today() - datetime.timedelta(days=1)
-    check("yesterday's skip is not today's skip",
-          d.is_scan_skipped_today() is False)
-    d.skip_scan_date = datetime.date.today()
-    check("today's skip is today's skip",
-          d.is_scan_skipped_today() is True)
 
 
 # ── 25. F5 OAuth throttle ──────────────────────────────────────────────
@@ -1226,6 +1203,587 @@ def test_flat_candle_batch_path_rejects():
           f"got={legit_row.get('side')!r}")
 
 
+# ═══════════════════════════════════════════════════════════════════════
+# ALGO3 SILVER MICRO — spec-driven regression tests (2026-08-19 rewrite)
+#
+# Two flavors:
+#   White-box (32-43): unit tests for each internal helper (bucket
+#     rounding, EMA step, setup capture, trigger detection, points
+#     -> pct conversion, scan-disabled short-circuit).
+#   Black-box (45): full scripted candles+ticks scenario, only inspect
+#     open_trade calls and their arguments.
+# ═══════════════════════════════════════════════════════════════════════
+def _make_bare_algo3(settings_overrides=None):
+    """Bypass __init__ (avoids Fyers + Supabase + broker construction)
+    and build a stub instance with just the state needed for logic tests.
+    """
+    from app.strategies.algo3_silver_micro import Algo3SilverMicro
+    from collections import deque
+    strat = object.__new__(Algo3SilverMicro)
+    strat.algo_id = "algo3"
+    strat.symbol = "MCX:SILVERMIC26AUGFUT"
+    strat.watchlist = [strat.symbol]
+    strat.settings = {
+        "capital_per_trade": 100000,
+        "silver_breakout_points": 150,
+        "sl_points": 100,
+        "target_points": 300,
+        "trailing_sl_enabled": False,
+        "tsl_trigger_points": 100,
+        "tsl_distance_points": 50,
+        "scan_enabled": True,
+        "exit_mode": "fixed_target_trailing_sl",
+    }
+    if settings_overrides:
+        strat.settings.update(settings_overrides)
+    strat._minute_buffer = []
+    strat._current_bucket = None
+    strat._bars = deque(maxlen=500)
+    strat._ema20 = None
+    strat._buy_setup_close = None
+    strat._sell_setup_close = None
+    strat._buy_setup_bar_at = None
+    strat._sell_setup_bar_at = None
+    strat._prev_ltp = None
+    strat._last_tick_at = None
+    strat._last_tick_ltp = None
+    strat._last_minute_candle_at = None
+    strat._last_bar_at = None
+    strat._history_loading = False
+    strat._history_ready = False
+    strat._history_error = None
+    strat._warmup_minute_candles = 0
+
+    class FakeBroker:
+        def __init__(self):
+            self.opens = []
+            self.closes = []
+            self._open_positions = []
+        def open_trade(self, symbol, side, qty, entry, sl, target, trigger, snapshot, entry_time=None):
+            pos = {
+                "symbol": symbol, "side": side, "qty": qty,
+                "entry_price": entry, "sl_price": sl, "target_price": target,
+                "trigger": trigger, "signal_snapshot": snapshot,
+            }
+            self.opens.append(pos)
+            self._open_positions.append(pos)
+            return pos
+        def close_trade(self, position, exit_price, reason):
+            self.closes.append({"symbol": position["symbol"], "reason": reason, "exit_price": exit_price})
+            if position in self._open_positions:
+                self._open_positions.remove(position)
+        def open_positions(self):
+            return list(self._open_positions)
+        def apply_trailing_stop(self, position, ltp, settings):
+            return position
+        def should_exit_at_target(self, settings):
+            return True
+
+    strat.broker = FakeBroker()
+    return strat
+
+
+# ── 32. 15-min bucket rounding ─────────────────────────────────────────
+def test_algo3_bucket_start_15m():
+    print("\n32. algo3 _bucket_start rounds down to nearest 15-min boundary")
+    import datetime as _dt
+    from app.strategies.algo3_silver_micro import _bucket_start
+    cases = [
+        (_dt.datetime(2026, 8, 19, 9, 0, 0), _dt.datetime(2026, 8, 19, 9, 0)),
+        (_dt.datetime(2026, 8, 19, 9, 14, 59), _dt.datetime(2026, 8, 19, 9, 0)),
+        (_dt.datetime(2026, 8, 19, 9, 15, 0), _dt.datetime(2026, 8, 19, 9, 15)),
+        (_dt.datetime(2026, 8, 19, 9, 29, 59), _dt.datetime(2026, 8, 19, 9, 15)),
+        (_dt.datetime(2026, 8, 19, 9, 30, 0), _dt.datetime(2026, 8, 19, 9, 30)),
+        (_dt.datetime(2026, 8, 19, 23, 55, 0), _dt.datetime(2026, 8, 19, 23, 45)),
+    ]
+    for ts, expected in cases:
+        got = _bucket_start(ts)
+        check(f"{ts.strftime('%H:%M:%S')} -> {expected.strftime('%H:%M')}",
+              got == expected, f"got={got.strftime('%H:%M')}")
+
+
+# ── 33. EMA step matches a hand-computed reference ─────────────────────
+def test_algo3_ema_step_matches_python_reference():
+    print("\n33. algo3 _ema_step matches an independent Python EMA")
+    from app.strategies.algo3_silver_micro import _ema_step
+    prices = [100, 102, 101, 103, 105, 104, 106, 108, 107, 109]
+    period = 20
+    k = 2 / (period + 1)
+    # First bar: EMA seeds to the first value.
+    reference = prices[0]
+    for p in prices[1:]:
+        reference = p * k + reference * (1 - k)
+    computed = None
+    for p in prices:
+        computed = _ema_step(computed, p, period)
+    check("EMA after 10 bars matches reference within 1e-9",
+          abs(computed - reference) < 1e-9,
+          f"got={computed} ref={reference}")
+
+
+# ── 34-35. Setup capture (green above / red below) + overwrite ─────────
+def test_algo3_setup_captures_and_overwrites():
+    print("\n34. algo3 setup: green-above-EMA and red-below-EMA candles are stored, later ones overwrite")
+    strat = _make_bare_algo3()
+    strat._ema20 = 90000.0  # arbitrary EMA20
+    # First green above: capture.
+    strat._update_setups({"open": 91000, "close": 92000, "time": "t1"})
+    check("first green-above sets buy_setup_close",
+          strat._buy_setup_close == 92000, f"got={strat._buy_setup_close}")
+    # Second green above: overwrite with newer close.
+    strat._update_setups({"open": 92100, "close": 92500, "time": "t2"})
+    check("second green-above overwrites buy_setup_close",
+          strat._buy_setup_close == 92500, f"got={strat._buy_setup_close}")
+    # Red below: independent setup.
+    strat._update_setups({"open": 89500, "close": 89000, "time": "t3"})
+    check("red-below sets sell_setup_close",
+          strat._sell_setup_close == 89000, f"got={strat._sell_setup_close}")
+    check("red-below does NOT touch buy_setup_close",
+          strat._buy_setup_close == 92500)
+
+
+def test_algo3_no_setup_when_wrong_side_of_ema():
+    print("\n35. algo3 setup: green BELOW EMA and red ABOVE EMA do NOT capture")
+    strat = _make_bare_algo3()
+    strat._ema20 = 90000.0
+    # Green but close still below EMA: no BUY setup.
+    strat._update_setups({"open": 88500, "close": 89500, "time": "t1"})
+    check("green-below-EMA: no buy_setup_close",
+          strat._buy_setup_close is None, f"got={strat._buy_setup_close}")
+    # Red but close still above EMA: no SELL setup.
+    strat._update_setups({"open": 91500, "close": 90500, "time": "t2"})
+    check("red-above-EMA: no sell_setup_close",
+          strat._sell_setup_close is None, f"got={strat._sell_setup_close}")
+
+
+# ── 36-38. Trigger detection ───────────────────────────────────────────
+def test_algo3_buy_trigger_only_on_upward_cross():
+    print("\n36. algo3 BUY trigger fires ONLY on an upward cross of (setup + n)")
+    strat = _make_bare_algo3()
+    strat._buy_setup_close = 92000.0
+    # n=150, so buy_level = 92150
+    strat._prev_ltp = 92100  # below
+    strat._check_triggers(92200)  # crossed up through 92150
+    check("upward cross fires BUY entry",
+          len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "BUY",
+          f"opens={strat.broker.opens}")
+
+    strat2 = _make_bare_algo3()
+    strat2._buy_setup_close = 92000.0
+    strat2._prev_ltp = 92200  # above the level already
+    strat2._check_triggers(92300)  # still above; not a fresh cross
+    check("moving further up while already above level: no double entry",
+          len(strat2.broker.opens) == 0)
+
+    strat3 = _make_bare_algo3()
+    strat3._buy_setup_close = 92000.0
+    strat3._prev_ltp = 92300
+    strat3._check_triggers(92100)  # downward through the level — wrong direction
+    check("downward through BUY level: no BUY entry",
+          len(strat3.broker.opens) == 0)
+
+
+def test_algo3_sell_trigger_only_on_downward_cross():
+    print("\n37. algo3 SELL trigger fires ONLY on a downward cross of (setup - n)")
+    strat = _make_bare_algo3()
+    strat._sell_setup_close = 89000.0
+    # sell_level = 88850
+    strat._prev_ltp = 88900  # above
+    strat._check_triggers(88800)  # crossed down through 88850
+    check("downward cross fires SELL entry",
+          len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "SELL",
+          f"opens={strat.broker.opens}")
+
+    strat2 = _make_bare_algo3()
+    strat2._sell_setup_close = 89000.0
+    strat2._prev_ltp = 88800  # already below
+    strat2._check_triggers(88700)
+    check("moving further down while already below: no double entry",
+          len(strat2.broker.opens) == 0)
+
+
+def test_algo3_no_trigger_before_first_prev_ltp():
+    print("\n38. algo3 first tick after boot cannot fire a spurious cross (prev_ltp is None)")
+    strat = _make_bare_algo3()
+    strat._buy_setup_close = 92000.0
+    strat._prev_ltp = None
+    strat._check_triggers(92500)  # would cross but no prev_ltp
+    check("no entry on first-ever tick",
+          len(strat.broker.opens) == 0)
+
+
+# ── 39. Configurable n parameter ───────────────────────────────────────
+def test_algo3_configurable_n_parameter():
+    print("\n39. algo3 respects settings[silver_breakout_points]")
+    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 500})
+    strat._buy_setup_close = 92000.0
+    # With n=500, buy_level=92500. A cross to 92200 (only +200) MUST NOT fire.
+    strat._prev_ltp = 92100
+    strat._check_triggers(92200)
+    check("n=500: cross of +200 does NOT fire", len(strat.broker.opens) == 0)
+    strat._prev_ltp = 92400
+    strat._check_triggers(92600)  # now crossed 92500
+    check("n=500: cross to 92600 fires",
+          len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
+
+
+# ── 40-41. Reversal & no-reentry ───────────────────────────────────────
+def test_algo3_reversal_on_contra_signal():
+    print("\n40. algo3 contra trigger closes existing position and flips at LTP")
+    strat = _make_bare_algo3()
+    strat._buy_setup_close = 92000.0
+    strat._sell_setup_close = 89000.0
+    # Fire BUY first.
+    strat._prev_ltp = 92100
+    strat._check_triggers(92200)
+    check("initial BUY open", len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "BUY")
+    # Now fire SELL — should close the BUY and open a SELL.
+    strat._prev_ltp = 88900
+    strat._check_triggers(88800)
+    check("existing BUY closed with REVERSAL_CONTRA_SIGNAL",
+          any(c["reason"] == "REVERSAL_CONTRA_SIGNAL" for c in strat.broker.closes),
+          f"closes={strat.broker.closes}")
+    check("new SELL opened after reversal",
+          len(strat.broker.opens) == 2 and strat.broker.opens[1]["side"] == "SELL",
+          f"opens={strat.broker.opens}")
+
+
+def test_algo3_no_reentry_same_side():
+    print("\n41. algo3 same-side re-trigger while already positioned: no-op (no second BUY)")
+    strat = _make_bare_algo3()
+    strat._buy_setup_close = 92000.0
+    strat._prev_ltp = 92100
+    strat._check_triggers(92200)  # first BUY
+    check("first BUY placed", len(strat.broker.opens) == 1)
+    # Simulate LTP dipping and crossing back up through the level again.
+    strat._prev_ltp = 92000  # below level
+    strat._check_triggers(92200)  # would cross up again
+    check("second same-side cross does NOT re-enter",
+          len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
+
+
+# ── 42. Entry payload uses POINTS for SL/target ────────────────────────
+def test_algo3_entry_uses_points_sl_target():
+    print("\n42. algo3 entry SL/target are computed as POINTS from entry, not %")
+    strat = _make_bare_algo3(settings_overrides={"sl_points": 200, "target_points": 500})
+    strat._buy_setup_close = 92000.0
+    strat._prev_ltp = 92100
+    strat._check_triggers(92200)
+    check("one BUY open", len(strat.broker.opens) == 1)
+    pos = strat.broker.opens[0]
+    # entry = 92200, sl = 92200 - 200 = 92000, target = 92200 + 500 = 92700
+    check("BUY sl_price = entry - 200 pts",
+          abs(pos["sl_price"] - 92000.0) < 1e-9, f"got={pos['sl_price']}")
+    check("BUY target_price = entry + 500 pts",
+          abs(pos["target_price"] - 92700.0) < 1e-9, f"got={pos['target_price']}")
+
+    # SELL side inverse
+    strat2 = _make_bare_algo3(settings_overrides={"sl_points": 200, "target_points": 500})
+    strat2._sell_setup_close = 89000.0
+    strat2._prev_ltp = 88900
+    strat2._check_triggers(88800)
+    check("one SELL open", len(strat2.broker.opens) == 1)
+    pos2 = strat2.broker.opens[0]
+    # entry = 88800, sl = 88800 + 200 = 89000, target = 88800 - 500 = 88300
+    check("SELL sl_price = entry + 200 pts",
+          abs(pos2["sl_price"] - 89000.0) < 1e-9, f"got={pos2['sl_price']}")
+    check("SELL target_price = entry - 500 pts",
+          abs(pos2["target_price"] - 88300.0) < 1e-9, f"got={pos2['target_price']}")
+
+
+# ── 43. Points -> percent conversion for TSL ───────────────────────────
+def test_algo3_trailing_settings_convert_points_to_pct():
+    print("\n43. algo3 _trailing_settings_for converts POINTS to percent based on entry price")
+    strat = _make_bare_algo3(settings_overrides={"tsl_trigger_points": 200, "tsl_distance_points": 100})
+    position = {"entry_price": 100000.0}
+    converted = strat._trailing_settings_for(position)
+    # 200 / 100000 * 100 = 0.2%; 100 / 100000 * 100 = 0.1%
+    check("trigger converted: 200/100000 -> 0.2%",
+          abs(converted["trailing_sl_trigger_pct"] - 0.2) < 1e-9,
+          f"got={converted['trailing_sl_trigger_pct']}")
+    check("distance converted: 100/100000 -> 0.1%",
+          abs(converted["trailing_sl_distance_pct"] - 0.1) < 1e-9,
+          f"got={converted['trailing_sl_distance_pct']}")
+    # Zero points -> no conversion, leave original settings alone
+    strat_zero = _make_bare_algo3(settings_overrides={"tsl_trigger_points": 0, "tsl_distance_points": 0,
+                                                       "trailing_sl_trigger_pct": 5.0, "trailing_sl_distance_pct": 2.0})
+    converted_zero = strat_zero._trailing_settings_for(position)
+    check("zero points -> original pct preserved",
+          converted_zero["trailing_sl_trigger_pct"] == 5.0
+          and converted_zero["trailing_sl_distance_pct"] == 2.0)
+
+
+# ── 44. Scan disabled → triggers skipped ───────────────────────────────
+def test_algo3_scan_disabled_skips_triggers():
+    print("\n44. algo3 scan_enabled=False: on_tick does not evaluate triggers")
+    strat = _make_bare_algo3(settings_overrides={"scan_enabled": False})
+    strat._buy_setup_close = 92000.0
+    # Simulate the WS engine calling on_tick.
+    strat.on_tick("MCX:SILVERMIC26AUGFUT", 92100, None)  # would set prev_ltp
+    strat.on_tick("MCX:SILVERMIC26AUGFUT", 92200, None)  # would fire trigger if scan was on
+    check("scan_enabled=False: no entries even on a valid cross",
+          len(strat.broker.opens) == 0, f"opens={strat.broker.opens}")
+
+
+# ── 45. Black-box end-to-end scripted scenario ─────────────────────────
+def test_algo3_black_box_end_to_end():
+    """Feed a scripted mix of 1-min candles + live ticks through the
+    public engine hooks. Only inspect broker.open_trade side effects at
+    the end. Reproduces a full session:
+      - 20 warmup bars establish EMA20
+      - Bar 21: green closes above EMA -> buy setup stored
+      - Ticks after that cross the buy level -> BUY entered
+      - Later bar: red closes below EMA -> sell setup stored
+      - Ticks cross the sell level -> reversal to SELL
+    """
+    print("\n45. algo3 BLACK-BOX: candles + ticks produce expected entries + reversal")
+    import datetime as _dt
+    strat = _make_bare_algo3()
+
+    def minute_candle(minute_offset, open_, high, low, close, vol=100):
+        base = _dt.datetime(2026, 8, 19, 9, 0)
+        t = base + _dt.timedelta(minutes=minute_offset)
+        return {"time": t, "open": open_, "high": high, "low": low, "close": close, "volume": vol}
+
+    # Warm up EMA with 20 flat bars around price 90000. Each 15-min bar
+    # needs 15 one-minute candles; feed the same close for a stable EMA.
+    for bar_idx in range(20):
+        for m in range(15):
+            offset = bar_idx * 15 + m
+            strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                                  minute_candle(offset, 90000, 90000, 90000, 90000), {})
+    # Trigger the finalize by starting a new bucket.
+    # bar_idx=20, m=0: new 15-min bucket starts -> previous bar (19) gets finalized.
+    strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                          minute_candle(20 * 15, 90000, 90000, 90000, 90000), {})
+    # After 20 finalized bars EMA should be ~90000, no setups yet (flat candles).
+    check("black-box: EMA20 ~= 90000 after warmup",
+          strat._ema20 is not None and abs(strat._ema20 - 90000) < 100,
+          f"got={strat._ema20}")
+    check("black-box: no setups from flat warmup candles",
+          strat._buy_setup_close is None and strat._sell_setup_close is None)
+
+    # Bar 21: green candle closing 500 above EMA -> BUY setup
+    for m in range(1, 15):
+        offset = 20 * 15 + m
+        strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                              minute_candle(offset, 90000, 90600, 89900, 90500), {})
+    # New bucket to finalize bar 21
+    strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                          minute_candle(21 * 15, 90500, 90500, 90500, 90500), {})
+    check("black-box: green-above-EMA bar 21 captured as buy setup",
+          strat._buy_setup_close is not None and strat._buy_setup_close > 90000,
+          f"got={strat._buy_setup_close}")
+
+    # Now feed live ticks that cross (setup + 150).
+    # Note: the "on_tick" pathway uses self.settings["silver_breakout_points"]=150.
+    buy_level = strat._buy_setup_close + 150
+    strat.on_tick("MCX:SILVERMIC26AUGFUT", buy_level - 20, None)
+    strat.on_tick("MCX:SILVERMIC26AUGFUT", buy_level + 5, None)
+    check("black-box: BUY fires on upward tick-cross of setup+150",
+          len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "BUY",
+          f"opens={strat.broker.opens}")
+
+    # Later 15-min bar: red closing 500 below EMA -> SELL setup
+    for m in range(1, 15):
+        offset = 21 * 15 + m
+        # Use a wide down bar (open above ema, close below)
+        strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                              minute_candle(offset, 90000, 90100, 89400, 89500), {})
+    strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                          minute_candle(22 * 15, 89500, 89500, 89500, 89500), {})
+    check("black-box: red-below-EMA bar captured as sell setup",
+          strat._sell_setup_close is not None and strat._sell_setup_close < strat._ema20,
+          f"got sell={strat._sell_setup_close}, ema={strat._ema20}")
+
+    # Ticks that cross (sell setup - 150) downward -> REVERSAL to SELL
+    sell_level = strat._sell_setup_close - 150
+    strat.on_tick("MCX:SILVERMIC26AUGFUT", sell_level + 20, None)
+    strat.on_tick("MCX:SILVERMIC26AUGFUT", sell_level - 5, None)
+    check("black-box: existing BUY closed as REVERSAL",
+          any(c["reason"] == "REVERSAL_CONTRA_SIGNAL" for c in strat.broker.closes),
+          f"closes={strat.broker.closes}")
+    check("black-box: SELL opened after reversal",
+          len(strat.broker.opens) == 2 and strat.broker.opens[1]["side"] == "SELL",
+          f"opens={[o['side'] for o in strat.broker.opens]}")
+
+
+# ── 46-47. BROKER_KEY_SUFFIX — token isolation between backends ────────
+def test_broker_key_suffix_isolates_tokens():
+    print("\n46. BROKER_KEY_SUFFIX: two suffixes produce two distinct broker keys")
+    import importlib, os
+    from unittest.mock import patch
+    # Simulate the CLIENT backend
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "client"}, clear=False):
+        import app.config, app.runtime_mode
+        importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
+        client_key_live = app.runtime_mode.get_active_broker_key(mode="live")
+        client_key_paper = app.runtime_mode.get_active_broker_key(mode="paper")
+    # Simulate the DEV backend
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "dev"}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
+        dev_key_live = app.runtime_mode.get_active_broker_key(mode="live")
+        dev_key_paper = app.runtime_mode.get_active_broker_key(mode="paper")
+
+    check("client live key is fyers_live__client",
+          client_key_live == "fyers_live__client", f"got={client_key_live}")
+    check("dev live key is fyers_live__dev",
+          dev_key_live == "fyers_live__dev", f"got={dev_key_live}")
+    check("client and dev live keys differ (no collision)",
+          client_key_live != dev_key_live)
+    check("client paper key is fyers__client",
+          client_key_paper == "fyers__client", f"got={client_key_paper}")
+    check("dev paper key is fyers__dev",
+          dev_key_paper == "fyers__dev", f"got={dev_key_paper}")
+    # Restore empty suffix so subsequent tests aren't affected
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": ""}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
+
+
+def test_broker_key_suffix_empty_preserves_legacy_key():
+    print("\n47. BROKER_KEY_SUFFIX empty: keeps historical 'fyers_live' / 'fyers' keys")
+    import importlib, os
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": ""}, clear=False):
+        import app.config, app.runtime_mode
+        importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
+        live_key = app.runtime_mode.get_active_broker_key(mode="live")
+        paper_key = app.runtime_mode.get_active_broker_key(mode="paper")
+    check("empty suffix: live key stays 'fyers_live' (backward-compat)",
+          live_key == "fyers_live", f"got={live_key}")
+    check("empty suffix: paper key stays 'fyers' (backward-compat)",
+          paper_key == "fyers", f"got={paper_key}")
+
+
+# ── 48. Backtest parity: same scenario, backtest and live must agree ──
+def test_algo3_backtest_parity_with_live():
+    """Give the same 1m candle history to the backtest simulator and to
+    the live algo3 (via on_candle_close + on_tick per 1m bar). Assert
+    they produce the SAME entries: same side, same entry price, same
+    minute. If they diverge, either the live logic or the backtest
+    simulator has drifted from the spec doc."""
+    print("\n48. algo3 backtest parity — same input, live + backtest agree on entries")
+    import datetime as _dt
+    from app import backtest as bt
+
+    # Scripted history: 20 flat 15m bars (300 1m candles) to warm EMA20,
+    # then a green 15m bar closing above EMA20 (BUY setup), then a 1m
+    # bar whose high crosses (setup + 150) upward.
+    symbol = "MCX:TEST-EQ"
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+
+    def push(offset, o, h, l, c, v=100):
+        history.append({
+            "time": base + _dt.timedelta(minutes=offset),
+            "open": o, "high": h, "low": l, "close": c, "volume": v,
+        })
+
+    # 20 flat warmup bars: EMA20 stabilizes at 90000
+    for b in range(20):
+        for m in range(15):
+            push(b * 15 + m, 90000, 90000, 90000, 90000)
+
+    # Bar 21: green closes above EMA (14 low-move minutes + 1 breakout min)
+    for m in range(14):
+        push(20 * 15 + m, 90000, 90200, 89950, 90100)
+    push(20 * 15 + 14, 90100, 90500, 90050, 90500)  # last minute pushes close to 90500
+
+    # Bar 22: contains the tick-cross. First few 1m bars quiet, then one
+    # 1m bar whose high crosses (90500 + 150) = 90650 upward.
+    for m in range(5):
+        push(21 * 15 + m, 90500, 90520, 90490, 90510)  # sitting below level
+    push(21 * 15 + 5, 90510, 90680, 90500, 90670)     # crosses 90650
+
+    # Bar 22 continues (needed so backtest finalizes bar 22 too).
+    for m in range(6, 15):
+        push(21 * 15 + m, 90670, 90680, 90600, 90650)
+
+    # Add one more bar to force the 15m aggregator to close bar 22.
+    push(22 * 15, 90650, 90650, 90650, 90650)
+
+    # ── run backtest ────────────────────────────────────────────────
+    class NoopCharges:
+        def __getitem__(self, k): return 0
+    charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0, "exchange_pct": 0,
+               "sebi_pct": 0, "gst_pct": 0, "stamp_duty_pct": 0}
+    settings = {
+        "capital_per_trade": 500000,
+        "silver_breakout_points": 150,
+        "sl_points": 100,
+        "target_points": 300,
+        "trailing_sl_enabled": False,
+        "tsl_trigger_points": 0,
+        "tsl_distance_points": 0,
+        "exit_mode": "fixed_target_sl",
+    }
+    # Backtest expects a job_id already registered so _raise_if_cancelled
+    # doesn't KeyError. Register a dummy one.
+    from app.backtest import _jobs, _lock
+    with _lock:
+        _jobs["parity-test"] = {"cancel_requested": False}
+
+    first_date = _dt.date(2026, 8, 19)
+    trading_days = [first_date]
+    bt_results = bt._simulate_silver_micro_range(
+        job_id="parity-test",
+        algo_id="algo3",
+        first_date=first_date,
+        last_date=first_date,
+        symbol=symbol,
+        history=history,
+        trading_days=trading_days,
+        settings=settings,
+        charges_config=charges,
+    )
+    bt_trades = bt_results[0]["trades"]
+
+    # ── run live algo3 through same input ──────────────────────────
+    strat = _make_bare_algo3(settings_overrides=settings)
+    strat.symbol = symbol
+    strat.watchlist = [symbol]
+    for candle in history:
+        strat.on_candle_close(symbol, candle, {})
+        # For each 1m candle also push the close as a tick so trigger detection runs.
+        strat.on_tick(symbol, candle["close"], candle["time"])
+        # AND push the high (BUY trigger detection) and low (SELL) as intra-minute ticks
+        # BEFORE closing at close, mimicking live tick sequence.
+    # Now run again with intra-minute high/low so trigger detection sees the extremes.
+    # The above only saw close-to-close; run a second pass emulating h/l ticks.
+    # For this test the interesting event is the high 90680 vs prev close 90510
+    # of the previous minute. Live tick pathway needs prev_ltp < 90650 <= new tick.
+    # Since we called on_tick with each candle's close in sequence, the last tick
+    # before the 6th minute of bar 22 was 90510, then next was 90670 - that DOES
+    # cross 90650 upward. So the parity check is meaningful without a high-tick pass.
+    live_trades = strat.broker.opens
+
+    # ── assertions ──────────────────────────────────────────────────
+    check("live: exactly 1 entry", len(live_trades) == 1, f"live opens={live_trades}")
+    check("backtest: exactly 1 entry", len(bt_trades) == 1, f"bt trades={bt_trades}")
+    if live_trades and bt_trades:
+        live = live_trades[0]
+        bt_trade = bt_trades[0]
+        check("same side",
+              live["side"] == bt_trade["side"],
+              f"live={live['side']} bt={bt_trade['side']}")
+        check("both are BUY", live["side"] == "BUY")
+        # Prices may differ by a few points because live enters at the tick's
+        # exact LTP while backtest enters at the trigger level itself (a
+        # documented conservative approximation). Allow up to 100 points.
+        diff = abs(float(live["entry"]) - float(bt_trade["entry_price"]))
+        check("entry prices within 100 pts of each other",
+              diff <= 100,
+              f"live={live['entry']} bt={bt_trade['entry_price']} diff={diff}")
+
+    # Cleanup
+    with _lock:
+        _jobs.pop("parity-test", None)
+
+
 def main():
     print("=" * 66)
     print("  LIVE ORDER PIPELINE — OFFLINE SMOKE TEST (no Fyers, no DB)")
@@ -1253,9 +1811,8 @@ def main():
     test_proxy_preflight_refuses_when_unreachable()
     test_proxy_preflight_allows_when_reachable()
     test_proxy_preflight_no_proxy_configured()
-    test_skip_scan_today_short_circuits_algo1()
-    test_skip_scan_today_short_circuits_algo3()
-    test_skip_scan_date_auto_resets()
+    test_scan_disabled_short_circuits_algo1()
+    test_scan_disabled_short_circuits_algo3()
     test_oauth_throttle_serializes_exchanges()
     test_connection_status_429_stays_degraded_not_expired()
     test_pre_market_no_tick_not_counted_as_failure()
@@ -1263,6 +1820,24 @@ def main():
     test_current_backoff_respects_min_floor()
     test_hidden_tabs_env_normalizes_aliases()
     test_flat_candle_batch_path_rejects()
+    # ── algo3 (Silver Micro) rewrite regression tests ──
+    test_algo3_bucket_start_15m()
+    test_algo3_ema_step_matches_python_reference()
+    test_algo3_setup_captures_and_overwrites()
+    test_algo3_no_setup_when_wrong_side_of_ema()
+    test_algo3_buy_trigger_only_on_upward_cross()
+    test_algo3_sell_trigger_only_on_downward_cross()
+    test_algo3_no_trigger_before_first_prev_ltp()
+    test_algo3_configurable_n_parameter()
+    test_algo3_reversal_on_contra_signal()
+    test_algo3_no_reentry_same_side()
+    test_algo3_entry_uses_points_sl_target()
+    test_algo3_trailing_settings_convert_points_to_pct()
+    test_algo3_scan_disabled_skips_triggers()
+    test_algo3_black_box_end_to_end()
+    test_broker_key_suffix_isolates_tokens()
+    test_broker_key_suffix_empty_preserves_legacy_key()
+    test_algo3_backtest_parity_with_live()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")

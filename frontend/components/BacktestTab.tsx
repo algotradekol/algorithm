@@ -75,8 +75,8 @@ export default function BacktestTab() {
   const introCopy = algoId === 'algo3'
     ? {
         title: 'Historical Silver Micro Backtest',
-        body: 'Replays MCX:SILVERMIC26AUGFUT on 5-minute candles with EMA20 and volume-EMA20 setup / confirmation logic. It stays read-only and does not touch the live engine.',
-        note: 'The replay uses the same Silver Micro rules as the live tab: a green or red setup candle on MCX:SILVERMIC26AUGFUT must be confirmed by one of the subsequent 5-minute candles within the confirmation window, then the trade enters on the following candle open.',
+        body: 'Replays MCX:SILVERMIC26AUGFUT on 15-minute candles with EMA20 breakout logic. Read-only; does not touch the live engine.',
+        note: 'Uses the live tab’s rules: green/red setup candle stores its close as the level; entry fires when price crosses (setup close +/- n) in the setup direction. n defaults to 150 points.',
       }
     : {
         title: 'Historical Backtest',

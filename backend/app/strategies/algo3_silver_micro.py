@@ -1,18 +1,43 @@
 """
-algo3_silver_micro.py
+algo3_silver_micro.py — Silver Micro (MCX:SILVERMIC*) strategy.
 
-Single-instrument MCX strategy for Silver Micro (SILVERMIC).
+Rewritten 2026-08-19 to match the client's spec doc (Silver Mic_Volume.docx).
+The previous 5-minute EMA+volume version has been retired.
 
-Rules:
-- 5-minute candles
-- Buy setup: green candle closes above EMA20 and volume is above volume EMA20
-- Sell setup: red candle closes below EMA20 and volume is above volume EMA20
-- Confirmation: one of the subsequent 5-minute candles within the
-  confirmation window must continue in the same direction and close beyond
-  the setup candle close
-- Entry: next candle open (first live tick in the next 5-minute bucket)
-- Reversal: if the opposite side confirms while a position is open, close the
-  current position and flip on the next candle open
+Rules per spec:
+  Instrument:   MCX Silver Micro (SILVERMIC)
+  Timeframe:    15 minute candles
+  Indicator:    20 EMA on close (no volume filter)
+
+  BUY setup:    a green candle (close > open) closes above EMA20.
+                Its close is stored as the BUY setup level. Each new
+                qualifying candle OVERWRITES the stored level so it
+                always reflects the most recent qualifier.
+  BUY trigger:  live LTP crosses (setup_close + n) in an UPWARD
+                direction. Default n = 150 points; configurable via
+                settings["silver_breakout_points"].
+
+  SELL setup:   a red candle (close < open) closes below EMA20.
+                Its close is stored / overwritten same way.
+  SELL trigger: live LTP crosses (setup_close - n) in a DOWNWARD
+                direction.
+
+  Reversal:     if a contra trigger fires while a position is open,
+                close the current position at LTP and open the new
+                one at the same tick.
+
+  Previous-day carry: on warmup the strategy replays enough historical
+                15-min candles (10 days) to bring EMA20 and the two
+                setup levels up to date, so the very first live tick
+                after boot can already fire an entry based on
+                yesterday's qualifier.
+
+  Exits:        fixed SL and target in POINTS from entry, plus optional
+                points-based trailing SL (activate at N points profit,
+                trail N points behind the extremum since activation).
+                The paper broker's trailing engine speaks percentages,
+                so we pass an on-the-fly settings dict with the point
+                values converted at the position's entry price.
 """
 from __future__ import annotations
 
@@ -21,16 +46,48 @@ import threading
 from collections import deque
 
 from .base import Strategy
+from ..config import SILVER_MICRO_SYMBOL_OVERRIDE
 from ..fyers_client import get_intraday_candles_for_range
-from ..mcx_symbols import get_active_mcx_contract
 from ..broker_factory import create_broker
+from ..mcx_symbols import get_active_mcx_contract
 from ..strategy_settings import get_settings
 from ..timezone import IST
 
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
-CONFIRMATION_WINDOW_MINUTES = 15
-SILVER_MICRO_SYMBOL = "MCX:SILVERMIC26AUGFUT"
+BUCKET_MINUTES = 15
+SILVER_MICRO_ROOT = "SILVERMIC"
+# Fallback if the MCX symbol-master download fails at boot AND the
+# in-memory cache is empty. Client confirmed the front-month contract
+# on 2026-08-18 is 31AUGFUT (matches Fyers naming: expiry-day + month).
+# Long-term the correct symbol comes from get_active_mcx_contract which
+# reads Fyers's live master file and picks the nearest expiry, so this
+# constant only matters when both network calls fail.
+SILVER_MICRO_SYMBOL = "MCX:SILVERMIC31AUGFUT"
+
+
+def _resolve_silver_symbol() -> str:
+    """Pick the Silver Micro contract to trade.
+
+    Precedence:
+      1. SILVER_MICRO_SYMBOL_OVERRIDE env var (client's explicit choice)
+      2. Fyers MCX symbol master, nearest expiry (auto-rollover)
+      3. Hardcoded SILVER_MICRO_SYMBOL fallback (only if the network fails)
+
+    The env override exists because Fyers's "nearest expiry" pick can
+    differ from what the client actually trades — e.g. Fyers lists a
+    weekly Silver Micro variant that expires before the monthly contract
+    the client uses. On 2026-08-18 the client (Bumba Da) asked for
+    31AUGFUT even though Fyers's master listed 26AUGFUT as nearest.
+    """
+    if SILVER_MICRO_SYMBOL_OVERRIDE:
+        print(f"[algo3] using SILVER_MICRO_SYMBOL_OVERRIDE={SILVER_MICRO_SYMBOL_OVERRIDE}")
+        return SILVER_MICRO_SYMBOL_OVERRIDE
+    try:
+        return get_active_mcx_contract(SILVER_MICRO_ROOT)
+    except Exception as exc:
+        print(f"[algo3] active MCX contract lookup failed ({exc}); using fallback {SILVER_MICRO_SYMBOL}")
+        return SILVER_MICRO_SYMBOL
 
 
 def _ema_step(previous: float | None, value: float, period: int = EMA_PERIOD) -> float:
@@ -38,8 +95,8 @@ def _ema_step(previous: float | None, value: float, period: int = EMA_PERIOD) ->
     return float(value) if previous is None else float(value) * k + previous * (1 - k)
 
 
-def _bucket_start(ts: datetime.datetime) -> datetime.datetime:
-    minute = (ts.minute // 5) * 5
+def _bucket_start(ts: datetime.datetime, minutes: int = BUCKET_MINUTES) -> datetime.datetime:
+    minute = (ts.minute // minutes) * minutes
     return ts.replace(minute=minute, second=0, microsecond=0)
 
 
@@ -54,10 +111,12 @@ def _fmt(value: float | None) -> str:
 
 class Algo3SilverMicro(Strategy):
     algo_id = "algo3"
-    display_name = "Silver Micro - 5m EMA/Volume"
+    display_name = "Silver Micro - 15m EMA breakout"
 
     def __init__(self, watchlist: list[str] | None = None):
-        self.symbol = (watchlist or [None])[0] if watchlist else SILVER_MICRO_SYMBOL
+        # Prefer an explicit override (used by backtest); otherwise resolve
+        # the live MCX front-month symbol so we auto-roll as contracts expire.
+        self.symbol = (watchlist or [None])[0] if watchlist else _resolve_silver_symbol()
         self.watchlist = [self.symbol] if self.symbol else []
         self.settings = get_settings(self.algo_id)
         self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
@@ -68,32 +127,36 @@ class Algo3SilverMicro(Strategy):
         self._history_error: str | None = None
         self._warmup_minute_candles = 0
 
+        # 15-min bucket aggregation from 1-min inputs.
         self._minute_buffer: list[dict] = []
         self._current_bucket: datetime.datetime | None = None
-        self._five_minute_candles: deque[dict] = deque(maxlen=300)
-        self._ema20_price: float | None = None
-        self._ema20_volume: float | None = None
+        self._bars: deque[dict] = deque(maxlen=500)
+        self._ema20: float | None = None
+
+        # Stored setup levels — most recent qualifying candle's close.
+        # Persist across candles until overwritten by a fresh qualifier.
+        self._buy_setup_close: float | None = None
+        self._sell_setup_close: float | None = None
+        self._buy_setup_bar_at: datetime.datetime | None = None
+        self._sell_setup_bar_at: datetime.datetime | None = None
+
+        # Tick-cross detection needs the previous tick's LTP.
+        self._prev_ltp: float | None = None
+
+        # Diagnostics.
         self._last_tick_at: str | None = None
         self._last_tick_ltp: float | None = None
         self._last_minute_candle_at: str | None = None
-        self._last_five_minute_bar_at: str | None = None
-        self._last_five_minute_bar_minute_count: int | None = None
-
-        self._pending_setup: dict | None = None
-        self._pending_entry: dict | None = None
+        self._last_bar_at: str | None = None
 
         self.refresh_market_data()
 
+    # ── settings / lifecycle ─────────────────────────────────────────
     def reload_settings(self):
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
-        if not self.scan_enabled():
-            self._pending_setup = None
-            self._pending_entry = None
 
     def scan_enabled(self) -> bool:
-        if self.is_scan_skipped_today():
-            return False
         return bool(self.settings.get("scan_enabled", True))
 
     def refresh_market_data(self):
@@ -110,31 +173,49 @@ class Algo3SilverMicro(Strategy):
             end_date = datetime.date.today() - datetime.timedelta(days=1)
             start_date = end_date - datetime.timedelta(days=WARMUP_LOOKBACK_DAYS)
             history = get_intraday_candles_for_range(self.symbol, start_date, end_date)
-            self._warmup_minute_candles = len(history)
-            for candle in history:
-                self._ingest_minute_candle(candle, allow_signals=False)
-            self._finalize_five_minute_candle(allow_signals=False)
-            self._history_ready = True
-            self._history_error = None
-            print(f"[algo3] warm-up loaded for {self.symbol}: {len(history)} one-minute candles")
+            # Preserve the last successful warmup count instead of blindly
+            # overwriting with 0 on a transient API failure — the diagnostic
+            # panel becomes useless if a later 0-result warmup wipes the
+            # earlier "loaded 6090 candles" number even though the deque
+            # (self._bars) still has all of them.
+            if history:
+                self._warmup_minute_candles = len(history)
+                self._history_ready = True
+                self._history_error = None
+                for candle in history:
+                    self._ingest_minute_candle(candle, allow_signals=False)
+                self._finalize_bar(allow_signals=False)
+            else:
+                # Only stamp 0 if we've never had a successful warmup yet.
+                if self._warmup_minute_candles == 0:
+                    self._history_error = "history call returned 0 candles"
+            print(
+                f"[algo3] warmup loaded {len(history)} 1m candles → "
+                f"{len(self._bars)} 15m bars, EMA20={_fmt(self._ema20)}, "
+                f"buy_setup={_fmt(self._buy_setup_close)}, "
+                f"sell_setup={_fmt(self._sell_setup_close)}"
+            )
         except Exception as exc:
             self._history_error = str(exc)
-            print(f"[algo3] warm-up failed for {self.symbol}: {exc}")
+            print(f"[algo3] warmup failed for {self.symbol}: {exc}")
         finally:
             with self._history_lock:
                 self._history_loading = False
 
+    # ── engine hooks ─────────────────────────────────────────────────
     def on_tick(self, symbol: str, ltp: float, timestamp):
         if symbol != self.symbol:
             return
-        now = timestamp if isinstance(timestamp, datetime.datetime) else datetime.datetime.now(IST)
-        if now.tzinfo is not None:
-            now = now.astimezone(IST).replace(tzinfo=None)
+        ltp = float(ltp)
         self._last_tick_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-        self._last_tick_ltp = float(ltp)
-        if not self.scan_enabled():
-            return
-        self._maybe_execute_pending_entry(symbol, float(ltp), timestamp)
+        self._last_tick_ltp = ltp
+
+        if self.scan_enabled():
+            self._check_triggers(ltp)
+
+        # Track prev_ltp AFTER using it so the first tick after boot
+        # doesn't fire a spurious cross.
+        self._prev_ltp = ltp
 
     def on_candle_close(self, symbol: str, candle: dict, indicators: dict):
         if symbol != self.symbol:
@@ -145,6 +226,41 @@ class Algo3SilverMicro(Strategy):
         self._last_minute_candle_at = candle_time.isoformat()
         self._ingest_minute_candle(candle, allow_signals=self.scan_enabled())
 
+    def check_exits(self):
+        position = self._open_position()
+        if not position:
+            return
+        ltp = position.get("_last_ltp") or self._last_tick_ltp
+        if not ltp:
+            return
+        ltp = float(ltp)
+        # Convert points-based TSL to the % settings the paper broker
+        # expects. Computed per-position using the actual entry price
+        # so points -> % is honest.
+        effective_settings = self._trailing_settings_for(position)
+        position = self.broker.apply_trailing_stop(position, ltp, effective_settings)
+        side = position["side"]
+        sl = float(position["sl_price"])
+        target = float(position["target_price"])
+        use_target = self.broker.should_exit_at_target(effective_settings)
+
+        if side == "BUY":
+            if ltp <= sl:
+                self.broker.close_trade(position, ltp, "SL")
+            elif use_target and ltp >= target:
+                self.broker.close_trade(position, ltp, "TARGET")
+        else:
+            if ltp >= sl:
+                self.broker.close_trade(position, ltp, "SL")
+            elif use_target and ltp <= target:
+                self.broker.close_trade(position, ltp, "TARGET")
+
+    def square_off_all(self):
+        for position in self.broker.open_positions():
+            ltp = position.get("_last_ltp", position["entry_price"])
+            self.broker.close_trade(position, ltp, "EOD_SQUAREOFF")
+
+    # ── aggregation ──────────────────────────────────────────────────
     def _ingest_minute_candle(self, candle: dict, allow_signals: bool):
         candle_time = candle["time"]
         if candle_time.tzinfo is not None:
@@ -166,17 +282,17 @@ class Algo3SilverMicro(Strategy):
             return
 
         if bucket != self._current_bucket:
-            self._finalize_five_minute_candle(allow_signals=allow_signals)
+            # New 15-min window started — finalize the completed one first.
+            self._finalize_bar(allow_signals=allow_signals)
             self._current_bucket = bucket
             self._minute_buffer = [minute_candle]
             return
 
         self._minute_buffer.append(minute_candle)
 
-    def _finalize_five_minute_candle(self, allow_signals: bool):
+    def _finalize_bar(self, allow_signals: bool):
         if not self._minute_buffer or self._current_bucket is None:
             return
-
         bar = {
             "time": self._current_bucket,
             "open": self._minute_buffer[0]["open"],
@@ -186,156 +302,114 @@ class Algo3SilverMicro(Strategy):
             "volume": sum(c["volume"] for c in self._minute_buffer),
             "minute_count": len(self._minute_buffer),
         }
-        self._five_minute_candles.append(bar)
-        self._ema20_price = _ema_step(self._ema20_price, bar["close"])
-        self._ema20_volume = _ema_step(self._ema20_volume, bar["volume"])
-        self._last_five_minute_bar_at = bar["time"].isoformat()
-        self._last_five_minute_bar_minute_count = len(self._minute_buffer)
+        self._bars.append(bar)
+        self._ema20 = _ema_step(self._ema20, bar["close"])
+        self._last_bar_at = bar["time"].isoformat()
         self._minute_buffer = []
+        self._update_setups(bar)
 
-        if allow_signals:
-            self._evaluate_completed_bar(bar)
-
-    def _evaluate_completed_bar(self, bar: dict):
-        current_bucket = bar["time"]
-
-        if self._pending_setup:
-            setup_bucket = self._pending_setup["setup_bucket"]
-            confirmation_deadline = self._pending_setup["confirmation_deadline"]
-            if current_bucket > confirmation_deadline:
-                self._pending_setup = None
-            elif current_bucket > setup_bucket and self._confirmation_passed(bar, self._pending_setup):
-                self._pending_entry = {
-                    "side": self._pending_setup["side"],
-                    "entry_bucket": current_bucket + datetime.timedelta(minutes=5),
-                    "setup_candle": self._pending_setup["setup_candle"],
-                    "confirmation_candle": bar,
-                }
-                self._pending_setup = None
-
-        if len(self._five_minute_candles) < EMA_PERIOD:
+    def _update_setups(self, bar: dict):
+        """Per spec: setup level is the CLOSE of the most recent
+        qualifying candle. Overwrite on every new qualifier so we always
+        track the latest one."""
+        if self._ema20 is None:
             return
-
-        side = self._condition_one_side(bar)
-        if not side:
-            return
-
-        current_position = self._open_position()
-        if current_position and current_position["side"] == side:
-            return
-
-        if current_position and current_position["side"] != side:
-            self.broker.close_trade(current_position, bar["close"], "REVERSAL_CONTRA_SIGNAL")
-
-        self._pending_setup = {
-            "side": side,
-            "setup_candle": bar,
-            "setup_close": bar["close"],
-            "setup_bucket": current_bucket,
-            "confirmation_deadline": current_bucket + datetime.timedelta(minutes=CONFIRMATION_WINDOW_MINUTES),
-        }
-
-    def _condition_one_side(self, bar: dict) -> str | None:
-        if self._ema20_price is None or self._ema20_volume is None:
-            return None
-
         is_green = bar["close"] > bar["open"]
         is_red = bar["close"] < bar["open"]
-        above_ema = bar["close"] > self._ema20_price
-        below_ema = bar["close"] < self._ema20_price
-        strong_volume = bar["volume"] > self._ema20_volume
+        close = bar["close"]
+        if is_green and close > self._ema20:
+            self._buy_setup_close = close
+            self._buy_setup_bar_at = bar["time"]
+        elif is_red and close < self._ema20:
+            self._sell_setup_close = close
+            self._sell_setup_bar_at = bar["time"]
 
-        if is_green and above_ema and strong_volume:
-            return "BUY"
-        if is_red and below_ema and strong_volume:
-            return "SELL"
-        return None
+    # ── tick-based trigger detection ─────────────────────────────────
+    def _check_triggers(self, ltp: float):
+        prev = self._prev_ltp
+        if prev is None:
+            return  # first tick — no cross to detect
 
-    def _confirmation_passed(self, bar: dict, pending_setup: dict) -> bool:
-        side = pending_setup["side"]
-        setup_close = float(pending_setup["setup_close"])
-        if side == "BUY":
-            return bar["close"] > bar["open"] and bar["close"] > setup_close
-        return bar["close"] < bar["open"] and bar["close"] < setup_close
-
-    def _maybe_execute_pending_entry(self, symbol: str, ltp: float, timestamp):
-        if not self._pending_entry or symbol != self.symbol:
+        n = float(self.settings.get("silver_breakout_points", 150))
+        if n <= 0:
             return
 
-        now = timestamp if isinstance(timestamp, datetime.datetime) else datetime.datetime.now(IST)
-        if now.tzinfo is not None:
-            now = now.astimezone(IST).replace(tzinfo=None)
-        current_bucket = _bucket_start(now)
-        if current_bucket < self._pending_entry["entry_bucket"]:
+        buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
+        sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
+
+        # Upward cross for BUY: previous below level, current at/above.
+        if buy_level is not None and prev < buy_level <= ltp:
+            self._fire_entry("BUY", ltp, buy_level)
             return
+        # Downward cross for SELL: previous above level, current at/below.
+        if sell_level is not None and prev > sell_level >= ltp:
+            self._fire_entry("SELL", ltp, sell_level)
 
-        current_position = self._open_position()
-        if current_position and current_position["side"] == self._pending_entry["side"]:
-            self._pending_entry = None
-            return
+    def _fire_entry(self, side: str, ltp: float, trigger_level: float):
+        current = self._open_position()
+        if current and current["side"] == side:
+            return  # already positioned same-side; nothing to do
+        if current and current["side"] != side:
+            # Reversal: close existing at current LTP, then open contra.
+            self.broker.close_trade(current, ltp, "REVERSAL_CONTRA_SIGNAL")
 
-        if current_position and current_position["side"] != self._pending_entry["side"]:
-            self.broker.close_trade(current_position, ltp, "REVERSAL_CONTRA_SIGNAL")
+        self._enter(side, ltp, trigger_level)
 
-        entered = self._enter(
-            side=self._pending_entry["side"],
-            entry_price=ltp,
-            setup_candle=self._pending_entry["setup_candle"],
-            confirmation_candle=self._pending_entry["confirmation_candle"],
-        )
-        if entered:
-            self._pending_entry = None
-
-    def _enter(self, side: str, entry_price: float, setup_candle: dict | None = None, confirmation_candle: dict | None = None) -> bool:
+    def _enter(self, side: str, entry_price: float, trigger_level: float) -> bool:
         if not self.symbol or not entry_price:
             return False
         qty = int(self.settings["capital_per_trade"] // float(entry_price))
         if qty < 1:
             return False
 
+        sl_pts = float(self.settings.get("sl_points", 100))
+        target_pts = float(self.settings.get("target_points", 300))
         if side == "BUY":
-            sl_price = float(entry_price) * (1 - float(self.settings["sl_pct"]) / 100)
-            target_price = float(entry_price) * (1 + float(self.settings["target_pct"]) / 100)
+            sl_price = float(entry_price) - sl_pts
+            target_price = float(entry_price) + target_pts
         else:
-            sl_price = float(entry_price) * (1 + float(self.settings["sl_pct"]) / 100)
-            target_price = float(entry_price) * (1 - float(self.settings["target_pct"]) / 100)
+            sl_price = float(entry_price) + sl_pts
+            target_price = float(entry_price) - target_pts
 
-        trigger = self._entry_trigger(side, entry_price, setup_candle, confirmation_candle)
-        snapshot = self._signal_snapshot(side, entry_price, setup_candle, confirmation_candle)
+        trigger = self._entry_trigger(side, entry_price, trigger_level)
+        snapshot = self._signal_snapshot(side, entry_price, trigger_level)
         try:
-            self.broker.open_trade(self.symbol, side, qty, float(entry_price), sl_price, target_price, trigger, snapshot)
+            self.broker.open_trade(
+                self.symbol, side, qty, float(entry_price),
+                sl_price, target_price, trigger, snapshot,
+            )
+            print(
+                f"[algo3] ENTERED {side} {self.symbol} @ {entry_price:.2f} "
+                f"qty={qty} (trigger {_fmt(trigger_level)}, "
+                f"sl={_fmt(sl_price)}, tgt={_fmt(target_price)})"
+            )
             return True
         except Exception as exc:
-            print(f"[algo3] paper entry failed for {self.symbol}: {exc}")
+            print(f"[algo3] entry failed for {self.symbol}: {exc}")
             return False
 
-    def _entry_trigger(self, side: str, entry_price: float, setup_candle: dict | None, confirmation_candle: dict | None) -> str:
-        setup = setup_candle or {}
-        confirm = confirmation_candle or {}
-        setup_close = setup.get("close")
-        confirm_close = confirm.get("close")
-        ema_price = _fmt(self._ema20_price)
-        ema_volume = _fmt(self._ema20_volume)
-        setup_close_text = _fmt(setup_close)
-        confirm_close_text = _fmt(confirm_close)
+    def _entry_trigger(self, side: str, entry_price: float, trigger_level: float) -> str:
+        n = self.settings.get("silver_breakout_points", 150)
+        setup_close = self._buy_setup_close if side == "BUY" else self._sell_setup_close
+        direction = "upward" if side == "BUY" else "downward"
         return (
-            f"5m {side.lower()} setup on {self.symbol}: "
-            f"condition-1 candle closed {'above' if side == 'BUY' else 'below'} EMA20 with volume above volume EMA20; "
-            f"immediate confirmation candle closed {'higher' if side == 'BUY' else 'lower'} than setup close; "
-            f"entered on next candle open near {entry_price:.2f}. "
-            f"Setup close {setup_close_text}, confirmation close {confirm_close_text}, EMA20 {ema_price}, volume EMA20 {ema_volume}."
+            f"15m silver {side.lower()} breakout on {self.symbol}: setup close "
+            f"{_fmt(setup_close)} + n={n} = trigger {_fmt(trigger_level)}, "
+            f"LTP crossed {direction} through the level at {entry_price:.2f}. "
+            f"EMA20 {_fmt(self._ema20)}."
         )
 
-    def _signal_snapshot(self, side: str, entry_price: float, setup_candle: dict | None, confirmation_candle: dict | None) -> dict:
+    def _signal_snapshot(self, side: str, entry_price: float, trigger_level: float) -> dict:
         return {
             "symbol": self.symbol,
-            "timeframe": "5m",
+            "timeframe": "15m",
             "side": side,
             "entry_ltp": entry_price,
-            "ema20_price": self._ema20_price,
-            "ema20_volume": self._ema20_volume,
-            "setup_candle": setup_candle,
-            "confirmation_candle": confirmation_candle,
+            "trigger_level": trigger_level,
+            "n_points": self.settings.get("silver_breakout_points", 150),
+            "ema20": self._ema20,
+            "buy_setup_close": self._buy_setup_close,
+            "sell_setup_close": self._sell_setup_close,
         }
 
     def _open_position(self) -> dict | None:
@@ -344,33 +418,19 @@ class Algo3SilverMicro(Strategy):
                 return position
         return None
 
-    def check_exits(self):
-        position = self._open_position()
-        if not position:
-            return
-        ltp = position.get("_last_ltp")
-        if not ltp:
-            return
-        position = self.broker.apply_trailing_stop(position, float(ltp), self.settings)
-        side, sl, target = position["side"], float(position["sl_price"]), float(position["target_price"])
-        use_target = self.broker.should_exit_at_target(self.settings)
+    # ── points → percent conversion for the shared trailing engine ───
+    def _trailing_settings_for(self, position: dict) -> dict:
+        entry = float(position.get("entry_price") or 0) or 1.0
+        trigger_pts = float(self.settings.get("tsl_trigger_points", 0))
+        distance_pts = float(self.settings.get("tsl_distance_points", 0))
+        merged = dict(self.settings)
+        if trigger_pts > 0:
+            merged["trailing_sl_trigger_pct"] = (trigger_pts / entry) * 100.0
+        if distance_pts > 0:
+            merged["trailing_sl_distance_pct"] = (distance_pts / entry) * 100.0
+        return merged
 
-        if side == "BUY":
-            if ltp <= sl:
-                self.broker.close_trade(position, ltp, "SL")
-            elif use_target and ltp >= target:
-                self.broker.close_trade(position, ltp, "TARGET")
-        else:
-            if ltp >= sl:
-                self.broker.close_trade(position, ltp, "SL")
-            elif use_target and ltp <= target:
-                self.broker.close_trade(position, ltp, "TARGET")
-
-    def square_off_all(self):
-        for position in self.broker.open_positions():
-            ltp = position.get("_last_ltp", position["entry_price"])
-            self.broker.close_trade(position, ltp, "EOD_SQUAREOFF")
-
+    # ── diagnostics ──────────────────────────────────────────────────
     def feed_status(self) -> dict:
         return {
             "algo_id": self.algo_id,
@@ -380,16 +440,17 @@ class Algo3SilverMicro(Strategy):
             "history_loading": self._history_loading,
             "history_error": self._history_error,
             "warmup_minute_candles": self._warmup_minute_candles,
-            "five_minute_bars": len(self._five_minute_candles),
+            "bars_15m": len(self._bars),
             "minute_buffer_count": len(self._minute_buffer),
             "current_bucket": self._current_bucket.isoformat() if self._current_bucket else None,
-            "pending_setup": bool(self._pending_setup),
-            "pending_entry": bool(self._pending_entry),
+            "ema20": self._ema20,
+            "buy_setup_close": self._buy_setup_close,
+            "sell_setup_close": self._sell_setup_close,
+            "buy_setup_bar_at": self._buy_setup_bar_at.isoformat() if self._buy_setup_bar_at else None,
+            "sell_setup_bar_at": self._sell_setup_bar_at.isoformat() if self._sell_setup_bar_at else None,
+            "n_points": self.settings.get("silver_breakout_points", 150),
             "last_tick_at": self._last_tick_at,
             "last_tick_ltp": self._last_tick_ltp,
             "last_minute_candle_at": self._last_minute_candle_at,
-            "last_five_minute_bar_at": self._last_five_minute_bar_at,
-            "last_five_minute_bar_minute_count": self._last_five_minute_bar_minute_count,
-            "ema20_price": self._ema20_price,
-            "ema20_volume": self._ema20_volume,
+            "last_bar_at": self._last_bar_at,
         }

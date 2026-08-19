@@ -149,10 +149,10 @@ export const api = {
     authedFetch(`/api/algo/${algoId}/available-cash`, { method: 'PUT', body: JSON.stringify({ cash }) }),
   resetSettings: (algoId: string) =>
     authedFetch(`/api/algo/${algoId}/settings/reset`, { method: 'POST' }),
-  setScanSkippedToday: (algoId: string, skip: boolean) =>
-    authedFetch(`/api/algo/${algoId}/skip-today`, {
+  setScanEnabled: (algoId: string, enabled: boolean) =>
+    authedFetch(`/api/algo/${algoId}/scan-enabled`, {
       method: 'POST',
-      body: JSON.stringify({ skip }),
+      body: JSON.stringify({ enabled }),
     }),
   compare: () => authedFetch('/api/compare'),
   calendarDays: (days = 60) => authedFetch(`/api/calendar?days=${days}`),
@@ -168,7 +168,8 @@ export const api = {
   updateTradingMode: (mode: 'paper' | 'live') =>
     authedFetch('/api/runtime/trading-mode', { method: 'PUT', body: JSON.stringify({ trading_mode: mode }) }),
   fyersRefreshToken: () => authedFetch('/api/fyers/refresh-token', { method: 'POST' }),
-  fyersDisconnect: () => authedFetch('/api/fyers/disconnect', { method: 'POST' }),
+  fyersDisconnect: (force = false) =>
+    authedFetch(`/api/fyers/disconnect${force ? '?force=true' : ''}`, { method: 'POST' }),
   fyersTokenStatus: () => authedFetch('/api/fyers/token-status'),
   fyersFunds: fetchFyersFunds,
   fyersPositions: fetchFyersPositions,

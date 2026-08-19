@@ -512,7 +512,7 @@ def algo_summary(algo_id: str, _user=Depends(require_auth)):
         "max_trades_per_day": settings.get("max_trades_per_day", 10),
         "max_buy_trades": settings.get("max_buy_trades", 5),
         "max_sell_trades": settings.get("max_sell_trades", 5),
-        "skipped_today": strategy.is_scan_skipped_today(),
+        "scan_enabled": bool(settings.get("scan_enabled", True)),
     }
 
 
@@ -684,30 +684,23 @@ def reset_algo_settings(algo_id: str, _user=Depends(require_auth)):
     return settings
 
 
-@app.post("/api/algo/{algo_id}/skip-today")
-def skip_algo_scan_today(algo_id: str, payload: dict, _user=Depends(require_auth)):
-    """Toggle "skip today's scan" for a strategy. Resets automatically at
-    midnight IST because the date comparison stops matching."""
+@app.post("/api/algo/{algo_id}/scan-enabled")
+def set_algo_scan_enabled(algo_id: str, payload: dict, _user=Depends(require_auth)):
+    """Persistent toggle: sets strategy_settings.scan_enabled and reloads
+    the strategy so the change takes effect immediately. Stays off (or
+    on) until the user toggles again — no midnight auto-reset."""
+    from .strategy_settings import get_settings, update_settings
     strategy = get_strategy_or_raise(algo_id)
-    skip = bool(payload.get("skip", True))
-    if skip:
-        strategy.skip_scan_date = datetime.date.today()
-        audit_log("strategy", "scan skipped for today", algo_id=algo_id)
-    else:
-        strategy.skip_scan_date = None
-        audit_log("strategy", "scan skip cleared", algo_id=algo_id)
+    enabled = bool(payload.get("enabled", True))
+    current = get_settings(algo_id)
+    current["scan_enabled"] = enabled
+    saved = update_settings(algo_id, current)
+    if hasattr(strategy, "reload_settings"):
+        strategy.reload_settings()
+    audit_log("strategy", "scan_enabled toggled", algo_id=algo_id, enabled=enabled)
     return {
         "algo_id": algo_id,
-        "skipped_today": strategy.is_scan_skipped_today(),
-    }
-
-
-@app.get("/api/algo/{algo_id}/skip-today")
-def get_skip_algo_scan_today(algo_id: str, _user=Depends(require_auth)):
-    strategy = get_strategy_or_raise(algo_id)
-    return {
-        "algo_id": algo_id,
-        "skipped_today": strategy.is_scan_skipped_today(),
+        "scan_enabled": bool(saved.get("scan_enabled", True)),
     }
 
 
@@ -822,14 +815,16 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
     # would remain the initial empty list.
     from app import engine
     from .backtest import start_backtest
-    from .strategies.algo3_silver_micro import SILVER_MICRO_SYMBOL
+    from .strategies.algo3_silver_micro import _resolve_silver_symbol
     algo_id = str(payload.get("algo_id") or "")
     # Accept date for existing clients while range-aware clients send both fields.
     start_date = str(payload.get("start_date") or payload.get("date") or "")
     end_date = str(payload.get("end_date") or start_date)
     try:
         if algo_id == "algo3":
-            return start_backtest(algo_id, start_date, end_date, [SILVER_MICRO_SYMBOL])
+            # Resolve at request time so backtests always target the current
+            # front-month contract, matching what live is trading.
+            return start_backtest(algo_id, start_date, end_date, [_resolve_silver_symbol()])
         return start_backtest(algo_id, start_date, end_date, engine.WATCHLIST)
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))

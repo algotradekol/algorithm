@@ -439,10 +439,10 @@ export default function AlgoTab({
           {description && <p className="mt-1 text-xs text-gray-500">{description}</p>}
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <SkipScanButton
+          <ScanToggleButton
             algoId={algoId}
-            skippedToday={Boolean(summary?.skipped_today)}
-            onChange={(next) => setSummary((prev: any) => (prev ? { ...prev, skipped_today: next } : prev))}
+            enabled={summary?.scan_enabled !== false}
+            onChange={(next) => setSummary((prev: any) => (prev ? { ...prev, scan_enabled: next } : prev))}
           />
           <button
             onClick={() => setSettingsOpen((open) => !open)}
@@ -452,9 +452,9 @@ export default function AlgoTab({
           </button>
         </div>
       </div>
-      {summary?.skipped_today && (
+      {summary && summary.scan_enabled === false && (
         <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
-          Scan skipped for today. No entries will be evaluated until you re-enable it (auto-resets at midnight IST).
+          Scan is OFF for this strategy. No entries will be evaluated until you turn it back ON above.
         </p>
       )}
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
@@ -518,7 +518,9 @@ export default function AlgoTab({
 function SilverFeedPanel({ status }: { status: any }) {
   const lastTick = formatDateTime(status?.last_tick_at);
   const lastMinuteCandle = formatDateTime(status?.last_minute_candle_at);
-  const lastFiveMinuteBar = formatDateTime(status?.last_five_minute_bar_at);
+  const lastBar = formatDateTime(status?.last_bar_at);
+  const buySetupAt = formatDateTime(status?.buy_setup_bar_at);
+  const sellSetupAt = formatDateTime(status?.sell_setup_bar_at);
   const historyBadge = status?.history_loading
     ? 'loading history'
     : status?.history_ready
@@ -526,10 +528,15 @@ function SilverFeedPanel({ status }: { status: any }) {
     : status?.history_error
     ? 'history error'
     : 'history pending';
+  const buySetupClose = status?.buy_setup_close;
+  const sellSetupClose = status?.sell_setup_close;
+  const n = status?.n_points ?? 150;
+  const buyTrigger = buySetupClose != null ? Number(buySetupClose) + Number(n) : null;
+  const sellTrigger = sellSetupClose != null ? Number(sellSetupClose) - Number(n) : null;
   return (
     <div className="rounded border border-[#3b82f6]/30 bg-[#0b1220] p-3 text-xs text-gray-300">
       <div className="flex items-center justify-between gap-3">
-        <div className="label text-[10px]">Silver feed diagnostics</div>
+        <div className="label text-[10px]">Silver feed diagnostics (15m EMA breakout)</div>
         <div className={`rounded px-2 py-0.5 font-semibold ${status?.last_tick_at ? 'bg-[#22c55e]/15 text-[#22c55e]' : 'bg-[#f59e0b]/15 text-[#f59e0b]'}`}>
           {status?.last_tick_at ? 'tick seen' : 'waiting for tick'}
         </div>
@@ -540,63 +547,84 @@ function SilverFeedPanel({ status }: { status: any }) {
         <FeedStat label="Last tick" value={lastTick || '--'} />
         <FeedStat label="Last price" value={formatNumber(status?.last_tick_ltp)} />
         <FeedStat label="Last 1m candle" value={lastMinuteCandle || '--'} />
-        <FeedStat label="Last 5m bar" value={lastFiveMinuteBar || '--'} />
-        <FeedStat label="5m bars" value={status?.five_minute_bars ?? 0} />
-        <FeedStat label="Warmup candles" value={status?.warmup_minute_candles ?? 0} />
+        <FeedStat label="Last 15m bar" value={lastBar || '--'} />
+        <FeedStat label="15m bars stored" value={status?.bars_15m ?? 0} />
+        <FeedStat label="EMA20" value={formatNumber(status?.ema20)} />
+      </div>
+      <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
+        <div className="rounded border border-[#22c55e]/30 bg-[#22c55e]/5 p-2">
+          <div className="label text-[10px] text-[#22c55e]">BUY setup (green &gt; EMA20)</div>
+          <div className="mt-1 num text-sm text-gray-100">
+            {buySetupClose != null ? `Close ${formatNumber(buySetupClose)}` : 'None captured yet'}
+          </div>
+          <div className="text-[10px] text-gray-500">
+            {buyTrigger != null ? `Fires on tick >= ${formatNumber(buyTrigger)} (setup + ${n})` : `Waiting for a green 15m candle to close above EMA20`}
+            {buySetupAt && <span className="ml-1">| set at {buySetupAt}</span>}
+          </div>
+        </div>
+        <div className="rounded border border-[#ef4444]/30 bg-[#ef4444]/5 p-2">
+          <div className="label text-[10px] text-[#ef4444]">SELL setup (red &lt; EMA20)</div>
+          <div className="mt-1 num text-sm text-gray-100">
+            {sellSetupClose != null ? `Close ${formatNumber(sellSetupClose)}` : 'None captured yet'}
+          </div>
+          <div className="text-[10px] text-gray-500">
+            {sellTrigger != null ? `Fires on tick <= ${formatNumber(sellTrigger)} (setup - ${n})` : `Waiting for a red 15m candle to close below EMA20`}
+            {sellSetupAt && <span className="ml-1">| set at {sellSetupAt}</span>}
+          </div>
+        </div>
       </div>
       <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-gray-500">
         <span>History load: {status?.history_error || status?.history_loading ? 'check logs' : 'ok'}</span>
-        <span>Pending setup: {status?.pending_setup ? 'yes' : 'no'}</span>
-        <span>Pending entry: {status?.pending_entry ? 'yes' : 'no'}</span>
+        <span>Warmup 1m candles: {status?.warmup_minute_candles ?? 0}</span>
+        <span>n (breakout offset): {n}</span>
       </div>
     </div>
   );
 }
 
-function SkipScanButton({
+function ScanToggleButton({
   algoId,
-  skippedToday,
+  enabled,
   onChange,
 }: {
   algoId: string;
-  skippedToday: boolean;
+  enabled: boolean;
   onChange: (next: boolean) => void;
 }) {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   async function toggle() {
     if (busy) return;
-    const next = !skippedToday;
-    // Confirm ONLY when turning skip ON — undoing a skip is harmless
-    // and confirming that would just be annoying.
-    if (next && !window.confirm('Skip today\'s scan for this strategy? No new entries will be placed until midnight IST (or until you turn scan back on).')) {
+    const next = !enabled;
+    // Confirm only when turning OFF — flipping back ON is harmless.
+    if (!next && !window.confirm('Turn scan OFF for this strategy? No entries will be evaluated until you turn it back ON — this setting persists across restarts and days.')) {
       return;
     }
     setBusy(true);
     setError('');
     try {
-      const res = await api.setScanSkippedToday(algoId, next);
-      onChange(Boolean(res?.skipped_today));
+      const res = await api.setScanEnabled(algoId, next);
+      onChange(res?.scan_enabled !== false);
     } catch (e: any) {
-      setError(e?.message || 'Failed to update scan-skip state');
+      setError(e?.message || 'Failed to update scan state');
     } finally {
       setBusy(false);
     }
   }
-  const tone = skippedToday
-    ? 'border-[#f59e0b] text-[#f59e0b]'
-    : 'border-[#374151] text-gray-400';
+  const tone = enabled
+    ? 'border-[#22c55e] text-[#22c55e]'
+    : 'border-[#f59e0b] text-[#f59e0b]';
   return (
     <div className="flex flex-col items-end gap-1">
       <button
         onClick={toggle}
         disabled={busy}
-        title={skippedToday
-          ? 'Scan is skipped for today. Click to re-enable.'
-          : 'Skip today\'s scheduled scan so no new entries fire (resets at midnight IST).'}
+        title={enabled
+          ? 'Scan is ON. Click to turn it OFF (persists until re-enabled).'
+          : 'Scan is OFF. Click to turn it back ON.'}
         className={`min-h-10 rounded border px-3 py-1.5 text-xs font-semibold disabled:cursor-wait ${tone}`}
       >
-        {busy ? '...' : skippedToday ? 'Scan: Skipped Today' : 'Skip Scan Today'}
+        {busy ? '...' : enabled ? 'Scan: ON' : 'Scan: OFF'}
       </button>
       {error && <p className="m-0 max-w-xs text-right text-[10px] text-[#ef4444]">{error}</p>}
     </div>

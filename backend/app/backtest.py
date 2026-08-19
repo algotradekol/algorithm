@@ -26,7 +26,8 @@ MAX_WORKERS = 2
 MAX_BACKTEST_DAYS = 31
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
-SILVER_MICRO_CONFIRMATION_WINDOW_MINUTES = 15
+SILVER_MICRO_BUCKET_MINUTES = 15
+SILVER_MICRO_MCX_CLOSE_HHMM = "23:30"  # MCX evening session close
 OPENING_WINDOW_START = "09:15"
 OPENING_WINDOW_END = "09:16"
 ENTRY_TIME = "09:16"
@@ -916,15 +917,29 @@ def _run_silver_micro_job(
         daily_results,
         data_coverage,
         mode="historical_mcx_replay",
-        execution_assumption=(
-            "Silver Micro replays closed 5-minute candles. A green candle closing above EMA20 with volume above volume EMA20 creates a BUY setup; "
-            "a red candle closing below EMA20 with volume above volume EMA20 creates a SELL setup. One of the subsequent 5-minute candles within the confirmation window must confirm the setup, "
-            "entry uses the following candle open, and stop-loss is assumed before target if both are touched inside the same candle. "
-            f"Historical data was loaded from {history_resolution}-minute candles."
-        ),
+        execution_assumption=_silver_micro_execution_assumption(history_resolution, settings),
     )
     _raise_if_cancelled(job_id)
     _update(job_id, status="complete", phase="complete", message="Silver Micro backtest complete.", result=result)
+
+
+def _silver_micro_execution_assumption(history_resolution: str, settings: dict) -> str:
+    n = int(settings.get("silver_breakout_points", 150))
+    sl_pts = int(settings.get("sl_points", 100))
+    target_pts = int(settings.get("target_points", 300))
+    return (
+        f"Silver Micro replays 15-minute bars aggregated from 1-minute history "
+        f"({history_resolution}). Each closed 15m bar updates EMA20; a green candle "
+        f"closing above EMA20 stores its close as the BUY level, a red candle "
+        f"closing below EMA20 stores the SELL level (levels overwrite on each new "
+        f"qualifier). Entry fires when a subsequent 1-minute bar's high (BUY) or "
+        f"low (SELL) crosses (setup_close +/- n={n} points) — the backtest "
+        f"approximates the live tick-cross using 1-minute bar extremes and enters "
+        f"at the trigger level itself. SL={sl_pts} points, target={target_pts} "
+        f"points, both fixed rupee distances from entry. If a 1-minute bar touches "
+        f"both SL and target, SL is assumed first (conservative). Reversal on "
+        f"contra trigger closes the current position and flips at the same bar."
+    )
 
 
 def _new_silver_micro_day_result(symbol: str, day: datetime.date, bar_count: int) -> dict:
@@ -933,18 +948,18 @@ def _new_silver_micro_day_result(symbol: str, day: datetime.date, bar_count: int
         "date": day.isoformat(),
         "mode": "historical_mcx_replay",
         "execution_assumption": (
-            "Silver Micro replays closed 5-minute candles. A green candle closing above EMA20 with volume above volume EMA20 creates a BUY setup; "
-            "a red candle closing below EMA20 with volume above volume EMA20 creates a SELL setup. One of the subsequent 5-minute candles within the confirmation window must confirm the setup, entry uses "
-            "the following candle open, and stop-loss is assumed before target if both are touched inside the same candle."
+            "Silver Micro (15m EMA breakout): green candle above EMA20 sets BUY level, "
+            "red candle below EMA20 sets SELL level. Entry fires when live price crosses "
+            "(setup_close +/- n) in the setup direction."
         ),
         "data_available_symbols": 1 if bar_count else 0,
         "summary": {},
         "sector_breakdown": [],
         "condition_breakdown": [
             {"label": "Scanned universe", "passed": 1 if bar_count else 0, "total": 1},
-            {"label": "Condition 1: 5m bars processed", "passed": 0, "total": bar_count},
-            {"label": "Condition 2: confirmation candle", "passed": 0, "total": 0},
-            {"label": "Final: selected for trade", "passed": 0, "total": 0},
+            {"label": "15m bars processed", "passed": 0, "total": bar_count},
+            {"label": "Setups captured (green above / red below EMA20)", "passed": 0, "total": 0},
+            {"label": "Final: entries executed", "passed": 0, "total": 0},
         ],
         "candidates": [],
         "trades": [],
@@ -993,35 +1008,119 @@ def _simulate_silver_micro_range(
     settings: dict,
     charges_config: dict,
 ) -> list[dict]:
-    bars = _build_five_minute_bars(history)
-    bars_by_day: dict[datetime.date, int] = defaultdict(int)
-    for bar in bars:
-        if first_date <= bar["time"].date() <= last_date:
-            bars_by_day[bar["time"].date()] += 1
+    """15m EMA breakout replay (2026-08-19 rewrite).
+
+    Iterates the raw 1-minute history. Each time a 15-min bucket closes
+    we update EMA20 and (if it qualifies) the BUY/SELL setup level. On
+    every 1-min bar we check whether its high/low crossed a trigger
+    (setup_close +/- n) — the closest tick-level approximation the
+    backtest can offer from 1m data. Enters at the trigger level itself
+    (conservative). SL/target/TSL are in POINTS from entry, matching the
+    live strategy exactly.
+    """
+    n = float(settings.get("silver_breakout_points", 150))
+    sl_pts = float(settings.get("sl_points", 100))
+    target_pts = float(settings.get("target_points", 300))
+    tsl_trigger_pts = float(settings.get("tsl_trigger_points", 0))
+    tsl_distance_pts = float(settings.get("tsl_distance_points", 0))
+    tsl_enabled = bool(settings.get("trailing_sl_enabled")) or settings.get("exit_mode") in {"trailing_sl_only", "fixed_target_trailing_sl"}
+
+    # Pre-count 1m bars per day so the UI can show how much data existed.
+    minute_bars_by_day: dict[datetime.date, int] = defaultdict(int)
+    sorted_history = sorted(history, key=lambda item: item["time"])
+    normalized_history: list[dict] = []
+    for candle in sorted_history:
+        ts = candle["time"]
+        if ts.tzinfo is not None:
+            ts = ts.astimezone(IST).replace(tzinfo=None)
+        entry = {
+            "time": ts,
+            "open": float(candle["open"]),
+            "high": float(candle["high"]),
+            "low": float(candle["low"]),
+            "close": float(candle["close"]),
+            "volume": float(candle.get("volume") or 0),
+        }
+        normalized_history.append(entry)
+        if first_date <= ts.date() <= last_date:
+            minute_bars_by_day[ts.date()] += 1
 
     daily_results = {
-        day: _new_silver_micro_day_result(symbol, day, bars_by_day.get(day, 0))
+        day: _new_silver_micro_day_result(symbol, day, minute_bars_by_day.get(day, 0))
         for day in trading_days
     }
 
-    ema_price: float | None = None
-    ema_volume: float | None = None
-    processed_bars = 0
+    # Live-state variables — mirror algo3_silver_micro.py exactly.
+    ema20: float | None = None
+    buy_setup_close: float | None = None
+    sell_setup_close: float | None = None
+    minute_buffer: list[dict] = []
+    current_bucket: datetime.datetime | None = None
+    prev_ltp: float | None = None
+    bars_finalized = 0
     current_day: datetime.date | None = None
-    pending_setup: dict | None = None
-    pending_entry: dict | None = None
+    last_bar_processed: dict | None = None
     position: dict | None = None
     position_candidate: dict | None = None
-    last_bar: dict | None = None
 
-    def finalize_pending_setup(reason: str):
-        nonlocal pending_setup
-        if pending_setup and pending_setup.get("candidate"):
-            candidate = pending_setup["candidate"]
-            if not candidate.get("selected_for_trade"):
-                candidate["signal_stage"] = "rejected"
-                candidate["rejection_reason"] = reason
-        pending_setup = None
+    def finalize_15m_bar(allow_signals: bool):
+        """Aggregate the minute_buffer into one 15m bar, update EMA20
+        and the BUY/SELL setup levels."""
+        nonlocal minute_buffer, ema20, buy_setup_close, sell_setup_close, bars_finalized
+        if not minute_buffer or current_bucket is None:
+            return
+        bar = {
+            "time": current_bucket,
+            "open": minute_buffer[0]["open"],
+            "high": max(c["high"] for c in minute_buffer),
+            "low": min(c["low"] for c in minute_buffer),
+            "close": minute_buffer[-1]["close"],
+            "volume": sum(c["volume"] for c in minute_buffer),
+        }
+        ema20 = _ema_step(ema20, bar["close"])
+        bars_finalized += 1
+        is_green = bar["close"] > bar["open"]
+        is_red = bar["close"] < bar["open"]
+        # Setup update: overwrite on every new qualifier (per spec doc).
+        # A qualifier can also be recorded in-scope so the UI candidates
+        # table shows what triggered.
+        setup_event: dict | None = None
+        if is_green and ema20 is not None and bar["close"] > ema20:
+            buy_setup_close = bar["close"]
+            setup_event = {"side": "BUY", "close": bar["close"], "bar": bar}
+        elif is_red and ema20 is not None and bar["close"] < ema20:
+            sell_setup_close = bar["close"]
+            setup_event = {"side": "SELL", "close": bar["close"], "bar": bar}
+        if setup_event and allow_signals and first_date <= bar["time"].date() <= last_date:
+            day_result = daily_results.get(bar["time"].date())
+            if day_result:
+                candidate = {
+                    "symbol": symbol,
+                    "sector": "MCX",
+                    "side": setup_event["side"],
+                    "open": round(bar["open"], 2),
+                    "high": round(bar["high"], 2),
+                    "low": round(bar["low"], 2),
+                    "close": round(bar["close"], 2),
+                    "setup_time": bar["time"].isoformat(),
+                    "setup_close": round(setup_event["close"], 2),
+                    "trigger_level": round(setup_event["close"] + n, 2) if setup_event["side"] == "BUY" else round(setup_event["close"] - n, 2),
+                    "ema20": round(ema20, 2) if ema20 is not None else None,
+                    "n_points": n,
+                    "signal_stage": "setup",
+                    "selected_for_trade": False,
+                    "rejection_reason": None,
+                    "entry_time": None,
+                    "entry_price": None,
+                    "exit_time": None,
+                    "exit_price": None,
+                    "exit_reason": None,
+                    "net_pnl": None,
+                    "gross_pnl": None,
+                    "total_charges": None,
+                }
+                day_result["candidates"].append(candidate)
+                day_result["condition_breakdown"][2]["passed"] += 1
 
     def close_position(exit_price: float, exit_time: datetime.datetime, exit_reason: str, day: datetime.date):
         nonlocal position, position_candidate
@@ -1041,17 +1140,17 @@ def _simulate_silver_micro_range(
         position = None
         position_candidate = None
 
-    def open_position(side: str, entry_price: float, entry_time: datetime.datetime, candidate: dict):
+    def open_position(side: str, entry_price: float, entry_time: datetime.datetime, day: datetime.date):
         nonlocal position, position_candidate
         qty = int(float(settings["capital_per_trade"]) // float(entry_price))
         if qty < 1:
             return
         if side == "BUY":
-            sl_price = float(entry_price) * (1 - float(settings["sl_pct"]) / 100)
-            target_price = float(entry_price) * (1 + float(settings["target_pct"]) / 100)
+            sl_price = float(entry_price) - sl_pts
+            target_price = float(entry_price) + target_pts
         else:
-            sl_price = float(entry_price) * (1 + float(settings["sl_pct"]) / 100)
-            target_price = float(entry_price) * (1 - float(settings["target_pct"]) / 100)
+            sl_price = float(entry_price) + sl_pts
+            target_price = float(entry_price) - target_pts
         position = {
             "symbol": symbol,
             "side": side,
@@ -1062,143 +1161,126 @@ def _simulate_silver_micro_range(
             "target_price": target_price,
             "highest": float(entry_price),
             "lowest": float(entry_price),
-            "last_ltp": float(entry_price),
         }
-        position_candidate = candidate
-        candidate["selected_for_trade"] = True
-        candidate["signal_stage"] = "entered"
-        candidate["entry_time"] = entry_time.isoformat()
-        candidate["entry_price"] = round(float(entry_price), 2)
-        candidate["sl_price"] = round(float(sl_price), 2)
-        candidate["target_price"] = round(float(target_price), 2)
+        # Latest matching-side setup in this day's candidates is the source
+        # candidate we mark as selected_for_trade.
+        source_candidate = None
+        day_result = daily_results.get(day)
+        if day_result:
+            for cand in reversed(day_result["candidates"]):
+                if cand["side"] == side and not cand.get("selected_for_trade"):
+                    source_candidate = cand
+                    break
+        if source_candidate:
+            source_candidate["selected_for_trade"] = True
+            source_candidate["signal_stage"] = "entered"
+            source_candidate["entry_time"] = entry_time.isoformat()
+            source_candidate["entry_price"] = round(float(entry_price), 2)
+            source_candidate["sl_price"] = round(float(sl_price), 2)
+            source_candidate["target_price"] = round(float(target_price), 2)
+        position_candidate = source_candidate
 
-    for bar in bars:
+    def maybe_apply_trailing(entry: float, side: str):
+        """Points-based trailing: activate once favorable move >= trigger,
+        then trail SL distance points behind the extremum."""
+        nonlocal position
+        if not position or not tsl_enabled or tsl_trigger_pts <= 0 or tsl_distance_pts <= 0:
+            return
+        if side == "BUY":
+            gain = float(position["highest"]) - entry
+            if gain >= tsl_trigger_pts:
+                new_sl = float(position["highest"]) - tsl_distance_pts
+                if new_sl > float(position["sl_price"]):
+                    position["sl_price"] = new_sl
+        else:
+            gain = entry - float(position["lowest"])
+            if gain >= tsl_trigger_pts:
+                new_sl = float(position["lowest"]) + tsl_distance_pts
+                if new_sl < float(position["sl_price"]):
+                    position["sl_price"] = new_sl
+
+    for candle in normalized_history:
         _raise_if_cancelled(job_id)
-        bar_day = bar["time"].date()
-        if bar_day < first_date:
-            ema_price = _ema_step(ema_price, bar["close"])
-            ema_volume = _ema_step(ema_volume, bar["volume"])
-            last_bar = bar
-            continue
-        if bar_day > last_date:
+        ts = candle["time"]
+        day = ts.date()
+        if day > last_date:
             break
 
-        if current_day is None:
-            current_day = bar_day
-        if bar_day != current_day:
-            if position and last_bar:
-                close_position(float(last_bar["close"]), last_bar["time"], "EOD_SQUAREOFF", current_day)
-            finalize_pending_setup("confirmation_timeout")
-            pending_entry = None
-            current_day = bar_day
+        in_scope = first_date <= day <= last_date
 
-        day_result = daily_results[bar_day]
-        day_result["condition_breakdown"][0]["passed"] = 1
+        # Day boundary — square off any open position at the previous day's
+        # last bar close (kept the same convention as before the rewrite).
+        if in_scope:
+            if current_day is None:
+                current_day = day
+            if day != current_day:
+                if position and last_bar_processed:
+                    close_position(float(last_bar_processed["close"]), last_bar_processed["time"], "EOD_SQUAREOFF", current_day)
+                current_day = day
 
-        if pending_entry and pending_entry.get("entry_bucket") == bar["time"]:
-            if position and position["side"] != pending_entry["side"]:
-                close_position(float(bar["open"]), bar["time"], "REVERSAL_CONTRA_SIGNAL", bar_day)
-            if not position:
-                open_position(pending_entry["side"], float(bar["open"]), bar["time"], pending_entry["candidate"])
-            pending_entry = None
+        day_result = daily_results.get(day) if in_scope else None
+        if day_result:
+            day_result["condition_breakdown"][0]["passed"] = 1
 
-        if position:
-            position["highest"] = max(float(position["highest"]), float(bar["high"]))
-            position["lowest"] = min(float(position["lowest"]), float(bar["low"]))
-            side = position["side"]
-            sl = float(position["sl_price"])
-            target = float(position["target_price"])
-            stop_hit = float(bar["low"]) <= sl if side == "BUY" else float(bar["high"]) >= sl
-            target_hit = float(bar["high"]) >= target if side == "BUY" else float(bar["low"]) <= target
-            if stop_hit:
-                close_position(sl, bar["time"], "SL", bar_day)
-            elif target_hit and settings.get("exit_mode") != "trailing_sl_only":
-                close_position(target, bar["time"], "TARGET", bar_day)
-            else:
-                trigger = float(settings.get("trailing_sl_trigger_pct") or 0)
-                distance = float(settings.get("trailing_sl_distance_pct") or 0)
-                if (settings.get("trailing_sl_enabled") or settings.get("exit_mode") in {"trailing_sl_only", "fixed_target_trailing_sl"}) and trigger > 0 and distance > 0:
-                    if side == "BUY" and (float(position["highest"]) - float(position["entry_price"])) / float(position["entry_price"]) * 100 >= trigger:
-                        position["sl_price"] = max(float(position["sl_price"]), float(position["highest"]) * (1 - distance / 100))
-                    elif side == "SELL" and (float(position["entry_price"]) - float(position["lowest"])) / float(position["entry_price"]) * 100 >= trigger:
-                        position["sl_price"] = min(float(position["sl_price"]), float(position["lowest"]) * (1 + distance / 100))
+        # 15-min bucket rollover: finalize before ingesting this new candle.
+        bucket = ts.replace(minute=(ts.minute // SILVER_MICRO_BUCKET_MINUTES) * SILVER_MICRO_BUCKET_MINUTES, second=0, microsecond=0)
+        if current_bucket is None:
+            current_bucket = bucket
+            minute_buffer = [candle]
+        elif bucket != current_bucket:
+            finalize_15m_bar(allow_signals=True)
+            if day_result:
+                day_result["condition_breakdown"][1]["passed"] += 1
+            current_bucket = bucket
+            minute_buffer = [candle]
+        else:
+            minute_buffer.append(candle)
 
-        ema_price = _ema_step(ema_price, bar["close"])
-        ema_volume = _ema_step(ema_volume, bar["volume"])
-        processed_bars += 1
-        if processed_bars < EMA_PERIOD:
-            last_bar = bar
-            continue
+        # In-scope logic: trigger detection + exit management.
+        if in_scope and bars_finalized >= EMA_PERIOD:
+            # Trigger levels from the latest stored setups.
+            buy_level = buy_setup_close + n if buy_setup_close is not None else None
+            sell_level = sell_setup_close - n if sell_setup_close is not None else None
 
-        if pending_setup:
-            setup_bucket = pending_setup["setup_bucket"]
-            confirmation_deadline = pending_setup["confirmation_deadline"]
-            if bar["time"] > confirmation_deadline:
-                finalize_pending_setup("confirmation_timeout")
-            elif bar["time"] > setup_bucket and _silver_micro_confirmation_passed(bar, pending_setup):
-                candidate = pending_setup["candidate"]
-                candidate["signal_stage"] = "confirmed"
-                candidate["confirmation_time"] = bar["time"].isoformat()
-                candidate["confirmation_close"] = round(float(bar["close"]), 2)
-                pending_entry = {
-                    "side": pending_setup["side"],
-                    "entry_bucket": bar["time"] + datetime.timedelta(minutes=5),
-                    "candidate": candidate,
-                }
-                day_result["condition_breakdown"][2]["passed"] += 1
-                pending_setup = None
+            # BUY cross: prev_ltp < level AND this minute's high >= level.
+            if position is None or position.get("side") != "BUY":
+                if buy_level is not None and prev_ltp is not None and prev_ltp < buy_level <= candle["high"]:
+                    if position and position["side"] != "BUY":
+                        close_position(buy_level, ts, "REVERSAL_CONTRA_SIGNAL", day)
+                    open_position("BUY", buy_level, ts, day)
 
-        if bar["time"].strftime("%H:%M") >= "15:15":
+            # SELL cross: prev_ltp > level AND this minute's low <= level.
+            if position is None or position.get("side") != "SELL":
+                if sell_level is not None and prev_ltp is not None and prev_ltp > sell_level >= candle["low"]:
+                    if position and position["side"] != "SELL":
+                        close_position(sell_level, ts, "REVERSAL_CONTRA_SIGNAL", day)
+                    open_position("SELL", sell_level, ts, day)
+
+            # Exit management for whatever's currently open.
             if position:
-                close_position(float(bar["close"]), bar["time"], "EOD_SQUAREOFF", bar_day)
-            last_bar = bar
-            continue
+                position["highest"] = max(float(position["highest"]), candle["high"])
+                position["lowest"] = min(float(position["lowest"]), candle["low"])
+                side = position["side"]
+                sl = float(position["sl_price"])
+                target = float(position["target_price"])
+                entry = float(position["entry_price"])
+                stop_hit = candle["low"] <= sl if side == "BUY" else candle["high"] >= sl
+                target_hit = candle["high"] >= target if side == "BUY" else candle["low"] <= target
+                use_target = settings.get("exit_mode") != "trailing_sl_only"
+                if stop_hit:
+                    close_position(sl, ts, "SL", day)
+                elif target_hit and use_target:
+                    close_position(target, ts, "TARGET", day)
+                else:
+                    maybe_apply_trailing(entry, side)
 
-        side = _silver_micro_signal_side(bar, ema_price, ema_volume)
-        if side:
-            day_result["condition_breakdown"][1]["passed"] += 1
-            candidate = {
-                "symbol": symbol,
-                "sector": "MCX",
-                "side": side,
-                "open": round(float(bar["open"]), 2),
-                "high": round(float(bar["high"]), 2),
-                "low": round(float(bar["low"]), 2),
-                "close": round(float(bar["close"]), 2),
-                "volume": round(float(bar["volume"]), 2),
-                "setup_time": bar["time"].isoformat(),
-                "setup_close": round(float(bar["close"]), 2),
-                "ema20_price": round(float(ema_price), 2) if ema_price is not None else None,
-                "ema20_volume": round(float(ema_volume), 2) if ema_volume is not None else None,
-                "signal_stage": "setup",
-                "selected_for_trade": False,
-                "rejection_reason": None,
-                "entry_time": None,
-                "entry_price": None,
-                "exit_time": None,
-                "exit_price": None,
-                "exit_reason": None,
-                "net_pnl": None,
-                "gross_pnl": None,
-                "total_charges": None,
-            }
-            day_result["candidates"].append(candidate)
-            if position and position["side"] != side:
-                close_position(float(bar["close"]), bar["time"], "REVERSAL_CONTRA_SIGNAL", bar_day)
-            pending_setup = {
-                "side": side,
-                "setup_close": float(bar["close"]),
-                "setup_bucket": bar["time"],
-                "confirmation_deadline": bar["time"] + datetime.timedelta(minutes=SILVER_MICRO_CONFIRMATION_WINDOW_MINUTES),
-                "candidate": candidate,
-            }
+        prev_ltp = candle["close"]
+        last_bar_processed = candle
 
-        last_bar = bar
-
-    if current_day and position and last_bar:
-        close_position(float(last_bar["close"]), last_bar["time"], "EOD_SQUAREOFF", current_day)
-    if current_day and pending_setup:
-        finalize_pending_setup("confirmation_timeout")
+    # Final flush — finalize the last 15m bucket + close any open position.
+    finalize_15m_bar(allow_signals=True)
+    if current_day and position and last_bar_processed:
+        close_position(float(last_bar_processed["close"]), last_bar_processed["time"], "EOD_SQUAREOFF", current_day)
 
     for day in trading_days:
         _raise_if_cancelled(job_id)
@@ -1210,76 +1292,13 @@ def _simulate_silver_micro_range(
             "sell_count": len([trade for trade in trades if trade["side"] == "SELL"]),
         }
         day_result["condition_breakdown"][3]["passed"] = len(trades)
+        # totals: setups (row 2 total) = 15m bars processed (row 1 passed);
+        # entries (row 3 total) = setups captured (row 2 passed).
         day_result["condition_breakdown"][2]["total"] = day_result["condition_breakdown"][1]["passed"]
         day_result["condition_breakdown"][3]["total"] = day_result["condition_breakdown"][2]["passed"]
         day_result["sector_breakdown"] = build_sector_breakdown(day_result["candidates"])
 
     return [daily_results[day] for day in trading_days]
-
-
-def _build_five_minute_bars(history: list[dict]) -> list[dict]:
-    bars: list[dict] = []
-    current_bucket: datetime.datetime | None = None
-    buffer: list[dict] = []
-
-    def flush():
-        nonlocal buffer, current_bucket
-        if not buffer or current_bucket is None:
-            return
-        bars.append({
-            "time": current_bucket,
-            "open": float(buffer[0]["open"]),
-            "high": max(float(candle["high"]) for candle in buffer),
-            "low": min(float(candle["low"]) for candle in buffer),
-            "close": float(buffer[-1]["close"]),
-            "volume": sum(float(candle.get("volume") or 0) for candle in buffer),
-            "minute_count": len(buffer),
-        })
-        buffer = []
-
-    for candle in sorted(history, key=lambda item: item["time"]):
-        candle_time = candle["time"]
-        if candle_time.tzinfo is not None:
-            candle_time = candle_time.astimezone(IST).replace(tzinfo=None)
-        minute_bucket = candle_time.replace(minute=(candle_time.minute // 5) * 5, second=0, microsecond=0)
-        if current_bucket is None:
-            current_bucket = minute_bucket
-        if minute_bucket != current_bucket:
-            flush()
-            current_bucket = minute_bucket
-        buffer.append({
-            "time": candle_time,
-            "open": float(candle["open"]),
-            "high": float(candle["high"]),
-            "low": float(candle["low"]),
-            "close": float(candle["close"]),
-            "volume": float(candle.get("volume") or 0),
-        })
-    flush()
-    return bars
-
-
-def _silver_micro_signal_side(bar: dict, ema_price: float | None, ema_volume: float | None) -> str | None:
-    if ema_price is None or ema_volume is None:
-        return None
-    is_green = float(bar["close"]) > float(bar["open"])
-    is_red = float(bar["close"]) < float(bar["open"])
-    above_ema = float(bar["close"]) > float(ema_price)
-    below_ema = float(bar["close"]) < float(ema_price)
-    strong_volume = float(bar["volume"]) > float(ema_volume)
-    if is_green and above_ema and strong_volume:
-        return "BUY"
-    if is_red and below_ema and strong_volume:
-        return "SELL"
-    return None
-
-
-def _silver_micro_confirmation_passed(bar: dict, pending_setup: dict) -> bool:
-    side = pending_setup["side"]
-    setup_close = float(pending_setup["setup_close"])
-    if side == "BUY":
-        return float(bar["close"]) > float(bar["open"]) and float(bar["close"]) > setup_close
-    return float(bar["close"]) < float(bar["open"]) and float(bar["close"]) < setup_close
 
 
 def _close_silver_micro_position(
@@ -1310,7 +1329,7 @@ def _close_silver_micro_position(
         "exit_reason": exit_reason,
         "target_price": round(target, 2),
         "sl_price": round(sl, 2),
-        "entry_trigger": f"Historical {position['entry_time'].date().isoformat()} Silver Micro 5m replay.",
+        "entry_trigger": f"Historical {position['entry_time'].date().isoformat()} Silver Micro 15m breakout replay.",
         **charges,
         "gross_pnl": round(gross_pnl, 2),
         "net_pnl": round(float(charges["net_pnl"]), 2),

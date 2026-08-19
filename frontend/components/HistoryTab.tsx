@@ -30,6 +30,7 @@ export default function HistoryTab({
   const [walletStatus, setWalletStatus] = useState<any>(null);
   const [walletStatusError, setWalletStatusError] = useState('');
   const [disconnecting, setDisconnecting] = useState(false);
+  const [recoveryLockError, setRecoveryLockError] = useState<{ message: string; eta: number } | null>(null);
   const walletRequestId = useRef(0);
 
   const loadTokenStatus = useCallback(async () => {
@@ -137,17 +138,36 @@ export default function HistoryTab({
     };
   }, [fyersConnected, loadTokenStatus, loadWalletStatus, tradingMode]);
 
-  async function handleDisconnectFyers() {
-    if (!window.confirm('Disconnect FYERS and clear the stored token for this mode?')) return;
+  async function handleDisconnectFyers(force = false) {
+    if (!force && !window.confirm('Disconnect FYERS and clear the stored token for this mode?')) return;
+    if (force && !window.confirm(
+      'FORCE disconnect: the backend thinks it is auto-recovering, but the recovery loop is stuck (usually SEBI-disabled refresh tokens). This overrides the safety lock and clears the token. Continue?'
+    )) return;
     try {
       setDisconnecting(true);
-      await api.fyersDisconnect();
+      setRecoveryLockError(null);
+      await api.fyersDisconnect(force);
       await loadTokenStatus();
       setWalletStatus(null);
       setWalletStatusError('');
       onFyersDisconnected?.();
     } catch (e: any) {
-      setTokenStatusError(e?.message || 'Failed to disconnect FYERS');
+      const msg = e?.message || 'Failed to disconnect FYERS';
+      // Backend returns 409 with recovery_in_progress when F14 recovery
+      // lock is engaged. Surface a force-override button instead of just
+      // an error message so the user can escape a stuck-recovery state
+      // (the 2026-08-19 client-account situation with SEBI-disabled
+      // refresh tokens looping forever).
+      const isLock = msg.includes('recovery_in_progress') || msg.includes('409');
+      if (isLock) {
+        // Try to parse eta_seconds if present in the message.
+        let eta = 0;
+        const etaMatch = msg.match(/eta[_ ]seconds[:=]?\s*(\d+)/i);
+        if (etaMatch) eta = parseInt(etaMatch[1], 10);
+        setRecoveryLockError({ message: msg, eta });
+      } else {
+        setTokenStatusError(msg);
+      }
     } finally {
       setDisconnecting(false);
     }
@@ -171,7 +191,9 @@ export default function HistoryTab({
         walletStatus={walletStatus}
         walletStatusError={walletStatusError}
         disconnecting={disconnecting}
-        onDisconnect={handleDisconnectFyers}
+        onDisconnect={() => handleDisconnectFyers(false)}
+        onForceDisconnect={() => handleDisconnectFyers(true)}
+        recoveryLockError={recoveryLockError}
       />
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -236,6 +258,8 @@ function TokenRefreshPanel({
   walletStatusError,
   disconnecting,
   onDisconnect,
+  onForceDisconnect,
+  recoveryLockError,
 }: {
   status: any;
   error: string;
@@ -243,12 +267,34 @@ function TokenRefreshPanel({
   walletStatusError: string;
   disconnecting: boolean;
   onDisconnect: () => void;
+  onForceDisconnect: () => void;
+  recoveryLockError: { message: string; eta: number } | null;
 }) {
   const daysLeft = Number(status?.refresh_token_days_left);
   const hasRefreshToken = Boolean(status?.refresh_token_present);
   const lastError = status?.last_refresh_error;
   const walletSummary = walletStatus?.summary || {};
   const walletBalance = optionalNumber(walletSummary.wallet_balance);
+  // Chip should be red, not green, when the last refresh actually failed —
+  // "Refresh token saved" alone was misleading the client on 2026-08-19:
+  // token string was present in DB but every refresh attempt was failing
+  // (SEBI disabled refresh tokens) so the green chip was a lie.
+  const lastRefreshFailed = Boolean(lastError);
+  const chipTone = !hasRefreshToken
+    ? 'border-[#f59e0b]/40 text-[#f59e0b]'
+    : lastRefreshFailed
+      ? 'border-[#ef4444]/40 text-[#ef4444]'
+      : 'border-[#22c55e]/40 text-[#22c55e]';
+  const chipIcon = !hasRefreshToken
+    ? 'ri-error-warning-fill text-sm'
+    : lastRefreshFailed
+      ? 'ri-error-warning-fill text-sm'
+      : 'ri-shield-check-fill text-sm';
+  const chipLabel = !hasRefreshToken
+    ? 'Manual login needed'
+    : lastRefreshFailed
+      ? 'Token saved but refresh failing'
+      : 'Refresh token saved';
   return (
     <section className="rounded border border-[#1f2937] bg-[#111827] p-3">
       <div className="flex flex-wrap items-start justify-between gap-3">
@@ -257,11 +303,9 @@ function TokenRefreshPanel({
           <p className="mt-1 text-xs text-gray-500">Auto-refresh runs daily after 08:30 IST while the refresh token is valid.</p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <div className={`inline-flex items-center gap-2 rounded border px-2 py-1 text-xs font-semibold ${
-            hasRefreshToken ? 'border-[#22c55e]/40 text-[#22c55e]' : 'border-[#f59e0b]/40 text-[#f59e0b]'
-          }`}>
-            <i className={hasRefreshToken ? 'ri-shield-check-fill text-sm' : 'ri-error-warning-fill text-sm'} />
-            {hasRefreshToken ? 'Refresh token saved' : 'Manual login needed'}
+          <div className={`inline-flex items-center gap-2 rounded border px-2 py-1 text-xs font-semibold ${chipTone}`}>
+            <i className={chipIcon} />
+            {chipLabel}
           </div>
           <button
             type="button"
@@ -274,6 +318,26 @@ function TokenRefreshPanel({
           </button>
         </div>
       </div>
+
+      {recoveryLockError && (
+        <div className="mt-3 rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 p-3">
+          <p className="text-xs text-[#f59e0b]">
+            <strong>Disconnect blocked:</strong> the backend thinks it is auto-recovering
+            {recoveryLockError.eta > 0 ? ` (ETA ${recoveryLockError.eta}s)` : ''}. This can loop
+            forever when the underlying issue is SEBI-disabled refresh tokens or a stale session.
+            Use Force Disconnect to override the safety lock.
+          </p>
+          <button
+            type="button"
+            onClick={onForceDisconnect}
+            disabled={disconnecting}
+            className="mt-2 inline-flex min-h-10 items-center justify-center gap-2 rounded border border-[#f59e0b]/60 bg-[#f59e0b]/20 px-3 py-2 text-xs font-semibold text-[#f59e0b] transition hover:bg-[#f59e0b]/30 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <i className="ri-alarm-warning-fill text-sm" />
+            {disconnecting ? 'Force disconnecting...' : 'Force Disconnect (override recovery lock)'}
+          </button>
+        </div>
+      )}
 
       {error && <p className="mt-3 text-xs text-[#ef4444]">{error}</p>}
 
