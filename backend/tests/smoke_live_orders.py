@@ -1136,6 +1136,59 @@ def test_engine_rest_fallback_targets_stale_non_nse_symbols():
           "expected False for fresh tick")
 
 
+def test_engine_rest_fallback_injects_synthetic_tick_into_algo3():
+    print("\n28c. Engine REST fallback — synthetic REST tick updates engine + algo3 state")
+    import app.engine as eng
+
+    symbol = "MCX:SILVERMIC26AUGFUT"
+    strat = _make_bare_algo3()
+    strat.symbol = symbol
+    strat.watchlist = [symbol]
+
+    old_strategies = dict(eng.STRATEGIES)
+    old_last_ltp = dict(eng.last_ltp)
+    old_symbol_last_tick_at = dict(eng._symbol_last_tick_at)
+    old_engine_status = dict(eng._engine_status)
+    try:
+        eng.STRATEGIES.clear()
+        eng.STRATEGIES["algo3"] = strat
+        eng.last_ltp.clear()
+        eng._symbol_last_tick_at.clear()
+        eng._engine_status.update({
+            "last_tick_at": None,
+            "last_tick_symbol": None,
+            "last_tick_ltp": None,
+            "tick_count": 0,
+        })
+
+        eng._inject_rest_tick(symbol, 240123.0)
+
+        check("engine last_ltp updated from synthetic tick",
+              eng.last_ltp.get(symbol) == 240123.0,
+              f"got={eng.last_ltp.get(symbol)}")
+        check("engine remembers per-symbol tick timestamp",
+              bool(eng._symbol_last_tick_at.get(symbol)),
+              f"got={eng._symbol_last_tick_at.get(symbol)}")
+        check("engine status last_tick_symbol updated",
+              eng._engine_status.get("last_tick_symbol") == symbol,
+              f"got={eng._engine_status.get('last_tick_symbol')}")
+        check("algo3 received synthetic tick LTP",
+              strat._last_tick_ltp == 240123.0,
+              f"got={strat._last_tick_ltp}")
+        check("algo3 prev_ltp seeded from synthetic tick",
+              strat._prev_ltp == 240123.0,
+              f"got={strat._prev_ltp}")
+    finally:
+        eng.STRATEGIES.clear()
+        eng.STRATEGIES.update(old_strategies)
+        eng.last_ltp.clear()
+        eng.last_ltp.update(old_last_ltp)
+        eng._symbol_last_tick_at.clear()
+        eng._symbol_last_tick_at.update(old_symbol_last_tick_at)
+        eng._engine_status.clear()
+        eng._engine_status.update(old_engine_status)
+
+
 # ── 29. F6 post-recovery grace ─────────────────────────────────────────
 def test_post_recovery_grace_ignores_immediate_failure():
     print("\n29. F6 — failure within 60s of recovery is ignored (no counter bump)")
@@ -2151,6 +2204,7 @@ def main():
     test_pre_market_no_tick_not_counted_as_failure()
     test_critical_live_feed_symbols_ignore_nse_noise()
     test_engine_rest_fallback_targets_stale_non_nse_symbols()
+    test_engine_rest_fallback_injects_synthetic_tick_into_algo3()
     test_post_recovery_grace_ignores_immediate_failure()
     test_current_backoff_respects_min_floor()
     test_hidden_tabs_env_normalizes_aliases()
