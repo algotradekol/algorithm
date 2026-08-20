@@ -240,6 +240,45 @@ def _utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
+def _hhmm_minus_minutes(hhmm: str, minutes: int) -> str:
+    base = datetime.datetime.strptime(hhmm, "%H:%M")
+    return (base - datetime.timedelta(minutes=minutes)).strftime("%H:%M")
+
+
+def _strategy_session_bounds(strategy) -> tuple[str, str]:
+    start_fn = getattr(strategy, "market_session_start", None)
+    end_fn = getattr(strategy, "market_session_end", None)
+    start = start_fn() if callable(start_fn) else "09:15"
+    end = end_fn() if callable(end_fn) else "15:30"
+    return start, end
+
+
+def _strategy_square_off_time(strategy) -> str:
+    square_off_fn = getattr(strategy, "square_off_time", None)
+    if callable(square_off_fn):
+        return square_off_fn()
+    return SQUARE_OFF_TIME
+
+
+def _strategy_session_active(strategy, hhmm: str) -> bool:
+    start, end = _strategy_session_bounds(strategy)
+    return start <= hhmm < end
+
+
+def _strategy_feed_permitted(strategy, hhmm: str) -> bool:
+    start, end = _strategy_session_bounds(strategy)
+    warmup_start = _hhmm_minus_minutes(start, 10)
+    return warmup_start <= hhmm < end
+
+
+def _any_strategy_active(hhmm: str) -> bool:
+    return any(_strategy_session_active(strategy, hhmm) for strategy in STRATEGIES.values())
+
+
+def _any_strategy_feed_permitted(hhmm: str) -> bool:
+    return any(_strategy_feed_permitted(strategy, hhmm) for strategy in STRATEGIES.values())
+
+
 def _on_live_feed_status(status: dict):
     global _live_feed_started, _feed_circuit_open_until
 
@@ -603,7 +642,7 @@ def _scheduler_loop():
     # Track (date, algo_id) for the "collecting_candle" broadcast so we only
     # push it once per scan-day per strategy, not every 5s during the minute.
     collecting_broadcast: set[tuple[datetime.date, str]] = set()
-    squareoff_fired_date = None
+    squareoff_fired_dates: dict[str, datetime.date] = {}
     token_refresh_fired_date = None
     global _feed_retry_schedules
 
@@ -817,15 +856,20 @@ def _scheduler_loop():
             except Exception as exc:
                 print(f"[engine] entry-scan calendar snapshot failed: {exc}")
 
-        if current_time >= SQUARE_OFF_TIME and squareoff_fired_date != today:
-            for strategy in STRATEGIES.values():
-                strategy.square_off_all()
+        squared_any = False
+        for strategy in STRATEGIES.values():
+            cutoff = _strategy_square_off_time(strategy)
+            if current_time < cutoff or squareoff_fired_dates.get(strategy.algo_id) == today:
+                continue
+            strategy.square_off_all()
+            squareoff_fired_dates[strategy.algo_id] = today
+            squared_any = True
+        if squared_any:
             try:
                 from .calendar_store import save_dashboard_snapshot
                 save_dashboard_snapshot(note="eod_squareoff")
             except Exception as exc:
                 print(f"[engine] EOD calendar snapshot failed: {exc}")
-            squareoff_fired_date = today
 
         time.sleep(5)
 
@@ -846,8 +890,8 @@ def _live_broker_reconcile_loop():
     while True:
         try:
             now = datetime.datetime.now(IST)
-            market_open = "09:15" <= now.strftime("%H:%M") < "15:30"
-            if not market_open:
+            current_time = now.strftime("%H:%M")
+            if not _any_strategy_active(current_time):
                 time.sleep(30)
                 continue
 
@@ -893,8 +937,8 @@ def _open_position_ltp_poll_loop():
     while True:
         try:
             now = datetime.datetime.now(IST)
-            market_open = "09:15" <= now.strftime("%H:%M") < "15:30"
-            if not market_open:
+            current_time = now.strftime("%H:%M")
+            if not _any_strategy_active(current_time):
                 time.sleep(10)
                 continue
 
@@ -981,15 +1025,13 @@ def _live_feed_watchdog_loop():
     while True:
         try:
             now = datetime.datetime.now(IST)
-            market_open = "09:15" <= now.strftime("%H:%M") < "15:30"
-            # Pre-market warmup: allow WS attempts from 09:05 (10 min before
-            # market open) so a stable session exists by 09:15:00 and the
-            # 9:15 signal candle can be captured LIVE via WS rather than
-            # falling back to slow REST backfill. Before this, the 60s
-            # opening_grace_elapsed check blocked all attempts until 09:16 —
-            # meaning WS was guaranteed to be down during the 9:15 window.
-            premarket_warmup = "09:05" <= now.strftime("%H:%M") < "09:15"
-            feed_permitted = (market_open or premarket_warmup) and get_stored_access_token()
+            current_time = now.strftime("%H:%M")
+            market_open = _any_strategy_active(current_time)
+            # Per-strategy warmup: allow WS attempts 10 min before the
+            # earliest active session so the opening bar can still be built
+            # live instead of via delayed REST backfill.
+            feed_permitted = _any_strategy_feed_permitted(current_time) and get_stored_access_token()
+            premarket_warmup = feed_permitted and not market_open
             last_tick_at = _engine_status.get("last_tick_at")
             tick_is_fresh = False
             if last_tick_at:
@@ -1006,7 +1048,7 @@ def _live_feed_watchdog_loop():
             token_expired_wait = _token_expired_hold_remaining()
 
             if not feed_permitted:
-                pass  # off-hours (before 09:05 or after 15:30) or no token
+                pass  # off-hours for every strategy, or no token
             elif token_expired_wait > 0:
                 # Fyers said the token is expired — no point handshaking
                 # again until the user re-logs in. Silent (would spam every

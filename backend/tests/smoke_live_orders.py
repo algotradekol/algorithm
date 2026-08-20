@@ -2585,6 +2585,35 @@ def test_algo3_lot_based_qty():
           f"opens={strat2.broker.opens}")
 
 
+def test_strategy_specific_square_off_times():
+    print("\n57. strategy-specific square-off keeps Silver alive past 15:15")
+    from app.strategies.algo1_opening_range import Algo1OpeningRange
+    from app.strategies.algo3_silver_micro import Algo3SilverMicro
+
+    algo1 = object.__new__(Algo1OpeningRange)
+    algo3 = object.__new__(Algo3SilverMicro)
+
+    check("algo1 square-off remains 15:15", algo1.square_off_time() == "15:15",
+          f"got={algo1.square_off_time()}")
+    check("algo3 square-off moved to MCX close window", algo3.square_off_time() == "23:25",
+          f"got={algo3.square_off_time()}")
+
+
+def test_strategy_specific_session_windows():
+    print("\n58. strategy-specific sessions keep MCX active after 15:30")
+    import app.engine as engine_mod
+    from app.strategies.algo1_opening_range import Algo1OpeningRange
+    from app.strategies.algo3_silver_micro import Algo3SilverMicro
+
+    algo1 = object.__new__(Algo1OpeningRange)
+    algo3 = object.__new__(Algo3SilverMicro)
+
+    check("algo1 inactive at 20:00", engine_mod._strategy_session_active(algo1, "20:00") is False)
+    check("algo3 active at 20:00", engine_mod._strategy_session_active(algo3, "20:00") is True)
+    check("algo3 feed warmup allowed at 08:50", engine_mod._strategy_feed_permitted(algo3, "08:50") is True)
+    check("algo3 inactive after 23:30", engine_mod._strategy_session_active(algo3, "23:30") is False)
+
+
 def main():
     print("=" * 66)
     print("  LIVE ORDER PIPELINE — OFFLINE SMOKE TEST (no Fyers, no DB)")
@@ -2666,6 +2695,8 @@ def main():
     test_algo3_warmup_debounce_blocks_repeat_calls()
     test_algo3_warmup_resets_state_before_replay()
     test_algo3_warmup_transient_zero_result_preserves_state()
+    test_strategy_specific_square_off_times()
+    test_strategy_specific_session_windows()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")

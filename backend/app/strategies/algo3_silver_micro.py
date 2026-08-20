@@ -152,6 +152,9 @@ def _fmt(value: float | None) -> str:
 class Algo3SilverMicro(Strategy):
     algo_id = "algo3"
     display_name = "Silver Micro - 15m EMA breakout"
+    _MCX_SESSION_START = "09:00"
+    _MCX_SESSION_END = "23:30"
+    _MCX_SQUARE_OFF_TIME = "23:25"
 
     def __init__(self, watchlist: list[str] | None = None):
         # Prefer an explicit override (used by backtest); otherwise resolve
@@ -211,6 +214,15 @@ class Algo3SilverMicro(Strategy):
     def reload_settings(self):
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
+
+    def market_session_start(self) -> str:
+        return self._MCX_SESSION_START
+
+    def market_session_end(self) -> str:
+        return self._MCX_SESSION_END
+
+    def square_off_time(self) -> str:
+        return self._MCX_SQUARE_OFF_TIME
 
     def scan_enabled(self) -> bool:
         return bool(self.settings.get("scan_enabled", True))
