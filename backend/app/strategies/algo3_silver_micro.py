@@ -144,6 +144,7 @@ class Algo3SilverMicro(Strategy):
         # 15-min bucket aggregation from 1-min inputs.
         self._minute_buffer: list[dict] = []
         self._current_bucket: datetime.datetime | None = None
+        self._last_ingested_minute_at: datetime.datetime | None = None
         self._bars: deque[dict] = deque(maxlen=500)
         self._ema20: float | None = None
 
@@ -220,6 +221,7 @@ class Algo3SilverMicro(Strategy):
         """
         self._minute_buffer = []
         self._current_bucket = None
+        self._last_ingested_minute_at = None
         self._bars.clear()
         self._ema20 = None
         self._buy_setup_close = None
@@ -351,6 +353,9 @@ class Algo3SilverMicro(Strategy):
             "close": float(candle["close"]),
             "volume": float(candle.get("volume") or 0),
         }
+        if self._last_ingested_minute_at == candle_time:
+            return
+        self._last_ingested_minute_at = candle_time
         bucket = _bucket_start(candle_time)
 
         if self._current_bucket is None:

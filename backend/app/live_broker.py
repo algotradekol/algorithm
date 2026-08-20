@@ -125,6 +125,20 @@ class LiveBroker(PaperBroker):
             sl_price=sl_price,
             target_price=target_price,
         )
+        if not protective.get("sl_order_id") or not protective.get("target_order_id"):
+            # Live positions must not remain naked. If either protective
+            # order failed, immediately flatten the fresh entry at Fyers
+            # and refuse to persist the position in our database.
+            exit_side = "SELL" if side.upper() == "BUY" else "BUY"
+            flatten_response = self._place_live_order(symbol, exit_side, qty)
+            raise RuntimeError(
+                "Fyers live protection arming failed: "
+                f"sl_order_id={protective.get('sl_order_id')!r} "
+                f"target_order_id={protective.get('target_order_id')!r} "
+                f"sl_error={protective.get('sl_error')!r} "
+                f"target_error={protective.get('target_error')!r} "
+                f"flatten_response={flatten_response!r}"
+            )
         # Persist Fyers order IDs in signal_snapshot so the reconciliation
         # thread can look them up and detect SL/Target fills without any
         # in-memory dependency (survives container restarts).

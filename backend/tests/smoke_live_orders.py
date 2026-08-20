@@ -167,6 +167,37 @@ def test_live_funds_cap_still_limits_cash_equity():
     check("cash-equity qty capped to 0 when wallet cannot afford one share", qty == 0, f"qty={qty}")
 
 
+def test_live_open_trade_refuses_unprotected_position():
+    print("\n2e. Live open_trade refuses to keep a position open when Fyers protections fail")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec, order_type="MARKET")
+    persisted = []
+    import app.paper_broker as pb
+    orig_open_trade = pb.PaperBroker.open_trade
+    pb.PaperBroker.open_trade = lambda self, *args, **kwargs: persisted.append((args, kwargs))
+    try:
+        broker._cap_qty_to_live_funds = lambda symbol, qty, price: qty
+        broker._place_live_order = lambda symbol, side, qty, order_type="MARKET", limit_price=0.0: {
+            "s": "ok", "id": f"{side}-ORDER"
+        }
+        broker._resolve_fill_details = lambda **kwargs: (240300.0, "2026-08-20T13:45:00+00:00")
+        broker._place_protective_orders = lambda **kwargs: {
+            "sl_order_id": None,
+            "target_order_id": "TP-1",
+            "sl_error": "sl failed",
+            "target_error": None,
+        }
+        try:
+            broker.open_trade("MCX:SILVERMIC26AUGFUT", "BUY", 1, 240300.0, 240200.0, 240600.0)
+            check("open_trade raised when protection missing", False, "expected RuntimeError")
+        except RuntimeError as exc:
+            text = str(exc)
+            check("exception mentions protection arming failed", "protection arming failed" in text.lower(), text)
+        check("position NOT persisted locally when protection missing", len(persisted) == 0, f"persisted={persisted}")
+    finally:
+        pb.PaperBroker.open_trade = orig_open_trade
+
+
 # ── 5. OCO reconcile: SL fills -> cancel Target ────────────────────────
 def test_oco_reconcile():
     print("\n5. OCO — SL fill triggers cancel of the leftover Target order")
@@ -1360,6 +1391,7 @@ def _make_bare_algo3(settings_overrides=None):
         strat.settings.update(settings_overrides)
     strat._minute_buffer = []
     strat._current_bucket = None
+    strat._last_ingested_minute_at = None
     strat._bars = deque(maxlen=500)
     strat._ema20 = None
     strat._buy_setup_close = None
@@ -1443,6 +1475,25 @@ def test_algo3_ema_step_matches_python_reference():
     check("EMA after 10 bars matches reference within 1e-9",
           abs(computed - reference) < 1e-9,
           f"got={computed} ref={reference}")
+
+
+def test_algo3_duplicate_minute_is_ignored():
+    print("\n33b. algo3 duplicate 1m candle is ignored instead of double-counting a 15m bar")
+    import datetime as _dt
+    strat = _make_bare_algo3()
+    candle = {
+        "time": _dt.datetime(2026, 8, 20, 19, 0),
+        "open": 241900,
+        "high": 242100,
+        "low": 241850,
+        "close": 242032,
+        "volume": 10,
+    }
+    strat.on_candle_close("MCX:SILVERMIC26AUGFUT", candle, {})
+    strat.on_candle_close("MCX:SILVERMIC26AUGFUT", candle, {})
+    check("duplicate minute only buffered once",
+          len(strat._minute_buffer) == 1,
+          f"buffer_len={len(strat._minute_buffer)}")
 
 
 # ── 34-35. Setup capture (green above / red below) + overwrite ─────────
@@ -2200,6 +2251,7 @@ def main():
     test_market_mode()
     test_live_funds_cap_bypasses_mcx_futures()
     test_live_funds_cap_still_limits_cash_equity()
+    test_live_open_trade_refuses_unprotected_position()
     test_oco_reconcile()
     test_trailing_sl_syncs_to_fyers()
     test_tick_rounding_and_slm_limit()
@@ -2235,6 +2287,7 @@ def main():
     # ── algo3 (Silver Micro) rewrite regression tests ──
     test_algo3_bucket_start_15m()
     test_algo3_ema_step_matches_python_reference()
+    test_algo3_duplicate_minute_is_ignored()
     test_algo3_setup_captures_and_overwrites()
     test_algo3_no_setup_when_wrong_side_of_ema()
     test_algo3_buy_trigger_only_on_upward_cross()
