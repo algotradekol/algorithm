@@ -1119,6 +1119,34 @@ def test_connection_status_connected_requires_successful_verify():
           f"got verified={result.get('verified')}")
 
 
+def test_silver_setup_history_naive_ist_stores_as_correct_utc():
+    print("\n26c. Silver setup history — naive IST candle time stores as correct UTC")
+    import datetime as _dt
+    import app.silver_setup_history as ssh
+
+    candle_time = _dt.datetime(2026, 8, 20, 23, 15, 0)
+    stored = ssh._utc_iso(candle_time)
+    check("23:15 IST becomes 17:45 UTC in storage",
+          stored == "2026-08-20T17:45:00+00:00",
+          f"got={stored}")
+
+
+def test_silver_setup_history_repairs_future_shifted_legacy_rows():
+    print("\n26d. Silver setup history — legacy future-shifted rows are normalized on read")
+    import datetime as _dt
+    from unittest.mock import patch
+    import app.silver_setup_history as ssh
+
+    fake_now = _dt.datetime(2026, 8, 20, 18, 20, 0, tzinfo=_dt.timezone.utc)
+    row = {"candle_time": "2026-08-20T23:15:00+00:00"}
+
+    with patch.object(ssh, "_now_utc", return_value=fake_now):
+        fixed = ssh._normalize_legacy_row(row)
+    check("legacy row shifted back by 5h30",
+          fixed.get("candle_time") == "2026-08-20T17:45:00+00:00",
+          f"got={fixed.get('candle_time')}")
+
+
 # ── 27. F4 pre-market watchdog skip ────────────────────────────────────
 def test_pre_market_no_tick_not_counted_as_failure():
     print("\n27. F4 — 'no market tick' fired before 09:15 IST does NOT increment failure counter")
@@ -2569,6 +2597,9 @@ def main():
     test_scan_disabled_short_circuits_algo3()
     test_oauth_throttle_serializes_exchanges()
     test_connection_status_429_stays_degraded_not_expired()
+    test_connection_status_connected_requires_successful_verify()
+    test_silver_setup_history_naive_ist_stores_as_correct_utc()
+    test_silver_setup_history_repairs_future_shifted_legacy_rows()
     test_pre_market_no_tick_not_counted_as_failure()
     test_critical_live_feed_symbols_ignore_nse_noise()
     test_engine_rest_fallback_targets_stale_non_nse_symbols()
