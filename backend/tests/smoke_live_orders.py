@@ -1088,9 +1088,32 @@ def test_pre_market_no_tick_not_counted_as_failure():
     eng._feed_circuit_open_until = 0.0
 
 
-# ── 28. F6 post-recovery grace ─────────────────────────────────────────
+# ── 28. Critical-symbol feed health ───────────────────────────────────
+def test_critical_live_feed_symbols_ignore_nse_noise():
+    print("\n28. Critical-symbol feed health — NSE ticks do not hide silent MCX strategy symbols")
+    from app.fyers_client import (
+        _critical_live_feed_symbols,
+        _missing_critical_live_feed_symbols,
+    )
+
+    subscribed = ["NSE:RELIANCE-EQ", "NSE:TCS-EQ", "MCX:SILVERMIC26AUGFUT"]
+    seen_nse_only = {"NSE:RELIANCE-EQ", "NSE:TCS-EQ"}
+    seen_all = {"NSE:RELIANCE-EQ", "NSE:TCS-EQ", "MCX:SILVERMIC26AUGFUT"}
+
+    check("critical list keeps only non-NSE symbols",
+          _critical_live_feed_symbols(subscribed) == ["MCX:SILVERMIC26AUGFUT"],
+          f"got={_critical_live_feed_symbols(subscribed)}")
+    check("MCX still reported missing when only NSE has ticked",
+          _missing_critical_live_feed_symbols(subscribed, seen_nse_only) == ["MCX:SILVERMIC26AUGFUT"],
+          f"got={_missing_critical_live_feed_symbols(subscribed, seen_nse_only)}")
+    check("no critical symbols missing once MCX ticks too",
+          _missing_critical_live_feed_symbols(subscribed, seen_all) == [],
+          f"got={_missing_critical_live_feed_symbols(subscribed, seen_all)}")
+
+
+# ── 29. F6 post-recovery grace ─────────────────────────────────────────
 def test_post_recovery_grace_ignores_immediate_failure():
-    print("\n28. F6 — failure within 60s of recovery is ignored (no counter bump)")
+    print("\n29. F6 — failure within 60s of recovery is ignored (no counter bump)")
     import time as _time
     import app.engine as eng
     eng._feed_reconnect_failure_count = 3
@@ -1117,9 +1140,9 @@ def test_post_recovery_grace_ignores_immediate_failure():
     eng._feed_last_recovery_at = 0.0
 
 
-# ── 29. F6 minimum backoff floor ───────────────────────────────────────
+# ── 30. F6 minimum backoff floor ───────────────────────────────────────
 def test_current_backoff_respects_min_floor():
-    print("\n29. F6 — _current_backoff_seconds returns at least 30s during a failure run")
+    print("\n30. F6 — _current_backoff_seconds returns at least 30s during a failure run")
     import app.engine as eng
     eng._feed_reconnect_failure_count = 0
     check("zero failures -> returns first ladder value (no floor)",
@@ -1135,9 +1158,9 @@ def test_current_backoff_respects_min_floor():
     eng._feed_reconnect_failure_count = 0
 
 
-# ── 30. HIDDEN_TABS alias normalization ────────────────────────────────
+# ── 31. HIDDEN_TABS alias normalization ────────────────────────────────
 def test_hidden_tabs_env_normalizes_aliases():
-    print("\n30. HIDDEN_TABS parsing — normalizes case/spaces/aliases so 'silver' hides algo3")
+    print("\n31. HIDDEN_TABS parsing — normalizes case/spaces/aliases so 'silver' hides algo3")
     # We test the config-layer parser directly since it's pure logic.
     import os
     from unittest.mock import patch
@@ -1163,9 +1186,9 @@ def test_hidden_tabs_env_normalizes_aliases():
         importlib.reload(app.engine)
 
 
-# ── 31. Flat-candle rejection through the batch path ───────────────────
+# ── 32. Flat-candle rejection through the batch path ───────────────────
 def test_flat_candle_batch_path_rejects():
-    print("\n31. Flat-candle rejection ALSO applies via _build_candidates_from_collection")
+    print("\n32. Flat-candle rejection ALSO applies via _build_candidates_from_collection")
     from app.strategies.algo1_opening_range import Algo1OpeningRange, ScanDebugLogger
     strat = object.__new__(Algo1OpeningRange)
     strat.algo_id = "algo1"
@@ -2101,6 +2124,7 @@ def main():
     test_oauth_throttle_serializes_exchanges()
     test_connection_status_429_stays_degraded_not_expired()
     test_pre_market_no_tick_not_counted_as_failure()
+    test_critical_live_feed_symbols_ignore_nse_noise()
     test_post_recovery_grace_ignores_immediate_failure()
     test_current_backoff_respects_min_floor()
     test_hidden_tabs_env_normalizes_aliases()
