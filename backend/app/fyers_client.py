@@ -827,6 +827,10 @@ def get_broker_positions(mode: str | None = None) -> dict:
             if isinstance(row, dict)
             and (normalized := _normalize_broker_position(row)) is not None
         ]
+        # Second pass: hydrate entry_time from the intraday tradebook so
+        # positions opened directly in the Fyers app show a real fill time
+        # instead of "--". Silent no-op on failure.
+        _enrich_positions_with_entry_times(fyers, positions)
         result = {
             "mode": effective_mode,
             "broker": get_active_broker_key(effective_mode),
@@ -1060,7 +1064,148 @@ def _normalize_broker_position(row: dict) -> dict | None:
         "product_type": str(value("productType", "product_type") or ""),
         "buy_qty": number("buyQty", "buy_qty"),
         "sell_qty": number("sellQty", "sell_qty"),
+        # Populated in a second pass from Fyers's tradebook when available
+        # (see _enrich_positions_with_entry_times). Left as None here so
+        # positions still render even if the tradebook call fails.
+        "entry_time": None,
     }
+
+
+def _parse_broker_trade_time(row: dict) -> datetime.datetime | None:
+    """Parse a Fyers tradebook row's timestamp into a UTC datetime.
+
+    Fyers uses several key names and formats across product versions; try
+    each in preference order and coerce to timezone-aware UTC. Returns
+    None if nothing parses (caller falls back to leaving entry_time null).
+    """
+    for key in (
+        "orderDateTime",
+        "tradeDateTime",
+        "tradeTime",
+        "tradedAt",
+        "tradedOn",
+        "updatedAt",
+        "updated_at",
+        "createdAt",
+        "timestamp",
+        "time",
+    ):
+        raw = row.get(key)
+        if raw in (None, ""):
+            continue
+        if isinstance(raw, (int, float)):
+            number_value = float(raw)
+            # Fyers occasionally emits milliseconds; heuristic split at 1e12.
+            if number_value > 1_000_000_000_000:
+                number_value /= 1000
+            try:
+                return datetime.datetime.fromtimestamp(number_value, tz=datetime.timezone.utc)
+            except (OverflowError, OSError, ValueError):
+                continue
+        text = str(raw).strip()
+        if not text:
+            continue
+        iso_candidate = text.replace("Z", "+00:00")
+        try:
+            parsed = datetime.datetime.fromisoformat(iso_candidate)
+            if parsed.tzinfo is None:
+                # Fyers wall-clock strings are IST; convert to UTC so the
+                # frontend's formatDateTime renders correctly regardless of
+                # server timezone.
+                from .timezone import IST
+                parsed = parsed.replace(tzinfo=IST)
+            return parsed.astimezone(datetime.timezone.utc)
+        except ValueError:
+            pass
+        for fmt in ("%d-%m-%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
+            try:
+                naive = datetime.datetime.strptime(text, fmt)
+                from .timezone import IST
+                return naive.replace(tzinfo=IST).astimezone(datetime.timezone.utc)
+            except ValueError:
+                continue
+    return None
+
+
+def _normalize_trade_side(raw) -> str | None:
+    if raw is None:
+        return None
+    text = str(raw).strip().upper()
+    if text in {"1", "BUY", "B"}:
+        return "BUY"
+    if text in {"-1", "SELL", "S"}:
+        return "SELL"
+    return None
+
+
+def _extract_tradebook_rows(response) -> list[dict]:
+    """Fyers tradebook can return the list under any of several keys, or
+    as a bare list, depending on SDK version. Normalize to a flat list of
+    dicts."""
+    if isinstance(response, list):
+        return [row for row in response if isinstance(row, dict)]
+    if not isinstance(response, dict):
+        return []
+    for key in ("tradeBook", "tradebook", "trades", "data"):
+        rows = response.get(key)
+        if isinstance(rows, list):
+            return [row for row in rows if isinstance(row, dict)]
+        if isinstance(rows, dict):
+            for nested_key in ("rows", "items", "trades"):
+                nested = rows.get(nested_key)
+                if isinstance(nested, list):
+                    return [row for row in nested if isinstance(row, dict)]
+    return []
+
+
+def _enrich_positions_with_entry_times(fyers, positions: list[dict]) -> None:
+    """For each open position, look up the earliest matching tradebook
+    fill and stamp its timestamp as `entry_time`. Mutates `positions`
+    in place. Silent no-op if the tradebook call fails — positions still
+    render, just without accurate entry_time (frontend shows '--').
+
+    Match is by (symbol, side). Fyers's intraday tradebook typically holds
+    all of today's fills; if a manual position was opened yesterday the
+    lookup returns None and entry_time stays null.
+    """
+    if not positions:
+        return
+    try:
+        response = fyers.tradebook()
+    except Exception as exc:
+        print(f"[fyers_client] tradebook fetch for entry_time enrichment failed: {exc}")
+        return
+    rows = _extract_tradebook_rows(response)
+    if not rows:
+        return
+
+    # Bucket earliest fill time by (symbol upper, side). One pass keeps
+    # this O(trades) instead of O(trades * positions).
+    earliest_by_key: dict[tuple[str, str], datetime.datetime] = {}
+    for row in rows:
+        symbol = str(row.get("symbol") or row.get("fySymbol") or "").upper()
+        if not symbol:
+            continue
+        side = _normalize_trade_side(
+            row.get("side")
+            or row.get("transactionType")
+            or row.get("buySell")
+        )
+        if side is None:
+            continue
+        parsed = _parse_broker_trade_time(row)
+        if parsed is None:
+            continue
+        key = (symbol, side)
+        prior = earliest_by_key.get(key)
+        if prior is None or parsed < prior:
+            earliest_by_key[key] = parsed
+
+    for position in positions:
+        key = (str(position.get("symbol", "")).upper(), position.get("side"))
+        earliest = earliest_by_key.get(key)
+        if earliest is not None:
+            position["entry_time"] = earliest.isoformat()
 
 
 def _normalize_broker_order(row: dict) -> dict | None:

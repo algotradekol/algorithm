@@ -1845,6 +1845,67 @@ def test_algo3_candle_close_trigger_fires():
           f"opens={strat.broker.opens}")
 
 
+def test_broker_positions_entry_time_from_tradebook():
+    """Positions opened directly in the Fyers app show accurate entry_time
+    sourced from the intraday tradebook (client's 2026-08-20 ask)."""
+    print("\n52. broker positions: entry_time hydrated from tradebook")
+    from app.fyers_client import _enrich_positions_with_entry_times
+
+    class FakeFyers:
+        def __init__(self, tradebook_response):
+            self._response = tradebook_response
+            self.calls = 0
+        def tradebook(self):
+            self.calls += 1
+            return self._response
+
+    # Case A — standard Fyers V3 response shape: {s:'ok', tradeBook:[...]}
+    positions = [
+        {"symbol": "MCX:SILVERMIC26AUGFUT", "side": "BUY", "entry_time": None},
+        {"symbol": "NSE:RELIANCE-EQ",       "side": "SELL", "entry_time": None},
+    ]
+    fake = FakeFyers({
+        "s": "ok",
+        "tradeBook": [
+            # Two BUY fills for silver — earliest should win
+            {"symbol": "MCX:SILVERMIC26AUGFUT", "side": 1, "orderDateTime": "2026-08-20 09:22:07"},
+            {"symbol": "MCX:SILVERMIC26AUGFUT", "side": 1, "orderDateTime": "2026-08-20 10:14:31"},
+            # SELL fill for reliance
+            {"symbol": "NSE:RELIANCE-EQ", "side": -1, "orderDateTime": "2026-08-20 11:05:00"},
+            # An unrelated fill that must not match
+            {"symbol": "NSE:TCS-EQ", "side": 1, "orderDateTime": "2026-08-20 09:15:00"},
+        ],
+    })
+    _enrich_positions_with_entry_times(fake, positions)
+    check("tradebook called exactly once", fake.calls == 1, f"calls={fake.calls}")
+    # 09:22 IST = 03:52 UTC; 11:05 IST = 05:35 UTC. Backend stores UTC,
+    # frontend converts to Asia/Kolkata for display.
+    check("silver BUY entry_time matches earliest fill (09:22 IST -> 03:52 UTC)",
+          positions[0]["entry_time"] and "03:52:07" in positions[0]["entry_time"],
+          f"got={positions[0]['entry_time']}")
+    check("reliance SELL entry_time matches its own fill (11:05 IST -> 05:35 UTC)",
+          positions[1]["entry_time"] and "05:35:00" in positions[1]["entry_time"],
+          f"got={positions[1]['entry_time']}")
+
+    # Case B — tradebook fetch fails: entry_time stays None, no exception
+    positions_b = [{"symbol": "MCX:SILVERMIC26AUGFUT", "side": "BUY", "entry_time": None}]
+    class FailingFyers:
+        def tradebook(self):
+            raise RuntimeError("simulated network error")
+    _enrich_positions_with_entry_times(FailingFyers(), positions_b)
+    check("tradebook failure leaves entry_time as None",
+          positions_b[0]["entry_time"] is None,
+          f"got={positions_b[0]['entry_time']}")
+
+    # Case C — position has no matching tradebook row (e.g. opened yesterday)
+    positions_c = [{"symbol": "MCX:GOLDM26AUGFUT", "side": "BUY", "entry_time": None}]
+    fake_c = FakeFyers({"tradeBook": [{"symbol": "MCX:SILVERMIC26AUGFUT", "side": 1, "orderDateTime": "2026-08-20 09:22:07"}]})
+    _enrich_positions_with_entry_times(fake_c, positions_c)
+    check("no match -> entry_time stays None",
+          positions_c[0]["entry_time"] is None,
+          f"got={positions_c[0]['entry_time']}")
+
+
 def test_algo3_lot_based_qty():
     """Silver Micro qty must be lots * 1, NOT capital // price."""
     print("\n51. algo3 qty is derived from silver_lots (not capital / price)")
@@ -1920,6 +1981,7 @@ def main():
     test_algo3_gap_through_fires_immediately()
     test_algo3_candle_close_trigger_fires()
     test_algo3_lot_based_qty()
+    test_broker_positions_entry_time_from_tradebook()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")
