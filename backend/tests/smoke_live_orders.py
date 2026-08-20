@@ -1401,6 +1401,12 @@ def _make_bare_algo3(settings_overrides=None):
     strat._prev_ltp = None
     strat._last_fired_buy_bar_at = None
     strat._last_fired_sell_bar_at = None
+    strat._last_attempted_buy_bar_at = None
+    strat._last_attempted_sell_bar_at = None
+    import threading as _threading
+    strat._entry_attempt_in_flight = False
+    strat._entry_guard_lock = _threading.Lock()
+    strat._entry_cooldown_until_monotonic = 0.0
     strat._last_tick_at = None
     strat._last_tick_ltp = None
     strat._last_minute_candle_at = None
@@ -1701,6 +1707,82 @@ def test_algo3_no_reentry_same_side():
     strat._check_triggers(92200)  # would cross up again
     check("second same-side cross does NOT re-enter",
           len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
+
+
+def test_algo3_failed_live_attempt_consumes_setup_once():
+    print("\n41b. algo3 failed live attempt consumes the current setup and does not retry on later ticks")
+    strat = _make_bare_algo3()
+    import datetime as _dt
+    strat._buy_setup_close = 92000.0
+    strat._buy_setup_bar_at = _dt.datetime(2026, 8, 20, 19, 15)
+    calls = []
+
+    def fake_enter(side, ltp, trigger_level):
+        calls.append((side, ltp, trigger_level))
+        return False
+
+    strat._enter = fake_enter
+    strat._prev_ltp = 92100.0
+    strat._check_triggers(92200.0)
+    strat._prev_ltp = 92200.0
+    strat._check_triggers(92300.0)
+    check("failed setup only attempted once",
+          len(calls) == 1, f"calls={calls}")
+    check("failed setup latched as attempted",
+          strat._last_attempted_buy_bar_at == strat._buy_setup_bar_at,
+          f"attempted={strat._last_attempted_buy_bar_at} setup={strat._buy_setup_bar_at}")
+
+
+def test_algo3_new_setup_rearms_after_failed_attempt():
+    print("\n41c. algo3 new qualifying setup re-arms after an earlier failed attempt")
+    strat = _make_bare_algo3()
+    import datetime as _dt
+    first_setup = _dt.datetime(2026, 8, 20, 19, 15)
+    second_setup = _dt.datetime(2026, 8, 20, 19, 30)
+    strat._buy_setup_close = 92000.0
+    strat._buy_setup_bar_at = first_setup
+    calls = []
+
+    def fake_enter(side, ltp, trigger_level):
+        calls.append((side, ltp, trigger_level))
+        return False
+
+    strat._enter = fake_enter
+    strat._prev_ltp = 92100.0
+    strat._check_triggers(92200.0)
+    strat._buy_setup_close = 92500.0
+    strat._buy_setup_bar_at = second_setup
+    strat._prev_ltp = 92600.0
+    strat._check_triggers(92700.0)
+    check("new setup got its own fresh attempt",
+          len(calls) == 2, f"calls={calls}")
+    check("attempt marker moved to the newer setup timestamp",
+          strat._last_attempted_buy_bar_at == second_setup,
+          f"attempted={strat._last_attempted_buy_bar_at}")
+
+
+def test_algo3_live_broker_guard_blocks_when_symbol_busy():
+    print("\n41d. algo3 live broker guard blocks a fresh entry when broker already has Silver activity")
+    strat = _make_bare_algo3()
+    strat.broker._algo3_treat_as_live = True
+    import datetime as _dt
+    strat._buy_setup_close = 92000.0
+    strat._buy_setup_bar_at = _dt.datetime(2026, 8, 20, 19, 15)
+    calls = []
+
+    def fake_enter(side, ltp, trigger_level):
+        calls.append((side, ltp, trigger_level))
+        return True
+
+    strat._enter = fake_enter
+    strat._live_broker_symbol_busy = lambda current=None: True
+    strat._prev_ltp = 92100.0
+    strat._check_triggers(92200.0)
+    check("busy broker state prevented the entry call",
+          len(calls) == 0, f"calls={calls}")
+    check("busy broker still consumed the setup to avoid retry storms",
+          strat._last_attempted_buy_bar_at == strat._buy_setup_bar_at,
+          f"attempted={strat._last_attempted_buy_bar_at}")
 
 
 # ── 42. Entry payload uses POINTS for SL/target ────────────────────────
@@ -2364,6 +2446,9 @@ def main():
     test_algo3_configurable_n_parameter()
     test_algo3_reversal_on_contra_signal()
     test_algo3_no_reentry_same_side()
+    test_algo3_failed_live_attempt_consumes_setup_once()
+    test_algo3_new_setup_rearms_after_failed_attempt()
+    test_algo3_live_broker_guard_blocks_when_symbol_busy()
     test_algo3_entry_uses_points_sl_target()
     test_algo3_trailing_settings_convert_points_to_pct()
     test_algo3_scan_disabled_skips_triggers()
