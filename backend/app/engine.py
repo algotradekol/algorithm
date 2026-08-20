@@ -43,6 +43,7 @@ from .runtime_mode import get_runtime_trading_mode, normalize_trading_mode, set_
 
 aggregator = CandleAggregator()
 last_ltp: dict[str, float] = {}
+_symbol_last_tick_at: dict[str, str] = {}
 SCAN_RESULTS: dict[str, dict] = {}
 
 STRATEGIES = {}   # populated in start_engine() once the watchlist is known
@@ -57,6 +58,7 @@ _feed_retry_schedules: set[tuple[datetime.date, str]] = set()
 _feed_watchdog_started = False
 _feed_watchdog_last_restart_at = 0.0
 _position_ltp_poll_started = False
+_critical_rest_fallback_started = False
 _live_broker_reconcile_started = False
 # Reconnect strategy for the Fyers WebSocket. Two mechanisms stacked:
 #
@@ -411,6 +413,7 @@ def _on_tick(message: dict):
     _record_tick_diagnostics(symbol, ltp)
 
     last_ltp[symbol] = ltp
+    _symbol_last_tick_at[symbol] = _utc_now()
     prev_close = (
         message.get("prev_close_price")
         or message.get("prev_close")
@@ -450,6 +453,105 @@ def _on_tick(message: dict):
                 position["_last_ltp"] = ltp
                 strategy.broker.update_position_range(position, ltp)
         strategy.check_exits()
+
+
+def _critical_live_feed_symbols() -> list[str]:
+    """Symbols that should get a REST fallback if the WS starves them."""
+    return [
+        symbol
+        for symbol in (LIVE_FEED_SYMBOLS or WATCHLIST)
+        if symbol and not str(symbol).upper().startswith("NSE:")
+    ]
+
+
+def _symbol_tick_age_seconds(symbol: str) -> float | None:
+    value = _symbol_last_tick_at.get(symbol)
+    if not value:
+        return None
+    try:
+        tick_time = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    return (datetime.datetime.now(datetime.timezone.utc) - tick_time).total_seconds()
+
+
+def _symbol_needs_rest_fallback(symbol: str, max_age_seconds: float = 15.0) -> bool:
+    age = _symbol_tick_age_seconds(symbol)
+    return age is None or age >= max_age_seconds
+
+
+def _inject_rest_tick(symbol: str, ltp: float) -> None:
+    _on_tick({
+        "symbol": symbol,
+        "ltp": float(ltp),
+        "vol_traded_today": 0,
+        "source": "rest_fallback",
+    })
+
+
+def _critical_symbol_rest_fallback_loop():
+    """Keep non-NSE strategy symbols alive via REST when WS is silent.
+
+    For today's production issue this mainly means the one MCX Silver Micro
+    symbol: if the websocket subscribes successfully but no tick arrives,
+    poll Fyers Quotes for LTP and the completed 1-minute candle so algo3 can
+    still update last price, build 15m bars, and trigger entries/exits.
+    """
+    from .fyers_client import get_live_ltp_batch, get_single_minute_candle
+
+    last_candle_seen: dict[str, str] = {}
+
+    while True:
+        try:
+            now_ist = datetime.datetime.now(IST)
+            hhmm = now_ist.strftime("%H:%M")
+            # NSE closes at 15:30, but MCX Silver Micro continues into the
+            # evening session. Keep the REST fallback alive for the full MCX
+            # window so post-15:30 algo3 can still trade.
+            if not ("09:15" <= hhmm < "23:30"):
+                time.sleep(5)
+                continue
+
+            critical_symbols = [symbol for symbol in _critical_live_feed_symbols() if _symbol_needs_rest_fallback(symbol)]
+            if not critical_symbols:
+                time.sleep(5)
+                continue
+
+            try:
+                ltps = get_live_ltp_batch(critical_symbols, mode="live")
+            except Exception as exc:
+                print(f"[engine] critical-symbol REST LTP fallback failed: {exc}")
+                time.sleep(5)
+                continue
+
+            for symbol, ltp in ltps.items():
+                if not ltp:
+                    continue
+                _inject_rest_tick(symbol, ltp)
+
+                # Rebuild the just-completed 1-minute candle from history so
+                # algo3 can keep forming 15m bars even while WS is dead.
+                previous_minute = (now_ist.replace(second=0, microsecond=0) - datetime.timedelta(minutes=1))
+                candle_hhmm = previous_minute.strftime("%H:%M")
+                candle_key = f"{symbol}|{previous_minute.isoformat()}"
+                if last_candle_seen.get(symbol) == candle_key:
+                    continue
+                try:
+                    candles = get_single_minute_candle(symbol, candle_hhmm)
+                except Exception as exc:
+                    print(f"[engine] critical-symbol 1m candle fallback failed for {symbol} {candle_hhmm}: {exc}")
+                    continue
+                if not candles:
+                    continue
+                candle = candles[-1]
+                if candle.get("time") and candle["time"].date() == previous_minute.date():
+                    _on_candle_close(symbol, candle, {})
+                    last_candle_seen[symbol] = candle_key
+
+        except Exception as exc:
+            print(f"[engine] critical-symbol REST fallback loop error: {exc}")
+
+        time.sleep(5)
 
 
 def _recover_scheduled_candle_from_buffer(strategy, scan_time: str, today: datetime.date) -> int:
@@ -1289,7 +1391,7 @@ def apply_trading_mode(mode: str) -> dict:
 
 def start_engine():
     """Called once from main.py's FastAPI startup event."""
-    global WATCHLIST, LIVE_FEED_SYMBOLS, _scheduler_started, _feed_watchdog_started
+    global WATCHLIST, LIVE_FEED_SYMBOLS, _scheduler_started, _feed_watchdog_started, _critical_rest_fallback_started
 
     with _engine_lock:
         if _engine_status["state"] in {"starting", "running"}:
@@ -1342,6 +1444,9 @@ def start_engine():
         if not _position_ltp_poll_started:
             threading.Thread(target=_open_position_ltp_poll_loop, daemon=True).start()
             _position_ltp_poll_started = True
+        if not _critical_rest_fallback_started:
+            threading.Thread(target=_critical_symbol_rest_fallback_loop, daemon=True).start()
+            _critical_rest_fallback_started = True
         global _live_broker_reconcile_started
         if not _live_broker_reconcile_started:
             threading.Thread(target=_live_broker_reconcile_loop, daemon=True).start()
