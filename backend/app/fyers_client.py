@@ -1441,8 +1441,26 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
     subscription_sent = False
     subscription_lock = threading.Lock()
 
+    # MCX diagnostic: log the raw shape of any message whose symbol
+    # contains "SILVERMIC" (regardless of exchange prefix). If MCX ticks
+    # ARE arriving but with a shape the on_tick filter drops (missing
+    # ltp key, different symbol format, etc.), this will show it.
+    # One log per unique raw shape so we don't flood.
+    _mcx_shapes_seen: set = set()
+
     def on_message(message):
         nonlocal first_tick_received
+        try:
+            sym_val = str(message.get("symbol") or "")
+            if "SILVERMIC" in sym_val.upper() or (isinstance(message, dict) and any(
+                "SILVERMIC" in str(v).upper() for v in message.values() if isinstance(v, str)
+            )):
+                shape_key = f"{sym_val}|{sorted(message.keys()) if isinstance(message, dict) else type(message).__name__}"
+                if shape_key not in _mcx_shapes_seen:
+                    _mcx_shapes_seen.add(shape_key)
+                    print(f"[fyers] MCX raw message shape: {message}")
+        except Exception:
+            pass
         if not first_tick_received and message.get("symbol") and message.get("ltp") is not None:
             first_tick_received = True
             report_status(
