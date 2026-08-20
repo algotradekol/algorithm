@@ -610,12 +610,18 @@ def manual_trade(algo_id: str, payload: dict, _user=Depends(require_auth)):
         if entry_price <= 0 or not math.isfinite(entry_price):
             raise HTTPException(status_code=409, detail="No live price is available for this symbol yet.")
 
-        capital_per_trade = float(getattr(strategy, "settings", {}).get("capital_per_trade") or 0)
-        qty = int(capital_per_trade // entry_price)
-        if qty < 1:
-            raise HTTPException(status_code=400, detail="Capital per trade is below the current share price.")
-
         settings = getattr(strategy, "settings", {}) or {}
+        if algo_id == "algo3":
+            # Silver Micro trades in whole lots. Do not reject using
+            # capital//price math — MCX futures are margin-based, not
+            # cash-equity "can I afford one share" based.
+            qty = max(1, int(settings.get("silver_lots", 1) or 1))
+        else:
+            capital_per_trade = float(settings.get("capital_per_trade") or 0)
+            qty = int(capital_per_trade // entry_price)
+            if qty < 1:
+                raise HTTPException(status_code=400, detail="Capital per trade is below the current share price.")
+
         if side == "BUY":
             sl_price = entry_price * (1 - float(settings.get("sl_pct") or 0) / 100)
             target_price = entry_price * (1 + float(settings.get("target_pct") or 0) / 100)
