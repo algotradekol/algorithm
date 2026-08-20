@@ -140,6 +140,8 @@ export const api = {
     authedFetch(`/api/algo/${algoId}/manual-trade`, { method: 'POST', body: JSON.stringify(payload) }),
   trades: (algoId: string) => authedFetch(`/api/algo/${algoId}/trades`),
   history: (algoId: string, days = 30) => authedFetch(`/api/algo/${algoId}/history?days=${days}`),
+  setupHistory: (algoId: string, side: 'BUY' | 'SELL', days = 30, limit = 100) =>
+    authedFetch(`/api/algo/${algoId}/setup-history?side=${encodeURIComponent(side)}&days=${days}&limit=${limit}`),
   scanResults: (algoId: string) => authedFetch(`/api/algo/${algoId}/scan-results`),
   feedStatus: (algoId: string) => authedFetch(`/api/algo/${algoId}/feed-status`),
   getSettings: (algoId: string) => authedFetch(`/api/algo/${algoId}/settings`),

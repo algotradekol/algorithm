@@ -169,6 +169,7 @@ def get_connection_status() -> dict:
     if not token:
         return {
             "connected": False,
+            "verified": False,
             "status": "disconnected",
             "message": "No Fyers access token found. Login to Fyers before trading.",
             "refresh_token_present": refresh_token_present,
@@ -184,6 +185,7 @@ def get_connection_status() -> dict:
         if _is_recent_token_row(token_row, RECENT_LOGIN_GRACE_SECONDS):
             return {
                 "connected": True,
+                "verified": False,
                 "status": "rechecking",
                 "message": f"Fyers login is still settling after a fresh login; retrying verification ({exc}).",
                 "refresh_token_present": refresh_token_present,
@@ -197,6 +199,7 @@ def get_connection_status() -> dict:
         # and expose a degraded verification state until FYERS responds again.
         return {
             "connected": True,
+            "verified": False,
             "status": "degraded",
             "message": f"Fyers token is stored, but verification is temporarily unavailable: {exc}",
             "refresh_token_present": refresh_token_present,
@@ -209,6 +212,7 @@ def get_connection_status() -> dict:
     if response.get("s") == "ok":
         return {
             "connected": True,
+            "verified": True,
             "status": "connected",
             "message": "Fyers token is valid.",
             "refresh_token_present": refresh_token_present,
@@ -221,6 +225,7 @@ def get_connection_status() -> dict:
     if _is_recent_token_row(token_row, RECENT_LOGIN_GRACE_SECONDS):
         return {
             "connected": True,
+            "verified": False,
             "status": "rechecking",
             "message": response.get("message") or "Fyers login is still settling after a fresh login; verification will retry.",
             "refresh_token_present": refresh_token_present,
@@ -239,6 +244,7 @@ def get_connection_status() -> dict:
     if _is_rate_limited(response):
         return {
             "connected": True,
+            "verified": False,
             "status": "degraded",
             "message": "Fyers verification throttled by rate limit; keeping session alive.",
             "refresh_token_present": refresh_token_present,
@@ -250,6 +256,7 @@ def get_connection_status() -> dict:
 
     return {
         "connected": False,
+        "verified": False,
         "status": "expired",
         "message": response.get("message") or "Fyers token is missing, expired, or rejected.",
         "refresh_token_present": refresh_token_present,

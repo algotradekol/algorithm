@@ -66,10 +66,12 @@ function DashboardContent() {
   const [istTime, setIstTime] = useState(formatIstTime());
   const [fyersStatus, setFyersStatus] = useState<{
     connected: boolean;
+    verified?: boolean;
     status: string;
     message: string;
     trading_mode?: 'paper' | 'live';
   } | null>(null);
+  const [statusReloadNonce, setStatusReloadNonce] = useState(0);
   const [engineStatus, setEngineStatus] = useState<{
     state: string;
     trading_mode?: string;
@@ -101,13 +103,27 @@ function DashboardContent() {
   const searchParams = useSearchParams();
   const tradingMode = (engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper';
   const fyersConnectedForMode = Boolean(
-    fyersStatus?.connected
+    fyersStatus?.verified
     && (!fyersStatus.trading_mode || fyersStatus.trading_mode === tradingMode)
   );
   const tradingReady = Boolean(fyersConnectedForMode && engineStatus?.state === 'running');
-  const statusText = fyersConnectedForMode ? 'LIVE' : fyersStatus?.status === 'disconnected' ? 'TOKEN MISSING' : 'STOPPED';
+  const statusText = fyersConnectedForMode
+    ? 'LIVE'
+    : fyersStatus?.status === 'disconnected'
+      ? 'TOKEN MISSING'
+      : fyersStatus?.status === 'expired'
+        ? 'EXPIRED'
+        : fyersStatus?.status === 'checking' || fyersStatus?.status === 'rechecking' || fyersStatus?.status === 'degraded'
+          ? 'CHECKING'
+          : 'STOPPED';
   const wsText = wsStatus === 'connected' ? 'Live' : wsStatus === 'reconnecting' ? 'Reconnecting' : 'Offline';
-  const statusIconTone = fyersConnectedForMode ? 'text-[#22c55e]' : fyersStatus?.status === 'disconnected' ? 'text-[#f59e0b]' : 'text-[#ef4444]';
+  const statusIconTone = fyersConnectedForMode
+    ? 'text-[#22c55e]'
+    : fyersStatus?.status === 'disconnected'
+      ? 'text-[#f59e0b]'
+      : fyersStatus?.status === 'checking' || fyersStatus?.status === 'rechecking' || fyersStatus?.status === 'degraded'
+        ? 'text-[#f59e0b]'
+        : 'text-[#ef4444]';
   const wsIconTone = wsStatus === 'connected' ? 'text-[#22c55e]' : wsStatus === 'reconnecting' ? 'text-[#f59e0b]' : 'text-[#ef4444]';
 
   useEffect(() => {
@@ -154,14 +170,15 @@ function DashboardContent() {
         if (!cancelled) {
           setFyersStatus((current) => current ? {
             ...current,
-            status: current.connected ? 'degraded' : current.status,
-            message: current.connected
+            status: current.verified ? 'degraded' : current.status,
+            message: current.verified
               ? `Connection check temporarily unavailable; keeping the last confirmed session. ${
                   error instanceof Error ? error.message : ''
                 }`.trim()
               : (error instanceof Error ? error.message : 'Unable to check Fyers status'),
           } : {
             connected: false,
+            verified: false,
             status: 'checking',
             message: error instanceof Error ? error.message : 'Unable to check Fyers status',
           });
@@ -188,7 +205,7 @@ function DashboardContent() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [ready, fyersLoginResult]);
+  }, [ready, fyersLoginResult, statusReloadNonce]);
 
   if (!ready) return null;
 
@@ -261,10 +278,18 @@ function DashboardContent() {
             <TradingModeToggle
               mode={engineStatus?.trading_mode}
               onModeChanged={(mode) => {
-                setFyersStatus(null);
+                setFyersStatus({
+                  connected: false,
+                  verified: false,
+                  status: 'checking',
+                  message: `Switching to FYERS ${mode.toUpperCase()} and verifying session...`,
+                  trading_mode: mode,
+                });
                 setEngineStatus((current) => (
                   current ? { ...current, trading_mode: mode } : current
                 ));
+                setWsStatus('reconnecting');
+                setStatusReloadNonce((value) => value + 1);
               }}
             />
             <FyersLoginButton
@@ -375,6 +400,7 @@ function DashboardContent() {
                 onFyersDisconnected={() => {
                   setFyersStatus({
                     connected: false,
+                    verified: false,
                     status: 'disconnected',
                     message: `FYERS ${tradingMode} token was disconnected.`,
                     trading_mode: tradingMode,

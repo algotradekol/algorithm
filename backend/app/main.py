@@ -62,6 +62,7 @@ from .runtime_mode import (
     set_pending_fyers_login_mode,
 )
 from .supabase_client import supabase
+from .silver_setup_history import get_setup_history
 from .timezone import IST
 
 
@@ -671,6 +672,21 @@ def algo_trades(algo_id: str, _user=Depends(require_auth)):
 def algo_history(algo_id: str, days: int = Query(default=30, ge=1, le=180), _user=Depends(require_auth)):
     strategy = get_strategy_or_raise(algo_id)
     return strategy.broker.daily_history(days)
+
+
+@app.get("/api/algo/{algo_id}/setup-history")
+def algo_setup_history(
+    algo_id: str,
+    side: str | None = Query(default=None),
+    days: int = Query(default=30, ge=1, le=180),
+    limit: int = Query(default=100, ge=1, le=500),
+    _user=Depends(require_auth),
+):
+    get_strategy_or_raise(algo_id)
+    normalized_side = side.upper() if isinstance(side, str) else None
+    if normalized_side not in {None, "BUY", "SELL"}:
+        raise HTTPException(status_code=400, detail="side must be BUY or SELL")
+    return get_setup_history(algo_id, side=normalized_side, days=days, limit=limit)
 
 
 @app.get("/api/algo/{algo_id}/settings")

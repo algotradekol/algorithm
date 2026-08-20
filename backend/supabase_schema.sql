@@ -297,6 +297,34 @@ CREATE TABLE IF NOT EXISTS market_candles (
 CREATE INDEX IF NOT EXISTS idx_market_candles_symbol_time
     ON market_candles (symbol, resolution, candle_time desc);
 
+-- Durable audit trail for every qualifying Silver Micro BUY/SELL setup candle.
+CREATE TABLE IF NOT EXISTS silver_setup_events (
+    id bigserial PRIMARY KEY,
+    algo_id text NOT NULL,
+    symbol text NOT NULL,
+    setup_side text NOT NULL CHECK (setup_side IN ('BUY', 'SELL')),
+    candle_time timestamptz NOT NULL,
+    candle_open numeric,
+    candle_high numeric,
+    candle_low numeric,
+    candle_close numeric,
+    candle_volume numeric,
+    minute_count int,
+    ema20 numeric,
+    breakout_points numeric,
+    trigger_level numeric,
+    source text default 'live',
+    captured_at timestamptz default now(),
+    created_at timestamptz default now(),
+    UNIQUE (algo_id, symbol, setup_side, candle_time)
+);
+
+CREATE INDEX IF NOT EXISTS idx_silver_setup_events_algo_time
+    ON silver_setup_events (algo_id, candle_time desc);
+
+CREATE INDEX IF NOT EXISTS idx_silver_setup_events_side_time
+    ON silver_setup_events (algo_id, setup_side, candle_time desc);
+
 -- Durable historical-backtest jobs. This lets the dashboard retrieve a job
 -- after a Railway restart instead of losing an in-memory job ID.
 CREATE TABLE IF NOT EXISTS backtest_jobs (
