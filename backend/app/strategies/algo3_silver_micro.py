@@ -57,6 +57,10 @@ EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
 BUCKET_MINUTES = 15
 SILVER_MICRO_ROOT = "SILVERMIC"
+# MCX Silver Micro contract size: 1 lot = 1 kg = 1 unit on Fyers.
+# Qty is therefore lots * 1. Kept as a constant so it's easy to adjust
+# if the exchange ever changes the lot size.
+SILVER_MICRO_LOT_SIZE = 1
 # Fallback if the MCX symbol-master download fails at boot AND the
 # in-memory cache is empty. Client confirmed the front-month contract
 # on 2026-08-18 is 31AUGFUT (matches Fyers naming: expiry-day + month).
@@ -142,6 +146,15 @@ class Algo3SilverMicro(Strategy):
 
         # Tick-cross detection needs the previous tick's LTP.
         self._prev_ltp: float | None = None
+
+        # One-shot guards so each setup can only fire ONE entry total.
+        # Stores the setup-bar timestamp we last fired on; a fresh
+        # qualifying candle (new _buy_setup_bar_at) re-arms the side.
+        # This lets us safely add both a "first-tick gap-through" check
+        # and a "candle-close crossed the level" check without
+        # double-firing when both fire on the same setup.
+        self._last_fired_buy_bar_at: datetime.datetime | None = None
+        self._last_fired_sell_bar_at: datetime.datetime | None = None
 
         # Diagnostics.
         self._last_tick_at: str | None = None
@@ -306,6 +319,13 @@ class Algo3SilverMicro(Strategy):
         self._ema20 = _ema_step(self._ema20, bar["close"])
         self._last_bar_at = bar["time"].isoformat()
         self._minute_buffer = []
+        # Order matters: check the trigger BEFORE updating setups. Otherwise
+        # a strongly-directional candle would overwrite its own setup level
+        # and then compare against itself, guaranteeing no fire. We want
+        # the just-closed bar's CLOSE compared against the PREVIOUS setup
+        # level (e.g. yesterday's or an earlier bar's).
+        if allow_signals:
+            self._check_candle_close_trigger(bar)
         self._update_setups(bar)
 
     def _update_setups(self, bar: dict):
@@ -325,40 +345,140 @@ class Algo3SilverMicro(Strategy):
             self._sell_setup_bar_at = bar["time"]
 
     # ── tick-based trigger detection ─────────────────────────────────
-    def _check_triggers(self, ltp: float):
-        prev = self._prev_ltp
-        if prev is None:
-            return  # first tick — no cross to detect
+    def _already_fired_this_setup(self, side: str) -> bool:
+        """True if we've already fired an entry for the current stored setup.
 
+        Keyed on the setup bar's timestamp: a fresh qualifying candle
+        overwrites _buy_setup_bar_at / _sell_setup_bar_at, which re-arms
+        the side. If the setup was injected manually (tests) without a
+        bar_at, the guard is skipped so classic tick-cross logic still
+        works.
+        """
+        if side == "BUY":
+            return (
+                self._buy_setup_bar_at is not None
+                and self._last_fired_buy_bar_at == self._buy_setup_bar_at
+            )
+        return (
+            self._sell_setup_bar_at is not None
+            and self._last_fired_sell_bar_at == self._sell_setup_bar_at
+        )
+
+    def _mark_fired(self, side: str) -> None:
+        if side == "BUY":
+            self._last_fired_buy_bar_at = self._buy_setup_bar_at
+        else:
+            self._last_fired_sell_bar_at = self._sell_setup_bar_at
+
+    def _check_triggers(self, ltp: float):
         n = float(self.settings.get("silver_breakout_points", 150))
         if n <= 0:
             return
 
         buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
         sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
+        prev = self._prev_ltp
 
-        # Upward cross for BUY: previous below level, current at/above.
-        if buy_level is not None and prev < buy_level <= ltp:
-            self._fire_entry("BUY", ltp, buy_level)
+        # Gap-through case: first live tick after warmup (or after a
+        # fresh setup) arrives with LTP ALREADY past the trigger. Client's
+        # ask (2026-08-20): fire immediately instead of waiting for a
+        # downward tick to re-cross upward. Only runs when we have a
+        # real setup_bar_at (so it can arm the one-shot guard).
+        if (
+            buy_level is not None
+            and ltp >= buy_level
+            and self._buy_setup_bar_at is not None
+            and not self._already_fired_this_setup("BUY")
+        ):
+            if self._fire_entry("BUY", ltp, buy_level):
+                self._mark_fired("BUY")
+                return
+        if (
+            sell_level is not None
+            and ltp <= sell_level
+            and self._sell_setup_bar_at is not None
+            and not self._already_fired_this_setup("SELL")
+        ):
+            if self._fire_entry("SELL", ltp, sell_level):
+                self._mark_fired("SELL")
+                return
+
+        # Classic live tick-cross for the case where a normal live tick
+        # walks through the level (not a gap-open). Guard against
+        # double-firing when the gap-through path already handled it.
+        if prev is None:
             return
-        # Downward cross for SELL: previous above level, current at/below.
-        if sell_level is not None and prev > sell_level >= ltp:
-            self._fire_entry("SELL", ltp, sell_level)
+        if (
+            buy_level is not None
+            and prev < buy_level <= ltp
+            and not self._already_fired_this_setup("BUY")
+        ):
+            if self._fire_entry("BUY", ltp, buy_level):
+                self._mark_fired("BUY")
+                return
+        if (
+            sell_level is not None
+            and prev > sell_level >= ltp
+            and not self._already_fired_this_setup("SELL")
+        ):
+            if self._fire_entry("SELL", ltp, sell_level):
+                self._mark_fired("SELL")
 
-    def _fire_entry(self, side: str, ltp: float, trigger_level: float):
+    def _check_candle_close_trigger(self, bar: dict):
+        """Fallback trigger check on every completed 15m bar.
+
+        Client's ask (2026-08-20): if a candle closes past the trigger
+        level (e.g. 09:00 opens at 240K, closes 241K while BUY trigger
+        was 238.2K), fire the entry at that close price. Handles the
+        case where live ticks were sparse or WS dropped and the tick
+        crossing never registered.
+        """
+        n = float(self.settings.get("silver_breakout_points", 150))
+        if n <= 0:
+            return
+        close = float(bar["close"])
+        bar_at = bar["time"]
+
+        buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
+        sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
+
+        if (
+            buy_level is not None
+            and close >= buy_level
+            and self._buy_setup_bar_at is not None
+            and not self._already_fired_this_setup("BUY")
+        ):
+            if self._fire_entry("BUY", close, buy_level):
+                self._mark_fired("BUY")
+                return
+        if (
+            sell_level is not None
+            and close <= sell_level
+            and self._sell_setup_bar_at is not None
+            and not self._already_fired_this_setup("SELL")
+        ):
+            if self._fire_entry("SELL", close, sell_level):
+                self._mark_fired("SELL")
+
+    def _fire_entry(self, side: str, ltp: float, trigger_level: float) -> bool:
         current = self._open_position()
         if current and current["side"] == side:
-            return  # already positioned same-side; nothing to do
+            return False  # already positioned same-side; nothing to do
         if current and current["side"] != side:
             # Reversal: close existing at current LTP, then open contra.
             self.broker.close_trade(current, ltp, "REVERSAL_CONTRA_SIGNAL")
 
-        self._enter(side, ltp, trigger_level)
+        return self._enter(side, ltp, trigger_level)
 
     def _enter(self, side: str, entry_price: float, trigger_level: float) -> bool:
         if not self.symbol or not entry_price:
             return False
-        qty = int(self.settings["capital_per_trade"] // float(entry_price))
+        # Silver Micro is sized in LOTS, not by dividing capital by price.
+        # 1 lot = 1 kg = SILVER_MICRO_LOT_SIZE units. Client trades whole
+        # lots (default 1). Capital-per-trade is retained for UI preview
+        # only; the algo does not divide by it.
+        lots = int(self.settings.get("silver_lots", 1) or 1)
+        qty = max(1, lots) * SILVER_MICRO_LOT_SIZE
         if qty < 1:
             return False
 
@@ -453,4 +573,7 @@ class Algo3SilverMicro(Strategy):
             "last_tick_ltp": self._last_tick_ltp,
             "last_minute_candle_at": self._last_minute_candle_at,
             "last_bar_at": self._last_bar_at,
+            "silver_lots": int(self.settings.get("silver_lots", 1) or 1),
+            "last_fired_buy_bar_at": self._last_fired_buy_bar_at.isoformat() if self._last_fired_buy_bar_at else None,
+            "last_fired_sell_bar_at": self._last_fired_sell_bar_at.isoformat() if self._last_fired_sell_bar_at else None,
         }

@@ -100,6 +100,13 @@ STRATEGY_DEFAULT_OVERRIDES = {
         "tsl_trigger_points": 100,
         "tsl_distance_points": 50,
         "exit_mode": "fixed_target_trailing_sl",
+        # Position sizing for MCX Silver Micro is done in LOTS, not by
+        # dividing capital by price. 1 lot of SILVERMIC = 1 kg = 1 unit
+        # on Fyers. Client trades in lots; default 1.
+        "silver_lots": 1,
+        # Client wants market orders by default so gap-through /
+        # candle-close triggers actually fill instead of chasing LIMIT.
+        "order_type": "MARKET",
     },
 }
 
@@ -113,6 +120,7 @@ INT_FIELDS = {
     "target_points",
     "tsl_trigger_points",
     "tsl_distance_points",
+    "silver_lots",
 }
 
 BOOL_FIELDS = {
@@ -212,6 +220,7 @@ _NEW_COLUMNS_TOLERATE_MISSING = {
     "target_points",
     "tsl_trigger_points",
     "tsl_distance_points",
+    "silver_lots",
 }
 
 

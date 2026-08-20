@@ -1142,7 +1142,10 @@ def _simulate_silver_micro_range(
 
     def open_position(side: str, entry_price: float, entry_time: datetime.datetime, day: datetime.date):
         nonlocal position, position_candidate
-        qty = int(float(settings["capital_per_trade"]) // float(entry_price))
+        # Silver Micro is sized in LOTS (1 lot = 1 kg = 1 unit). Mirrors
+        # the live algo3 sizing so backtest ↔ live parity is preserved.
+        lots = int(settings.get("silver_lots", 1) or 1)
+        qty = max(1, lots)
         if qty < 1:
             return
         if side == "BUY":

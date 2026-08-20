@@ -23,6 +23,7 @@ const RISK_FIELDS: Field[] = [
 // algo3 (Silver Micro) uses POINTS instead of %, per spec doc. Separate
 // field list keeps the UI honest about units.
 const SILVER_RISK_FIELDS: Field[] = [
+  ['silver_lots', 'Lots per trade', 'Position size in lots. 1 lot of SILVERMIC = 1 kg = 1 unit on Fyers. Default 1.'],
   ['silver_breakout_points', 'Breakout Offset n (points)', 'Entry fires when live price crosses (setup close +/- n). Default 150.'],
   ['target_points', 'Target (points from entry)', 'Fixed rupee distance in favor before exit.'],
   ['sl_points', 'Stop Loss (points from entry)', 'Fixed rupee distance against before exit.'],
@@ -175,7 +176,7 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
         />
           {algoId === 'algo3' && (
             <div className="mt-5 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
-            Silver Micro runs on MCX:SILVERMIC26AUGFUT using 15-minute candles. Setup levels come from green/red candles crossing EMA20; entry fires when live price crosses setup close +/- n points (default 150). SL, target, and trailing SL are all in POINTS from entry (fields above).
+            Silver Micro runs on the front-month MCX SILVERMIC contract using 15-minute candles. Setup levels come from green/red candles crossing EMA20; entry fires when live price crosses setup close +/- n points (default 150), including gap-opens past the level and candle-closes that clear the level even when live ticks were sparse. Position size is in LOTS (1 lot = 1 kg). SL, target, and trailing SL are all in POINTS from entry. Default order type is MARKET.
             </div>
           )}
         {(algoId === 'algo1' || algoId === 'algo4') && <TestSchedule settings={settings} setSettings={setSettings} />}
@@ -499,7 +500,7 @@ function FieldGroup({
 }
 
 function NumberField({ fieldKey, label, helper, settings, setSettings }: { fieldKey: string; label: string; helper: string; settings: Record<string, any>; setSettings: (settings: Record<string, any>) => void }) {
-  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume']);
+  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume', 'silver_lots', 'silver_breakout_points', 'sl_points', 'target_points', 'tsl_trigger_points', 'tsl_distance_points']);
   const rupeeFields = new Set(['starting_capital', 'capital_per_trade', 'min_total_value', 'ltp_min', 'ltp_max']);
   const signedFields = new Set(['sl_pct', 'target_pct']);
   const step = integerFields.has(fieldKey) ? '1' : rupeeFields.has(fieldKey) ? '0.01' : '0.0001';
@@ -543,7 +544,7 @@ function formatInputMoney(value: unknown) {
 }
 
 function roundForField(key: string, value: number) {
-  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume']);
+  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume', 'silver_lots', 'silver_breakout_points', 'sl_points', 'target_points', 'tsl_trigger_points', 'tsl_distance_points']);
   const rupeeFields = new Set(['starting_capital', 'capital_per_trade', 'min_total_value', 'ltp_min', 'ltp_max']);
   if (integerFields.has(key)) return Math.round(value);
   if (rupeeFields.has(key)) return roundMoney(value);

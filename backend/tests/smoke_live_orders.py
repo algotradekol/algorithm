@@ -1245,6 +1245,8 @@ def _make_bare_algo3(settings_overrides=None):
     strat._buy_setup_bar_at = None
     strat._sell_setup_bar_at = None
     strat._prev_ltp = None
+    strat._last_fired_buy_bar_at = None
+    strat._last_fired_sell_bar_at = None
     strat._last_tick_at = None
     strat._last_tick_ltp = None
     strat._last_minute_candle_at = None
@@ -1774,14 +1776,91 @@ def test_algo3_backtest_parity_with_live():
         # Prices may differ by a few points because live enters at the tick's
         # exact LTP while backtest enters at the trigger level itself (a
         # documented conservative approximation). Allow up to 100 points.
-        diff = abs(float(live["entry"]) - float(bt_trade["entry_price"]))
+        diff = abs(float(live["entry_price"]) - float(bt_trade["entry_price"]))
         check("entry prices within 100 pts of each other",
               diff <= 100,
-              f"live={live['entry']} bt={bt_trade['entry_price']} diff={diff}")
+              f"live={live['entry_price']} bt={bt_trade['entry_price']} diff={diff}")
 
     # Cleanup
     with _lock:
         _jobs.pop("parity-test", None)
+
+
+def test_algo3_gap_through_fires_immediately():
+    """Client's 2026-08-20 ask: if today's market opens ALREADY past the
+    stored setup ± n, fire the entry on the first live tick instead of
+    waiting for a downward tick to re-cross upward.
+    """
+    print("\n49. algo3 gap-through: LTP already past trigger fires immediately")
+    import datetime as _dt
+    strat = _make_bare_algo3()
+    strat._buy_setup_close = 238000.0
+    strat._buy_setup_bar_at = _dt.datetime(2026, 8, 19, 23, 45)  # prev-day qualifier
+    # Gap open beyond buy_level (238000 + 150 = 238150).
+    # prev_ltp=None simulates first live tick after warmup.
+    strat._prev_ltp = None
+    strat.on_tick("MCX:SILVERMIC26AUGFUT", 240300, None)
+    check("gap-through BUY fires on first tick already past level",
+          len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "BUY",
+          f"opens={strat.broker.opens}")
+    # Second tick still past level — must NOT re-fire (one-shot per setup).
+    strat.on_tick("MCX:SILVERMIC26AUGFUT", 240500, None)
+    check("gap-through BUY does NOT re-fire on same setup",
+          len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
+
+    # SELL side gap-down
+    strat2 = _make_bare_algo3()
+    strat2._sell_setup_close = 231000.0
+    strat2._sell_setup_bar_at = _dt.datetime(2026, 8, 19, 23, 45)
+    strat2._prev_ltp = None
+    # sell_level = 231000 - 150 = 230850; opening at 228000 is well past.
+    strat2.on_tick("MCX:SILVERMIC26AUGFUT", 228000, None)
+    check("gap-through SELL fires on first tick already past level",
+          len(strat2.broker.opens) == 1 and strat2.broker.opens[0]["side"] == "SELL",
+          f"opens={strat2.broker.opens}")
+
+
+def test_algo3_candle_close_trigger_fires():
+    """Client's 2026-08-20 ask: if a 15m candle CLOSES past the trigger
+    level (e.g. 09:00 closed 241104 while BUY trigger was 238150),
+    fire on candle-close as a fallback when live ticks were sparse."""
+    print("\n50. algo3 candle-close trigger: bar closes past level fires entry")
+    import datetime as _dt
+    strat = _make_bare_algo3()
+    strat._buy_setup_close = 238000.0
+    strat._buy_setup_bar_at = _dt.datetime(2026, 8, 19, 23, 45)
+    strat._ema20 = 237000.0  # so the closing bar's setup detection doesn't overwrite
+    # Feed a fresh 09:00 bar via the aggregation path so _finalize_bar runs.
+    # Build 15 one-minute candles all closing at 241104, then a 16th minute
+    # in the next bucket to force finalization of the 09:00 bar.
+    def mc(minute, o, h, l, c):
+        t = _dt.datetime(2026, 8, 20, 9, 0) + _dt.timedelta(minutes=minute)
+        return {"time": t, "open": o, "high": h, "low": l, "close": c, "volume": 1}
+    for m in range(15):
+        strat.on_candle_close("MCX:SILVERMIC26AUGFUT", mc(m, 240000, 241200, 239900, 241104), {})
+    # 16th minute belongs to 09:15 bucket — this finalizes 09:00.
+    strat.on_candle_close("MCX:SILVERMIC26AUGFUT", mc(15, 241104, 241150, 241000, 241104), {})
+    check("candle-close BUY fires when bar closes past buy_level",
+          len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "BUY",
+          f"opens={strat.broker.opens}")
+
+
+def test_algo3_lot_based_qty():
+    """Silver Micro qty must be lots * 1, NOT capital // price."""
+    print("\n51. algo3 qty is derived from silver_lots (not capital / price)")
+    strat = _make_bare_algo3(settings_overrides={"silver_lots": 3, "capital_per_trade": 100000})
+    strat._buy_setup_close = 92000.0
+    strat._prev_ltp = 92100
+    strat._check_triggers(92200)
+    check("lots=3 -> qty=3", len(strat.broker.opens) == 1 and strat.broker.opens[0]["qty"] == 3,
+          f"opens={strat.broker.opens}")
+
+    strat2 = _make_bare_algo3(settings_overrides={"silver_lots": 1})
+    strat2._buy_setup_close = 92000.0
+    strat2._prev_ltp = 92100
+    strat2._check_triggers(92200)
+    check("lots=1 -> qty=1 (default)", strat2.broker.opens[0]["qty"] == 1,
+          f"opens={strat2.broker.opens}")
 
 
 def main():
@@ -1838,6 +1917,9 @@ def main():
     test_broker_key_suffix_isolates_tokens()
     test_broker_key_suffix_empty_preserves_legacy_key()
     test_algo3_backtest_parity_with_live()
+    test_algo3_gap_through_fires_immediately()
+    test_algo3_candle_close_trigger_fires()
+    test_algo3_lot_based_qty()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")
