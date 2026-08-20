@@ -43,6 +43,7 @@ from __future__ import annotations
 
 import datetime
 import threading
+import time
 from collections import deque
 
 from .base import Strategy
@@ -61,6 +62,14 @@ SILVER_MICRO_ROOT = "SILVERMIC"
 # Qty is therefore lots * 1. Kept as a constant so it's easy to adjust
 # if the exchange ever changes the lot size.
 SILVER_MICRO_LOT_SIZE = 1
+
+# Minimum seconds between successful warmups. Prevents the WS watchdog /
+# mode-switch loop from re-fetching 7000+ candles every few minutes,
+# which was thrashing the algo3 state (setups reset to yesterday's
+# values every restart, so today's live bars were repeatedly discarded).
+# 5 minutes is short enough to pick up a genuine restart, long enough
+# to not run more than 12 times per hour in a worst-case restart storm.
+WARMUP_DEBOUNCE_SECONDS = 300
 # Fallback if the MCX symbol-master download fails at boot AND the
 # in-memory cache is empty. Client confirmed the front-month contract
 # on 2026-08-18 is 31AUGFUT (matches Fyers naming: expiry-day + month).
@@ -130,6 +139,7 @@ class Algo3SilverMicro(Strategy):
         self._history_ready = False
         self._history_error: str | None = None
         self._warmup_minute_candles = 0
+        self._last_warmup_at: float | None = None  # monotonic seconds; None = never
 
         # 15-min bucket aggregation from 1-min inputs.
         self._minute_buffer: list[dict] = []
@@ -172,18 +182,63 @@ class Algo3SilverMicro(Strategy):
     def scan_enabled(self) -> bool:
         return bool(self.settings.get("scan_enabled", True))
 
-    def refresh_market_data(self):
+    def refresh_market_data(self, force: bool = False):
+        """Trigger a background warmup. Debounced by default — a fresh
+        warmup within WARMUP_DEBOUNCE_SECONDS of the last successful one
+        is a no-op unless `force=True`.
+
+        Debounce matters because the WS watchdog restarts the live feed
+        every few minutes on flaky connections. Each restart used to
+        wipe today's live-built 15m bars and reload only up-to-yesterday
+        from history, which is why the client's BUY setup stayed frozen
+        at yesterday's 2,38,000 despite today's 09:00 close at 2,41,104.
+        """
+        now_monotonic = time.monotonic()
         with self._history_lock:
             if self._history_loading or not self.symbol:
                 return
+            if (
+                not force
+                and self._last_warmup_at is not None
+                and (now_monotonic - self._last_warmup_at) < WARMUP_DEBOUNCE_SECONDS
+            ):
+                remaining = int(WARMUP_DEBOUNCE_SECONDS - (now_monotonic - self._last_warmup_at))
+                print(f"[algo3] warmup debounced ({remaining}s remaining); pass force=True to override")
+                return
             self._history_loading = True
         threading.Thread(target=self._load_history_background, daemon=True).start()
+
+    def _reset_aggregation_state(self):
+        """Wipe intra-day aggregation state before a warmup replay.
+
+        Without this, a mid-day warmup would append historical (older)
+        candles on top of a live-built _current_bucket, triggering a
+        spurious finalize of today's incomplete bucket and mixing old
+        history into today's bars. The setups deque + EMA20 are all
+        derived state, so wiping and re-computing from scratch is
+        cheaper than trying to reconcile.
+        """
+        self._minute_buffer = []
+        self._current_bucket = None
+        self._bars.clear()
+        self._ema20 = None
+        self._buy_setup_close = None
+        self._sell_setup_close = None
+        self._buy_setup_bar_at = None
+        self._sell_setup_bar_at = None
+        self._last_fired_buy_bar_at = None
+        self._last_fired_sell_bar_at = None
 
     def _load_history_background(self):
         try:
             if not self.symbol:
                 return
-            end_date = datetime.date.today() - datetime.timedelta(days=1)
+            # end_date is TODAY (inclusive) so the very first warmup on a
+            # mid-day restart replays today's completed 1m candles too.
+            # Previously end_date was today - 1, which meant every restart
+            # reset the algo to yesterday's setups and today's live bars
+            # were repeatedly discarded by later warmups.
+            end_date = datetime.date.today()
             start_date = end_date - datetime.timedelta(days=WARMUP_LOOKBACK_DAYS)
             history = get_intraday_candles_for_range(self.symbol, start_date, end_date)
             # Preserve the last successful warmup count instead of blindly
@@ -192,18 +247,22 @@ class Algo3SilverMicro(Strategy):
             # earlier "loaded 6090 candles" number even though the deque
             # (self._bars) still has all of them.
             if history:
+                # Reset state ONLY when we have data to replace it with;
+                # a transient 0-result must NOT wipe good state.
+                self._reset_aggregation_state()
                 self._warmup_minute_candles = len(history)
                 self._history_ready = True
                 self._history_error = None
                 for candle in history:
                     self._ingest_minute_candle(candle, allow_signals=False)
                 self._finalize_bar(allow_signals=False)
+                self._last_warmup_at = time.monotonic()
             else:
                 # Only stamp 0 if we've never had a successful warmup yet.
                 if self._warmup_minute_candles == 0:
                     self._history_error = "history call returned 0 candles"
             print(
-                f"[algo3] warmup loaded {len(history)} 1m candles → "
+                f"[algo3] warmup loaded {len(history)} 1m candles -> "
                 f"{len(self._bars)} 15m bars, EMA20={_fmt(self._ema20)}, "
                 f"buy_setup={_fmt(self._buy_setup_close)}, "
                 f"sell_setup={_fmt(self._sell_setup_close)}"

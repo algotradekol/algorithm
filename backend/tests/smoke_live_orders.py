@@ -1906,6 +1906,151 @@ def test_broker_positions_entry_time_from_tradebook():
           f"got={positions_c[0]['entry_time']}")
 
 
+def test_algo3_warmup_end_date_is_today():
+    """Warmup must include today's completed 1m candles so a mid-day
+    restart rebuilds today's 15m bars + setups, not just yesterday's.
+
+    Bug from 2026-08-20 client logs: end_date was today-1, so restarts
+    at 13:30 IST reloaded up to Aug 19 only. Today's 09:00 green candle
+    that closed at 2,41,104 (should have overwritten BUY setup) never
+    made it into the algo, so BUY setup stayed frozen at yesterday's
+    2,38,000 despite the market clearly moving through the trigger.
+    """
+    print("\n53. algo3 warmup end_date must be TODAY (mid-day restart fix)")
+    from unittest.mock import patch
+    import app.strategies.algo3_silver_micro as algo3_mod
+
+    captured_ranges = []
+    def fake_range(symbol, start, end):
+        captured_ranges.append((start, end))
+        return []  # empty is fine; we only care about the range
+
+    strat = _make_bare_algo3()
+    # Bypass the __init__ warmup call; test the reload path directly.
+    strat._history_lock = __import__("threading").Lock()
+    strat._history_loading = False
+    strat._last_warmup_at = None
+    with patch.object(algo3_mod, "get_intraday_candles_for_range", side_effect=fake_range):
+        strat._load_history_background()
+    check("warmup called history once", len(captured_ranges) == 1,
+          f"calls={len(captured_ranges)}")
+    start, end = captured_ranges[0]
+    check("end_date is TODAY (not today-1)",
+          end == __import__("datetime").date.today(),
+          f"got end={end} today={__import__('datetime').date.today()}")
+    days_span = (end - start).days
+    check("start_date covers WARMUP_LOOKBACK_DAYS back",
+          days_span == algo3_mod.WARMUP_LOOKBACK_DAYS,
+          f"span={days_span}")
+
+
+def test_algo3_warmup_debounce_blocks_repeat_calls():
+    """WS watchdog / mode-switch used to trigger a fresh warmup every
+    few minutes, each pulling ~7000 candles and wiping today's live
+    state. Debounce (WARMUP_DEBOUNCE_SECONDS) blocks repeat calls
+    unless force=True."""
+    print("\n54. algo3 warmup debounce blocks calls within cooldown")
+    from unittest.mock import patch
+    import app.strategies.algo3_silver_micro as algo3_mod
+
+    load_calls = []
+    def counting_load(self):
+        load_calls.append(1)
+        # Simulate a successful warmup so _last_warmup_at gets stamped
+        self._last_warmup_at = __import__("time").monotonic()
+        self._history_loading = False
+
+    strat = _make_bare_algo3()
+    strat._history_lock = __import__("threading").Lock()
+    strat._history_loading = False
+    strat._last_warmup_at = None
+
+    # Rather than race the daemon thread, replace threading.Thread with
+    # a synchronous "run now" fake so refresh_market_data completes
+    # inline. Then we can assert on load_calls deterministically.
+    class SyncThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+        def start(self):
+            self._target()
+
+    with patch.object(algo3_mod.Algo3SilverMicro, "_load_history_background", counting_load), \
+         patch.object(algo3_mod.threading, "Thread", SyncThread):
+        # First call proceeds and stamps _last_warmup_at
+        strat.refresh_market_data()
+        check("1st call ran the loader", len(load_calls) == 1,
+              f"calls={len(load_calls)}")
+
+        # Second call within debounce window: must be a no-op
+        strat._history_loading = False  # counting_load reset this
+        strat.refresh_market_data()
+        check("2nd call within debounce window is skipped",
+              len(load_calls) == 1, f"calls={len(load_calls)}")
+
+        # Force=True bypasses debounce and runs the loader again
+        strat._history_loading = False
+        strat.refresh_market_data(force=True)
+        check("force=True bypasses debounce and runs the loader",
+              len(load_calls) == 2, f"calls={len(load_calls)}")
+
+
+def test_algo3_warmup_resets_state_before_replay():
+    """A mid-day warmup must wipe prior aggregation state before
+    replaying history. Otherwise an old historical candle appended to
+    a live-built _current_bucket would spuriously finalize today's
+    partial bucket."""
+    print("\n55. algo3 warmup resets aggregation state before replay")
+    strat = _make_bare_algo3()
+
+    # Simulate a "dirty" mid-day state.
+    import datetime as _dt
+    strat._current_bucket = _dt.datetime(2026, 8, 20, 10, 15)
+    strat._minute_buffer = [{"time": _dt.datetime(2026, 8, 20, 10, 20),
+                             "open": 100, "high": 100, "low": 100, "close": 100, "volume": 1}]
+    strat._bars.append({"time": _dt.datetime(2026, 8, 20, 9, 0),
+                        "open": 100, "high": 100, "low": 100, "close": 100, "volume": 1})
+    strat._ema20 = 999.99
+    strat._buy_setup_close = 111111.0
+    strat._buy_setup_bar_at = _dt.datetime(2026, 8, 19, 23, 0)
+    strat._last_fired_buy_bar_at = _dt.datetime(2026, 8, 19, 23, 0)
+
+    strat._reset_aggregation_state()
+
+    check("aggregation state cleared: bars empty", len(strat._bars) == 0)
+    check("aggregation state cleared: buffer empty", strat._minute_buffer == [])
+    check("aggregation state cleared: current_bucket None", strat._current_bucket is None)
+    check("aggregation state cleared: EMA None", strat._ema20 is None)
+    check("aggregation state cleared: buy setup None", strat._buy_setup_close is None)
+    check("aggregation state cleared: buy setup ts None", strat._buy_setup_bar_at is None)
+    check("aggregation state cleared: fired guard None", strat._last_fired_buy_bar_at is None)
+
+
+def test_algo3_warmup_transient_zero_result_preserves_state():
+    """A 0-candle history response (transient Fyers API failure) must
+    NOT wipe good aggregation state that a prior successful warmup built."""
+    print("\n56. algo3 transient 0-candle warmup preserves prior good state")
+    from unittest.mock import patch
+    import app.strategies.algo3_silver_micro as algo3_mod
+
+    strat = _make_bare_algo3()
+    strat._history_lock = __import__("threading").Lock()
+    strat._history_loading = False
+    strat._last_warmup_at = None
+    # Seed some "good" prior state
+    strat._buy_setup_close = 238000.0
+    strat._warmup_minute_candles = 6960
+
+    with patch.object(algo3_mod, "get_intraday_candles_for_range", return_value=[]):
+        strat._load_history_background()
+
+    check("0-candle warmup preserved prior setup",
+          strat._buy_setup_close == 238000.0,
+          f"got={strat._buy_setup_close}")
+    check("0-candle warmup preserved prior warmup count",
+          strat._warmup_minute_candles == 6960,
+          f"got={strat._warmup_minute_candles}")
+
+
 def test_algo3_lot_based_qty():
     """Silver Micro qty must be lots * 1, NOT capital // price."""
     print("\n51. algo3 qty is derived from silver_lots (not capital / price)")
@@ -1982,6 +2127,10 @@ def main():
     test_algo3_candle_close_trigger_fires()
     test_algo3_lot_based_qty()
     test_broker_positions_entry_time_from_tradebook()
+    test_algo3_warmup_end_date_is_today()
+    test_algo3_warmup_debounce_blocks_repeat_calls()
+    test_algo3_warmup_resets_state_before_replay()
+    test_algo3_warmup_transient_zero_result_preserves_state()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")
