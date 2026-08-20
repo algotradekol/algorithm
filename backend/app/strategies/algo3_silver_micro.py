@@ -240,6 +240,7 @@ class Algo3SilverMicro(Strategy):
             # were repeatedly discarded by later warmups.
             end_date = datetime.date.today()
             start_date = end_date - datetime.timedelta(days=WARMUP_LOOKBACK_DAYS)
+            print(f"[algo3] warmup START: symbol={self.symbol} range={start_date} to {end_date}")
             history = get_intraday_candles_for_range(self.symbol, start_date, end_date)
             # Preserve the last successful warmup count instead of blindly
             # overwriting with 0 on a transient API failure — the diagnostic
@@ -261,11 +262,15 @@ class Algo3SilverMicro(Strategy):
                 # Only stamp 0 if we've never had a successful warmup yet.
                 if self._warmup_minute_candles == 0:
                     self._history_error = "history call returned 0 candles"
+            last_bar_ts = self._last_bar_at or "(none)"
+            buy_ts = self._buy_setup_bar_at.isoformat() if self._buy_setup_bar_at else "(none)"
+            sell_ts = self._sell_setup_bar_at.isoformat() if self._sell_setup_bar_at else "(none)"
             print(
-                f"[algo3] warmup loaded {len(history)} 1m candles -> "
-                f"{len(self._bars)} 15m bars, EMA20={_fmt(self._ema20)}, "
-                f"buy_setup={_fmt(self._buy_setup_close)}, "
-                f"sell_setup={_fmt(self._sell_setup_close)}"
+                f"[algo3] warmup DONE: {len(history)} 1m candles -> "
+                f"{len(self._bars)} 15m bars, last_bar={last_bar_ts}, "
+                f"EMA20={_fmt(self._ema20)}, "
+                f"buy_setup={_fmt(self._buy_setup_close)}@{buy_ts}, "
+                f"sell_setup={_fmt(self._sell_setup_close)}@{sell_ts}"
             )
         except Exception as exc:
             self._history_error = str(exc)
@@ -378,6 +383,22 @@ class Algo3SilverMicro(Strategy):
         self._ema20 = _ema_step(self._ema20, bar["close"])
         self._last_bar_at = bar["time"].isoformat()
         self._minute_buffer = []
+        # Only log LIVE bars (allow_signals=True). Warmup replays thousands
+        # of bars silently; logging each would flood Railway with 6000+ lines
+        # per warmup and hide what actually happened live.
+        if allow_signals:
+            color = "GREEN" if bar["close"] > bar["open"] else ("RED" if bar["close"] < bar["open"] else "DOJI")
+            side_of_ema = (
+                "above-EMA" if self._ema20 is not None and bar["close"] > self._ema20
+                else "below-EMA" if self._ema20 is not None and bar["close"] < self._ema20
+                else "at-EMA"
+            )
+            print(
+                f"[algo3] bar closed {bar['time'].isoformat()} "
+                f"O={bar['open']:.2f} H={bar['high']:.2f} L={bar['low']:.2f} "
+                f"C={bar['close']:.2f} EMA20={_fmt(self._ema20)} "
+                f"{color} {side_of_ema} minutes={bar['minute_count']}"
+            )
         # Order matters: check the trigger BEFORE updating setups. Otherwise
         # a strongly-directional candle would overwrite its own setup level
         # and then compare against itself, guaranteeing no fire. We want
@@ -385,23 +406,51 @@ class Algo3SilverMicro(Strategy):
         # level (e.g. yesterday's or an earlier bar's).
         if allow_signals:
             self._check_candle_close_trigger(bar)
-        self._update_setups(bar)
+        self._update_setups(bar, log=allow_signals)
 
-    def _update_setups(self, bar: dict):
+    def _update_setups(self, bar: dict, log: bool = False):
         """Per spec: setup level is the CLOSE of the most recent
         qualifying candle. Overwrite on every new qualifier so we always
-        track the latest one."""
+        track the latest one.
+
+        `log=True` prints when the setup actually moves (only interesting
+        for live bars; warmup silently rebuilds hundreds of setups).
+        """
         if self._ema20 is None:
             return
         is_green = bar["close"] > bar["open"]
         is_red = bar["close"] < bar["open"]
         close = bar["close"]
         if is_green and close > self._ema20:
+            old = self._buy_setup_close
             self._buy_setup_close = close
             self._buy_setup_bar_at = bar["time"]
+            if log:
+                print(
+                    f"[algo3] BUY setup UPDATED {_fmt(old)} -> {close:.2f} "
+                    f"(green close > EMA20 {_fmt(self._ema20)} at {bar['time'].isoformat()})"
+                )
         elif is_red and close < self._ema20:
+            old = self._sell_setup_close
             self._sell_setup_close = close
             self._sell_setup_bar_at = bar["time"]
+            if log:
+                print(
+                    f"[algo3] SELL setup UPDATED {_fmt(old)} -> {close:.2f} "
+                    f"(red close < EMA20 {_fmt(self._ema20)} at {bar['time'].isoformat()})"
+                )
+        elif log:
+            # Bar didn't qualify — say WHY so grepping logs answers "why
+            # is my setup stuck?" without diving into code.
+            reason = (
+                "doji (close==open)" if not is_green and not is_red
+                else "green but below EMA20" if is_green
+                else "red but above EMA20"
+            )
+            print(
+                f"[algo3] bar did NOT update setup: {reason} "
+                f"(close={close:.2f}, EMA20={_fmt(self._ema20)})"
+            )
 
     # ── tick-based trigger detection ─────────────────────────────────
     def _already_fired_this_setup(self, side: str) -> bool:
@@ -449,6 +498,7 @@ class Algo3SilverMicro(Strategy):
             and self._buy_setup_bar_at is not None
             and not self._already_fired_this_setup("BUY")
         ):
+            print(f"[algo3] TRIGGER BUY (gap-through): LTP {ltp:.2f} >= level {buy_level:.2f} (setup {self._buy_setup_close:.2f} + n={n:.0f})")
             if self._fire_entry("BUY", ltp, buy_level):
                 self._mark_fired("BUY")
                 return
@@ -458,6 +508,7 @@ class Algo3SilverMicro(Strategy):
             and self._sell_setup_bar_at is not None
             and not self._already_fired_this_setup("SELL")
         ):
+            print(f"[algo3] TRIGGER SELL (gap-through): LTP {ltp:.2f} <= level {sell_level:.2f} (setup {self._sell_setup_close:.2f} - n={n:.0f})")
             if self._fire_entry("SELL", ltp, sell_level):
                 self._mark_fired("SELL")
                 return
@@ -472,6 +523,7 @@ class Algo3SilverMicro(Strategy):
             and prev < buy_level <= ltp
             and not self._already_fired_this_setup("BUY")
         ):
+            print(f"[algo3] TRIGGER BUY (tick-cross): prev {prev:.2f} -> LTP {ltp:.2f} crossed level {buy_level:.2f}")
             if self._fire_entry("BUY", ltp, buy_level):
                 self._mark_fired("BUY")
                 return
@@ -480,6 +532,7 @@ class Algo3SilverMicro(Strategy):
             and prev > sell_level >= ltp
             and not self._already_fired_this_setup("SELL")
         ):
+            print(f"[algo3] TRIGGER SELL (tick-cross): prev {prev:.2f} -> LTP {ltp:.2f} crossed level {sell_level:.2f}")
             if self._fire_entry("SELL", ltp, sell_level):
                 self._mark_fired("SELL")
 
@@ -507,6 +560,7 @@ class Algo3SilverMicro(Strategy):
             and self._buy_setup_bar_at is not None
             and not self._already_fired_this_setup("BUY")
         ):
+            print(f"[algo3] TRIGGER BUY (candle-close): bar close {close:.2f} >= level {buy_level:.2f} (setup {self._buy_setup_close:.2f} + n={n:.0f})")
             if self._fire_entry("BUY", close, buy_level):
                 self._mark_fired("BUY")
                 return
@@ -516,15 +570,18 @@ class Algo3SilverMicro(Strategy):
             and self._sell_setup_bar_at is not None
             and not self._already_fired_this_setup("SELL")
         ):
+            print(f"[algo3] TRIGGER SELL (candle-close): bar close {close:.2f} <= level {sell_level:.2f} (setup {self._sell_setup_close:.2f} - n={n:.0f})")
             if self._fire_entry("SELL", close, sell_level):
                 self._mark_fired("SELL")
 
     def _fire_entry(self, side: str, ltp: float, trigger_level: float) -> bool:
         current = self._open_position()
         if current and current["side"] == side:
-            return False  # already positioned same-side; nothing to do
+            # Log so "trigger fired but no entry" is answerable from logs.
+            print(f"[algo3] entry SKIPPED for {side}: already positioned same-side (qty={current.get('qty')})")
+            return False
         if current and current["side"] != side:
-            # Reversal: close existing at current LTP, then open contra.
+            print(f"[algo3] REVERSAL: closing existing {current['side']} at {ltp:.2f} before opening {side}")
             self.broker.close_trade(current, ltp, "REVERSAL_CONTRA_SIGNAL")
 
         return self._enter(side, ltp, trigger_level)
