@@ -323,12 +323,65 @@ def _on_candle_close(symbol: str, candle: dict, indicators: dict):
         strategy.on_candle_close(symbol, candle, indicators)
 
 
+# Tick diagnostics — track first tick per symbol + periodic summary so
+# "why is my MCX feed silent?" is answerable from Railway logs alone.
+# Without this, _on_tick is silent and a broken subscription looks
+# identical to "no market activity." Reset on live feed restart.
+_first_tick_seen_symbols: set[str] = set()
+_tick_stats_lock = threading.Lock()
+_tick_stats = {
+    "window_started_at": None,  # monotonic seconds
+    "window_ticks": 0,
+    "window_symbols": set(),
+    "by_exchange": {},
+    "window_seconds": 60,
+}
+
+
+def _reset_tick_diagnostics():
+    with _tick_stats_lock:
+        _first_tick_seen_symbols.clear()
+        _tick_stats["window_started_at"] = None
+        _tick_stats["window_ticks"] = 0
+        _tick_stats["window_symbols"] = set()
+        _tick_stats["by_exchange"] = {}
+
+
+def _record_tick_diagnostics(symbol: str, ltp) -> None:
+    """First-tick-per-symbol log + rolling 60-second summary. Cheap
+    enough to call on every tick (dict inserts + one lock)."""
+    now = time.time()
+    with _tick_stats_lock:
+        if symbol not in _first_tick_seen_symbols:
+            _first_tick_seen_symbols.add(symbol)
+            print(f"[feed] first tick for {symbol} @ {ltp} (total unique symbols so far: {len(_first_tick_seen_symbols)})")
+        if _tick_stats["window_started_at"] is None:
+            _tick_stats["window_started_at"] = now
+        _tick_stats["window_ticks"] += 1
+        _tick_stats["window_symbols"].add(symbol)
+        exch = symbol.split(":", 1)[0] if ":" in symbol else "?"
+        _tick_stats["by_exchange"][exch] = _tick_stats["by_exchange"].get(exch, 0) + 1
+        elapsed = now - _tick_stats["window_started_at"]
+        if elapsed >= _tick_stats["window_seconds"]:
+            by_exch = ", ".join(f"{k}={v}" for k, v in sorted(_tick_stats["by_exchange"].items()))
+            print(
+                f"[feed] tick summary last {int(elapsed)}s: "
+                f"{_tick_stats['window_ticks']} ticks across "
+                f"{len(_tick_stats['window_symbols'])} symbols ({by_exch})"
+            )
+            _tick_stats["window_started_at"] = now
+            _tick_stats["window_ticks"] = 0
+            _tick_stats["window_symbols"] = set()
+            _tick_stats["by_exchange"] = {}
+
+
 def _on_tick(message: dict):
     symbol = message.get("symbol")
     ltp = message.get("ltp")
     day_volume = message.get("vol_traded_today", 0)
     if not symbol or not ltp:
         return
+    _record_tick_diagnostics(symbol, ltp)
 
     last_ltp[symbol] = ltp
     prev_close = (
@@ -919,6 +972,10 @@ def start_live_feed_if_ready(force: bool = False) -> bool:
         threading.Thread(target=run_live_feed, daemon=True).start()
         _live_feed_started = True
         _feed_watchdog_last_restart_at = time.time()
+        # Fresh tick counters so first-tick-per-symbol logs fire again after
+        # a WS restart; otherwise a symbol seen in the previous session
+        # never appears in logs again and it looks like nothing is arriving.
+        _reset_tick_diagnostics()
         with _engine_lock:
             _engine_status.update({
                 "live_feed_started": True,

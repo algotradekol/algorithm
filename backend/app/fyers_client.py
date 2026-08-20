@@ -1468,6 +1468,13 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
                     if subscription_sent:
                         return
                     try:
+                        mcx_syms = [s for s in symbols if s.upper().startswith("MCX:")]
+                        nse_count = sum(1 for s in symbols if s.upper().startswith("NSE:"))
+                        bse_count = sum(1 for s in symbols if s.upper().startswith("BSE:"))
+                        # Emit before subscribe so if the call raises we know
+                        # what was in flight. MCX list is short enough to
+                        # print fully — helps confirm SILVERMIC made it.
+                        print(f"[fyers] WS subscribe breakdown: NSE={nse_count} BSE={bse_count} MCX={len(mcx_syms)} (MCX symbols: {mcx_syms})")
                         for i in range(0, len(symbols), 50):
                             socket.subscribe(symbols=symbols[i:i+50], data_type="SymbolUpdate")
                         subscription_sent = True
