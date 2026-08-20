@@ -10,6 +10,15 @@ const CAPITAL_FIELDS: Field[] = [
   ['margin_multiplier', 'Margin Cap (x)', 'ceiling only. Actual leverage is per-stock from the broker approved list (1x–5x); this caps it. Keep at 5 to use each stock’s full approved margin.'],
 ];
 
+// Silver Micro is sized in whole lots, not by margin. Replace the
+// Margin Cap slot with a Lots-per-trade field; keep Capital Per Trade
+// for the paper preview and Starting Capital where the mode allows it.
+const SILVER_CAPITAL_FIELDS: Field[] = [
+  ['starting_capital', 'Starting Capital (Rs)', 'baseline capital shown in strategy summary'],
+  ['capital_per_trade', 'Capital Per Trade (Rs)', 'paper capital allocated to one new trade'],
+  ['silver_lots', 'Lots per trade', 'Position size in lots. 1 lot of SILVERMIC = 1 kg = 1 unit on Fyers. Default 1.'],
+];
+
 const RISK_FIELDS: Field[] = [
   ['target_pct', 'Target % (per trade)', 'BUY: +value (e.g. +2). SELL: −value (e.g. −2). Sign is a display convention; magnitude is what applies.'],
   ['sl_pct', 'Stop Loss % (per trade)', 'BUY: −value (e.g. −1). SELL: +value (e.g. +1). Sign is a display convention; magnitude is what applies.'],
@@ -23,7 +32,6 @@ const RISK_FIELDS: Field[] = [
 // algo3 (Silver Micro) uses POINTS instead of %, per spec doc. Separate
 // field list keeps the UI honest about units.
 const SILVER_RISK_FIELDS: Field[] = [
-  ['silver_lots', 'Lots per trade', 'Position size in lots. 1 lot of SILVERMIC = 1 kg = 1 unit on Fyers. Default 1.'],
   ['silver_breakout_points', 'Breakout Offset n (points)', 'Entry fires when live price crosses (setup close +/- n). Default 150.'],
   ['target_points', 'Target (points from entry)', 'Fixed rupee distance in favor before exit.'],
   ['sl_points', 'Stop Loss (points from entry)', 'Fixed rupee distance against before exit.'],
@@ -152,7 +160,10 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
         {!isLive && <CashControl value={availableCash} setValue={setAvailableCash} onSave={saveAvailableCash} saving={cashSaving} />}
         <FieldGroup
           title="Capital Settings"
-          fields={isLive ? CAPITAL_FIELDS.filter(([key]) => key !== 'starting_capital') : CAPITAL_FIELDS}
+          fields={(() => {
+            const base = algoId === 'algo3' ? SILVER_CAPITAL_FIELDS : CAPITAL_FIELDS;
+            return isLive ? base.filter(([key]) => key !== 'starting_capital') : base;
+          })()}
           settings={settings}
           setSettings={setSettings}
         />
