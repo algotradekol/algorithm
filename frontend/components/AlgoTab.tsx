@@ -516,11 +516,13 @@ export default function AlgoTab({
 }
 
 function SilverFeedPanel({ status }: { status: any }) {
-  const lastTick = formatDateTime(status?.last_tick_at);
-  const lastMinuteCandle = formatDateTime(status?.last_minute_candle_at);
-  const lastBar = formatDateTime(status?.last_bar_at);
-  const buySetupAt = formatDateTime(status?.buy_setup_bar_at);
-  const sellSetupAt = formatDateTime(status?.sell_setup_bar_at);
+  // All five feed timestamps use the with-date formatter so it's obvious
+  // whether "16:15" is today's tick or yesterday's stale warmup value.
+  const lastTick = formatDateTimeWithDate(status?.last_tick_at);
+  const lastMinuteCandle = formatDateTimeWithDate(status?.last_minute_candle_at);
+  const lastBar = formatDateTimeWithDate(status?.last_bar_at);
+  const buySetupAt = formatDateTimeWithDate(status?.buy_setup_bar_at);
+  const sellSetupAt = formatDateTimeWithDate(status?.sell_setup_bar_at);
   const historyBadge = status?.history_loading
     ? 'loading history'
     : status?.history_ready
@@ -1104,6 +1106,25 @@ function formatDateTime(value: unknown) {
   if (Number.isNaN(date.getTime())) return String(value);
   return date.toLocaleTimeString('en-IN', {
     timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: false,
+  });
+}
+
+// Same as formatDateTime but prefixes the date. Used for setup / last-bar
+// labels where "set at 16:15" is ambiguous — could be today's 16:15 or
+// yesterday's stale value carried through warmup. Rendered as
+// "20 Aug 16:15:00" so the user always knows the day.
+function formatDateTimeWithDate(value: unknown) {
+  if (!value) return '--';
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
