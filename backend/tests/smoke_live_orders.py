@@ -1094,6 +1094,29 @@ def test_connection_status_429_stays_degraded_not_expired():
     check("connection stays 'connected'=True during 429",
           result.get("connected") is True,
           f"got connected={result.get('connected')}")
+    check("429 state is not treated as verified",
+          result.get("verified") is False,
+          f"got verified={result.get('verified')}")
+
+
+def test_connection_status_connected_requires_successful_verify():
+    print("\n26b. Connection status — verified flips true only after profile success")
+    from unittest.mock import patch
+    import app.fyers_client as fc
+
+    class FakeProfile:
+        def get_profile(self):
+            return {"s": "ok"}
+
+    fake_token_row = {"access_token": "T", "refresh_token": "R"}
+    with patch.object(fc, "get_active_broker_key", return_value="fyers_live"), \
+         patch.object(fc, "get_stored_token_row", return_value=fake_token_row), \
+         patch.object(fc, "get_runtime_trading_mode", return_value="live"), \
+         patch.object(fc, "get_fyers_model", return_value=FakeProfile()):
+        result = fc.get_connection_status()
+    check("verified true after successful profile verify",
+          result.get("verified") is True,
+          f"got verified={result.get('verified')}")
 
 
 # ── 27. F4 pre-market watchdog skip ────────────────────────────────────
@@ -1407,6 +1430,7 @@ def _make_bare_algo3(settings_overrides=None):
     strat._entry_attempt_in_flight = False
     strat._entry_guard_lock = _threading.Lock()
     strat._entry_cooldown_until_monotonic = 0.0
+    strat._persist_setup_event = lambda side, bar, source: None
     strat._last_tick_at = None
     strat._last_tick_ltp = None
     strat._last_minute_candle_at = None
@@ -1568,6 +1592,51 @@ def test_algo3_partial_15m_bucket_is_not_finalized_on_warmup_tail():
           f"bars={len(strat._bars)} current_bucket={strat._current_bucket}")
 
 
+def test_algo3_partial_15m_bucket_does_not_persist_setup_history():
+    print("\n33e. algo3 does not save setup history from a still-forming 15m bucket")
+    import datetime as _dt
+    from unittest.mock import patch
+    import app.strategies.algo3_silver_micro as algo3_mod
+
+    strat = _make_bare_algo3()
+    strat._ema20 = 240000.0
+    calls = []
+    strat._persist_setup_event = lambda side, bar, source: calls.append((side, bar["time"], source))
+    candles = [
+        {
+            "time": _dt.datetime(2026, 8, 20, 20, 15),
+            "open": 242000,
+            "high": 242050,
+            "low": 241990,
+            "close": 242020,
+            "volume": 10,
+        },
+        {
+            "time": _dt.datetime(2026, 8, 20, 20, 16),
+            "open": 242020,
+            "high": 242070,
+            "low": 242010,
+            "close": 242055,
+            "volume": 10,
+        },
+        {
+            "time": _dt.datetime(2026, 8, 20, 20, 17),
+            "open": 242055,
+            "high": 242100,
+            "low": 242050,
+            "close": 242081,
+            "volume": 10,
+        },
+    ]
+    fake_now = _dt.datetime(2026, 8, 20, 20, 18, 30, tzinfo=algo3_mod.IST)
+    with patch.object(algo3_mod, "_latest_closed_minute_cutoff", return_value=fake_now.replace(second=0, microsecond=0, tzinfo=None)):
+        for candle in candles:
+            strat._ingest_minute_candle(candle, allow_signals=True)
+        strat._finalize_bar(allow_signals=True)
+    check("no setup history persisted from in-progress bucket",
+          calls == [], f"calls={calls}")
+
+
 # ── 34-35. Setup capture (green above / red below) + overwrite ─────────
 def test_algo3_setup_captures_and_overwrites():
     print("\n34. algo3 setup: green-above-EMA and red-below-EMA candles are stored, later ones overwrite")
@@ -1601,6 +1670,65 @@ def test_algo3_no_setup_when_wrong_side_of_ema():
     strat._update_setups({"open": 91500, "close": 90500, "time": "t2"})
     check("red-above-EMA: no sell_setup_close",
           strat._sell_setup_close is None, f"got={strat._sell_setup_close}")
+
+
+def test_algo3_setup_persistence_emits_history_event():
+    print("\n35b. algo3 qualifying setup emits a persistence event for history")
+    strat = _make_bare_algo3()
+    import datetime as _dt
+    strat._ema20 = 90000.0
+    calls = []
+    strat._persist_setup_event = lambda side, bar, source: calls.append((side, bar["close"], source))
+    strat._update_setups({
+        "open": 90500,
+        "high": 92200,
+        "low": 90450,
+        "close": 92000,
+        "volume": 123,
+        "minute_count": 15,
+        "time": _dt.datetime(2026, 8, 20, 19, 15),
+    })
+    check("one BUY setup history event emitted",
+          calls == [("BUY", 92000, "warmup")], f"calls={calls}")
+
+
+def test_algo3_setup_persistence_rejects_wrong_candle_color():
+    print("\n35c. algo3 history saver rejects a BUY/SELL persistence call for the wrong candle color")
+    import app.strategies.algo3_silver_micro as algo3_mod
+    import datetime as _dt
+    strat = _make_bare_algo3()
+    strat.symbol = "MCX:SILVERMIC26AUGFUT"
+    strat._ema20 = 90000.0
+    calls = []
+
+    def fake_record_setup_event(**kwargs):
+        calls.append(kwargs)
+
+    original = algo3_mod.record_setup_event
+    algo3_mod.record_setup_event = fake_record_setup_event
+    try:
+        strat._persist_setup_event("BUY", {
+            "open": 91000,
+            "high": 91100,
+            "low": 90400,
+            "close": 90500,
+            "volume": 1,
+            "minute_count": 15,
+            "time": _dt.datetime(2026, 8, 20, 19, 15),
+        }, source="live")
+        strat._persist_setup_event("SELL", {
+            "open": 90000,
+            "high": 92100,
+            "low": 89900,
+            "close": 92000,
+            "volume": 1,
+            "minute_count": 15,
+            "time": _dt.datetime(2026, 8, 20, 19, 30),
+        }, source="live")
+    finally:
+        algo3_mod.record_setup_event = original
+    check("wrong-color history rows were rejected",
+          calls == [], f"calls={calls}")
 
 
 # ── 36-38. Trigger detection ───────────────────────────────────────────
@@ -2141,6 +2269,23 @@ def test_algo3_gap_through_fires_immediately():
           f"opens={strat2.broker.opens}")
 
 
+def test_algo3_previous_day_buy_setup_gap_open_fires_immediately():
+    print("\n49b. algo3 previous-day BUY setup fires immediately on the next day's first gap-open tick")
+    import datetime as _dt
+    strat = _make_bare_algo3()
+    strat._buy_setup_close = 1000.0
+    strat._buy_setup_bar_at = _dt.datetime(2026, 8, 20, 22, 15)
+    strat._prev_ltp = None
+    strat.on_tick("MCX:SILVERMIC26AUGFUT", 1500, None)
+    check("next-session first tick above prior trigger opens BUY immediately",
+          len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "BUY",
+          f"opens={strat.broker.opens}")
+    if strat.broker.opens:
+        check("entry uses the actual first tick gap-open price",
+              abs(float(strat.broker.opens[0]["entry_price"]) - 1500.0) < 1e-9,
+              f"entry={strat.broker.opens[0]['entry_price']}")
+
+
 def test_algo3_candle_close_trigger_fires():
     """Client's 2026-08-20 ask: if a 15m candle CLOSES past the trigger
     level (e.g. 09:00 closed 241104 while BUY trigger was 238150),
@@ -2438,8 +2583,11 @@ def main():
     test_algo3_duplicate_minute_is_ignored()
     test_algo3_current_minute_is_not_treated_as_closed()
     test_algo3_partial_15m_bucket_is_not_finalized_on_warmup_tail()
+    test_algo3_partial_15m_bucket_does_not_persist_setup_history()
     test_algo3_setup_captures_and_overwrites()
     test_algo3_no_setup_when_wrong_side_of_ema()
+    test_algo3_setup_persistence_emits_history_event()
+    test_algo3_setup_persistence_rejects_wrong_candle_color()
     test_algo3_buy_trigger_only_on_upward_cross()
     test_algo3_sell_trigger_only_on_downward_cross()
     test_algo3_no_trigger_before_first_prev_ltp()
@@ -2457,6 +2605,7 @@ def main():
     test_broker_key_suffix_empty_preserves_legacy_key()
     test_algo3_backtest_parity_with_live()
     test_algo3_gap_through_fires_immediately()
+    test_algo3_previous_day_buy_setup_gap_open_fires_immediately()
     test_algo3_candle_close_trigger_fires()
     test_algo3_lot_based_qty()
     test_broker_positions_entry_time_from_tradebook()

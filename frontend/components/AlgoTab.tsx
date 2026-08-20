@@ -516,6 +516,10 @@ export default function AlgoTab({
 }
 
 function SilverFeedPanel({ status }: { status: any }) {
+  const [historyOpenSide, setHistoryOpenSide] = useState<'BUY' | 'SELL' | null>(null);
+  const [historyRows, setHistoryRows] = useState<any[]>([]);
+  const [historyBusy, setHistoryBusy] = useState(false);
+  const [historyError, setHistoryError] = useState('');
   // All five feed timestamps use the with-date formatter so it's obvious
   // whether "16:15" is today's tick or yesterday's stale warmup value.
   const lastTick = formatDateTimeWithDate(status?.last_tick_at);
@@ -535,6 +539,21 @@ function SilverFeedPanel({ status }: { status: any }) {
   const n = status?.n_points ?? 150;
   const buyTrigger = buySetupClose != null ? Number(buySetupClose) + Number(n) : null;
   const sellTrigger = sellSetupClose != null ? Number(sellSetupClose) - Number(n) : null;
+  async function openHistory(side: 'BUY' | 'SELL') {
+    setHistoryOpenSide(side);
+    setHistoryBusy(true);
+    setHistoryError('');
+    try {
+      const result = await api.setupHistory('algo3', side, 30, 100);
+      setHistoryRows(Array.isArray(result?.rows) ? result.rows : []);
+      setHistoryError(result?.warning || '');
+    } catch (e: any) {
+      setHistoryRows([]);
+      setHistoryError(e?.message || 'Failed to load setup history');
+    } finally {
+      setHistoryBusy(false);
+    }
+  }
   return (
     <div className="rounded border border-[#3b82f6]/30 bg-[#0b1220] p-3 text-xs text-gray-300">
       <div className="flex items-center justify-between gap-3">
@@ -555,7 +574,15 @@ function SilverFeedPanel({ status }: { status: any }) {
       </div>
       <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
         <div className="rounded border border-[#22c55e]/30 bg-[#22c55e]/5 p-2">
-          <div className="label text-[10px] text-[#22c55e]">BUY setup (green &gt; EMA20)</div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="label text-[10px] text-[#22c55e]">BUY setup (green &gt; EMA20)</div>
+            <button
+              onClick={() => openHistory('BUY')}
+              className="rounded border border-[#22c55e]/40 px-2 py-0.5 text-[10px] font-semibold text-[#22c55e]"
+            >
+              History
+            </button>
+          </div>
           <div className="mt-1 num text-sm text-gray-100">
             {buySetupClose != null ? `Close ${formatNumber(buySetupClose)}` : 'None captured yet'}
           </div>
@@ -565,7 +592,15 @@ function SilverFeedPanel({ status }: { status: any }) {
           </div>
         </div>
         <div className="rounded border border-[#ef4444]/30 bg-[#ef4444]/5 p-2">
-          <div className="label text-[10px] text-[#ef4444]">SELL setup (red &lt; EMA20)</div>
+          <div className="flex items-center justify-between gap-2">
+            <div className="label text-[10px] text-[#ef4444]">SELL setup (red &lt; EMA20)</div>
+            <button
+              onClick={() => openHistory('SELL')}
+              className="rounded border border-[#ef4444]/40 px-2 py-0.5 text-[10px] font-semibold text-[#ef4444]"
+            >
+              History
+            </button>
+          </div>
           <div className="mt-1 num text-sm text-gray-100">
             {sellSetupClose != null ? `Close ${formatNumber(sellSetupClose)}` : 'None captured yet'}
           </div>
@@ -580,6 +615,58 @@ function SilverFeedPanel({ status }: { status: any }) {
         <span>Warmup 1m candles: {status?.warmup_minute_candles ?? 0}</span>
         <span>n (breakout offset): {n}</span>
       </div>
+      {historyOpenSide && (
+        <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4">
+          <div className="max-h-[80vh] w-full max-w-4xl overflow-hidden rounded border border-[#1f2937] bg-[#0d1117] shadow-2xl">
+            <div className="flex items-center justify-between gap-3 border-b border-[#1f2937] px-4 py-3">
+              <div>
+                <div className="text-sm font-semibold text-gray-100">{historyOpenSide} setup history</div>
+                <div className="text-xs text-gray-500">Saved qualifying 15m candles for Silver Micro</div>
+              </div>
+              <button onClick={() => setHistoryOpenSide(null)} className="text-sm text-gray-500 hover:text-gray-100">X</button>
+            </div>
+            <div className="p-4">
+              {historyError && (
+                <p className="mb-3 rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-xs text-[#f59e0b]">
+                  {historyError}
+                </p>
+              )}
+              {historyBusy ? (
+                <p className="text-sm text-gray-400">Loading setup history...</p>
+              ) : !historyRows.length ? (
+                <p className="text-sm text-gray-400">No saved {historyOpenSide.toLowerCase()} setup candles yet.</p>
+              ) : (
+                <div className="overflow-x-auto rounded border border-[#1f2937]">
+                  <table className="w-full min-w-[980px] border-collapse text-xs">
+                    <thead className="bg-[#111827]">
+                      <tr>
+                        {['Time', 'Open', 'High', 'Low', 'Close', 'EMA20', 'Trigger', 'Volume', 'Source'].map((column) => (
+                          <th key={column} className="table-cell label">{column}</th>
+                        ))}
+                      </tr>
+                    </thead>
+                    <tbody>
+                      {historyRows.map((row, index) => (
+                        <tr key={`${row.setup_side}-${row.candle_time}-${index}`} className={index % 2 === 0 ? 'bg-[#0d1117]' : 'bg-[#111827]'}>
+                          <td className="table-cell text-gray-300">{formatDateTimeWithDate(row.candle_time)}</td>
+                          <td className="table-cell num text-gray-100">{formatNumber(row.candle_open)}</td>
+                          <td className="table-cell num text-gray-100">{formatNumber(row.candle_high)}</td>
+                          <td className="table-cell num text-gray-100">{formatNumber(row.candle_low)}</td>
+                          <td className="table-cell num text-gray-100">{formatNumber(row.candle_close)}</td>
+                          <td className="table-cell num text-gray-100">{formatNumber(row.ema20)}</td>
+                          <td className="table-cell num text-gray-100">{formatNumber(row.trigger_level)}</td>
+                          <td className="table-cell num text-gray-100">{formatNumber(row.candle_volume)}</td>
+                          <td className="table-cell text-gray-400">{row.source || '--'}</td>
+                        </tr>
+                      ))}
+                    </tbody>
+                  </table>
+                </div>
+              )}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }

@@ -51,6 +51,7 @@ from ..config import SILVER_MICRO_SYMBOL_OVERRIDE
 from ..fyers_client import get_intraday_candles_for_range
 from ..broker_factory import create_broker
 from ..mcx_symbols import get_active_mcx_contract
+from ..silver_setup_history import record_setup_event
 from ..strategy_settings import get_settings
 from ..timezone import IST
 
@@ -469,6 +470,7 @@ class Algo3SilverMicro(Strategy):
             old = self._buy_setup_close
             self._buy_setup_close = close
             self._buy_setup_bar_at = bar["time"]
+            self._persist_setup_event("BUY", bar, source="live" if log else "warmup")
             if log:
                 print(
                     f"[algo3] BUY setup UPDATED {_fmt(old)} -> {close:.2f} "
@@ -478,6 +480,7 @@ class Algo3SilverMicro(Strategy):
             old = self._sell_setup_close
             self._sell_setup_close = close
             self._sell_setup_bar_at = bar["time"]
+            self._persist_setup_event("SELL", bar, source="live" if log else "warmup")
             if log:
                 print(
                     f"[algo3] SELL setup UPDATED {_fmt(old)} -> {close:.2f} "
@@ -495,6 +498,37 @@ class Algo3SilverMicro(Strategy):
                 f"[algo3] bar did NOT update setup: {reason} "
                 f"(close={close:.2f}, EMA20={_fmt(self._ema20)})"
             )
+
+    def _persist_setup_event(self, side: str, bar: dict, source: str) -> None:
+        if not self.symbol:
+            return
+        close = float(bar.get("close") or 0)
+        open_price = float(bar.get("open") or 0)
+        is_green = close > open_price
+        is_red = close < open_price
+        if self._ema20 is None:
+            return
+        if side == "BUY" and not (is_green and close > self._ema20):
+            print(
+                f"[algo3] setup history SKIPPED for BUY: non-qualifying candle "
+                f"O={open_price:.2f} C={close:.2f} EMA20={_fmt(self._ema20)}"
+            )
+            return
+        if side == "SELL" and not (is_red and close < self._ema20):
+            print(
+                f"[algo3] setup history SKIPPED for SELL: non-qualifying candle "
+                f"O={open_price:.2f} C={close:.2f} EMA20={_fmt(self._ema20)}"
+            )
+            return
+        record_setup_event(
+            algo_id=self.algo_id,
+            symbol=self.symbol,
+            side=side,
+            bar=bar,
+            ema20=self._ema20,
+            breakout_points=float(self.settings.get("silver_breakout_points", 150) or 150),
+            source=source,
+        )
 
     # ── tick-based trigger detection ─────────────────────────────────
     def _already_fired_this_setup(self, side: str) -> bool:
