@@ -7,8 +7,17 @@ Supabase auth token.
 import datetime
 import asyncio
 import json
+import logging
 import math
 import threading
+
+# Silence Uvicorn's per-request access log. The Next.js dashboard polls
+# ~10 endpoints every 1-2s (positions, trades, feed-status, summary,
+# scan-results...), which drowns Railway logs in hundreds of
+# `INFO: ... GET /api/... 200 OK` lines per minute and buries the
+# actual algo signal / MCX diagnostics we care about. Errors still log
+# via uvicorn.error at WARNING and above.
+logging.getLogger("uvicorn.access").disabled = True
 from contextlib import asynccontextmanager
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from fastapi import FastAPI, Depends, HTTPException, Query, Request, WebSocket, WebSocketDisconnect

@@ -348,27 +348,54 @@ def _reset_tick_diagnostics():
 
 
 def _record_tick_diagnostics(symbol: str, ltp) -> None:
-    """First-tick-per-symbol log + rolling 60-second summary. Cheap
-    enough to call on every tick (dict inserts + one lock)."""
+    """First-tick-per-non-NSE-symbol log + rolling ~5-minute summary.
+
+    NSE is by far the noisiest exchange (500+ symbols each ticking
+    multiple times per second during market hours) and the client's
+    only real concern in Silver-only mode is 'is MCX arriving?'.
+    So NSE is silenced:
+      - No first-tick log for individual NSE symbols
+      - No summary while ONLY NSE is ticking (nothing interesting to say)
+      - A single 'NSE feed alive: N ticks' line every ~5 min proves
+        the socket is up without flooding
+    Non-NSE (MCX / BSE / any commodity) still gets first-tick per symbol
+    AND a summary whenever any arrive.
+    """
     now = time.time()
+    exch = symbol.split(":", 1)[0].upper() if ":" in symbol else "?"
     with _tick_stats_lock:
-        if symbol not in _first_tick_seen_symbols:
+        # Only log first-tick for non-NSE symbols — that's the
+        # signal the user actually cares about.
+        if exch != "NSE" and symbol not in _first_tick_seen_symbols:
             _first_tick_seen_symbols.add(symbol)
-            print(f"[feed] first tick for {symbol} @ {ltp} (total unique symbols so far: {len(_first_tick_seen_symbols)})")
+            print(f"[feed] first tick for {symbol} @ {ltp}")
+        elif exch == "NSE" and not any(s.startswith("NSE:") for s in _first_tick_seen_symbols):
+            # A single line confirms NSE stream came alive at all.
+            _first_tick_seen_symbols.add(symbol)
+            print(f"[feed] NSE stream alive (first NSE tick: {symbol} @ {ltp})")
         if _tick_stats["window_started_at"] is None:
             _tick_stats["window_started_at"] = now
         _tick_stats["window_ticks"] += 1
         _tick_stats["window_symbols"].add(symbol)
-        exch = symbol.split(":", 1)[0] if ":" in symbol else "?"
         _tick_stats["by_exchange"][exch] = _tick_stats["by_exchange"].get(exch, 0) + 1
         elapsed = now - _tick_stats["window_started_at"]
-        if elapsed >= _tick_stats["window_seconds"]:
+        # Summary cadence:
+        #  - Every 60s if any non-NSE (MCX/BSE) ticks arrived (what we care about)
+        #  - Every 300s (5 min) if only NSE ticks (heartbeat only)
+        non_nse = sum(v for k, v in _tick_stats["by_exchange"].items() if k != "NSE")
+        cadence = 60 if non_nse > 0 else 300
+        if elapsed >= cadence:
             by_exch = ", ".join(f"{k}={v}" for k, v in sorted(_tick_stats["by_exchange"].items()))
-            print(
-                f"[feed] tick summary last {int(elapsed)}s: "
-                f"{_tick_stats['window_ticks']} ticks across "
-                f"{len(_tick_stats['window_symbols'])} symbols ({by_exch})"
-            )
+            if non_nse > 0:
+                print(
+                    f"[feed] tick summary last {int(elapsed)}s: "
+                    f"{_tick_stats['window_ticks']} ticks / "
+                    f"{len(_tick_stats['window_symbols'])} symbols ({by_exch})"
+                )
+            else:
+                # NSE-only heartbeat — one short line every 5 min so we
+                # know the socket is still delivering something.
+                print(f"[feed] NSE-only feed alive: {_tick_stats['window_ticks']} ticks / {len(_tick_stats['window_symbols'])} symbols in {int(elapsed)}s (no MCX/BSE)")
             _tick_stats["window_started_at"] = now
             _tick_stats["window_ticks"] = 0
             _tick_stats["window_symbols"] = set()
