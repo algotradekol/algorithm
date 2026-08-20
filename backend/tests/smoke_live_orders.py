@@ -1111,6 +1111,31 @@ def test_critical_live_feed_symbols_ignore_nse_noise():
           f"got={_missing_critical_live_feed_symbols(subscribed, seen_all)}")
 
 
+def test_engine_rest_fallback_targets_stale_non_nse_symbols():
+    print("\n28b. Engine REST fallback — only stale non-NSE symbols qualify")
+    import time as _time
+    import app.engine as eng
+
+    eng.LIVE_FEED_SYMBOLS = ["NSE:RELIANCE-EQ", "MCX:SILVERMIC26AUGFUT"]
+    eng.WATCHLIST = list(eng.LIVE_FEED_SYMBOLS)
+    eng._symbol_last_tick_at.clear()
+
+    check("critical symbols list excludes NSE",
+          eng._critical_live_feed_symbols() == ["MCX:SILVERMIC26AUGFUT"],
+          f"got={eng._critical_live_feed_symbols()}")
+    check("missing MCX tick => REST fallback needed",
+          eng._symbol_needs_rest_fallback("MCX:SILVERMIC26AUGFUT"),
+          "expected True when symbol has never ticked")
+
+    fresh = (_time.time() - 3)
+    eng._symbol_last_tick_at["MCX:SILVERMIC26AUGFUT"] = __import__("datetime").datetime.fromtimestamp(
+        fresh, tz=__import__("datetime").timezone.utc
+    ).isoformat()
+    check("fresh MCX tick => no fallback",
+          not eng._symbol_needs_rest_fallback("MCX:SILVERMIC26AUGFUT"),
+          "expected False for fresh tick")
+
+
 # ── 29. F6 post-recovery grace ─────────────────────────────────────────
 def test_post_recovery_grace_ignores_immediate_failure():
     print("\n29. F6 — failure within 60s of recovery is ignored (no counter bump)")
@@ -2125,6 +2150,7 @@ def main():
     test_connection_status_429_stays_degraded_not_expired()
     test_pre_market_no_tick_not_counted_as_failure()
     test_critical_live_feed_symbols_ignore_nse_noise()
+    test_engine_rest_fallback_targets_stale_non_nse_symbols()
     test_post_recovery_grace_ignores_immediate_failure()
     test_current_backoff_respects_min_floor()
     test_hidden_tabs_env_normalizes_aliases()
