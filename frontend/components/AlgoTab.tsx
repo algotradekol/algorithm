@@ -750,7 +750,7 @@ function PositionsTable({
           );
         })}
       </div>
-      <div className="hidden overflow-x-auto rounded border border-[#1f2937] sm:block">
+      <div className="hidden w-full max-w-full overflow-x-auto rounded border border-[#1f2937] sm:block">
         <table className="w-full min-w-[1180px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
@@ -791,8 +791,8 @@ function PositionsTable({
                 <td className="table-cell num text-gray-100">{formatNumber(row.sl_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.target_price)}</td>
                 <td className="table-cell min-w-[150px]"><TrailingBadge row={row} /></td>
-                <td className="table-cell min-w-[190px] text-gray-400"><SignalAudit row={row} /></td>
-                <td className="table-cell max-w-[300px] text-gray-400">{formatTrigger(row.entry_trigger)}</td>
+                <td className="table-cell min-w-[220px] text-gray-400"><SignalAudit row={row} /></td>
+                <td className="table-cell max-w-[300px] break-words whitespace-normal text-gray-400">{formatTrigger(row.entry_trigger)}</td>
                 <td className={`table-cell num font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
                 <td className="table-cell"><ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} tradingMode={tradingMode} /></td>
               </tr>
@@ -842,7 +842,7 @@ function TradesTable({ rows }: { rows: any[] }) {
           </div>
         ))}
       </div>
-      <div className="hidden overflow-x-auto rounded border border-[#1f2937] sm:block">
+      <div className="hidden w-full max-w-full overflow-x-auto rounded border border-[#1f2937] sm:block">
         <table className="w-full min-w-[1280px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
@@ -872,8 +872,8 @@ function TradesTable({ rows }: { rows: any[] }) {
                 {formatReason(row.exit_reason)}
               </td>
               <td className="table-cell min-w-[150px]"><TrailingBadge row={row} /></td>
-              <td className="table-cell min-w-[190px] text-gray-400"><SignalAudit row={row} /></td>
-              <td className="table-cell max-w-[300px] text-gray-400">{formatTrigger(row.entry_trigger)}</td>
+              <td className="table-cell min-w-[220px] text-gray-400"><SignalAudit row={row} /></td>
+              <td className="table-cell max-w-[300px] break-words whitespace-normal text-gray-400">{formatTrigger(row.entry_trigger)}</td>
               <td className={`table-cell num ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
               <td className="table-cell num text-gray-100">{formatMoney(row.total_charges)}</td>
               <td className={`table-cell num font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>{formatMoney(row.net_pnl)}</td>
@@ -957,7 +957,7 @@ function MobileField({ label, value, wide = false }: { label: string; value: any
   return (
     <div className={wide ? 'col-span-2' : ''}>
       <div className="label text-[10px]">{label}</div>
-      <div className="num mt-0.5 text-gray-100">{value}</div>
+      <div className="num mt-0.5 break-words whitespace-normal text-gray-100">{value}</div>
     </div>
   );
 }
@@ -973,14 +973,36 @@ function SignalAudit({ row }: { row: any }) {
   if (!signal || typeof signal !== 'object') {
     return <span className="text-xs text-gray-500">Not captured for this legacy trade</span>;
   }
+  const algo3Snapshot = signal.timeframe === '15m' && (
+    signal.buy_setup_close !== undefined ||
+    signal.sell_setup_close !== undefined ||
+    signal.trigger_level !== undefined ||
+    signal.ema20 !== undefined
+  );
+  if (algo3Snapshot) {
+    const triggerLabel = signal.side === 'SELL' ? 'Sell trigger' : 'Buy trigger';
+    const activeSetup = signal.side === 'SELL' ? signal.sell_setup_close : signal.buy_setup_close;
+    return (
+      <details className="max-w-full text-xs">
+        <summary className="cursor-pointer text-[#60a5fa]">View signal OHLC</summary>
+        <div className="mt-1 space-y-0.5 break-words whitespace-normal text-gray-400">
+          <div className="font-semibold text-gray-200">15m EMA breakout audit</div>
+          <div>Symbol {signal.symbol || row.symbol || '--'} | Side {signal.side || row.side || '--'}</div>
+          <div>Setup close {formatNumber(activeSetup)} | {triggerLabel} {formatNumber(signal.trigger_level)}</div>
+          <div>Entry LTP {formatNumber(signal.entry_ltp)} | EMA20 {formatNumber(signal.ema20)}</div>
+          <div>Buy setup {formatNumber(signal.buy_setup_close)} | Sell setup {formatNumber(signal.sell_setup_close)}</div>
+        </div>
+      </details>
+    );
+  }
   const shape = signal.shape === 'open_equals_low' ? 'BUY: signal open ≈ low (tick tolerance)'
     : signal.shape === 'open_equals_high' ? 'SELL: signal open ≈ high (tick tolerance)'
       : signal.shape === 'flat_ambiguous' ? 'Rejected: flat/ambiguous signal'
         : 'Signal window audit';
   return (
-    <details className="text-xs">
+    <details className="max-w-full text-xs">
       <summary className="cursor-pointer text-[#60a5fa]">View signal OHLC</summary>
-      <div className="mt-1 space-y-0.5 text-gray-400">
+      <div className="mt-1 space-y-0.5 break-words whitespace-normal text-gray-400">
         <div className="font-semibold text-gray-200">{shape}</div>
         <div>{signal.window || 'Opening window'}: O {formatNumber(signal.open)} / H {formatNumber(signal.high)} / L {formatNumber(signal.low)} / C {formatNumber(signal.close)}</div>
         <div>Prev close {formatNumber(signal.previous_close)} | Gap {Number.isFinite(Number(signal.gap_pct)) ? `${Number(signal.gap_pct).toFixed(2)}%` : '--'}</div>
