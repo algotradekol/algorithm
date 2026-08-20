@@ -3,16 +3,53 @@ from __future__ import annotations
 import datetime
 
 from .supabase_client import run_with_supabase
+from .timezone import IST
+
+
+def _now_utc() -> datetime.datetime:
+    return datetime.datetime.now(datetime.timezone.utc)
 
 
 def _utc_iso(value: datetime.datetime | None) -> str | None:
     if value is None:
         return None
     if value.tzinfo is None:
-        value = value.replace(tzinfo=datetime.timezone.utc)
+        # Algo3 builds candle buckets in market-time IST using naive
+        # datetimes. Treat those values as IST before converting to UTC;
+        # interpreting them as UTC shifts every saved setup forward by
+        # +5:30 and makes today's 23:15 candle look like tomorrow 04:45.
+        value = value.replace(tzinfo=IST)
     else:
-        value = value.astimezone(datetime.timezone.utc)
+        value = value.astimezone(IST)
+    value = value.astimezone(datetime.timezone.utc)
     return value.isoformat()
+
+
+def _normalize_legacy_row(row: dict) -> dict:
+    """Repair early setup-history rows that were saved with naive IST
+    timestamps wrongly tagged as UTC.
+
+    Symptom: a real 20 Aug 23:15 IST candle shows in the UI as
+    21 Aug 04:45 IST. We detect rows that land implausibly in the future
+    and shift them back by 5h30 so the history reflects the true candle
+    the algo used.
+    """
+    normalized = dict(row)
+    candle_time = normalized.get("candle_time")
+    if not candle_time:
+        return normalized
+    try:
+        parsed = datetime.datetime.fromisoformat(str(candle_time).replace("Z", "+00:00"))
+    except Exception:
+        return normalized
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    now_utc = _now_utc()
+    future_skew = parsed - now_utc
+    ist_offset = datetime.timedelta(hours=5, minutes=30)
+    if datetime.timedelta(minutes=1) < future_skew <= datetime.timedelta(hours=6):
+        normalized["candle_time"] = (parsed - ist_offset).astimezone(datetime.timezone.utc).isoformat()
+    return normalized
 
 
 def record_setup_event(
@@ -48,7 +85,7 @@ def record_setup_event(
         "breakout_points": float(breakout_points),
         "trigger_level": float(trigger_level),
         "source": str(source or "live"),
-        "captured_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "captured_at": _now_utc().isoformat(),
     }
     try:
         run_with_supabase(
@@ -69,7 +106,7 @@ def get_setup_history(
     days: int = 30,
 ) -> dict:
     start_date = (
-        datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(days=max(1, int(days)))
+        _now_utc() - datetime.timedelta(days=max(1, int(days)))
     ).isoformat()
 
     def query(supabase):
@@ -87,10 +124,11 @@ def get_setup_history(
 
     try:
         result = run_with_supabase(query)
+        rows = [_normalize_legacy_row(row) for row in (result.data or [])]
         return {
             "algo_id": algo_id,
             "side": side,
-            "rows": result.data or [],
+            "rows": rows,
             "warning": "",
         }
     except Exception as exc:
