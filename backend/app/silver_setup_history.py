@@ -104,10 +104,18 @@ def get_setup_history(
     side: str | None = None,
     limit: int = 100,
     days: int = 30,
+    current_session_only: bool = False,
+    live_only: bool = False,
 ) -> dict:
-    start_date = (
-        _now_utc() - datetime.timedelta(days=max(1, int(days)))
-    ).isoformat()
+    now_utc = _now_utc()
+    if current_session_only:
+        now_ist = now_utc.astimezone(IST)
+        session_start_ist = now_ist.replace(hour=0, minute=0, second=0, microsecond=0)
+        start_date = session_start_ist.astimezone(datetime.timezone.utc).isoformat()
+    else:
+        start_date = (
+            now_utc - datetime.timedelta(days=max(1, int(days)))
+        ).isoformat()
 
     def query(supabase):
         request = (
@@ -120,6 +128,8 @@ def get_setup_history(
         )
         if side in {"BUY", "SELL"}:
             request = request.eq("setup_side", side)
+        if live_only:
+            request = request.eq("source", "live")
         return request.execute()
 
     try:
@@ -130,6 +140,8 @@ def get_setup_history(
             "side": side,
             "rows": rows,
             "warning": "",
+            "current_session_only": current_session_only,
+            "live_only": live_only,
         }
     except Exception as exc:
         return {
@@ -137,4 +149,6 @@ def get_setup_history(
             "side": side,
             "rows": [],
             "warning": str(exc),
+            "current_session_only": current_session_only,
+            "live_only": live_only,
         }

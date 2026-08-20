@@ -1701,7 +1701,7 @@ def test_algo3_no_setup_when_wrong_side_of_ema():
 
 
 def test_algo3_setup_persistence_emits_history_event():
-    print("\n35b. algo3 qualifying setup emits a persistence event for history")
+    print("\n35b. algo3 live qualifying setup emits a persistence event for history")
     strat = _make_bare_algo3()
     import datetime as _dt
     strat._ema20 = 90000.0
@@ -1715,9 +1715,31 @@ def test_algo3_setup_persistence_emits_history_event():
         "volume": 123,
         "minute_count": 15,
         "time": _dt.datetime(2026, 8, 20, 19, 15),
-    })
+    }, log=True)
     check("one BUY setup history event emitted",
-          calls == [("BUY", 92000, "warmup")], f"calls={calls}")
+          calls == [("BUY", 92000, "live")], f"calls={calls}")
+
+
+def test_algo3_warmup_setup_does_not_persist_history():
+    print("\n35bb. algo3 warmup rebuild updates in-memory setup but does not write setup history")
+    strat = _make_bare_algo3()
+    import datetime as _dt
+    strat._ema20 = 90000.0
+    calls = []
+    strat._persist_setup_event = lambda side, bar, source: calls.append((side, bar["close"], source))
+    strat._update_setups({
+        "open": 90500,
+        "high": 92200,
+        "low": 90450,
+        "close": 92000,
+        "volume": 123,
+        "minute_count": 15,
+        "time": _dt.datetime(2026, 8, 20, 19, 15),
+    }, log=False)
+    check("warmup did not emit setup history rows",
+          calls == [], f"calls={calls}")
+    check("warmup still updated in-memory buy setup",
+          strat._buy_setup_close == 92000, f"buy={strat._buy_setup_close}")
 
 
 def test_algo3_setup_persistence_rejects_wrong_candle_color():

@@ -680,13 +680,22 @@ def algo_setup_history(
     side: str | None = Query(default=None),
     days: int = Query(default=30, ge=1, le=180),
     limit: int = Query(default=100, ge=1, le=500),
+    current_session_only: bool = Query(default=False),
+    live_only: bool = Query(default=False),
     _user=Depends(require_auth),
 ):
     get_strategy_or_raise(algo_id)
     normalized_side = side.upper() if isinstance(side, str) else None
     if normalized_side not in {None, "BUY", "SELL"}:
         raise HTTPException(status_code=400, detail="side must be BUY or SELL")
-    return get_setup_history(algo_id, side=normalized_side, days=days, limit=limit)
+    return get_setup_history(
+        algo_id,
+        side=normalized_side,
+        days=days,
+        limit=limit,
+        current_session_only=current_session_only,
+        live_only=live_only,
+    )
 
 
 @app.get("/api/algo/{algo_id}/settings")

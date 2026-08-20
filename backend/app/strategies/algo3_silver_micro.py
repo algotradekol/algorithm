@@ -470,7 +470,8 @@ class Algo3SilverMicro(Strategy):
             old = self._buy_setup_close
             self._buy_setup_close = close
             self._buy_setup_bar_at = bar["time"]
-            self._persist_setup_event("BUY", bar, source="live" if log else "warmup")
+            if log:
+                self._persist_setup_event("BUY", bar, source="live")
             if log:
                 print(
                     f"[algo3] BUY setup UPDATED {_fmt(old)} -> {close:.2f} "
@@ -480,7 +481,8 @@ class Algo3SilverMicro(Strategy):
             old = self._sell_setup_close
             self._sell_setup_close = close
             self._sell_setup_bar_at = bar["time"]
-            self._persist_setup_event("SELL", bar, source="live" if log else "warmup")
+            if log:
+                self._persist_setup_event("SELL", bar, source="live")
             if log:
                 print(
                     f"[algo3] SELL setup UPDATED {_fmt(old)} -> {close:.2f} "
