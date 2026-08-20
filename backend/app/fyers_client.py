@@ -1423,6 +1423,21 @@ def _summarize_funds_response(response: dict) -> dict:
     }
 
 
+def _critical_live_feed_symbols(symbols: list[str]) -> list[str]:
+    """Non-NSE symbols whose silence should fail the feed health check."""
+    critical: list[str] = []
+    for symbol in symbols:
+        exchange = symbol.split(":", 1)[0].upper() if ":" in symbol else ""
+        if exchange != "NSE":
+            critical.append(symbol)
+    return critical
+
+
+def _missing_critical_live_feed_symbols(subscribed_symbols: list[str], seen_symbols: set[str]) -> list[str]:
+    """Critical subscribed symbols that have not produced a valid tick yet."""
+    return [symbol for symbol in _critical_live_feed_symbols(subscribed_symbols) if symbol not in seen_symbols]
+
+
 def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=None):
     if data_ws is None:
         raise RuntimeError(
@@ -1440,6 +1455,7 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
     first_tick_received = False
     subscription_sent = False
     subscription_lock = threading.Lock()
+    seen_symbols_with_ticks: set[str] = set()
 
     # MCX diagnostic: log the raw shape of any message whose symbol
     # contains "SILVERMIC" (regardless of exchange prefix). If MCX ticks
@@ -1450,8 +1466,12 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
 
     def on_message(message):
         nonlocal first_tick_received
+        symbol = message.get("symbol")
+        ltp = message.get("ltp")
+        if symbol and ltp is not None:
+            seen_symbols_with_ticks.add(symbol)
         try:
-            sym_val = str(message.get("symbol") or "")
+            sym_val = str(symbol or "")
             if "SILVERMIC" in sym_val.upper() or (isinstance(message, dict) and any(
                 "SILVERMIC" in str(v).upper() for v in message.values() if isinstance(v, str)
             )):
@@ -1461,7 +1481,7 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
                     print(f"[fyers] MCX raw message shape: {message}")
         except Exception:
             pass
-        if not first_tick_received and message.get("symbol") and message.get("ltp") is not None:
+        if not first_tick_received and symbol and ltp is not None:
             first_tick_received = True
             report_status(
                 connected=True,
@@ -1563,7 +1583,17 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
         # engine watchdog can reconnect instead of displaying a false green
         # "connected" state until the scheduled scan has already been missed.
         time.sleep(30)
-        if not first_tick_received:
+        missing_critical = _missing_critical_live_feed_symbols(symbols, seen_symbols_with_ticks)
+        if missing_critical:
+            report_status(
+                connected=False,
+                error=(
+                    "No Fyers market tick received for critical symbols within 30 seconds "
+                    f"of subscription: {', '.join(missing_critical)}"
+                ),
+                message="Fyers websocket is receiving other symbols but not the live strategy feed",
+            )
+        elif not first_tick_received:
             report_status(
                 connected=False,
                 error="No Fyers market tick received within 30 seconds of subscription",
