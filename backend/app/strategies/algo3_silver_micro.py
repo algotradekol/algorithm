@@ -113,6 +113,31 @@ def _bucket_start(ts: datetime.datetime, minutes: int = BUCKET_MINUTES) -> datet
     return ts.replace(minute=minute, second=0, microsecond=0)
 
 
+def _latest_closed_minute_cutoff(now: datetime.datetime | None = None) -> datetime.datetime:
+    """Return the earliest minute timestamp that is still forming.
+
+    A 1-minute candle stamped with the CURRENT minute (e.g. 19:58 while the
+    wall clock is still 19:58:xx IST) is not closed yet and must never be fed
+    into the 15m builder, or the 19:45 bucket can finalize before 20:00.
+    """
+    current = now.astimezone(IST) if now and now.tzinfo is not None else now
+    current = current or datetime.datetime.now(IST)
+    return current.replace(second=0, microsecond=0, tzinfo=None)
+
+
+def _is_bucket_closed(
+    bucket_start: datetime.datetime,
+    now: datetime.datetime | None = None,
+    minutes: int = BUCKET_MINUTES,
+) -> bool:
+    """Return True only when the full bucket window has elapsed.
+
+    Example: the 20:15 bucket is NOT closed until wall-clock time reaches
+    20:30 and the first closed minute from that next bucket exists.
+    """
+    return bucket_start + datetime.timedelta(minutes=minutes) <= _latest_closed_minute_cutoff(now)
+
+
 def _fmt(value: float | None) -> str:
     if value is None:
         return "--"
@@ -353,6 +378,8 @@ class Algo3SilverMicro(Strategy):
             "close": float(candle["close"]),
             "volume": float(candle.get("volume") or 0),
         }
+        if candle_time >= _latest_closed_minute_cutoff():
+            return
         if self._last_ingested_minute_at == candle_time:
             return
         self._last_ingested_minute_at = candle_time
@@ -372,8 +399,10 @@ class Algo3SilverMicro(Strategy):
 
         self._minute_buffer.append(minute_candle)
 
-    def _finalize_bar(self, allow_signals: bool):
+    def _finalize_bar(self, allow_signals: bool, require_closed: bool = True):
         if not self._minute_buffer or self._current_bucket is None:
+            return
+        if require_closed and not _is_bucket_closed(self._current_bucket):
             return
         bar = {
             "time": self._current_bucket,

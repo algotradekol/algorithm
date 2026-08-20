@@ -1496,6 +1496,72 @@ def test_algo3_duplicate_minute_is_ignored():
           f"buffer_len={len(strat._minute_buffer)}")
 
 
+def test_algo3_current_minute_is_not_treated_as_closed():
+    print("\n33c. algo3 ignores the current still-forming 1m candle")
+    import datetime as _dt
+    from unittest.mock import patch
+    import app.strategies.algo3_silver_micro as algo3_mod
+
+    strat = _make_bare_algo3()
+    forming_candle = {
+        "time": _dt.datetime(2026, 8, 20, 19, 58),
+        "open": 242000,
+        "high": 242210,
+        "low": 241990,
+        "close": 242207,
+        "volume": 10,
+    }
+    fake_now = _dt.datetime(2026, 8, 20, 19, 58, 30, tzinfo=algo3_mod.IST)
+    with patch.object(algo3_mod, "_latest_closed_minute_cutoff", return_value=fake_now.replace(second=0, microsecond=0, tzinfo=None)):
+        strat.on_candle_close("MCX:SILVERMIC26AUGFUT", forming_candle, {})
+    check("current minute ignored until it is actually closed",
+          len(strat._minute_buffer) == 0 and strat._current_bucket is None,
+          f"buffer_len={len(strat._minute_buffer)} bucket={strat._current_bucket}")
+
+
+def test_algo3_partial_15m_bucket_is_not_finalized_on_warmup_tail():
+    print("\n33d. algo3 does not finalize a still-forming 15m bucket during warmup replay")
+    import datetime as _dt
+    from unittest.mock import patch
+    import app.strategies.algo3_silver_micro as algo3_mod
+
+    strat = _make_bare_algo3()
+    candles = [
+        {
+            "time": _dt.datetime(2026, 8, 20, 20, 15),
+            "open": 242000,
+            "high": 242050,
+            "low": 241990,
+            "close": 242020,
+            "volume": 10,
+        },
+        {
+            "time": _dt.datetime(2026, 8, 20, 20, 16),
+            "open": 242020,
+            "high": 242070,
+            "low": 242010,
+            "close": 242055,
+            "volume": 10,
+        },
+        {
+            "time": _dt.datetime(2026, 8, 20, 20, 17),
+            "open": 242055,
+            "high": 242100,
+            "low": 242050,
+            "close": 242081,
+            "volume": 10,
+        },
+    ]
+    fake_now = _dt.datetime(2026, 8, 20, 20, 18, 30, tzinfo=algo3_mod.IST)
+    with patch.object(algo3_mod, "_latest_closed_minute_cutoff", return_value=fake_now.replace(second=0, microsecond=0, tzinfo=None)):
+        for candle in candles:
+            strat._ingest_minute_candle(candle, allow_signals=False)
+        strat._finalize_bar(allow_signals=False)
+    check("still-forming 20:15 bucket not finalized into a 15m bar",
+          len(strat._bars) == 0 and strat._current_bucket == _dt.datetime(2026, 8, 20, 20, 15),
+          f"bars={len(strat._bars)} current_bucket={strat._current_bucket}")
+
+
 # ── 34-35. Setup capture (green above / red below) + overwrite ─────────
 def test_algo3_setup_captures_and_overwrites():
     print("\n34. algo3 setup: green-above-EMA and red-below-EMA candles are stored, later ones overwrite")
@@ -2288,6 +2354,8 @@ def main():
     test_algo3_bucket_start_15m()
     test_algo3_ema_step_matches_python_reference()
     test_algo3_duplicate_minute_is_ignored()
+    test_algo3_current_minute_is_not_treated_as_closed()
+    test_algo3_partial_15m_bucket_is_not_finalized_on_warmup_tail()
     test_algo3_setup_captures_and_overwrites()
     test_algo3_no_setup_when_wrong_side_of_ema()
     test_algo3_buy_trigger_only_on_upward_cross()
