@@ -30,6 +30,18 @@ try:
 except ImportError:  # pragma: no cover - keeps /health alive if SDK is missing
     fyersModel = None
 
+# Log the installed Fyers SDK version at boot. Requirements pin only
+# 'fyers-apiv3' (no version), so every Railway deploy pulls latest.
+# If Fyers ships a new SDK that changes MCX WebSocket handling, this
+# tells us immediately what version is running so we can pin to a
+# known-working one via requirements.txt.
+try:
+    from importlib.metadata import version as _pkg_version
+    _fyers_sdk_version = _pkg_version("fyers-apiv3")
+    print(f"[boot] fyers-apiv3 version: {_fyers_sdk_version}")
+except Exception as _exc:  # pragma: no cover
+    print(f"[boot] fyers-apiv3 version lookup failed: {_exc}")
+
 from .config import ALLOWED_ORIGINS, APP_PIN, FRONTEND_URL, SUPABASE_JWT_SECRET
 from .auth import require_auth
 from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, last_ltp, restart_live_feed, start_engine, stop_live_feed, STRATEGIES, _clear_token_expired
