@@ -83,7 +83,7 @@ class LiveBroker(PaperBroker):
         entry_trigger: str | None = None,
         signal_snapshot: dict | None = None,
     ):
-        qty = self._cap_qty_to_live_funds(qty, entry_price)
+        qty = self._cap_qty_to_live_funds(symbol, qty, entry_price)
         if qty < 1:
             raise RuntimeError("Fyers live order failed: available live funds are below the current share price.")
         # Entry order type is driven by strategy settings (default LIMIT at LTP,
@@ -713,9 +713,23 @@ class LiveBroker(PaperBroker):
             return "LIMIT", float(entry_price)
         return "MARKET", 0.0
 
-    def _cap_qty_to_live_funds(self, requested_qty: int, entry_price: float) -> int:
+    def _uses_full_price_funds_cap(self, symbol: str) -> bool:
+        """True when a naive `available_funds // price` cap is valid.
+
+        NSE/BSE cash-style buys can be roughly sanity-checked against the
+        instrument's quoted price. MCX futures cannot: the quoted LTP is a
+        contract price, while the broker blocks/approves based on required
+        margin. Using full LTP there wrongly rejects valid 1-lot entries
+        (e.g. SILVERMIC at 2.4L with ~1.1L wallet balance).
+        """
+        text = str(symbol or "").strip().upper()
+        return not text.startswith("MCX:")
+
+    def _cap_qty_to_live_funds(self, symbol: str, requested_qty: int, entry_price: float) -> int:
         if requested_qty < 1 or entry_price <= 0:
             return 0
+        if not self._uses_full_price_funds_cap(symbol):
+            return int(requested_qty)
         try:
             funds = get_wallet_balance("live")
         except Exception:

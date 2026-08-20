@@ -146,6 +146,27 @@ def test_market_mode():
     check("entry limitPrice = 0", entry["limitPrice"] == 0)
 
 
+def test_live_funds_cap_bypasses_mcx_futures():
+    print("\n2c. Live funds cap bypasses full-price check for MCX futures")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec, order_type="MARKET")
+    # Wallet below quoted futures price, but Silver Micro should still be
+    # allowed through here because Fyers validates required margin, not
+    # full contract LTP like cash equity.
+    lb.get_wallet_balance = lambda *a, **k: {"summary": {"available_margin": 114_532.82}}
+    qty = broker._cap_qty_to_live_funds("MCX:SILVERMIC26AUGFUT", 1, 240_300.0)
+    check("MCX futures keep requested qty despite wallet < LTP", qty == 1, f"qty={qty}")
+
+
+def test_live_funds_cap_still_limits_cash_equity():
+    print("\n2d. Live funds cap still limits cash-equity buys")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec, order_type="MARKET")
+    lb.get_wallet_balance = lambda *a, **k: {"summary": {"available_margin": 1_000.0}}
+    qty = broker._cap_qty_to_live_funds("NSE:RELIANCE-EQ", 10, 2_400.0)
+    check("cash-equity qty capped to 0 when wallet cannot afford one share", qty == 0, f"qty={qty}")
+
+
 # ── 5. OCO reconcile: SL fills -> cancel Target ────────────────────────
 def test_oco_reconcile():
     print("\n5. OCO — SL fill triggers cancel of the leftover Target order")
@@ -2177,6 +2198,8 @@ def main():
     test_dynamic_qty()
     test_entry_and_protective_payloads()
     test_market_mode()
+    test_live_funds_cap_bypasses_mcx_futures()
+    test_live_funds_cap_still_limits_cash_equity()
     test_oco_reconcile()
     test_trailing_sl_syncs_to_fyers()
     test_tick_rounding_and_slm_limit()
