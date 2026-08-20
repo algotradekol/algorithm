@@ -544,7 +544,10 @@ function SilverFeedPanel({ status }: { status: any }) {
     setHistoryBusy(true);
     setHistoryError('');
     try {
-      const result = await api.setupHistory('algo3', side, 30, 100);
+      const result = await api.setupHistory('algo3', side, 30, 100, {
+        currentSessionOnly: true,
+        liveOnly: true,
+      });
       setHistoryRows(Array.isArray(result?.rows) ? result.rows : []);
       setHistoryError(result?.warning || '');
     } catch (e: any) {
