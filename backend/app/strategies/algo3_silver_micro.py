@@ -70,6 +70,7 @@ SILVER_MICRO_LOT_SIZE = 1
 # 5 minutes is short enough to pick up a genuine restart, long enough
 # to not run more than 12 times per hour in a worst-case restart storm.
 WARMUP_DEBOUNCE_SECONDS = 300
+ENTRY_ATTEMPT_COOLDOWN_SECONDS = 180
 # Fallback if the MCX symbol-master download fails at boot AND the
 # in-memory cache is empty. Client confirmed the front-month contract
 # on 2026-08-18 is 31AUGFUT (matches Fyers naming: expiry-day + month).
@@ -191,6 +192,11 @@ class Algo3SilverMicro(Strategy):
         # double-firing when both fire on the same setup.
         self._last_fired_buy_bar_at: datetime.datetime | None = None
         self._last_fired_sell_bar_at: datetime.datetime | None = None
+        self._last_attempted_buy_bar_at: datetime.datetime | None = None
+        self._last_attempted_sell_bar_at: datetime.datetime | None = None
+        self._entry_attempt_in_flight = False
+        self._entry_guard_lock = threading.Lock()
+        self._entry_cooldown_until_monotonic = 0.0
 
         # Diagnostics.
         self._last_tick_at: str | None = None
@@ -255,6 +261,10 @@ class Algo3SilverMicro(Strategy):
         self._sell_setup_bar_at = None
         self._last_fired_buy_bar_at = None
         self._last_fired_sell_bar_at = None
+        self._last_attempted_buy_bar_at = None
+        self._last_attempted_sell_bar_at = None
+        self._entry_attempt_in_flight = False
+        self._entry_cooldown_until_monotonic = 0.0
 
     def _load_history_background(self):
         try:
@@ -506,11 +516,90 @@ class Algo3SilverMicro(Strategy):
             and self._last_fired_sell_bar_at == self._sell_setup_bar_at
         )
 
+    def _already_attempted_this_setup(self, side: str) -> bool:
+        if side == "BUY":
+            return (
+                self._buy_setup_bar_at is not None
+                and self._last_attempted_buy_bar_at == self._buy_setup_bar_at
+            )
+        return (
+            self._sell_setup_bar_at is not None
+            and self._last_attempted_sell_bar_at == self._sell_setup_bar_at
+        )
+
+    def _already_consumed_this_setup(self, side: str) -> bool:
+        return self._already_attempted_this_setup(side) or self._already_fired_this_setup(side)
+
     def _mark_fired(self, side: str) -> None:
         if side == "BUY":
             self._last_fired_buy_bar_at = self._buy_setup_bar_at
         else:
             self._last_fired_sell_bar_at = self._sell_setup_bar_at
+
+    def _mark_attempted(self, side: str) -> None:
+        if side == "BUY":
+            self._last_attempted_buy_bar_at = self._buy_setup_bar_at
+        else:
+            self._last_attempted_sell_bar_at = self._sell_setup_bar_at
+        if not self._is_live_broker():
+            return
+        cooldown = float(self.settings.get("silver_entry_cooldown_seconds", ENTRY_ATTEMPT_COOLDOWN_SECONDS) or 0)
+        self._entry_cooldown_until_monotonic = max(
+            self._entry_cooldown_until_monotonic,
+            time.monotonic() + max(0.0, cooldown),
+        )
+
+    def _entry_cooldown_remaining(self) -> float:
+        return max(0.0, self._entry_cooldown_until_monotonic - time.monotonic())
+
+    def _is_live_broker(self) -> bool:
+        return (
+            getattr(self.broker, "_algo3_treat_as_live", False)
+            or self.broker.__class__.__name__ == "LiveBroker"
+        )
+
+    def _live_broker_symbol_busy(self, current_position: dict | None = None) -> bool:
+        """Best-effort live broker guard against duplicate Silver entries.
+
+        If the app has no local open Silver position but Fyers still reports
+        an open/pending symbol state, fail closed and skip a fresh entry.
+        This prevents retry storms after partial entry/protection failures.
+        """
+        if not self._is_live_broker() or current_position is not None:
+            return False
+        try:
+            from ..fyers_client import get_broker_orders, get_broker_positions
+
+            positions_result = get_broker_positions("live")
+            if not positions_result.get("available"):
+                print(
+                    f"[algo3] entry SKIPPED: live positions unavailable for broker guard "
+                    f"({positions_result.get('warning') or 'unknown error'})"
+                )
+                return True
+            for row in positions_result.get("positions", []):
+                if row.get("symbol") == self.symbol:
+                    print(f"[algo3] entry SKIPPED: broker already reports open {self.symbol} position")
+                    return True
+
+            orders_result = get_broker_orders("live")
+            if not orders_result.get("available"):
+                print(
+                    f"[algo3] entry SKIPPED: live orders unavailable for broker guard "
+                    f"({orders_result.get('warning') or 'unknown error'})"
+                )
+                return True
+            for row in orders_result.get("orders", []):
+                if row.get("symbol") == self.symbol:
+                    print(
+                        f"[algo3] entry SKIPPED: broker already has pending {self.symbol} "
+                        f"{row.get('side')} order ({row.get('status')})"
+                    )
+                    return True
+            return False
+        except Exception as exc:
+            print(f"[algo3] entry SKIPPED: live broker guard failed for {self.symbol}: {exc}")
+            return True
 
     def _check_triggers(self, ltp: float):
         n = float(self.settings.get("silver_breakout_points", 150))
@@ -530,7 +619,7 @@ class Algo3SilverMicro(Strategy):
             buy_level is not None
             and ltp >= buy_level
             and self._buy_setup_bar_at is not None
-            and not self._already_fired_this_setup("BUY")
+            and not self._already_consumed_this_setup("BUY")
         ):
             print(f"[algo3] TRIGGER BUY (gap-through): LTP {ltp:.2f} >= level {buy_level:.2f} (setup {self._buy_setup_close:.2f} + n={n:.0f})")
             if self._fire_entry("BUY", ltp, buy_level):
@@ -540,7 +629,7 @@ class Algo3SilverMicro(Strategy):
             sell_level is not None
             and ltp <= sell_level
             and self._sell_setup_bar_at is not None
-            and not self._already_fired_this_setup("SELL")
+            and not self._already_consumed_this_setup("SELL")
         ):
             print(f"[algo3] TRIGGER SELL (gap-through): LTP {ltp:.2f} <= level {sell_level:.2f} (setup {self._sell_setup_close:.2f} - n={n:.0f})")
             if self._fire_entry("SELL", ltp, sell_level):
@@ -555,7 +644,7 @@ class Algo3SilverMicro(Strategy):
         if (
             buy_level is not None
             and prev < buy_level <= ltp
-            and not self._already_fired_this_setup("BUY")
+            and not self._already_consumed_this_setup("BUY")
         ):
             print(f"[algo3] TRIGGER BUY (tick-cross): prev {prev:.2f} -> LTP {ltp:.2f} crossed level {buy_level:.2f}")
             if self._fire_entry("BUY", ltp, buy_level):
@@ -564,7 +653,7 @@ class Algo3SilverMicro(Strategy):
         if (
             sell_level is not None
             and prev > sell_level >= ltp
-            and not self._already_fired_this_setup("SELL")
+            and not self._already_consumed_this_setup("SELL")
         ):
             print(f"[algo3] TRIGGER SELL (tick-cross): prev {prev:.2f} -> LTP {ltp:.2f} crossed level {sell_level:.2f}")
             if self._fire_entry("SELL", ltp, sell_level):
@@ -592,7 +681,7 @@ class Algo3SilverMicro(Strategy):
             buy_level is not None
             and close >= buy_level
             and self._buy_setup_bar_at is not None
-            and not self._already_fired_this_setup("BUY")
+            and not self._already_consumed_this_setup("BUY")
         ):
             print(f"[algo3] TRIGGER BUY (candle-close): bar close {close:.2f} >= level {buy_level:.2f} (setup {self._buy_setup_close:.2f} + n={n:.0f})")
             if self._fire_entry("BUY", close, buy_level):
@@ -602,7 +691,7 @@ class Algo3SilverMicro(Strategy):
             sell_level is not None
             and close <= sell_level
             and self._sell_setup_bar_at is not None
-            and not self._already_fired_this_setup("SELL")
+            and not self._already_consumed_this_setup("SELL")
         ):
             print(f"[algo3] TRIGGER SELL (candle-close): bar close {close:.2f} <= level {sell_level:.2f} (setup {self._sell_setup_close:.2f} - n={n:.0f})")
             if self._fire_entry("SELL", close, sell_level):
@@ -614,11 +703,31 @@ class Algo3SilverMicro(Strategy):
             # Log so "trigger fired but no entry" is answerable from logs.
             print(f"[algo3] entry SKIPPED for {side}: already positioned same-side (qty={current.get('qty')})")
             return False
-        if current and current["side"] != side:
-            print(f"[algo3] REVERSAL: closing existing {current['side']} at {ltp:.2f} before opening {side}")
-            self.broker.close_trade(current, ltp, "REVERSAL_CONTRA_SIGNAL")
+        with self._entry_guard_lock:
+            if self._entry_attempt_in_flight:
+                print(f"[algo3] entry SKIPPED for {side}: another Silver entry attempt is already in flight")
+                return False
+            if self._already_consumed_this_setup(side):
+                print(f"[algo3] entry SKIPPED for {side}: current setup already consumed")
+                return False
+            if self._live_broker_symbol_busy(current):
+                self._mark_attempted(side)
+                return False
+            cooldown_left = self._entry_cooldown_remaining()
+            if cooldown_left > 0:
+                print(f"[algo3] entry SKIPPED for {side}: cooldown active ({cooldown_left:.0f}s remaining)")
+                return False
+            self._mark_attempted(side)
+            self._entry_attempt_in_flight = True
+        try:
+            if current and current["side"] != side:
+                print(f"[algo3] REVERSAL: closing existing {current['side']} at {ltp:.2f} before opening {side}")
+                self.broker.close_trade(current, ltp, "REVERSAL_CONTRA_SIGNAL")
 
-        return self._enter(side, ltp, trigger_level)
+            return self._enter(side, ltp, trigger_level)
+        finally:
+            with self._entry_guard_lock:
+                self._entry_attempt_in_flight = False
 
     def _enter(self, side: str, entry_price: float, trigger_level: float) -> bool:
         if not self.symbol or not entry_price:
@@ -726,4 +835,8 @@ class Algo3SilverMicro(Strategy):
             "silver_lots": int(self.settings.get("silver_lots", 1) or 1),
             "last_fired_buy_bar_at": self._last_fired_buy_bar_at.isoformat() if self._last_fired_buy_bar_at else None,
             "last_fired_sell_bar_at": self._last_fired_sell_bar_at.isoformat() if self._last_fired_sell_bar_at else None,
+            "last_attempted_buy_bar_at": self._last_attempted_buy_bar_at.isoformat() if self._last_attempted_buy_bar_at else None,
+            "last_attempted_sell_bar_at": self._last_attempted_sell_bar_at.isoformat() if self._last_attempted_sell_bar_at else None,
+            "entry_attempt_in_flight": self._entry_attempt_in_flight,
+            "entry_cooldown_remaining_seconds": int(self._entry_cooldown_remaining()),
         }
