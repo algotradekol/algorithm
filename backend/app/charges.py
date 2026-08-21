@@ -12,6 +12,10 @@ against a recent actual Fyers contract note and update charges_config
 if anything's drifted.
 """
 
+import zlib
+
+from . import config
+
 DEFAULT_CHARGES_CONFIG = {
     "brokerage_flat": 20.0,       # ₹ per executed order (per leg)
     "brokerage_pct": 0.03,        # % of turnover, whichever is LOWER than the flat fee applies
@@ -21,6 +25,12 @@ DEFAULT_CHARGES_CONFIG = {
     "gst_pct": 18.0,              # % on (brokerage + exchange charges + SEBI charges)
     "stamp_duty_pct": 0.003,      # % on BUY side turnover only
 }
+
+
+def get_charges_config_row_id() -> int:
+    if not config.BROKER_KEY_SUFFIX:
+        return 1
+    return 1000 + (zlib.crc32(config.BROKER_KEY_SUFFIX.encode("utf-8")) % 1_000_000_000)
 
 
 def calculate_charges(buy_value: float, sell_value: float, config: dict) -> dict:
@@ -60,17 +70,19 @@ def calculate_charges(buy_value: float, sell_value: float, config: dict) -> dict
 
 def get_charges_config() -> dict:
     from .supabase_client import run_with_supabase
-    result = run_with_supabase(
-        lambda supabase: supabase.table("charges_config").select("*").eq("id", 1).execute()
-    )
-    if result.data:
-        row = result.data[0]
-        return {k: row[k] for k in DEFAULT_CHARGES_CONFIG}
+    row_id = get_charges_config_row_id()
+    for candidate in ([row_id] if row_id == 1 else [row_id, 1]):
+        result = run_with_supabase(
+            lambda supabase, config_id=candidate: supabase.table("charges_config").select("*").eq("id", config_id).execute()
+        )
+        if result.data:
+            row = result.data[0]
+            return {k: row[k] for k in DEFAULT_CHARGES_CONFIG}
     return DEFAULT_CHARGES_CONFIG.copy()
 
 
 def set_charges_config(config: dict):
     from .supabase_client import run_with_supabase
     run_with_supabase(
-        lambda supabase: supabase.table("charges_config").upsert({"id": 1, **config}).execute()
+        lambda supabase: supabase.table("charges_config").upsert({"id": get_charges_config_row_id(), **config}).execute()
     )

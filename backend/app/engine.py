@@ -714,7 +714,7 @@ def _critical_symbol_rest_fallback_loop():
                 continue
 
             try:
-                ltps = get_live_ltp_batch(critical_symbols, mode="live")
+                ltps = get_live_ltp_batch(critical_symbols, mode=get_runtime_trading_mode())
             except Exception as exc:
                 print(f"[engine] critical-symbol REST LTP fallback failed: {exc}")
                 time.sleep(5)
@@ -1115,7 +1115,7 @@ def _open_position_ltp_poll_loop():
                 continue
 
             try:
-                ltps = get_live_ltp_batch(list(symbols_needing_ltp), mode="live")
+                ltps = get_live_ltp_batch(list(symbols_needing_ltp), mode=get_runtime_trading_mode())
             except Exception as exc:
                 print(f"[engine] open-position LTP poll failed: {exc}")
                 time.sleep(10)

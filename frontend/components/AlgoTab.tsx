@@ -1105,6 +1105,7 @@ function SignalAudit({ row }: { row: any }) {
 // Compact per-row indicator of trailing-SL activity. Reads the metadata
 // stamped into signal_snapshot by paper_broker.apply_trailing_stop.
 function TrailingBadge({ row }: { row: any }) {
+  const [historyOpen, setHistoryOpen] = useState(false);
   const snap = row?.signal_snapshot;
   if (!snap || typeof snap !== 'object') {
     return <span className="text-xs text-gray-500">--</span>;
@@ -1112,8 +1113,13 @@ function TrailingBadge({ row }: { row: any }) {
   const trailing = snap.trailing;
   const activated = !!(trailing && trailing.activated);
   const initialSl = Number(snap.initial_sl_price);
-  const currentSl = Number(row?.sl_price);
   const side = String(row?.side || '').toUpperCase();
+  const events = Array.isArray(trailing?.events)
+    ? trailing.events.filter((event: any) => event && typeof event === 'object')
+    : [];
+  const latestEvent = events.length ? events[events.length - 1] : null;
+  const currentSl = optionalNumber(row?.sl_price, latestEvent?.new_sl);
+  const currentSlIsFinite = Number.isFinite(currentSl);
 
   if (!activated) {
     return (
@@ -1127,8 +1133,8 @@ function TrailingBadge({ row }: { row: any }) {
   // Delta relative to the initial SL. For BUY exits the trailed SL rises
   // (positive delta = protection tightened). For SELL exits it falls
   // (delta shown as negative movement in absolute terms).
-  const delta = Number.isFinite(initialSl) && Number.isFinite(currentSl)
-    ? (side === 'SELL' ? initialSl - currentSl : currentSl - initialSl)
+  const delta = Number.isFinite(initialSl) && currentSlIsFinite
+    ? (side === 'SELL' ? initialSl - currentSl! : currentSl! - initialSl)
     : null;
   const deltaLabel = delta === null
     ? ''
@@ -1139,19 +1145,110 @@ function TrailingBadge({ row }: { row: any }) {
         hour: '2-digit', minute: '2-digit', hour12: false, timeZone: 'Asia/Kolkata',
       })
     : null;
-  const bumps = Number(trailing?.update_count) || 0;
+  const bumps = Math.max(Number(trailing?.update_count) || 0, events.length);
 
   return (
+    <>
     <div className="text-xs text-gray-300">
       <div className="flex items-center gap-1 font-semibold text-[#22c55e]">
         <span className="h-1.5 w-1.5 rounded-full bg-[#22c55e]" />
-        {arrow} {Number.isFinite(currentSl) ? currentSl.toFixed(2) : '--'}
+        {arrow} {currentSlIsFinite ? currentSl!.toFixed(2) : '--'}
         <span className="text-gray-400">{deltaLabel}</span>
       </div>
-      <div className="mt-0.5 text-[10px] text-gray-500">
-        {firstAt ? `active ${firstAt}` : 'active'} · {bumps}x{Number.isFinite(initialSl) ? ` · init ${initialSl.toFixed(2)}` : ''}
+      <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-gray-500">
+        <span>{firstAt ? `active ${firstAt}` : 'active'} · {bumps}x{Number.isFinite(initialSl) ? ` · init ${initialSl.toFixed(2)}` : ''}</span>
+        <button
+          type="button"
+          onClick={() => setHistoryOpen(true)}
+          className="inline-flex items-center rounded border border-[#1d4ed8] px-2 py-0.5 text-[10px] font-medium text-[#60a5fa] transition hover:bg-[#0f172a]"
+        >
+          Trail list
+        </button>
       </div>
     </div>
+    {historyOpen && (
+      <div
+        className="fixed inset-0 z-[90] bg-black/60 p-3 sm:p-6"
+        onClick={() => setHistoryOpen(false)}
+      >
+        <div
+          className="mx-auto w-full max-w-3xl rounded-xl border border-[#1f2937] bg-[#0b1220] shadow-2xl"
+          onClick={(event) => event.stopPropagation()}
+        >
+          <div className="flex items-start justify-between gap-4 border-b border-[#1f2937] px-4 py-3 sm:px-5">
+            <div>
+              <h4 className="text-lg font-semibold text-gray-100">Trailing SL history</h4>
+              <p className="mt-1 text-sm text-gray-400">
+                {row?.symbol || 'Position'} · {side || '--'} · {bumps} saved trail {bumps === 1 ? 'move' : 'moves'}
+              </p>
+            </div>
+            <button
+              type="button"
+              onClick={() => setHistoryOpen(false)}
+              className="rounded p-1 text-gray-400 transition hover:bg-[#111827] hover:text-gray-200"
+              aria-label="Close trailing SL history"
+            >
+              <i className="ri-close-line text-xl" />
+            </button>
+          </div>
+          <div className="grid gap-3 border-b border-[#1f2937] px-4 py-3 text-sm sm:grid-cols-4 sm:px-5">
+            <div>
+              <div className="label text-[10px]">Activated</div>
+              <div className="mt-1 font-medium text-gray-100">{firstAt || '--'}</div>
+            </div>
+            <div>
+              <div className="label text-[10px]">Initial SL</div>
+              <div className="mt-1 font-medium text-gray-100">{formatNumber(initialSl)}</div>
+            </div>
+            <div>
+              <div className="label text-[10px]">Current SL</div>
+              <div className="mt-1 font-medium text-gray-100">{formatNumber(currentSl)}</div>
+            </div>
+            <div>
+              <div className="label text-[10px]">Protected</div>
+              <div className="mt-1 font-medium text-[#22c55e]">{deltaLabel || '--'}</div>
+            </div>
+          </div>
+          <div className="max-h-[60vh] overflow-auto px-4 py-3 sm:px-5">
+            {!events.length ? (
+              <p className="text-sm text-gray-400">No per-step trail entries were saved for this legacy trade yet.</p>
+            ) : (
+              <div className="overflow-x-auto rounded border border-[#1f2937]">
+                <table className="w-full min-w-[640px] border-collapse text-xs">
+                  <thead className="bg-[#111827]">
+                    <tr>
+                      {['#', 'Time', 'LTP', 'Previous SL', 'New SL', 'Delta'].map((column) => (
+                        <th key={column} className="table-cell label">{column}</th>
+                      ))}
+                    </tr>
+                  </thead>
+                  <tbody>
+                    {events.map((event: any, index: number) => {
+                      const previous = Number(event?.previous_sl);
+                      const next = Number(event?.new_sl);
+                      const eventDelta = Number(event?.delta);
+                      return (
+                        <tr key={`${event?.at || 'trail'}-${index}`} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
+                          <td className="table-cell num text-gray-500">{index + 1}</td>
+                          <td className="table-cell num text-gray-300">{formatDateTimeWithDate(event?.at)}</td>
+                          <td className="table-cell num text-gray-100">{formatNumber(event?.ltp)}</td>
+                          <td className="table-cell num text-gray-100">{formatNumber(previous)}</td>
+                          <td className="table-cell num font-semibold text-[#22c55e]">{formatNumber(next)}</td>
+                          <td className="table-cell num font-semibold text-[#22c55e]">
+                            {Number.isFinite(eventDelta) ? `${eventDelta >= 0 ? '+' : ''}${formatNumber(eventDelta)}` : '--'}
+                          </td>
+                        </tr>
+                      );
+                    })}
+                  </tbody>
+                </table>
+              </div>
+            )}
+          </div>
+        </div>
+      </div>
+    )}
+    </>
   );
 }
 

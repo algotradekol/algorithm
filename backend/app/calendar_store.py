@@ -3,6 +3,7 @@ import json
 from decimal import Decimal
 from typing import Any
 
+from .storage_namespace import current_and_legacy_values, namespaced_value, strip_current_namespace
 from .supabase_client import run_with_supabase
 
 
@@ -20,6 +21,29 @@ def _jsonable(value: Any) -> Any:
 
 def _today_ist() -> str:
     return datetime.datetime.now(datetime.timezone(datetime.timedelta(hours=5, minutes=30))).date().isoformat()
+
+
+def _preferred_calendar_rows(rows: list[dict]) -> list[dict]:
+    grouped: dict[tuple[str, str], dict[str, dict]] = {}
+    for row in rows or []:
+        snapshot_date = str(row.get("snapshot_date") or "")
+        base_algo_id = strip_current_namespace(row.get("algo_id"))
+        bucket = grouped.setdefault((snapshot_date, base_algo_id), {})
+        bucket[str(row.get("algo_id") or "")] = row
+
+    preferred: list[dict] = []
+    for (_, base_algo_id), bucket in grouped.items():
+        selected = None
+        for candidate in current_and_legacy_values(base_algo_id):
+            if candidate in bucket:
+                selected = dict(bucket[candidate])
+                break
+        if not selected:
+            continue
+        selected["algo_id"] = base_algo_id
+        preferred.append(selected)
+    preferred.sort(key=lambda row: (str(row.get("snapshot_date") or ""), str(row.get("algo_id") or "")), reverse=True)
+    return preferred
 
 
 def save_dashboard_snapshot(algo_id: str | None = None, note: str = "manual") -> list[dict]:
@@ -42,7 +66,7 @@ def save_dashboard_snapshot(algo_id: str | None = None, note: str = "manual") ->
         settings = getattr(strategy, "settings", {}) or {}
         row = {
             "snapshot_date": snapshot_date,
-            "algo_id": current_algo_id,
+            "algo_id": namespaced_value(current_algo_id),
             "display_name": getattr(strategy, "display_name", current_algo_id),
             "summary": _jsonable(strategy.broker.summary()),
             "positions": _jsonable(attach_entry_triggers(current_algo_id, enrich_positions_with_ltp(strategy.broker.open_positions()))),
@@ -73,7 +97,7 @@ def list_calendar_days(days: int = 60) -> list[dict]:
         .order("snapshot_date", desc=True)
         .execute()
     )
-    return result.data
+    return _preferred_calendar_rows(result.data or [])
 
 
 def get_calendar_day(snapshot_date: str) -> list[dict]:
@@ -84,28 +108,45 @@ def get_calendar_day(snapshot_date: str) -> list[dict]:
         .order("algo_id")
         .execute()
     )
-    return result.data
+    return _preferred_calendar_rows(result.data or [])
 
 
 def delete_calendar_day(snapshot_date: str) -> dict:
-    result = run_with_supabase(
-        lambda supabase: supabase.table("calendar_snapshots")
-        .delete()
-        .eq("snapshot_date", snapshot_date)
-        .execute()
-    )
-    return {"status": "deleted", "snapshot_date": snapshot_date, "deleted": len(result.data or [])}
+    rows = get_calendar_day(snapshot_date)
+    deleted = 0
+    for row in rows:
+        result = run_with_supabase(
+            lambda supabase, current_row=row: supabase.table("calendar_snapshots")
+            .delete()
+            .eq("snapshot_date", snapshot_date)
+            .eq("algo_id", namespaced_value(current_row.get("algo_id")))
+            .execute()
+        )
+        deleted += len(result.data or [])
+        if namespaced_value(row.get("algo_id")) != str(row.get("algo_id") or ""):
+            legacy = run_with_supabase(
+                lambda supabase, current_row=row: supabase.table("calendar_snapshots")
+                .delete()
+                .eq("snapshot_date", snapshot_date)
+                .eq("algo_id", str(current_row.get("algo_id") or ""))
+                .execute()
+            )
+            deleted += len(legacy.data or [])
+    return {"status": "deleted", "snapshot_date": snapshot_date, "deleted": deleted}
 
 
 def delete_calendar_snapshot(snapshot_date: str, algo_id: str) -> dict:
-    result = run_with_supabase(
-        lambda supabase: supabase.table("calendar_snapshots")
-        .delete()
-        .eq("snapshot_date", snapshot_date)
-        .eq("algo_id", algo_id)
-        .execute()
-    )
-    return {"status": "deleted", "snapshot_date": snapshot_date, "algo_id": algo_id, "deleted": len(result.data or [])}
+    deleted = 0
+    for candidate in current_and_legacy_values(algo_id):
+        result = run_with_supabase(
+            lambda supabase, key=candidate: supabase.table("calendar_snapshots")
+            .delete()
+            .eq("snapshot_date", snapshot_date)
+            .eq("algo_id", key)
+            .execute()
+        )
+        deleted += len(result.data or [])
+    return {"status": "deleted", "snapshot_date": snapshot_date, "algo_id": algo_id, "deleted": deleted}
 
 
 def store_market_candles(symbol: str, resolution: str, candles: list[dict], source: str = "fyers_history") -> int:
