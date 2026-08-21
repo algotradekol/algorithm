@@ -465,6 +465,26 @@ class Algo3SilverMicro(Strategy):
             self._check_candle_close_trigger(bar)
         self._update_setups(bar, log=allow_signals)
 
+    def flush_clock_closed_bar(self, allow_signals: bool | None = None) -> bool:
+        """Finalize the current 15m bucket once its time window has elapsed.
+
+        Normally a 15m bucket closes when the first 1m candle of the next
+        bucket arrives. On thin MCX stretches that rollover minute can be
+        delayed, leaving the previous setup stale even though the chart's
+        15m candle has already closed. The scheduler calls this every few
+        seconds so a due bucket is finalized by the wall clock, not only by
+        next-bucket ingestion.
+        """
+        if not self._minute_buffer or self._current_bucket is None:
+            return False
+        if not _is_bucket_closed(self._current_bucket):
+            return False
+        if allow_signals is None:
+            allow_signals = self.scan_enabled()
+        bars_before = len(self._bars)
+        self._finalize_bar(allow_signals=allow_signals, require_closed=True)
+        return len(self._bars) > bars_before
+
     def _update_setups(self, bar: dict, log: bool = False):
         """Per spec: setup level is the CLOSE of the most recent
         qualifying candle. Overwrite on every new qualifier so we always
@@ -859,6 +879,7 @@ class Algo3SilverMicro(Strategy):
 
     # ── diagnostics ──────────────────────────────────────────────────
     def feed_status(self) -> dict:
+        self.flush_clock_closed_bar()
         return {
             "algo_id": self.algo_id,
             "display_name": self.display_name,

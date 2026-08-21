@@ -1665,6 +1665,39 @@ def test_algo3_partial_15m_bucket_does_not_persist_setup_history():
           calls == [], f"calls={calls}")
 
 
+def test_algo3_closed_15m_bucket_finalizes_without_next_bucket_tick():
+    print("\n33f. algo3 finalizes a closed 15m bucket even when the next bucket has no tick yet")
+    import datetime as _dt
+    from unittest.mock import patch
+    import app.strategies.algo3_silver_micro as algo3_mod
+
+    strat = _make_bare_algo3()
+    strat._ema20 = 245000.0
+    candles = []
+    for minute in range(15):
+        close = 246800.0 + minute
+        candles.append({
+            "time": _dt.datetime(2026, 8, 21, 12, minute),
+            "open": close - 10.0,
+            "high": close + 5.0,
+            "low": close - 20.0,
+            "close": close,
+            "volume": 10,
+        })
+    fake_now = _dt.datetime(2026, 8, 21, 12, 19, 0, tzinfo=algo3_mod.IST)
+    with patch.object(algo3_mod, "_latest_closed_minute_cutoff", return_value=fake_now.replace(second=0, microsecond=0, tzinfo=None)):
+        for candle in candles:
+            strat._ingest_minute_candle(candle, allow_signals=True)
+        finalized = strat.flush_clock_closed_bar(allow_signals=True)
+    check("closed 12:00 bucket finalized by clock", finalized is True)
+    check("one 15m bar stored without needing a 12:15 minute tick", len(strat._bars) == 1, f"bars={len(strat._bars)}")
+    check("bar timestamp stays at 12:00 bucket start", str(strat._bars[0]['time']) == "2026-08-21 12:00:00",
+          f"time={strat._bars[0]['time']}")
+    check("buy setup updated from the finalized 12:00 green bar",
+          strat._buy_setup_close == candles[-1]["close"],
+          f"buy_setup={strat._buy_setup_close}")
+
+
 # ── 34-35. Setup capture (green above / red below) + overwrite ─────────
 def test_algo3_setup_captures_and_overwrites():
     print("\n34. algo3 setup: green-above-EMA and red-below-EMA candles are stored, later ones overwrite")
@@ -2666,6 +2699,7 @@ def main():
     test_algo3_current_minute_is_not_treated_as_closed()
     test_algo3_partial_15m_bucket_is_not_finalized_on_warmup_tail()
     test_algo3_partial_15m_bucket_does_not_persist_setup_history()
+    test_algo3_closed_15m_bucket_finalizes_without_next_bucket_tick()
     test_algo3_setup_captures_and_overwrites()
     test_algo3_no_setup_when_wrong_side_of_ema()
     test_algo3_setup_persistence_emits_history_event()
