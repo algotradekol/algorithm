@@ -19,7 +19,11 @@ from .symbols import get_nse500_watchlist
 from .candle_aggregator import CandleAggregator
 from .broker_factory import create_broker
 from .fyers_client import connect_live_feed
-from .fyers_auth import get_stored_access_token, refresh_access_token_from_refresh_token
+from .fyers_auth import (
+    get_stored_access_token,
+    refresh_access_token_from_refresh_token,
+    get_access_token_seconds_remaining,
+)
 from .strategies.algo1_opening_range import Algo1OpeningRange
 from .strategies.algo3_silver_micro import Algo3SilverMicro
 from .strategies.un1_915_filtered import UN1915Filtered
@@ -644,6 +648,16 @@ def _scheduler_loop():
     collecting_broadcast: set[tuple[datetime.date, str]] = set()
     squareoff_fired_dates: dict[str, datetime.date] = {}
     token_refresh_fired_date = None
+    # Watchdog for proactive access-token refresh: Fyers access tokens are
+    # short-lived (~24h) and the 08:30 scheduled refresh above only helps if
+    # the user logged in before 08:30. A user logging in at, say, 14:00 would
+    # otherwise have their token silently expire ~24h later with nothing to
+    # catch it until the *next day's* 08:30 run. Track the last proactive
+    # attempt so a persistent failure (e.g. no refresh token yet) doesn't
+    # retry every 5s.
+    last_proactive_refresh_attempt_at: datetime.datetime | None = None
+    PROACTIVE_REFRESH_BUFFER_SECONDS = 2 * 60 * 60  # refresh when < 2h remain
+    PROACTIVE_REFRESH_RETRY_COOLDOWN_SECONDS = 10 * 60
     global _feed_retry_schedules
 
     while True:
@@ -654,6 +668,27 @@ def _scheduler_loop():
         if current_time >= "08:30" and token_refresh_fired_date != today:
             try_refresh_access_token(reason="scheduled_08_30")
             token_refresh_fired_date = today
+
+        # Proactive refresh independent of the 08:30 schedule: fires
+        # whenever the stored access token is within the buffer window of
+        # expiring, no matter what time of day the user logged in.
+        try:
+            seconds_remaining = get_access_token_seconds_remaining()
+        except Exception as exc:
+            seconds_remaining = None
+            print(f"[engine] could not determine access token expiry: {exc}")
+        if seconds_remaining is not None and seconds_remaining < PROACTIVE_REFRESH_BUFFER_SECONDS:
+            cooldown_elapsed = (
+                last_proactive_refresh_attempt_at is None
+                or (now - last_proactive_refresh_attempt_at).total_seconds() >= PROACTIVE_REFRESH_RETRY_COOLDOWN_SECONDS
+            )
+            if cooldown_elapsed:
+                last_proactive_refresh_attempt_at = now
+                print(
+                    f"[engine] Fyers access token expires in {int(seconds_remaining)}s "
+                    "(< 2h buffer); refreshing proactively"
+                )
+                try_refresh_access_token(reason="proactive_expiry_buffer")
 
         # A socket handshake is not market data. Retry once during whichever
         # candle minute a production or UI test schedule is using if no tick

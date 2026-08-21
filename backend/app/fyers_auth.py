@@ -304,12 +304,33 @@ def store_broker_tokens(response: dict, mode: str | None = None) -> None:
         "last_refresh_error": None,
         "updated_at": now,
     }
+    # Fyers access tokens are short-lived (~24h). The OAuth/refresh response
+    # includes expires_in (seconds); without recording the actual expiry the
+    # backend had no way to know when a proactive refresh was needed, and
+    # relied solely on a hardcoded 08:30 AM scheduled refresh -- which could
+    # be hours after a token issued later in the day had already expired.
+    expires_in = response.get("expires_in")
+    if expires_in is not None:
+        try:
+            expires_in_seconds = int(expires_in)
+        except (TypeError, ValueError):
+            expires_in_seconds = None
+        if expires_in_seconds is not None:
+            expires_at = datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=expires_in_seconds)
+            payload["access_token_expires_at"] = expires_at.isoformat()
     if response.get("refresh_token"):
         payload["refresh_token"] = response["refresh_token"]
         payload["refresh_token_updated_at"] = now
     run_with_supabase(lambda supabase: supabase.table("broker_tokens").upsert(payload).execute())
     _record_refresh_log("success", None, mode=mode)
-    audit_log("fyers", "stored broker tokens", mode=mode or "runtime", broker=broker_key, has_refresh_token=bool(response.get("refresh_token")))
+    audit_log(
+        "fyers",
+        "stored broker tokens",
+        mode=mode or "runtime",
+        broker=broker_key,
+        has_refresh_token=bool(response.get("refresh_token")),
+        access_token_expires_at=payload.get("access_token_expires_at"),
+    )
 
 
 def disconnect_broker_tokens(mode: str | None = None) -> None:
@@ -426,6 +447,23 @@ def get_stored_token_row(mode: str | None = None) -> dict | None:
     if result.data:
         return result.data[0]
     return None
+
+
+def get_access_token_seconds_remaining(mode: str | None = None) -> float | None:
+    """Seconds until the stored Fyers access token expires, or None if the
+    expiry isn't known (e.g. token stored before this field existed, or no
+    token stored at all). A negative value means the token has already
+    expired."""
+    row = get_stored_token_row(mode)
+    expires_at = row.get("access_token_expires_at") if row else None
+    if not expires_at:
+        return None
+    try:
+        target = datetime.datetime.fromisoformat(expires_at.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    remaining = target - datetime.datetime.now(datetime.timezone.utc)
+    return remaining.total_seconds()
 
 
 def get_token_status(mode: str | None = None) -> dict:
