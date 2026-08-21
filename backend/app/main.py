@@ -339,7 +339,7 @@ def fyers_orders(mode: str | None = None, _user=Depends(require_auth)):
 
 
 @app.post("/api/fyers/disconnect")
-def fyers_disconnect(force: bool = Query(False), _user=Depends(require_auth)):
+def fyers_disconnect(force: bool = Query(False), source: str = Query("manual_ui"), _user=Depends(require_auth)):
     # F14 recovery lock: if the engine is currently auto-recovering a
     # transient WS drop, refuse a logout unless the caller explicitly says
     # ?force=true. Prevents the client-panics-and-relogs cascade that
@@ -363,11 +363,11 @@ def fyers_disconnect(force: bool = Query(False), _user=Depends(require_auth)):
         )
     mode = get_runtime_trading_mode()
     broker = get_active_broker_key(mode)
-    disconnect_broker_tokens(mode)
+    disconnect_broker_tokens(mode, source=source)
     clear_pending_fyers_login_mode()
     clear_pending_fyers_login_origin()
-    stop_live_feed(reason="fyers_disconnect")
-    audit_log("fyers", "disconnect requested", mode=mode, broker=broker, forced=force)
+    stop_live_feed(reason=f"fyers_disconnect:{source}")
+    audit_log("fyers", "disconnect requested", mode=mode, broker=broker, forced=force, source=source)
     return {
         "status": "ok",
         "message": f"FYERS {mode} connection disconnected.",

@@ -161,16 +161,22 @@ def get_fyers_model(
 
 
 def get_connection_status() -> dict:
+    from .engine import get_engine_status
+
     effective_mode = get_runtime_trading_mode()
     broker = get_active_broker_key(effective_mode)
     token_row = get_stored_token_row(effective_mode)
     token = token_row.get("access_token") if token_row else None
     refresh_token_present = bool(token_row and token_row.get("refresh_token"))
+    engine_status = get_engine_status()
+    engine_session_state = engine_status.get("fyers_session_state")
+    recovery_owner = engine_status.get("fyers_recovery_owner")
     if not token:
         return {
             "connected": False,
             "verified": False,
             "status": "disconnected",
+            "session_state": "token_missing",
             "message": "No Fyers access token found. Login to Fyers before trading.",
             "refresh_token_present": refresh_token_present,
             "broker": broker,
@@ -187,6 +193,7 @@ def get_connection_status() -> dict:
                 "connected": True,
                 "verified": False,
                 "status": "rechecking",
+                "session_state": engine_session_state or "token_present_settling",
                 "message": f"Fyers login is still settling after a fresh login; retrying verification ({exc}).",
                 "refresh_token_present": refresh_token_present,
                 "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
@@ -201,6 +208,7 @@ def get_connection_status() -> dict:
             "connected": True,
             "verified": False,
             "status": "degraded",
+            "session_state": "token_present_degraded" if engine_session_state == "token_present_degraded" else (engine_session_state or "token_present_degraded"),
             "message": f"Fyers token is stored, but verification is temporarily unavailable: {exc}",
             "refresh_token_present": refresh_token_present,
             "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
@@ -214,6 +222,7 @@ def get_connection_status() -> dict:
             "connected": True,
             "verified": True,
             "status": "connected",
+            "session_state": "token_present_connected",
             "message": "Fyers token is valid.",
             "refresh_token_present": refresh_token_present,
             "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
@@ -227,6 +236,7 @@ def get_connection_status() -> dict:
             "connected": True,
             "verified": False,
             "status": "rechecking",
+            "session_state": engine_session_state or "token_present_settling",
             "message": response.get("message") or "Fyers login is still settling after a fresh login; verification will retry.",
             "refresh_token_present": refresh_token_present,
             "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
@@ -246,6 +256,7 @@ def get_connection_status() -> dict:
             "connected": True,
             "verified": False,
             "status": "degraded",
+            "session_state": "token_present_settling" if recovery_owner in {"startup", "oauth_callback", "mode_switch", "token_refresh"} else (engine_session_state or "token_present_degraded"),
             "message": "Fyers verification throttled by rate limit; keeping session alive.",
             "refresh_token_present": refresh_token_present,
             "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
@@ -258,6 +269,7 @@ def get_connection_status() -> dict:
         "connected": False,
         "verified": False,
         "status": "expired",
+        "session_state": "token_present_degraded",
         "message": response.get("message") or "Fyers token is missing, expired, or rejected.",
         "refresh_token_present": refresh_token_present,
         "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
