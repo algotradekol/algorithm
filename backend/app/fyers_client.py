@@ -508,6 +508,45 @@ def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_d
     ]
 
 
+def get_intraday_candle_at(
+    symbol: str,
+    candle_time: datetime.datetime,
+    resolution: str = "15",
+) -> dict | None:
+    """Fetch the exact intraday candle starting at ``candle_time``.
+
+    Returns a normalized candle dict keyed to IST-naive datetimes, or
+    ``None`` if FYERS did not return that candle. Used by Silver live
+    finalization so a sparse local 1m buffer cannot invent a fake 15m
+    close for BUY/SELL setup updates.
+    """
+    fyers = get_fyers_model(use_proxy=False)
+    target_time = candle_time.astimezone(IST).replace(tzinfo=None) if candle_time.tzinfo is not None else candle_time
+    target_date = target_time.date()
+    response = fyers.history({
+        "symbol": symbol,
+        "resolution": resolution,
+        "date_format": "1",
+        "range_from": target_date.isoformat(),
+        "range_to": target_date.isoformat(),
+        "cont_flag": "1",
+    })
+    candles = response.get("candles", [])
+    for candle in candles:
+        parsed_time = datetime.datetime.fromtimestamp(candle[0], tz=IST).replace(tzinfo=None)
+        if parsed_time != target_time:
+            continue
+        return {
+            "time": parsed_time,
+            "open": float(candle[1]),
+            "high": float(candle[2]),
+            "low": float(candle[3]),
+            "close": float(candle[4]),
+            "volume": float(candle[5] or 0),
+        }
+    return None
+
+
 def _parse_candle_ohlcv(candle: list | dict, symbol: str = "") -> dict | None:
     """Safely extract OHLCV from a Fyers candle array or dict.
 
