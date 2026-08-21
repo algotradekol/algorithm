@@ -18,6 +18,14 @@ alter table broker_tokens
     add column if not exists last_refresh_attempt_at timestamptz,
     add column if not exists last_refresh_error text;
 
+-- Fyers access tokens are short-lived (~24h). Without tracking the exact
+-- expiry, the only refresh trigger was a hardcoded 08:30 AM scheduler run,
+-- which meant logins after 08:30 could expire hours before the next
+-- refresh fired. This column lets the engine proactively refresh ahead
+-- of the real expiry regardless of what time the user logged in.
+alter table broker_tokens
+    add column if not exists access_token_expires_at timestamptz;
+
 create table if not exists fyers_token_refresh_logs (
     id bigserial primary key,
     attempted_at timestamptz default now(),
