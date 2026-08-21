@@ -398,6 +398,7 @@ export default function AlgoTab({
   const walletSummary = walletStatus?.summary || {};
   const liveWalletBalance = optionalNumber(walletSummary.wallet_balance);
   const showLiveWallet = tradingMode === 'live';
+  const isSilverAlgo = algoId === 'algo3';
   const openUnrealizedPnl = positions.reduce((total, position) => {
     const ltp = Number(position.ltp ?? position.last_ltp ?? position._last_ltp ?? position.entry_price);
     const entry = Number(position.entry_price || 0);
@@ -472,28 +473,42 @@ export default function AlgoTab({
           </p>
         ));
       })()}
-      {algoId === 'algo3' && <SilverFeedPanel status={feedStatus} />}
+      {isSilverAlgo && <SilverFeedPanel status={feedStatus} />}
 
-      <div className="grid grid-cols-3 gap-1.5 sm:gap-2 lg:grid-cols-6">
-        {showLiveWallet ? (
+      {isSilverAlgo ? (
+        <div className="grid grid-cols-2 gap-1.5 sm:gap-2 lg:grid-cols-4">
           <MetricCard
-            label="Wallet Balance"
-            value={liveWalletBalance === null ? '--' : formatMoney(liveWalletBalance)}
-            helper={
-              walletSummary.wallet_balance_source
-                ? `source: ${walletSummary.wallet_balance_source}`
-                : walletStatusError || 'Waiting for FYERS funds'
-            }
+            label="Total Capital"
+            value={formatMoney(totalCapital)}
+            delta={formatSignedMoney(totalCapital - startingCapital)}
+            pnl={totalCapital - startingCapital}
           />
-        ) : (
-          <MetricCard label="Total Capital" value={formatMoney(totalCapital)} delta={formatSignedMoney(totalCapital - startingCapital)} pnl={totalCapital - startingCapital} />
-        )}
-        <MetricCard label="Capital Used" value={formatMoney(capitalUsed)} />
-        <MetricCard label="Trades Today" value={`${summary.trade_count_today} / ${summary.max_trades_per_day || 10}`} />
-        <MetricCard label="Buy / Sell" value={`${summary.buy_count_today}B ${summary.sell_count_today}S`} />
-        <MetricCard label="Realized Gross P&L" value={formatMoney(grossPnl)} pnl={grossPnl} />
-        <MetricCard label="Live Net P&L" value={formatMoney(liveNetPnl)} pnl={liveNetPnl} important />
-      </div>
+          <MetricCard label="Trades Today" value={`${summary.trade_count_today} / ${summary.max_trades_per_day || 10}`} />
+          <MetricCard label="Realized Gross P&L" value={formatMoney(grossPnl)} pnl={grossPnl} />
+          <MetricCard label="Live Net P&L" value={formatMoney(liveNetPnl)} pnl={liveNetPnl} important />
+        </div>
+      ) : (
+        <div className="grid grid-cols-3 gap-1.5 sm:gap-2 lg:grid-cols-6">
+          {showLiveWallet ? (
+            <MetricCard
+              label="Wallet Balance"
+              value={liveWalletBalance === null ? '--' : formatMoney(liveWalletBalance)}
+              helper={
+                walletSummary.wallet_balance_source
+                  ? `source: ${walletSummary.wallet_balance_source}`
+                  : walletStatusError || 'Waiting for FYERS funds'
+              }
+            />
+          ) : (
+            <MetricCard label="Total Capital" value={formatMoney(totalCapital)} delta={formatSignedMoney(totalCapital - startingCapital)} pnl={totalCapital - startingCapital} />
+          )}
+          <MetricCard label="Capital Used" value={formatMoney(capitalUsed)} />
+          <MetricCard label="Trades Today" value={`${summary.trade_count_today} / ${summary.max_trades_per_day || 10}`} />
+          <MetricCard label="Buy / Sell" value={`${summary.buy_count_today}B ${summary.sell_count_today}S`} />
+          <MetricCard label="Realized Gross P&L" value={formatMoney(grossPnl)} pnl={grossPnl} />
+          <MetricCard label="Live Net P&L" value={formatMoney(liveNetPnl)} pnl={liveNetPnl} important />
+        </div>
+      )}
 
       <SettingsDrawer open={settingsOpen} algoId={algoId} tradingMode={tradingMode} onClose={() => setSettingsOpen(false)} />
 
@@ -840,8 +855,8 @@ function PositionsTable({
           );
         })}
       </div>
-      <div className="hidden w-full max-w-full overflow-x-auto rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1180px] border-collapse text-xs">
+      <div className="hidden w-full overflow-x-auto rounded border border-[#1f2937] sm:block">
+        <table className="w-full min-w-[1320px] border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
             {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Trailing SL', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
@@ -880,9 +895,17 @@ function PositionsTable({
                 <td className="table-cell num text-gray-100">{formatNumber(row.low_price ?? row.lowest_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.sl_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.target_price)}</td>
-                <td className="table-cell min-w-[150px]"><TrailingBadge row={row} /></td>
-                <td className="table-cell min-w-[220px] text-gray-400"><SignalAudit row={row} /></td>
-                <td className="table-cell max-w-[300px] break-words whitespace-normal text-gray-400">{formatTrigger(row.entry_trigger)}</td>
+                <td className="table-cell min-w-[160px]"><TrailingBadge row={row} /></td>
+                <td className="table-cell min-w-[180px] text-gray-400">
+                  <div className="max-h-24 overflow-y-auto pr-1">
+                    <SignalAudit row={row} />
+                  </div>
+                </td>
+                <td className="table-cell min-w-[220px] text-gray-400">
+                  <div className="max-h-24 overflow-y-auto break-words whitespace-normal pr-1">
+                    {formatTrigger(row.entry_trigger)}
+                  </div>
+                </td>
                 <td className={`table-cell num font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
                 <td className="table-cell"><ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} tradingMode={tradingMode} /></td>
               </tr>
