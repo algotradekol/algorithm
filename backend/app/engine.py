@@ -52,7 +52,8 @@ WATCHLIST: list[str] = []
 LIVE_FEED_SYMBOLS: list[str] = []
 _scheduler_started = False
 _live_feed_started = False
-_live_feed_socket = None
+_live_feed_sockets: dict[str, object] = {}
+_live_feed_plans: dict[str, dict] = {}
 _live_feed_lock = threading.Lock()
 _engine_lock = threading.Lock()
 _feed_retry_schedules: set[tuple[datetime.date, str]] = set()
@@ -229,6 +230,7 @@ _engine_status = {
     "fyers_ws_last_event_at": None,
     "fyers_ws_subscribed_symbols": 0,
     "fyers_ws_first_tick_at": None,
+    "fyers_feed_statuses": {},
     "last_tick_at": None,
     "last_tick_symbol": None,
     "last_tick_ltp": None,
@@ -395,9 +397,98 @@ def _any_strategy_feed_permitted(hhmm: str) -> bool:
     return any(_strategy_feed_permitted(strategy, hhmm) for strategy in STRATEGIES.values())
 
 
-def _on_live_feed_status(status: dict):
-    global _live_feed_started, _feed_circuit_open_until
+def _build_live_feed_plans(hhmm: str | None = None) -> list[dict]:
+    current_hhmm = hhmm or datetime.datetime.now(IST).strftime("%H:%M")
+    plans: list[dict] = []
+    dedicated_symbols: set[str] = set()
 
+    silver_strategy = STRATEGIES.get("algo3")
+    if silver_strategy and _strategy_feed_permitted(silver_strategy, current_hhmm):
+        silver_symbols = sorted({
+            symbol
+            for symbol in (getattr(silver_strategy, "watchlist", []) or [])
+            if symbol
+        })
+        if silver_symbols:
+            plans.append({
+                "name": "silver",
+                "symbols": silver_symbols,
+                "litemode": True,
+                "description": "Dedicated Silver execution feed",
+            })
+            dedicated_symbols.update(silver_symbols)
+
+    general_symbols = sorted({
+        symbol
+        for strategy in STRATEGIES.values()
+        if _strategy_feed_permitted(strategy, current_hhmm)
+        for symbol in (getattr(strategy, "watchlist", []) or [])
+        if symbol and symbol not in dedicated_symbols
+    })
+    if general_symbols:
+        plans.insert(0, {
+            "name": "general",
+            "symbols": general_symbols,
+            "litemode": False,
+            "description": "General market-data feed",
+        })
+    return plans
+
+
+def _feed_plan_signature(plans: list[dict]) -> tuple:
+    return tuple(
+        (
+            plan["name"],
+            bool(plan.get("litemode")),
+            tuple(plan.get("symbols") or []),
+        )
+        for plan in sorted(plans, key=lambda item: item["name"])
+    )
+
+
+def _aggregate_feed_statuses(feed_statuses: dict[str, dict]) -> dict:
+    active_names = list(_live_feed_plans.keys())
+    if not active_names:
+        return {
+            "all_connected": False,
+            "any_failed": False,
+            "any_pending": False,
+            "error": None,
+            "subscribed_symbols": 0,
+        }
+
+    active_entries = [
+        feed_statuses.get(name) or {"pending": True, "connected": False, "subscribed_symbols": 0}
+        for name in active_names
+    ]
+    all_connected = all(entry.get("connected") is True for entry in active_entries)
+    any_failed = any(
+        entry.get("pending") is False and entry.get("connected") is False
+        for entry in active_entries
+    )
+    any_pending = any(entry.get("pending", False) for entry in active_entries)
+    error = next(
+        (
+            entry.get("error")
+            for entry in active_entries
+            if entry.get("connected") is False and entry.get("error")
+        ),
+        None,
+    )
+    subscribed_symbols = sum(int(entry.get("subscribed_symbols") or 0) for entry in active_entries)
+    return {
+        "all_connected": all_connected,
+        "any_failed": any_failed,
+        "any_pending": any_pending,
+        "error": error,
+        "subscribed_symbols": subscribed_symbols,
+    }
+
+
+def _on_live_feed_status(status: dict, feed_name: str | None = None):
+    global _feed_circuit_open_until
+
+    effective_feed_name = feed_name or status.get("feed_name") or "general"
     connected = bool(status.get("connected"))
     error = status.get("error")
     error_text = str(error or "").lower()
@@ -409,20 +500,42 @@ def _on_live_feed_status(status: dict):
         was_connected = bool(_engine_status.get("fyers_ws_connected"))
         current_session_state = _engine_status.get("fyers_session_state")
         in_recovery_window = _recovery_window_active()
+        feed_statuses = dict(_engine_status.get("fyers_feed_statuses") or {})
+        existing = dict(feed_statuses.get(effective_feed_name) or {})
+        plan = dict(_live_feed_plans.get(effective_feed_name) or {})
+        next_feed_status = {
+            **existing,
+            "name": effective_feed_name,
+            "connected": connected,
+            "pending": False,
+            "error": None if connected else error,
+            "message": status.get("message"),
+            "last_event_at": _utc_now(),
+            "litemode": bool(status.get("litemode", plan.get("litemode"))),
+            "symbols": list(plan.get("symbols") or existing.get("symbols") or []),
+            "symbol_count": len(plan.get("symbols") or existing.get("symbols") or []),
+            "subscribed_symbols": int(status.get("subscribed_symbols") or existing.get("subscribed_symbols") or 0),
+            "first_tick_received": bool(existing.get("first_tick_received")) or bool(status.get("first_tick_received")),
+            "first_tick_at": existing.get("first_tick_at"),
+        }
+        if status.get("first_tick_received") and not next_feed_status.get("first_tick_at"):
+            next_feed_status["first_tick_at"] = _utc_now()
+        feed_statuses[effective_feed_name] = next_feed_status
+        aggregate = _aggregate_feed_statuses(feed_statuses)
         update = {
-            "fyers_ws_connected": connected,
-            "fyers_ws_error": None if connected else error,
+            "fyers_feed_statuses": feed_statuses,
+            "fyers_ws_connected": aggregate["all_connected"],
+            "fyers_ws_error": aggregate["error"],
             "fyers_ws_last_event_at": _utc_now(),
             "live_feed_started": connected or _engine_status.get("live_feed_started"),
+            "fyers_ws_subscribed_symbols": aggregate["subscribed_symbols"],
         }
-        if status.get("subscribed_symbols") is not None:
-            update["fyers_ws_subscribed_symbols"] = int(status["subscribed_symbols"])
         if status.get("first_tick_received") and not _engine_status.get("fyers_ws_first_tick_at"):
             update["fyers_ws_first_tick_at"] = _utc_now()
-        if connected:
+        if aggregate["all_connected"]:
             update.update({
                 "fyers_session_state": "token_present_connected",
-                "fyers_recovery_last_event": "ws_open",
+                "fyers_recovery_last_event": f"ws_open:{effective_feed_name}",
                 "fyers_recovery_id": None,
                 "fyers_recovery_owner": None,
                 "fyers_recovery_reason": None,
@@ -432,16 +545,18 @@ def _on_live_feed_status(status: dict):
         elif current_session_state != "token_missing":
             update["fyers_session_state"] = (
                 "token_present_settling"
-                if in_recovery_window and current_session_state == "token_present_settling"
+                if aggregate["any_pending"] or (in_recovery_window and current_session_state == "token_present_settling")
                 else "token_present_ws_recovering"
             )
-            update["fyers_recovery_last_event"] = "ws_close"
+            update["fyers_recovery_last_event"] = (
+                f"ws_close:{effective_feed_name}" if aggregate["any_failed"] else f"ws_pending:{effective_feed_name}"
+            )
         _engine_status.update(update)
         # Track the disconnected-since timestamp so /api/engine/status can
         # tell the frontend how long we've been down (F14 debounce).
-        if connected:
+        if aggregate["all_connected"]:
             _feed_disconnected_since = 0.0
-        elif was_connected or _feed_disconnected_since == 0.0:
+        elif aggregate["any_failed"] and (was_connected or _feed_disconnected_since == 0.0):
             _feed_disconnected_since = time.time()
 
     # Real tick arrived → Fyers is fine with us, close the circuit and reset backoff.
@@ -480,11 +595,6 @@ def _on_live_feed_status(status: dict):
             # Any other disconnect (close, error, missing first tick) adds to
             # the circuit-breaker failure count.
             _record_feed_failure(error_text[:60] or "disconnect")
-
-    if not connected:
-        with _live_feed_lock:
-            _live_feed_started = False
-
 
 def _on_candle_close(symbol: str, candle: dict, indicators: dict):
     with _engine_lock:
@@ -1155,6 +1265,8 @@ def _live_feed_watchdog_loop():
             now = datetime.datetime.now(IST)
             current_time = now.strftime("%H:%M")
             market_open = _any_strategy_active(current_time)
+            desired_feed_signature = _feed_plan_signature(_build_live_feed_plans(current_time))
+            current_feed_signature = _feed_plan_signature(list(_live_feed_plans.values()))
             # Per-strategy warmup: allow WS attempts 10 min before the
             # earliest active session so the opening bar can still be built
             # live instead of via delayed REST backfill.
@@ -1177,6 +1289,8 @@ def _live_feed_watchdog_loop():
 
             if not feed_permitted:
                 pass  # off-hours for every strategy, or no token
+            elif desired_feed_signature and desired_feed_signature != current_feed_signature:
+                start_live_feed_if_ready()
             elif token_expired_wait > 0:
                 # Fyers said the token is expired — no point handshaking
                 # again until the user re-logs in. Silent (would spam every
@@ -1219,11 +1333,20 @@ def _live_feed_watchdog_loop():
         time.sleep(5)
 
 
-def start_live_feed_if_ready(force: bool = False) -> bool:
-    global _live_feed_started, _live_feed_socket, _feed_watchdog_last_restart_at
+def _close_live_feed_sockets(socket_map: dict[str, object], reason: str) -> None:
+    for feed_name, socket_to_close in socket_map.items():
+        close_connection = getattr(socket_to_close, "close_connection", None)
+        if callable(close_connection):
+            try:
+                close_connection()
+            except Exception as exc:
+                print(f"[engine] {feed_name} Fyers websocket close failed ({reason}): {exc}")
 
-    feed_symbols = LIVE_FEED_SYMBOLS or WATCHLIST
-    if not feed_symbols:
+
+def start_live_feed_if_ready(force: bool = False) -> bool:
+    global _live_feed_started, _feed_watchdog_last_restart_at, _live_feed_plans
+
+    if not (LIVE_FEED_SYMBOLS or WATCHLIST):
         print("[engine] watchlist not initialized yet, cannot start live feed")
         return False
 
@@ -1232,72 +1355,128 @@ def start_live_feed_if_ready(force: bool = False) -> bool:
         print("[engine] no Fyers access token in Supabase yet, waiting for manual login")
         return False
 
-    socket_to_close = None
+    feed_plans = _build_live_feed_plans()
+    if not feed_plans:
+        print("[engine] no strategy feed is permitted at the current time, skipping live feed start")
+        return False
+
+    desired_signature = _feed_plan_signature(feed_plans)
+    sockets_to_close: dict[str, object] = {}
+
     with _live_feed_lock:
-        if _live_feed_started and not force:
+        existing_signature = _feed_plan_signature(list(_live_feed_plans.values()))
+        plan_changed = desired_signature != existing_signature
+        if _live_feed_started and not force and not plan_changed:
             return True
-        if force:
-            # Close the old SDK connection outside the lock before starting the
-            # replacement, otherwise a stale socket can keep the feed silent.
-            socket_to_close = _live_feed_socket
-            _live_feed_socket = None
+        if _live_feed_started and (force or plan_changed):
+            sockets_to_close = dict(_live_feed_sockets)
+            _live_feed_sockets.clear()
+        _live_feed_plans = {plan["name"]: dict(plan) for plan in feed_plans}
 
-    if socket_to_close is not None:
-        close_connection = getattr(socket_to_close, "close_connection", None)
-        if callable(close_connection):
-            try:
-                close_connection()
-            except Exception as exc:
-                print(f"[engine] old Fyers websocket close failed: {exc}")
+    if sockets_to_close:
+        _close_live_feed_sockets(
+            sockets_to_close,
+            "restart" if force else "plan_changed",
+        )
+
+    plans_snapshot = [dict(plan) for plan in feed_plans]
+    plan_names = [plan["name"] for plan in plans_snapshot]
+    pending_statuses = {}
+    for plan in plans_snapshot:
+        pending_statuses[plan["name"]] = {
+            "name": plan["name"],
+            "connected": False,
+            "pending": True,
+            "error": None,
+            "message": "Feed start requested",
+            "last_event_at": _utc_now(),
+            "litemode": bool(plan.get("litemode")),
+            "symbols": list(plan.get("symbols") or []),
+            "symbol_count": len(plan.get("symbols") or []),
+            "subscribed_symbols": 0,
+            "first_tick_received": False,
+            "first_tick_at": None,
+        }
+
+    def run_live_feed(active_plans: list[dict], expected_signature: tuple):
+        global _live_feed_started
+        started_sockets: dict[str, object] = {}
+        try:
+            for plan in active_plans:
+                feed_name = str(plan["name"])
+                socket = connect_live_feed(
+                    list(plan.get("symbols") or []),
+                    _on_tick,
+                    lambda status, name=feed_name: _on_live_feed_status(status, feed_name=name),
+                    feed_name=feed_name,
+                    litemode=bool(plan.get("litemode")),
+                )
+                started_sockets[feed_name] = socket
+            stale_sockets: dict[str, object] = {}
+            with _live_feed_lock:
+                if _feed_plan_signature(list(_live_feed_plans.values())) == expected_signature:
+                    _live_feed_sockets.clear()
+                    _live_feed_sockets.update(started_sockets)
+                else:
+                    stale_sockets = dict(started_sockets)
+            if stale_sockets:
+                _close_live_feed_sockets(stale_sockets, "stale_plan")
+        except Exception as exc:
+            _close_live_feed_sockets(started_sockets, "startup_failed")
+            with _engine_lock:
+                _engine_status.update({
+                    "fyers_ws_connected": False,
+                    "fyers_ws_error": str(exc),
+                    "fyers_ws_last_event_at": _utc_now(),
+                    "live_feed_started": False,
+                    "fyers_feed_statuses": {},
+                    "fyers_session_state": "token_present_degraded",
+                    "fyers_recovery_last_event": f"ws_start_failed:{exc}",
+                    "fyers_recovery_id": None,
+                    "fyers_recovery_owner": None,
+                    "fyers_recovery_reason": None,
+                    "fyers_recovery_started_at": None,
+                    "fyers_recovery_settling_until": None,
+                })
+            with _live_feed_lock:
+                _live_feed_sockets.clear()
+                _live_feed_started = False
+            print(f"[engine] live feed failed: {exc}")
 
     with _live_feed_lock:
-        def run_live_feed():
-            global _live_feed_socket, _live_feed_started
-            try:
-                socket = connect_live_feed(feed_symbols, _on_tick, _on_live_feed_status)
-                with _live_feed_lock:
-                    _live_feed_socket = socket
-            except Exception as exc:
-                with _engine_lock:
-                    _engine_status.update({
-                        "fyers_ws_connected": False,
-                        "fyers_ws_error": str(exc),
-                        "fyers_ws_last_event_at": _utc_now(),
-                        "live_feed_started": False,
-                        "fyers_session_state": "token_present_degraded",
-                        "fyers_recovery_last_event": f"ws_start_failed:{exc}",
-                        "fyers_recovery_id": None,
-                        "fyers_recovery_owner": None,
-                        "fyers_recovery_reason": None,
-                        "fyers_recovery_started_at": None,
-                        "fyers_recovery_settling_until": None,
-                    })
-                with _live_feed_lock:
-                    _live_feed_started = False
-                print(f"[engine] live feed failed: {exc}")
-
-        threading.Thread(target=run_live_feed, daemon=True).start()
         _live_feed_started = True
         _feed_watchdog_last_restart_at = time.time()
-        # Fresh tick counters so first-tick-per-symbol logs fire again after
-        # a WS restart; otherwise a symbol seen in the previous session
-        # never appears in logs again and it looks like nothing is arriving.
         _reset_tick_diagnostics()
         with _engine_lock:
             _engine_status.update({
                 "live_feed_started": True,
+                "fyers_ws_connected": False,
                 "fyers_ws_error": None,
                 "fyers_ws_last_event_at": _utc_now(),
                 "fyers_ws_subscribed_symbols": 0,
                 "fyers_ws_first_tick_at": None,
-                "fyers_recovery_last_event": "feed_restart_requested",
+                "fyers_feed_statuses": pending_statuses,
+                "fyers_session_state": "token_present_settling",
+                "fyers_recovery_last_event": f"feed_restart_requested:{','.join(plan_names)}",
             })
-        print(f"[engine] live feed start requested for {len(feed_symbols)} symbols")
-        for strategy in STRATEGIES.values():
-            refresh_market_data = getattr(strategy, "refresh_market_data", None)
-            if refresh_market_data:
-                refresh_market_data()
-        return True
+    threading.Thread(
+        target=run_live_feed,
+        args=(plans_snapshot, desired_signature),
+        daemon=True,
+    ).start()
+    print(
+        "[engine] live feed start requested for "
+        + ", ".join(
+            f"{plan['name']}={len(plan.get('symbols') or [])} symbols"
+            + (" (lite)" if plan.get("litemode") else "")
+            for plan in plans_snapshot
+        )
+    )
+    for strategy in STRATEGIES.values():
+        refresh_market_data = getattr(strategy, "refresh_market_data", None)
+        if refresh_market_data:
+            refresh_market_data()
+    return True
 
 
 def restart_live_feed(reason: str = "manual", ignore_backoff: bool = False) -> bool:
@@ -1334,27 +1513,25 @@ def restart_live_feed(reason: str = "manual", ignore_backoff: bool = False) -> b
 
 def stop_live_feed(reason: str = "manual") -> bool:
     """Stop the active FYERS live feed and close any open websocket."""
-    global _live_feed_started, _live_feed_socket
+    global _live_feed_started, _live_feed_plans
 
-    socket_to_close = None
+    sockets_to_close: dict[str, object] = {}
     with _live_feed_lock:
-        socket_to_close = _live_feed_socket
-        _live_feed_socket = None
+        sockets_to_close = dict(_live_feed_sockets)
+        _live_feed_sockets.clear()
+        _live_feed_plans = {}
         _live_feed_started = False
 
-    if socket_to_close is not None:
-        close_connection = getattr(socket_to_close, "close_connection", None)
-        if callable(close_connection):
-            try:
-                close_connection()
-            except Exception as exc:
-                print(f"[engine] live feed stop close failed ({reason}): {exc}")
+    if sockets_to_close:
+        _close_live_feed_sockets(sockets_to_close, reason)
 
     with _engine_lock:
         _engine_status.update({
             "live_feed_started": False,
             "fyers_ws_connected": False,
             "fyers_ws_error": f"Stopped ({reason})",
+            "fyers_ws_subscribed_symbols": 0,
+            "fyers_feed_statuses": {},
             "fyers_session_state": "token_missing" if "disconnect" in reason else "token_present_degraded",
             "fyers_recovery_last_event": f"stopped:{reason}",
             "fyers_recovery_id": None,
@@ -1372,6 +1549,13 @@ def get_engine_status() -> dict:
     circuit_left = int(_circuit_open_remaining())
     ws_connected = bool(_engine_status.get("fyers_ws_connected"))
     live_feed_started = bool(_engine_status.get("live_feed_started"))
+    active_feed_plans = [dict(plan) for plan in _live_feed_plans.values()]
+    active_live_symbols = sorted({
+        symbol
+        for plan in active_feed_plans
+        for symbol in (plan.get("symbols") or [])
+        if symbol
+    })
     # F14: auto_recovering means "we're trying to be up and haven't given up
     # yet" — the frontend uses this to show "Reconnecting…" instead of
     # scaring the user with "Disconnected". A hard disconnect (live feed
@@ -1403,6 +1587,7 @@ def get_engine_status() -> dict:
         "last_token_refresh": _engine_status.get("last_token_refresh"),
         "last_token_refresh_error": _engine_status.get("last_token_refresh_error"),
         "live_feed_started": _engine_status.get("live_feed_started"),
+        "fyers_feed_statuses": _engine_status.get("fyers_feed_statuses") or {},
         "fyers_ws_connected": _engine_status.get("fyers_ws_connected"),
         "fyers_ws_error": _engine_status.get("fyers_ws_error"),
         "fyers_ws_last_event_at": _engine_status.get("fyers_ws_last_event_at"),
@@ -1417,6 +1602,8 @@ def get_engine_status() -> dict:
         "closed_candle_count": _engine_status.get("closed_candle_count"),
         "watchlist_count": len(WATCHLIST),
         "live_feed_symbol_count": len(LIVE_FEED_SYMBOLS or WATCHLIST),
+        "active_live_feed_plan_names": [plan["name"] for plan in active_feed_plans],
+        "active_live_feed_symbol_count": len(active_live_symbols),
         "strategies_running": list(STRATEGIES.keys()),
     }
 

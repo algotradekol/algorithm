@@ -1519,7 +1519,14 @@ def _missing_critical_live_feed_symbols(subscribed_symbols: list[str], seen_symb
     return [symbol for symbol in _critical_live_feed_symbols(subscribed_symbols) if symbol not in seen_symbols]
 
 
-def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=None):
+def connect_live_feed(
+    symbols: list[str],
+    on_tick_callback,
+    on_status_callback=None,
+    *,
+    feed_name: str = "general",
+    litemode: bool = False,
+):
     if data_ws is None:
         raise RuntimeError(
             "Fyers websocket SDK is not installed in this environment. "
@@ -1529,8 +1536,12 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
     if not token:
         raise RuntimeError("No Fyers access token in Supabase yet")
 
+    feed_label = f"[fyers:{feed_name}]"
+
     def report_status(**data):
         if on_status_callback:
+            data.setdefault("feed_name", feed_name)
+            data.setdefault("litemode", litemode)
             on_status_callback(data)
 
     first_tick_received = False
@@ -1559,7 +1570,7 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
                 shape_key = f"{sym_val}|{sorted(message.keys()) if isinstance(message, dict) else type(message).__name__}"
                 if shape_key not in _mcx_shapes_seen:
                     _mcx_shapes_seen.add(shape_key)
-                    print(f"[fyers] MCX raw message shape: {message}")
+                    print(f"{feed_label} MCX raw message shape: {message}")
         except Exception:
             pass
         if not first_tick_received and symbol and ltp is not None:
@@ -1593,19 +1604,23 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
                         # Emit before subscribe so if the call raises we know
                         # what was in flight. MCX list is short enough to
                         # print fully — helps confirm SILVERMIC made it.
-                        print(f"[fyers] WS subscribe breakdown: NSE={nse_count} BSE={bse_count} MCX={len(mcx_syms)} (MCX symbols: {mcx_syms})")
+                        print(
+                            f"{feed_label} WS subscribe breakdown: "
+                            f"NSE={nse_count} BSE={bse_count} MCX={len(mcx_syms)} "
+                            f"(MCX symbols: {mcx_syms})"
+                        )
                         for i in range(0, len(symbols), 50):
                             socket.subscribe(symbols=symbols[i:i+50], data_type="SymbolUpdate")
                         subscription_sent = True
                     except Exception as exc:
-                        print("Fyers WS subscription error:", exc)
+                        print(f"{feed_label} WS subscription error:", exc)
                         report_status(
                             connected=False,
                             error=str(exc),
                             message="Fyers websocket subscription failed",
                         )
                         return
-                print(f"[fyers] websocket subscribed to {len(symbols)} symbols")
+                print(f"{feed_label} websocket subscribed to {len(symbols)} symbols")
                 report_status(
                     connected=True,
                     subscribed_symbols=len(symbols),
@@ -1624,7 +1639,7 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
         threading.Thread(target=subscribe_when_ready, daemon=True).start()
 
     def on_error(message):
-        print("Fyers WS error:", message)
+        print(f"{feed_label} WS error:", message)
         text = str(message)
         classified = "Fyers websocket error"
         if "429" in text or "Too Many Requests" in text:
@@ -1635,13 +1650,13 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
         nonlocal subscription_sent
         with subscription_lock:
             subscription_sent = False
-        print("Fyers WS closed:", message)
+        print(f"{feed_label} WS closed:", message)
         report_status(connected=False, error=str(message), message="Fyers websocket closed")
 
     socket = data_ws.FyersDataSocket(
         access_token=f"{get_fyers_config()['client_id']}:{token}",
         log_path="",
-        litemode=False,
+        litemode=litemode,
         # SDK auto-reconnect stacks with our watchdog and produces Fyers-side
         # 429 (Too Many Requests) on the WS handshake. We handle reconnects
         # ourselves with exponential backoff in engine._live_feed_watchdog_loop.

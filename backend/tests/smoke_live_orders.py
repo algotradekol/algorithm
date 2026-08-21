@@ -2942,6 +2942,367 @@ def test_strategy_specific_session_windows():
     check("algo3 inactive after 23:30", engine_mod._strategy_session_active(algo3, "23:30") is False)
 
 
+def _make_feed_strategy(symbols, *, start="09:15", end="15:30"):
+    class _Strategy:
+        def __init__(self):
+            self.watchlist = list(symbols)
+            self.refresh_calls = 0
+
+        def market_session_start(self):
+            return start
+
+        def market_session_end(self):
+            return end
+
+        def refresh_market_data(self, force: bool = False):
+            self.refresh_calls += 1
+
+    return _Strategy()
+
+
+def test_live_feed_plans_split_silver_and_general():
+    print("\n58b. live feed plans split dedicated Silver feed from general watchlist")
+    import app.engine as eng
+
+    old_strategies = dict(eng.STRATEGIES)
+    try:
+        eng.STRATEGIES = {
+            "algo1": _make_feed_strategy(["NSE:RELIANCE-EQ", "NSE:TCS-EQ"]),
+            "algo3": _make_feed_strategy(
+                ["MCX:SILVERMIC26AUGFUT"],
+                start="09:00",
+                end="23:30",
+            ),
+        }
+        plans = eng._build_live_feed_plans("09:10")
+        general = next((plan for plan in plans if plan["name"] == "general"), None)
+        silver = next((plan for plan in plans if plan["name"] == "silver"), None)
+
+        check("general plan exists during shared warmup", general is not None, f"plans={plans}")
+        check("silver plan exists during shared warmup", silver is not None, f"plans={plans}")
+        check("silver feed uses lite mode", bool(silver and silver.get("litemode")) is True, f"silver={silver}")
+        check("general feed excludes dedicated Silver symbol",
+              general is not None and general.get("symbols") == ["NSE:RELIANCE-EQ", "NSE:TCS-EQ"],
+              f"general={general}")
+        check("silver feed keeps only Silver symbol",
+              silver is not None and silver.get("symbols") == ["MCX:SILVERMIC26AUGFUT"],
+              f"silver={silver}")
+    finally:
+        eng.STRATEGIES = old_strategies
+
+
+def test_live_feed_plans_go_silver_only_after_nse_close():
+    print("\n58c. live feed plans drop general NSE feed during MCX-only hours")
+    import app.engine as eng
+
+    old_strategies = dict(eng.STRATEGIES)
+    try:
+        eng.STRATEGIES = {
+            "algo1": _make_feed_strategy(["NSE:RELIANCE-EQ", "NSE:TCS-EQ"]),
+            "algo3": _make_feed_strategy(
+                ["MCX:SILVERMIC26AUGFUT"],
+                start="09:00",
+                end="23:30",
+            ),
+        }
+        plans = eng._build_live_feed_plans("20:00")
+        check("only one plan remains after NSE close", len(plans) == 1, f"plans={plans}")
+        check("remaining feed is dedicated Silver lite feed",
+              plans == [{
+                  "name": "silver",
+                  "symbols": ["MCX:SILVERMIC26AUGFUT"],
+                  "litemode": True,
+                  "description": "Dedicated Silver execution feed",
+              }],
+              f"plans={plans}")
+    finally:
+        eng.STRATEGIES = old_strategies
+
+
+def test_start_live_feed_if_ready_starts_named_feeds():
+    print("\n58d. start_live_feed_if_ready launches named FYERS feeds with correct lite mode")
+    from unittest.mock import patch
+    import app.engine as eng
+
+    class SyncThread:
+        def __init__(self, target=None, args=(), daemon=None):
+            self._target = target
+            self._args = args
+
+        def start(self):
+            self._target(*self._args)
+
+    class FakeSocket:
+        def __init__(self, name):
+            self.name = name
+            self.closed = False
+
+        def close_connection(self):
+            self.closed = True
+
+    calls = []
+    fake_sockets = {}
+    strategies = {
+        "algo1": _make_feed_strategy(["NSE:RELIANCE-EQ", "NSE:TCS-EQ"]),
+        "algo3": _make_feed_strategy(["MCX:SILVERMIC26AUGFUT"], start="09:00", end="23:30"),
+    }
+
+    def fake_connect(symbols, on_tick, on_status_callback=None, *, feed_name="general", litemode=False):
+        calls.append({
+            "feed_name": feed_name,
+            "symbols": list(symbols),
+            "litemode": litemode,
+        })
+        socket = FakeSocket(feed_name)
+        fake_sockets[feed_name] = socket
+        return socket
+
+    old_strategies = dict(eng.STRATEGIES)
+    old_watchlist = list(eng.WATCHLIST)
+    old_live_symbols = list(eng.LIVE_FEED_SYMBOLS)
+    old_status = dict(eng._engine_status)
+    old_started = eng._live_feed_started
+    old_plans = dict(eng._live_feed_plans)
+    old_sockets = dict(eng._live_feed_sockets)
+    try:
+        eng.STRATEGIES = strategies
+        eng.WATCHLIST = ["NSE:RELIANCE-EQ", "NSE:TCS-EQ", "MCX:SILVERMIC26AUGFUT"]
+        eng.LIVE_FEED_SYMBOLS = list(eng.WATCHLIST)
+        eng._live_feed_started = False
+        eng._live_feed_plans = {}
+        eng._live_feed_sockets = {}
+        eng._engine_status.update({
+            "fyers_feed_statuses": {},
+            "fyers_ws_connected": False,
+            "fyers_ws_error": None,
+            "live_feed_started": False,
+        })
+
+        with patch.object(eng, "get_stored_access_token", return_value="TOKEN"), \
+             patch.object(eng, "_build_live_feed_plans", return_value=[
+                 {
+                     "name": "general",
+                     "symbols": ["NSE:RELIANCE-EQ", "NSE:TCS-EQ"],
+                     "litemode": False,
+                     "description": "General market-data feed",
+                 },
+                 {
+                     "name": "silver",
+                     "symbols": ["MCX:SILVERMIC26AUGFUT"],
+                     "litemode": True,
+                     "description": "Dedicated Silver execution feed",
+                 },
+             ]), \
+             patch.object(eng, "connect_live_feed", side_effect=fake_connect), \
+             patch.object(eng.threading, "Thread", SyncThread):
+            started = eng.start_live_feed_if_ready()
+
+        check("multi-feed start request succeeds", started is True, f"started={started}")
+        check("two named feed connections are opened", [call["feed_name"] for call in calls] == ["general", "silver"],
+              f"calls={calls}")
+        check("general feed stays full mode",
+              calls[0]["litemode"] is False and calls[0]["symbols"] == ["NSE:RELIANCE-EQ", "NSE:TCS-EQ"],
+              f"call={calls[0] if calls else None}")
+        check("silver feed uses lite mode",
+              calls[1]["litemode"] is True and calls[1]["symbols"] == ["MCX:SILVERMIC26AUGFUT"],
+              f"call={calls[1] if len(calls) > 1 else None}")
+        check("engine stores both named sockets",
+              sorted(eng._live_feed_sockets.keys()) == ["general", "silver"],
+              f"sockets={sorted(eng._live_feed_sockets.keys())}")
+        check("engine exposes pending per-feed statuses immediately",
+              sorted((eng._engine_status.get("fyers_feed_statuses") or {}).keys()) == ["general", "silver"],
+              f"statuses={eng._engine_status.get('fyers_feed_statuses')}")
+    finally:
+        eng.STRATEGIES = old_strategies
+        eng.WATCHLIST = old_watchlist
+        eng.LIVE_FEED_SYMBOLS = old_live_symbols
+        eng._engine_status.clear()
+        eng._engine_status.update(old_status)
+        eng._live_feed_started = old_started
+        eng._live_feed_plans = old_plans
+        eng._live_feed_sockets = old_sockets
+
+
+def test_start_live_feed_if_ready_reconfigures_when_plan_changes():
+    print("\n58e. start_live_feed_if_ready reshapes feeds when the desired plan changes")
+    from unittest.mock import patch
+    import app.engine as eng
+
+    class SyncThread:
+        def __init__(self, target=None, args=(), daemon=None):
+            self._target = target
+            self._args = args
+
+        def start(self):
+            self._target(*self._args)
+
+    class FakeSocket:
+        def __init__(self, name):
+            self.name = name
+            self.closed = False
+
+        def close_connection(self):
+            self.closed = True
+
+    first_general = FakeSocket("general")
+    first_silver = FakeSocket("silver")
+    second_silver = FakeSocket("silver-restarted")
+    issued = []
+    returned = [first_general, first_silver, second_silver]
+
+    def fake_connect(symbols, on_tick, on_status_callback=None, *, feed_name="general", litemode=False):
+        issued.append((feed_name, list(symbols), litemode))
+        return returned[len(issued) - 1]
+
+    old_watchlist = list(eng.WATCHLIST)
+    old_live_symbols = list(eng.LIVE_FEED_SYMBOLS)
+    old_status = dict(eng._engine_status)
+    old_started = eng._live_feed_started
+    old_plans = dict(eng._live_feed_plans)
+    old_sockets = dict(eng._live_feed_sockets)
+    try:
+        eng.WATCHLIST = ["NSE:RELIANCE-EQ", "MCX:SILVERMIC26AUGFUT"]
+        eng.LIVE_FEED_SYMBOLS = list(eng.WATCHLIST)
+        eng._live_feed_started = False
+        eng._live_feed_plans = {}
+        eng._live_feed_sockets = {}
+        eng._engine_status.update({"fyers_feed_statuses": {}, "live_feed_started": False})
+
+        with patch.object(eng, "get_stored_access_token", return_value="TOKEN"), \
+             patch.object(eng, "connect_live_feed", side_effect=fake_connect), \
+             patch.object(eng.threading, "Thread", SyncThread), \
+             patch.object(eng, "_build_live_feed_plans", side_effect=[
+                 [
+                     {"name": "general", "symbols": ["NSE:RELIANCE-EQ"], "litemode": False},
+                     {"name": "silver", "symbols": ["MCX:SILVERMIC26AUGFUT"], "litemode": True},
+                 ],
+                 [
+                     {"name": "silver", "symbols": ["MCX:SILVERMIC26AUGFUT"], "litemode": True},
+                 ],
+             ]):
+            eng.start_live_feed_if_ready()
+            eng.start_live_feed_if_ready()
+
+        check("general socket is closed when plan shrinks to silver-only", first_general.closed is True)
+        check("previous silver socket is closed before reconfigure", first_silver.closed is True)
+        check("latest active socket is the replacement silver feed",
+              list(eng._live_feed_sockets.keys()) == ["silver"] and eng._live_feed_sockets["silver"] is second_silver,
+              f"sockets={eng._live_feed_sockets}")
+        check("reconfigure performed a second silver connect",
+              issued == [
+                  ("general", ["NSE:RELIANCE-EQ"], False),
+                  ("silver", ["MCX:SILVERMIC26AUGFUT"], True),
+                  ("silver", ["MCX:SILVERMIC26AUGFUT"], True),
+              ],
+              f"issued={issued}")
+    finally:
+        eng.WATCHLIST = old_watchlist
+        eng.LIVE_FEED_SYMBOLS = old_live_symbols
+        eng._engine_status.clear()
+        eng._engine_status.update(old_status)
+        eng._live_feed_started = old_started
+        eng._live_feed_plans = old_plans
+        eng._live_feed_sockets = old_sockets
+
+
+def test_live_feed_status_aggregates_named_feeds():
+    print("\n58f. named feed statuses aggregate conservatively until every active feed is connected")
+    import app.engine as eng
+
+    old_status = dict(eng._engine_status)
+    old_plans = dict(eng._live_feed_plans)
+    old_started = eng._live_feed_started
+    try:
+        eng._live_feed_started = True
+        eng._live_feed_plans = {
+            "general": {"name": "general", "symbols": ["NSE:RELIANCE-EQ"], "litemode": False},
+            "silver": {"name": "silver", "symbols": ["MCX:SILVERMIC26AUGFUT"], "litemode": True},
+        }
+        eng._engine_status.update({
+            "fyers_feed_statuses": {},
+            "fyers_ws_connected": False,
+            "fyers_ws_error": None,
+            "fyers_session_state": "token_present_settling",
+            "live_feed_started": True,
+            "fyers_ws_subscribed_symbols": 0,
+            "fyers_ws_first_tick_at": None,
+        })
+
+        eng._on_live_feed_status({
+            "connected": True,
+            "subscribed_symbols": 1,
+            "first_tick_received": True,
+        }, feed_name="silver")
+        check("one connected feed is not enough to mark whole bundle connected",
+              eng._engine_status.get("fyers_ws_connected") is False,
+              f"status={eng._engine_status.get('fyers_feed_statuses')}")
+
+        eng._on_live_feed_status({
+            "connected": True,
+            "subscribed_symbols": 1,
+            "first_tick_received": True,
+        }, feed_name="general")
+        check("bundle becomes connected after both feeds connect",
+              eng._engine_status.get("fyers_ws_connected") is True)
+        check("subscribed symbol count is summed across feeds",
+              eng._engine_status.get("fyers_ws_subscribed_symbols") == 2,
+              f"got={eng._engine_status.get('fyers_ws_subscribed_symbols')}")
+        check("per-feed state keeps lite mode metadata",
+              (eng._engine_status.get("fyers_feed_statuses") or {}).get("silver", {}).get("litemode") is True,
+              f"statuses={eng._engine_status.get('fyers_feed_statuses')}")
+    finally:
+        eng._engine_status.clear()
+        eng._engine_status.update(old_status)
+        eng._live_feed_plans = old_plans
+        eng._live_feed_started = old_started
+
+
+def test_stop_live_feed_closes_all_named_sockets():
+    print("\n58g. stop_live_feed closes every named socket and clears per-feed status")
+    import app.engine as eng
+
+    class FakeSocket:
+        def __init__(self):
+            self.closed = False
+
+        def close_connection(self):
+            self.closed = True
+
+    general = FakeSocket()
+    silver = FakeSocket()
+
+    old_status = dict(eng._engine_status)
+    old_started = eng._live_feed_started
+    old_plans = dict(eng._live_feed_plans)
+    old_sockets = dict(eng._live_feed_sockets)
+    try:
+        eng._live_feed_started = True
+        eng._live_feed_plans = {
+            "general": {"name": "general", "symbols": ["NSE:RELIANCE-EQ"]},
+            "silver": {"name": "silver", "symbols": ["MCX:SILVERMIC26AUGFUT"]},
+        }
+        eng._live_feed_sockets = {"general": general, "silver": silver}
+        eng._engine_status.update({
+            "fyers_feed_statuses": {"general": {"connected": True}, "silver": {"connected": True}},
+            "fyers_ws_connected": True,
+            "live_feed_started": True,
+        })
+
+        stopped = eng.stop_live_feed(reason="smoke_test")
+
+        check("stop_live_feed returns success", stopped is True, f"stopped={stopped}")
+        check("every named socket is closed", general.closed is True and silver.closed is True)
+        check("active sockets are cleared", eng._live_feed_sockets == {}, f"sockets={eng._live_feed_sockets}")
+        check("per-feed statuses are cleared", eng._engine_status.get("fyers_feed_statuses") == {},
+              f"statuses={eng._engine_status.get('fyers_feed_statuses')}")
+    finally:
+        eng._engine_status.clear()
+        eng._engine_status.update(old_status)
+        eng._live_feed_started = old_started
+        eng._live_feed_plans = old_plans
+        eng._live_feed_sockets = old_sockets
+
+
 def main():
     print("=" * 66)
     print("  LIVE ORDER PIPELINE — OFFLINE SMOKE TEST (no Fyers, no DB)")
@@ -3034,6 +3395,12 @@ def main():
     test_algo3_warmup_transient_zero_result_preserves_state()
     test_strategy_specific_square_off_times()
     test_strategy_specific_session_windows()
+    test_live_feed_plans_split_silver_and_general()
+    test_live_feed_plans_go_silver_only_after_nse_close()
+    test_start_live_feed_if_ready_starts_named_feeds()
+    test_start_live_feed_if_ready_reconfigures_when_plan_changes()
+    test_live_feed_status_aggregates_named_feeds()
+    test_stop_live_feed_closes_all_named_sockets()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")
