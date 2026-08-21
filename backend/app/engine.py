@@ -695,6 +695,13 @@ def _scheduler_loop():
         # Close the just-finished minute even for symbols that have not sent a
         # follow-up tick yet. This must happen before the 9:16 entry check.
         aggregator.flush_completed_candles(on_candle_close=_on_candle_close, now=now.replace(tzinfo=None))
+        for strategy in STRATEGIES.values():
+            flush_due = getattr(strategy, "flush_clock_closed_bar", None)
+            if callable(flush_due):
+                try:
+                    flush_due()
+                except Exception as exc:
+                    print(f"[engine] flush_clock_closed_bar failed for {strategy.algo_id}: {exc}")
 
         pending = []
         completed_any = False
