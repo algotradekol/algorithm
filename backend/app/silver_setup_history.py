@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 
+from .storage_namespace import current_and_legacy_values, namespaced_value
 from .supabase_client import run_with_supabase
 from .timezone import IST
 
@@ -71,7 +72,7 @@ def record_setup_event(
         else float(bar["close"]) - float(breakout_points)
     )
     payload = {
-        "algo_id": algo_id,
+        "algo_id": namespaced_value(algo_id),
         "symbol": symbol,
         "setup_side": side,
         "candle_time": _utc_iso(candle_time),
@@ -118,23 +119,30 @@ def get_setup_history(
         ).isoformat()
 
     def query(supabase):
-        request = (
-            supabase.table("silver_setup_events")
-            .select("*")
-            .eq("algo_id", algo_id)
-            .gte("candle_time", start_date)
-            .order("candle_time", desc=True)
-            .limit(max(1, min(int(limit), 500)))
-        )
-        if side in {"BUY", "SELL"}:
-            request = request.eq("setup_side", side)
-        if live_only:
-            request = request.eq("source", "live")
-        return request.execute()
+        rows: list[dict] = []
+        for candidate in current_and_legacy_values(algo_id):
+            request = (
+                supabase.table("silver_setup_events")
+                .select("*")
+                .eq("algo_id", candidate)
+                .gte("candle_time", start_date)
+                .order("candle_time", desc=True)
+                .limit(max(1, min(int(limit), 500)))
+            )
+            if side in {"BUY", "SELL"}:
+                request = request.eq("setup_side", side)
+            if live_only:
+                request = request.eq("source", "live")
+            result = request.execute()
+            rows.extend(result.data or [])
+            if rows:
+                break
+        return rows
 
     try:
-        result = run_with_supabase(query)
-        rows = [_normalize_legacy_row(row) for row in (result.data or [])]
+        rows = [_normalize_legacy_row(row) for row in run_with_supabase(query)]
+        for row in rows:
+            row["algo_id"] = algo_id
         return {
             "algo_id": algo_id,
             "side": side,

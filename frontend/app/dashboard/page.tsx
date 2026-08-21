@@ -116,7 +116,8 @@ function DashboardContent() {
     && (!fyersStatus.trading_mode || fyersStatus.trading_mode === tradingMode)
   );
   const sessionRecovering = sessionState === 'token_present_settling' || sessionState === 'token_present_ws_recovering';
-  const tradingReady = Boolean((fyersConnectedForMode || sessionRecovering) && engineStatus?.state === 'running');
+  const hasUsableFyersSession = sessionState !== 'token_missing';
+  const tradingReady = Boolean(hasUsableFyersSession && engineStatus?.state === 'running');
   const statusText = fyersConnectedForMode
     ? 'LIVE'
     : sessionState === 'token_missing'
@@ -182,6 +183,7 @@ function DashboardContent() {
         if (!cancelled) {
           setFyersStatus((current) => current ? {
             ...current,
+            session_state: current.session_state || 'token_present_degraded',
             status: current.verified ? 'degraded' : current.status,
             message: current.verified
               ? `Connection check temporarily unavailable; keeping the last confirmed session. ${
@@ -192,6 +194,7 @@ function DashboardContent() {
             connected: false,
             verified: false,
             status: 'checking',
+            session_state: 'token_present_degraded',
             message: error instanceof Error ? error.message : 'Unable to check Fyers status',
           });
         }

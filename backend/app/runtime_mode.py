@@ -11,7 +11,6 @@ import datetime
 import os
 
 from .config import (
-    BROKER_KEY_SUFFIX,
     LIVE_FYERS_CLIENT_ID,
     LIVE_FYERS_FY_ID,
     LIVE_FYERS_PIN,
@@ -27,6 +26,7 @@ from .config import (
     PAPER_FYERS_TOTP_KEY,
     PAPER_FYERS_PROXY_URL,
     )
+from .storage_namespace import current_and_legacy_values, namespaced_value
 from .supabase_client import run_with_supabase
 
 RUNTIME_MODE_TABLE = "app_runtime_settings"
@@ -35,6 +35,28 @@ FYERS_LOGIN_MODE_KEY = "pending_fyers_login_mode"
 FYERS_LOGIN_ORIGIN_KEY = "pending_fyers_login_origin"
 VALID_TRADING_MODES = {"paper", "live"}
 _runtime_mode_cache: str | None = None
+
+
+def get_runtime_setting_storage_key(setting_key: str) -> str:
+    return namespaced_value(setting_key)
+
+
+def _get_runtime_setting_value(setting_key: str) -> str | None:
+    storage_key = get_runtime_setting_storage_key(setting_key)
+    for candidate in current_and_legacy_values(setting_key):
+        result = run_with_supabase(
+            lambda supabase, key=candidate: (
+                supabase.table(RUNTIME_MODE_TABLE)
+                .select("setting_value")
+                .eq("setting_key", key)
+                .limit(1)
+                .execute()
+            )
+        )
+        row = (result.data or [{}])[0] if result.data else None
+        if row:
+            return row.get("setting_value")
+    return None
 
 
 def normalize_trading_mode(mode: str | None) -> str:
@@ -53,17 +75,7 @@ def get_runtime_trading_mode(force_refresh: bool = False) -> str:
 
     default_mode = get_default_trading_mode()
     try:
-        result = run_with_supabase(
-            lambda supabase: (
-                supabase.table(RUNTIME_MODE_TABLE)
-                .select("setting_value")
-                .eq("setting_key", RUNTIME_MODE_KEY)
-                .limit(1)
-                .execute()
-            )
-        )
-        row = (result.data or [{}])[0] if result.data else None
-        mode = normalize_trading_mode((row or {}).get("setting_value") or default_mode)
+        mode = normalize_trading_mode(_get_runtime_setting_value(RUNTIME_MODE_KEY) or default_mode)
     except Exception as exc:
         if "PGRST205" in str(exc) or RUNTIME_MODE_TABLE in str(exc):
             mode = default_mode
@@ -81,7 +93,7 @@ def set_runtime_trading_mode(mode: str) -> str:
         run_with_supabase(
             lambda supabase: supabase.table(RUNTIME_MODE_TABLE).upsert(
                 {
-                    "setting_key": RUNTIME_MODE_KEY,
+                    "setting_key": get_runtime_setting_storage_key(RUNTIME_MODE_KEY),
                     "setting_value": normalized,
                     "updated_at": now,
                 }
@@ -103,7 +115,7 @@ def set_pending_fyers_login_mode(mode: str | None) -> str:
         run_with_supabase(
             lambda supabase: supabase.table(RUNTIME_MODE_TABLE).upsert(
                 {
-                    "setting_key": FYERS_LOGIN_MODE_KEY,
+                    "setting_key": get_runtime_setting_storage_key(FYERS_LOGIN_MODE_KEY),
                     "setting_value": normalized,
                     "updated_at": now,
                 }
@@ -118,29 +130,21 @@ def set_pending_fyers_login_mode(mode: str | None) -> str:
 
 def get_pending_fyers_login_mode() -> str | None:
     try:
-        result = run_with_supabase(
-            lambda supabase: (
-                supabase.table(RUNTIME_MODE_TABLE)
-                .select("setting_value")
-                .eq("setting_key", FYERS_LOGIN_MODE_KEY)
-                .limit(1)
-                .execute()
-            )
-        )
-        row = (result.data or [{}])[0] if result.data else None
-        return normalize_trading_mode((row or {}).get("setting_value")) if row else None
+        value = _get_runtime_setting_value(FYERS_LOGIN_MODE_KEY)
+        return normalize_trading_mode(value) if value else None
     except Exception:
         return None
 
 
 def clear_pending_fyers_login_mode() -> None:
     try:
-        run_with_supabase(
-            lambda supabase: supabase.table(RUNTIME_MODE_TABLE)
-            .delete()
-            .eq("setting_key", FYERS_LOGIN_MODE_KEY)
-            .execute()
-        )
+        for candidate in current_and_legacy_values(FYERS_LOGIN_MODE_KEY):
+            run_with_supabase(
+                lambda supabase, key=candidate: supabase.table(RUNTIME_MODE_TABLE)
+                .delete()
+                .eq("setting_key", key)
+                .execute()
+            )
     except Exception:
         pass
 
@@ -168,7 +172,7 @@ def set_pending_fyers_login_origin(origin: str | None) -> str | None:
         run_with_supabase(
             lambda supabase: supabase.table(RUNTIME_MODE_TABLE).upsert(
                 {
-                    "setting_key": FYERS_LOGIN_ORIGIN_KEY,
+                    "setting_key": get_runtime_setting_storage_key(FYERS_LOGIN_ORIGIN_KEY),
                     "setting_value": normalized,
                     "updated_at": now,
                 }
@@ -183,40 +187,28 @@ def set_pending_fyers_login_origin(origin: str | None) -> str | None:
 
 def get_pending_fyers_login_origin() -> str | None:
     try:
-        result = run_with_supabase(
-            lambda supabase: (
-                supabase.table(RUNTIME_MODE_TABLE)
-                .select("setting_value")
-                .eq("setting_key", FYERS_LOGIN_ORIGIN_KEY)
-                .limit(1)
-                .execute()
-            )
-        )
-        row = (result.data or [{}])[0] if result.data else None
-        return _normalize_frontend_origin((row or {}).get("setting_value")) if row else None
+        value = _get_runtime_setting_value(FYERS_LOGIN_ORIGIN_KEY)
+        return _normalize_frontend_origin(value) if value else None
     except Exception:
         return None
 
 
 def clear_pending_fyers_login_origin() -> None:
     try:
-        run_with_supabase(
-            lambda supabase: supabase.table(RUNTIME_MODE_TABLE)
-            .delete()
-            .eq("setting_key", FYERS_LOGIN_ORIGIN_KEY)
-            .execute()
-        )
+        for candidate in current_and_legacy_values(FYERS_LOGIN_ORIGIN_KEY):
+            run_with_supabase(
+                lambda supabase, key=candidate: supabase.table(RUNTIME_MODE_TABLE)
+                .delete()
+                .eq("setting_key", key)
+                .execute()
+            )
     except Exception:
         pass
 
 
 def get_active_broker_key(mode: str | None = None) -> str:
     base = "fyers_live" if normalize_trading_mode(mode or get_runtime_trading_mode()) == "live" else "fyers"
-    # Per-deployment suffix keeps token rows isolated when multiple
-    # backends share a Supabase (see config.BROKER_KEY_SUFFIX).
-    if BROKER_KEY_SUFFIX:
-        return f"{base}__{BROKER_KEY_SUFFIX}"
-    return base
+    return namespaced_value(base)
 
 
 def get_fyers_config(mode: str | None = None) -> dict[str, str]:

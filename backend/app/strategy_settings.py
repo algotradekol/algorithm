@@ -1,5 +1,6 @@
 import datetime
 
+from .storage_namespace import namespaced_value
 
 DEFAULT_SETTINGS = {
     "starting_capital": 500000,
@@ -166,6 +167,17 @@ def default_settings_for(algo_id: str) -> dict:
     return {**DEFAULT_SETTINGS, **STRATEGY_DEFAULT_OVERRIDES.get(algo_id, {})}
 
 
+def get_settings_storage_key(algo_id: str) -> str:
+    """Per-deployment settings key.
+
+    When multiple backends share one Supabase, plain algo_id rows collide
+    across deployments. Reuse BROKER_KEY_SUFFIX so strategy settings follow
+    the same tenant split as broker_tokens. Empty suffix preserves the
+    historical single-row behavior.
+    """
+    return namespaced_value(algo_id)
+
+
 def _normalize(settings: dict, algo_id: str) -> dict:
     defaults = default_settings_for(algo_id)
     normalized = {**defaults, **settings}
@@ -198,9 +210,17 @@ def get_settings(algo_id: str) -> dict:
     """Read settings for this algo from Supabase. Fall back to hardcoded defaults if missing."""
     from .supabase_client import supabase
 
-    result = supabase.table("strategy_settings").select("*").eq("algo_id", algo_id).execute()
+    storage_key = get_settings_storage_key(algo_id)
+    result = supabase.table("strategy_settings").select("*").eq("algo_id", storage_key).execute()
     if result.data:
         return _normalize(result.data[0], algo_id)
+    # Backward-compatible fallback: if this deployment has never saved its
+    # own namespaced row yet, hydrate from the legacy shared algo_id row so
+    # the app still starts with the old settings until the next save/reset.
+    if storage_key != algo_id:
+        legacy_result = supabase.table("strategy_settings").select("*").eq("algo_id", algo_id).execute()
+        if legacy_result.data:
+            return _normalize(legacy_result.data[0], algo_id)
     return _normalize({}, algo_id)
 
 
@@ -230,7 +250,7 @@ def _upsert_settings_with_fallback(algo_id: str, settings: dict) -> None:
     save from silently failing when a new field hasn't been migrated yet."""
     from .supabase_client import supabase
 
-    payload = {"algo_id": algo_id, **settings, "updated_at": "now()"}
+    payload = {"algo_id": get_settings_storage_key(algo_id), **settings, "updated_at": "now()"}
     try:
         supabase.table("strategy_settings").upsert(payload).execute()
         return

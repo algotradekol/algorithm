@@ -265,6 +265,29 @@ def get_connection_status() -> dict:
             "trading_mode": effective_mode,
         }
 
+    raw_message = str(response.get("message") or "").strip()
+    lowered_message = raw_message.lower()
+    if (
+        raw_message
+        and "expired" not in lowered_message
+        and "invalid token" not in lowered_message
+        and "token invalid" not in lowered_message
+        and "access denied" not in lowered_message
+        and "unauthorized" not in lowered_message
+    ):
+        return {
+            "connected": True,
+            "verified": False,
+            "status": "degraded",
+            "session_state": engine_session_state or "token_present_degraded",
+            "message": f"Fyers token is stored, but profile verification returned a temporary error: {raw_message}",
+            "refresh_token_present": refresh_token_present,
+            "access_token_updated_at": token_row.get("access_token_updated_at") or token_row.get("updated_at"),
+            "refresh_token_updated_at": token_row.get("refresh_token_updated_at"),
+            "broker": broker,
+            "trading_mode": effective_mode,
+        }
+
     return {
         "connected": False,
         "verified": False,

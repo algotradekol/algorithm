@@ -1147,6 +1147,34 @@ def test_connection_status_token_present_settling_survives_redeploy():
           f"got status={result.get('status')!r}")
 
 
+def test_connection_status_bad_request_stays_degraded_not_expired():
+    print("\n26bc. Connection status — stored token + FYERS bad request stays degraded")
+    from unittest.mock import patch
+    import app.fyers_client as fc
+
+    class FakeProfile:
+        def get_profile(self):
+            return {"s": "error", "message": "Bad request", "code": -99}
+
+    fake_token_row = {"access_token": "T", "refresh_token": "R"}
+    with patch.object(fc, "get_active_broker_key", return_value="fyers_paper"), \
+         patch.object(fc, "get_stored_token_row", return_value=fake_token_row), \
+         patch.object(fc, "get_runtime_trading_mode", return_value="paper"), \
+         patch.object(fc, "_is_recent_token_row", return_value=False), \
+         patch.object(fc, "get_fyers_model", return_value=FakeProfile()), \
+         patch("app.engine.get_engine_status", return_value={
+             "fyers_session_state": "token_present_connected",
+             "fyers_recovery_owner": None,
+         }):
+        result = fc.get_connection_status()
+    check("bad request returns degraded, not expired",
+          result.get("status") == "degraded",
+          f"got status={result.get('status')!r}")
+    check("bad request keeps session connected",
+          result.get("connected") is True and result.get("verified") is False,
+          f"got connected={result.get('connected')!r} verified={result.get('verified')!r}")
+
+
 def test_silver_setup_history_naive_ist_stores_as_correct_utc():
     print("\n26c. Silver setup history — naive IST candle time stores as correct UTC")
     import datetime as _dt
@@ -2331,14 +2359,143 @@ def test_broker_key_suffix_empty_preserves_legacy_key():
           paper_key == "fyers", f"got={paper_key}")
 
 
-# ── 48. Backtest parity: same scenario, backtest and live must agree ──
+def test_strategy_settings_storage_key_isolates_deployments():
+    print("\n48. Strategy settings storage key: two suffixes produce distinct rows")
+    import importlib, os
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "client"}, clear=False):
+        import app.config, app.strategy_settings
+        importlib.reload(app.config)
+        importlib.reload(app.strategy_settings)
+        client_key = app.strategy_settings.get_settings_storage_key("algo3")
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "dev"}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.strategy_settings)
+        dev_key = app.strategy_settings.get_settings_storage_key("algo3")
+
+    check("client settings key is algo3__client",
+          client_key == "algo3__client", f"got={client_key}")
+    check("dev settings key is algo3__dev",
+          dev_key == "algo3__dev", f"got={dev_key}")
+    check("client and dev settings keys differ (no settings collision)",
+          client_key != dev_key)
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": ""}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.strategy_settings)
+
+
+def test_strategy_settings_storage_key_empty_preserves_legacy_algo_id():
+    print("\n49. Strategy settings storage key empty: keeps historical algo_id row")
+    import importlib, os
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": ""}, clear=False):
+        import app.config, app.strategy_settings
+        importlib.reload(app.config)
+        importlib.reload(app.strategy_settings)
+        storage_key = app.strategy_settings.get_settings_storage_key("algo3")
+
+    check("empty suffix: settings key stays plain algo_id",
+          storage_key == "algo3", f"got={storage_key}")
+
+
+def test_runtime_mode_setting_key_isolates_deployments():
+    print("\n50. Runtime mode storage key: two suffixes produce distinct rows")
+    import importlib, os
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "client"}, clear=False):
+        import app.config, app.runtime_mode
+        importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
+        client_key = app.runtime_mode.get_runtime_setting_storage_key("trading_mode")
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "dev"}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
+        dev_key = app.runtime_mode.get_runtime_setting_storage_key("trading_mode")
+
+    check("client runtime setting key is trading_mode__client",
+          client_key == "trading_mode__client", f"got={client_key}")
+    check("dev runtime setting key is trading_mode__dev",
+          dev_key == "trading_mode__dev", f"got={dev_key}")
+    check("client and dev runtime setting keys differ",
+          client_key != dev_key)
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": ""}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
+
+
+def test_paper_broker_storage_key_isolates_deployments():
+    print("\n51. Broker storage key: paper/live state rows split by deployment suffix")
+    import importlib, os
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "client"}, clear=False):
+        import app.config, app.paper_broker, app.live_broker
+        importlib.reload(app.config)
+        importlib.reload(app.paper_broker)
+        importlib.reload(app.live_broker)
+        client_paper = app.paper_broker.PaperBroker.__new__(app.paper_broker.PaperBroker)
+        client_paper.algo_id = "algo3"
+        client_live = app.live_broker.LiveBroker.__new__(app.live_broker.LiveBroker)
+        client_live.algo_id = "algo3"
+        client_paper_key = client_paper.storage_algo_id()
+        client_live_key = client_live.storage_algo_id()
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "dev"}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.paper_broker)
+        importlib.reload(app.live_broker)
+        dev_paper = app.paper_broker.PaperBroker.__new__(app.paper_broker.PaperBroker)
+        dev_paper.algo_id = "algo3"
+        dev_live = app.live_broker.LiveBroker.__new__(app.live_broker.LiveBroker)
+        dev_live.algo_id = "algo3"
+        dev_paper_key = dev_paper.storage_algo_id()
+        dev_live_key = dev_live.storage_algo_id()
+
+    check("client paper broker key is algo3__client",
+          client_paper_key == "algo3__client", f"got={client_paper_key}")
+    check("dev paper broker key is algo3__dev",
+          dev_paper_key == "algo3__dev", f"got={dev_paper_key}")
+    check("client and dev paper broker keys differ",
+          client_paper_key != dev_paper_key)
+    check("live broker inherits same deployment key",
+          client_live_key == "algo3__client" and dev_live_key == "algo3__dev",
+          f"client={client_live_key} dev={dev_live_key}")
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": ""}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.paper_broker)
+        importlib.reload(app.live_broker)
+
+
+def test_charges_config_row_id_isolates_deployments():
+    print("\n52. Charges config row id: two suffixes produce distinct rows")
+    import importlib, os
+    from unittest.mock import patch
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "client"}, clear=False):
+        import app.config, app.charges
+        importlib.reload(app.config)
+        importlib.reload(app.charges)
+        client_id = app.charges.get_charges_config_row_id()
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "dev"}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.charges)
+        dev_id = app.charges.get_charges_config_row_id()
+    with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": ""}, clear=False):
+        importlib.reload(app.config)
+        importlib.reload(app.charges)
+        legacy_id = app.charges.get_charges_config_row_id()
+
+    check("client charges row id differs from legacy row 1", client_id != 1, f"got={client_id}")
+    check("dev charges row id differs from legacy row 1", dev_id != 1, f"got={dev_id}")
+    check("client and dev charges row ids differ", client_id != dev_id, f"client={client_id} dev={dev_id}")
+    check("empty suffix keeps legacy charges row id 1", legacy_id == 1, f"got={legacy_id}")
+
+
+# ── 53. Backtest parity: same scenario, backtest and live must agree ──
 def test_algo3_backtest_parity_with_live():
     """Give the same 1m candle history to the backtest simulator and to
     the live algo3 (via on_candle_close + on_tick per 1m bar). Assert
     they produce the SAME entries: same side, same entry price, same
     minute. If they diverge, either the live logic or the backtest
     simulator has drifted from the spec doc."""
-    print("\n48. algo3 backtest parity — same input, live + backtest agree on entries")
+    print("\n53. algo3 backtest parity — same input, live + backtest agree on entries")
     import datetime as _dt
     from app import backtest as bt
 
@@ -2821,6 +2978,7 @@ def main():
     test_connection_status_429_stays_degraded_not_expired()
     test_connection_status_connected_requires_successful_verify()
     test_connection_status_token_present_settling_survives_redeploy()
+    test_connection_status_bad_request_stays_degraded_not_expired()
     test_silver_setup_history_naive_ist_stores_as_correct_utc()
     test_silver_setup_history_repairs_future_shifted_legacy_rows()
     test_pre_market_no_tick_not_counted_as_failure()
@@ -2859,6 +3017,11 @@ def main():
     test_algo3_black_box_end_to_end()
     test_broker_key_suffix_isolates_tokens()
     test_broker_key_suffix_empty_preserves_legacy_key()
+    test_strategy_settings_storage_key_isolates_deployments()
+    test_strategy_settings_storage_key_empty_preserves_legacy_algo_id()
+    test_runtime_mode_setting_key_isolates_deployments()
+    test_paper_broker_storage_key_isolates_deployments()
+    test_charges_config_row_id_isolates_deployments()
     test_algo3_backtest_parity_with_live()
     test_algo3_gap_through_fires_immediately()
     test_algo3_previous_day_buy_setup_gap_open_fires_immediately()

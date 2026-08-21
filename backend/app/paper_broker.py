@@ -9,6 +9,7 @@ from __future__ import annotations
 import datetime
 
 from .charges import calculate_charges, get_charges_config
+from .storage_namespace import current_and_legacy_values, namespaced_value
 from .supabase_client import run_with_supabase
 
 
@@ -27,25 +28,57 @@ class PaperBroker:
     def trades_table_name(self) -> str:
         return "trades"
 
+    def storage_algo_id(self) -> str:
+        return namespaced_value(self.algo_id)
+
+    def storage_algo_candidates(self) -> list[str]:
+        return current_and_legacy_values(self.algo_id)
+
+    def _merge_storage_rows(self, rows_by_candidate: list[list[dict]], *, limit: int | None = None, order_key: str | None = None, reverse: bool = False) -> list[dict]:
+        merged: list[dict] = []
+        seen_ids: set[str] = set()
+        for rows in rows_by_candidate:
+            for row in rows or []:
+                row_id = str(row.get("id") or "")
+                dedupe_key = row_id or f"{row.get('algo_id')}::{row.get('symbol')}::{row.get('entry_time')}::{row.get('exit_time')}"
+                if dedupe_key in seen_ids:
+                    continue
+                seen_ids.add(dedupe_key)
+                merged.append(row)
+        if order_key:
+            merged.sort(key=lambda row: str(row.get(order_key) or ""), reverse=reverse)
+        if limit is not None:
+            return merged[:limit]
+        return merged
+
     def _ensure_state_row(self):
         existing = run_with_supabase(
-            lambda supabase: supabase.table(self.state_table_name()).select("*").eq("algo_id", self.algo_id).execute()
+            lambda supabase: supabase.table(self.state_table_name()).select("*").eq("algo_id", self.storage_algo_id()).execute()
         )
         if not existing.data:
+            seed_row = None
+            if self.storage_algo_id() != self.algo_id:
+                legacy = run_with_supabase(
+                    lambda supabase: supabase.table(self.state_table_name()).select("*").eq("algo_id", self.algo_id).execute()
+                )
+                if legacy.data:
+                    seed_row = dict(legacy.data[0])
+                    seed_row.pop("id", None)
+                    seed_row["algo_id"] = self.storage_algo_id()
             run_with_supabase(
-                lambda supabase: supabase.table(self.state_table_name()).insert({
-                    "algo_id": self.algo_id,
+                lambda supabase, payload=seed_row or {
+                    "algo_id": self.storage_algo_id(),
                     "cash": self.starting_capital,
                     "trade_count_today": 0,
                     "buy_count_today": 0,
                     "sell_count_today": 0,
                     "trading_date": datetime.date.today().isoformat(),
-                }).execute()
+                }: supabase.table(self.state_table_name()).insert(payload).execute()
             )
 
     def _get_state(self) -> dict:
         row = run_with_supabase(
-            lambda supabase: supabase.table(self.state_table_name()).select("*").eq("algo_id", self.algo_id).execute()
+            lambda supabase: supabase.table(self.state_table_name()).select("*").eq("algo_id", self.storage_algo_id()).execute()
         ).data[0]
         today = datetime.date.today().isoformat()
         if row["trading_date"] != today:
@@ -56,7 +89,7 @@ class PaperBroker:
                     "trade_count_today": 0,
                     "buy_count_today": 0,
                     "sell_count_today": 0,
-                }).eq("algo_id", self.algo_id).execute()
+                }).eq("algo_id", self.storage_algo_id()).execute()
             )
             row.update({"trading_date": today, "trade_count_today": 0, "buy_count_today": 0, "sell_count_today": 0})
         return row
@@ -64,13 +97,17 @@ class PaperBroker:
     def open_positions(self, include_stale: bool = False) -> list[dict]:
         query_date = datetime.date.today().isoformat()
 
-        def query(supabase):
-            request = supabase.table(self.positions_table_name()).select("*").eq("algo_id", self.algo_id).eq("status", "open")
+        def query_candidate(supabase, candidate: str):
+            request = supabase.table(self.positions_table_name()).select("*").eq("algo_id", candidate).eq("status", "open")
             if not include_stale:
                 request = request.gte("entry_time", query_date)
             return request.execute()
 
-        return run_with_supabase(query).data
+        rows_by_candidate = [
+            run_with_supabase(lambda supabase, key=candidate: query_candidate(supabase, key)).data
+            for candidate in self.storage_algo_candidates()
+        ]
+        return self._merge_storage_rows(rows_by_candidate, order_key="entry_time", reverse=True)
 
     def close_stale_open_positions(self) -> int:
         """Close previous-day open paper positions so they never appear as live positions."""
@@ -86,22 +123,28 @@ class PaperBroker:
     def recent_trades(self, limit: int = 200, today_only: bool = True) -> list[dict]:
         query_date = datetime.date.today().isoformat()
 
-        def query(supabase):
-            request = supabase.table(self.trades_table_name()).select("*").eq("algo_id", self.algo_id)
+        def query_candidate(supabase, candidate: str):
+            request = supabase.table(self.trades_table_name()).select("*").eq("algo_id", candidate)
             if today_only:
                 request = request.gte("entry_time", query_date)
             return request.order("exit_time", desc=True).limit(limit).execute()
 
-        result = run_with_supabase(query)
-        return result.data
+        rows_by_candidate = [
+            run_with_supabase(lambda supabase, key=candidate: query_candidate(supabase, key)).data
+            for candidate in self.storage_algo_candidates()
+        ]
+        return self._merge_storage_rows(rows_by_candidate, limit=limit, order_key="exit_time", reverse=True)
 
     def already_traded_today(self, symbol: str) -> bool:
         today = datetime.date.today().isoformat()
-        result = run_with_supabase(
-            lambda supabase: supabase.table(self.trades_table_name()).select("id").eq("algo_id", self.algo_id)
-            .eq("symbol", symbol).gte("entry_time", today).execute()
-        )
-        return len(result.data) > 0
+        for candidate in self.storage_algo_candidates():
+            result = run_with_supabase(
+                lambda supabase, key=candidate: supabase.table(self.trades_table_name()).select("id").eq("algo_id", key)
+                .eq("symbol", symbol).gte("entry_time", today).execute()
+            )
+            if result.data:
+                return True
+        return False
 
     def can_open_new_trade(self, side: str, max_total: int, max_per_side: int) -> bool:
         counts = self.today_counts()
@@ -138,10 +181,11 @@ class PaperBroker:
             "last_updated_at": None,
             "update_count": 0,
             "last_sl_before_trail": float(sl_price),
+            "events": [],
         })
 
         position_row = {
-            "algo_id": self.algo_id,
+            "algo_id": self.storage_algo_id(),
             "symbol": symbol,
             "side": side,
             "qty": qty,
@@ -174,7 +218,7 @@ class PaperBroker:
         updates["buy_count_today" if side == "BUY" else "sell_count_today"] = \
             state["buy_count_today" if side == "BUY" else "sell_count_today"] + 1
         run_with_supabase(
-            lambda supabase: supabase.table(self.state_table_name()).update(updates).eq("algo_id", self.algo_id).execute()
+            lambda supabase: supabase.table(self.state_table_name()).update(updates).eq("algo_id", self.storage_algo_id()).execute()
         )
         from .broadcaster import broadcast_sync
         broadcast_sync({
@@ -214,6 +258,7 @@ class PaperBroker:
         entry = float(position["entry_price"])
         side = position["side"]
         current_sl = float(position["sl_price"])
+        previous_sl = current_sl
         trigger_pct = float(settings.get("trailing_sl_trigger_pct") or 0)
         distance_pct = float(settings.get("trailing_sl_distance_pct") or 0)
         if trigger_pct <= 0 or distance_pct <= 0:
@@ -231,6 +276,7 @@ class PaperBroker:
                 active = True
                 new_sl = highest * (1 - distance_pct / 100)
                 if new_sl > current_sl:
+                    previous_sl = current_sl
                     updates["sl_price"] = new_sl
                     current_sl = new_sl
                     sl_moved = True
@@ -240,6 +286,7 @@ class PaperBroker:
                 active = True
                 new_sl = lowest * (1 + distance_pct / 100)
                 if new_sl < current_sl:
+                    previous_sl = current_sl
                     updates["sl_price"] = new_sl
                     current_sl = new_sl
                     sl_moved = True
@@ -254,6 +301,7 @@ class PaperBroker:
         merged_snapshot: dict | None = None
         current_snapshot = dict(position.get("signal_snapshot") or {})
         trailing_meta = dict(current_snapshot.get("trailing") or {})
+        trailing_events = list(trailing_meta.get("events") or [])
         now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
         if active and not trailing_meta.get("first_activated_at"):
@@ -265,9 +313,17 @@ class PaperBroker:
             trailing_meta["last_updated_at"] = now_iso
             trailing_meta["update_count"] = int(trailing_meta.get("update_count") or 0) + 1
             trailing_meta.setdefault("activated", True)
+            trailing_events.append({
+                "at": now_iso,
+                "ltp": float(ltp),
+                "previous_sl": float(previous_sl),
+                "new_sl": float(current_sl),
+                "delta": float(current_sl) - float(previous_sl),
+            })
             merged_snapshot = current_snapshot  # need to write
 
         if merged_snapshot is not None:
+            trailing_meta["events"] = trailing_events
             merged_snapshot["trailing"] = trailing_meta
             # Preserve initial_sl_price if it existed; older positions
             # written before this feature won't have it — stamp it now
@@ -288,14 +344,20 @@ class PaperBroker:
 
     def today_counts(self) -> dict:
         today = datetime.date.today().isoformat()
-        trades = run_with_supabase(
-            lambda supabase: supabase.table(self.trades_table_name()).select("side").eq("algo_id", self.algo_id)
-            .gte("entry_time", today).execute()
-        ).data
-        positions = run_with_supabase(
-            lambda supabase: supabase.table(self.positions_table_name()).select("side").eq("algo_id", self.algo_id)
-            .eq("status", "open").gte("entry_time", today).execute()
-        ).data
+        trades = self._merge_storage_rows([
+            run_with_supabase(
+                lambda supabase, key=candidate: supabase.table(self.trades_table_name()).select("side").eq("algo_id", key)
+                .gte("entry_time", today).execute()
+            ).data
+            for candidate in self.storage_algo_candidates()
+        ])
+        positions = self._merge_storage_rows([
+            run_with_supabase(
+                lambda supabase, key=candidate: supabase.table(self.positions_table_name()).select("side").eq("algo_id", key)
+                .eq("status", "open").gte("entry_time", today).execute()
+            ).data
+            for candidate in self.storage_algo_candidates()
+        ])
         rows = trades + positions
         buy_count = len([row for row in rows if row.get("side") == "BUY"])
         sell_count = len([row for row in rows if row.get("side") == "SELL"])
@@ -326,7 +388,7 @@ class PaperBroker:
             lambda supabase: supabase.table(self.positions_table_name()).update({"status": "closed"}).eq("id", position["id"]).execute()
         )
         trade_row = {
-            "algo_id": self.algo_id,
+            "algo_id": self.storage_algo_id(),
             "symbol": position["symbol"],
             "side": side,
             "qty": qty,
@@ -354,7 +416,7 @@ class PaperBroker:
 
         state = self._get_state()
         run_with_supabase(
-            lambda supabase: supabase.table(self.state_table_name()).update({"cash": state["cash"] + charges["net_pnl"]}).eq("algo_id", self.algo_id).execute()
+            lambda supabase: supabase.table(self.state_table_name()).update({"cash": state["cash"] + charges["net_pnl"]}).eq("algo_id", self.storage_algo_id()).execute()
         )
         from .broadcaster import broadcast_sync
         broadcast_sync({
@@ -376,10 +438,13 @@ class PaperBroker:
     def summary(self) -> dict:
         state = self._get_state()
         counts = self.today_counts()
-        trades_today = run_with_supabase(
-            lambda supabase: supabase.table(self.trades_table_name()).select("net_pnl,gross_pnl,total_charges")
-            .eq("algo_id", self.algo_id).gte("entry_time", datetime.date.today().isoformat()).execute()
-        ).data
+        trades_today = self._merge_storage_rows([
+            run_with_supabase(
+                lambda supabase, key=candidate: supabase.table(self.trades_table_name()).select("net_pnl,gross_pnl,total_charges")
+                .eq("algo_id", key).gte("entry_time", datetime.date.today().isoformat()).execute()
+            ).data
+            for candidate in self.storage_algo_candidates()
+        ])
         realized_net = sum(t["net_pnl"] for t in trades_today)
         realized_gross = sum(t["gross_pnl"] for t in trades_today)
         realized_charges = sum(t["total_charges"] for t in trades_today)
@@ -400,26 +465,32 @@ class PaperBroker:
         if cash < 0:
             raise ValueError("Available cash cannot be negative.")
         run_with_supabase(
-            lambda supabase: supabase.table(self.state_table_name()).update({"cash": cash}).eq("algo_id", self.algo_id).execute()
+            lambda supabase: supabase.table(self.state_table_name()).update({"cash": cash}).eq("algo_id", self.storage_algo_id()).execute()
         )
         return cash
 
     def daily_history(self, days: int = 30) -> list[dict]:
         start_date = datetime.date.today() - datetime.timedelta(days=max(days - 1, 0))
         try:
-            trades = run_with_supabase(
-                lambda supabase: supabase.table(self.trades_table_name()).select(
-                    "entry_time,exit_time,symbol,side,qty,entry_price,exit_price,entry_trigger,gross_pnl,total_charges,net_pnl"
-                ).eq("algo_id", self.algo_id).gte("exit_time", start_date.isoformat()).order("exit_time").execute()
-            ).data
+            trades = self._merge_storage_rows([
+                run_with_supabase(
+                    lambda supabase, key=candidate: supabase.table(self.trades_table_name()).select(
+                        "entry_time,exit_time,symbol,side,qty,entry_price,exit_price,entry_trigger,gross_pnl,total_charges,net_pnl"
+                    ).eq("algo_id", key).gte("exit_time", start_date.isoformat()).order("exit_time").execute()
+                ).data
+                for candidate in self.storage_algo_candidates()
+            ], order_key="exit_time")
         except Exception as exc:
             if "entry_trigger" not in str(exc):
                 raise
-            trades = run_with_supabase(
-                lambda supabase: supabase.table(self.trades_table_name()).select(
-                    "entry_time,exit_time,symbol,side,qty,entry_price,exit_price,gross_pnl,total_charges,net_pnl"
-                ).eq("algo_id", self.algo_id).gte("exit_time", start_date.isoformat()).order("exit_time").execute()
-            ).data
+            trades = self._merge_storage_rows([
+                run_with_supabase(
+                    lambda supabase, key=candidate: supabase.table(self.trades_table_name()).select(
+                        "entry_time,exit_time,symbol,side,qty,entry_price,exit_price,gross_pnl,total_charges,net_pnl"
+                    ).eq("algo_id", key).gte("exit_time", start_date.isoformat()).order("exit_time").execute()
+                ).data
+                for candidate in self.storage_algo_candidates()
+            ], order_key="exit_time")
 
         grouped: dict[str, dict] = {}
         for trade in trades:
