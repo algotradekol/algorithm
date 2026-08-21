@@ -105,6 +105,22 @@ function DashboardContent() {
     symbols_with_ticks?: number;
     last_candle_close_at?: string | null;
     closed_candle_count?: number;
+    fyers_feed_statuses?: Record<string, {
+      name?: string;
+      connected?: boolean;
+      pending?: boolean;
+      error?: string | null;
+      message?: string | null;
+      last_event_at?: string | null;
+      litemode?: boolean;
+      symbols?: string[];
+      symbol_count?: number;
+      subscribed_symbols?: number;
+      first_tick_received?: boolean;
+      first_tick_at?: string | null;
+    }>;
+    active_live_feed_plan_names?: string[];
+    active_live_feed_symbol_count?: number;
   } | null>(null);
   const [wsStatus, setWsStatus] = useState<WebSocketState>('reconnecting');
   const router = useRouter();
@@ -452,77 +468,165 @@ function LiveDiagnostics({ engineStatus }: { engineStatus: any }) {
   const hasRecentTick = isRecent(engineStatus?.last_tick_at, 90);
   const subscribedSymbols = Number(engineStatus?.fyers_ws_subscribed_symbols || 0);
   return (
-    <section className="mb-4 grid gap-2 rounded border border-[#1f2937] bg-[#111827] p-3 text-xs sm:grid-cols-2 lg:grid-cols-6">
-      <DiagnosticItem
-        label="Fyers Feed"
-        value={hasRecentTick ? 'Receiving ticks' : subscribedSymbols ? 'Subscribed, waiting for tick' : engineStatus?.live_feed_started ? 'Start requested' : 'Not started'}
-        tone={hasRecentTick ? 'text-[#22c55e]' : engineStatus?.live_feed_started ? 'text-[#f59e0b]' : 'text-[#ef4444]'}
-        detail={subscribedSymbols ? `${subscribedSymbols} symbols subscribed` : undefined}
-      />
-      <DiagnosticItem
-        label="Fyers WS"
-        value={(() => {
-          if (engineStatus?.fyers_ws_connected) return 'Connected';
-          const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
-          if (circuit > 0) {
-            const m = Math.floor(circuit / 60);
-            const s = circuit % 60;
-            return m > 0 ? `Paused ${m}m ${s}s` : `Paused ${s}s`;
-          }
-          // F14: don't show "Disconnected" for transient hiccups (<60s).
-          // Fyers server-closes idle WS every ~30s, so brief drops are
-          // normal and shouldn't scare the user into clicking logout.
-          const downFor = engineStatus?.disconnected_since_seconds ?? 0;
-          if (engineStatus?.auto_recovering || downFor < 60) return 'Reconnecting…';
-          return 'Disconnected';
-        })()}
-        tone={(() => {
-          if (engineStatus?.fyers_ws_connected) return 'text-[#22c55e]';
-          const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
-          if (circuit > 0) return 'text-[#f59e0b]';
-          const downFor = engineStatus?.disconnected_since_seconds ?? 0;
-          if (engineStatus?.auto_recovering || downFor < 60) return 'text-[#f59e0b]';
-          return 'text-[#ef4444]';
-        })()}
-        detail={(() => {
-          const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
-          const failures = engineStatus?.ws_reconnect_failure_count ?? 0;
-          const nextBackoff = engineStatus?.ws_next_backoff_seconds ?? 0;
-          const err = engineStatus?.fyers_ws_error;
-          const downFor = engineStatus?.disconnected_since_seconds ?? 0;
-          if (circuit > 0) {
-            return `Circuit breaker open after ${failures} failures. Auto-retry in ${Math.floor(circuit / 60)}m ${circuit % 60}s. Positions monitored via REST poll (10s).`;
-          }
-          if (!engineStatus?.fyers_ws_connected && (engineStatus?.auto_recovering || downFor < 60)) {
-            return `Brief Fyers disconnects are normal (Fyers closes idle sockets every ~30s). Auto-reconnecting${downFor > 0 ? ` (${downFor}s)` : ''}.`;
-          }
-          if (err && !engineStatus?.fyers_ws_connected) {
-            return `${String(err).slice(0, 120)}${failures > 0 ? ` (attempt ${failures + 1}, next backoff ${nextBackoff}s)` : ''}`;
-          }
-          if (engineStatus?.fyers_ws_first_tick_at) return `First tick ${formatRelativeTime(engineStatus.fyers_ws_first_tick_at)}`;
-          return 'Socket open; no market tick yet';
-        })()}
-      />
-      <DiagnosticItem
-        label="Last Tick"
-        value={formatRelativeTime(engineStatus?.last_tick_at)}
-        tone={hasRecentTick ? 'text-[#22c55e]' : 'text-[#f59e0b]'}
-      />
-      <DiagnosticItem
-        label="Last Symbol"
-        value={engineStatus?.last_tick_symbol ? `${engineStatus.last_tick_symbol} @ ${formatNumber(engineStatus.last_tick_ltp)}` : '--'}
-      />
-      <DiagnosticItem
-        label="Tick Coverage"
-        value={`${engineStatus?.symbols_with_ticks || 0} / ${engineStatus?.live_feed_symbol_count || engineStatus?.watchlist_count || 0} symbols`}
-      />
-      <DiagnosticItem
-        label="Closed Candles"
-        value={`${engineStatus?.closed_candle_count || 0} total`}
-        detail={engineStatus?.last_candle_close_at ? `Last ${formatRelativeTime(engineStatus.last_candle_close_at)}` : 'Waiting'}
-      />
+    <div className="mb-4 grid gap-3">
+      <section className="grid gap-2 rounded border border-[#1f2937] bg-[#111827] p-3 text-xs sm:grid-cols-2 lg:grid-cols-6">
+        <DiagnosticItem
+          label="Fyers Feed"
+          value={hasRecentTick ? 'Receiving ticks' : subscribedSymbols ? 'Subscribed, waiting for tick' : engineStatus?.live_feed_started ? 'Start requested' : 'Not started'}
+          tone={hasRecentTick ? 'text-[#22c55e]' : engineStatus?.live_feed_started ? 'text-[#f59e0b]' : 'text-[#ef4444]'}
+          detail={subscribedSymbols ? `${subscribedSymbols} symbols subscribed` : undefined}
+        />
+        <DiagnosticItem
+          label="Fyers WS"
+          value={(() => {
+            if (engineStatus?.fyers_ws_connected) return 'Connected';
+            const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
+            if (circuit > 0) {
+              const m = Math.floor(circuit / 60);
+              const s = circuit % 60;
+              return m > 0 ? `Paused ${m}m ${s}s` : `Paused ${s}s`;
+            }
+            const downFor = engineStatus?.disconnected_since_seconds ?? 0;
+            if (engineStatus?.auto_recovering || downFor < 60) return 'Reconnecting…';
+            return 'Disconnected';
+          })()}
+          tone={(() => {
+            if (engineStatus?.fyers_ws_connected) return 'text-[#22c55e]';
+            const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
+            if (circuit > 0) return 'text-[#f59e0b]';
+            const downFor = engineStatus?.disconnected_since_seconds ?? 0;
+            if (engineStatus?.auto_recovering || downFor < 60) return 'text-[#f59e0b]';
+            return 'text-[#ef4444]';
+          })()}
+          detail={(() => {
+            const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
+            const failures = engineStatus?.ws_reconnect_failure_count ?? 0;
+            const nextBackoff = engineStatus?.ws_next_backoff_seconds ?? 0;
+            const err = engineStatus?.fyers_ws_error;
+            const downFor = engineStatus?.disconnected_since_seconds ?? 0;
+            if (circuit > 0) {
+              return `Circuit breaker open after ${failures} failures. Auto-retry in ${Math.floor(circuit / 60)}m ${circuit % 60}s. Positions monitored via REST poll (10s).`;
+            }
+            if (!engineStatus?.fyers_ws_connected && (engineStatus?.auto_recovering || downFor < 60)) {
+              return `Brief Fyers disconnects are normal (Fyers closes idle sockets every ~30s). Auto-reconnecting${downFor > 0 ? ` (${downFor}s)` : ''}.`;
+            }
+            if (err && !engineStatus?.fyers_ws_connected) {
+              return `${String(err).slice(0, 120)}${failures > 0 ? ` (attempt ${failures + 1}, next backoff ${nextBackoff}s)` : ''}`;
+            }
+            if (engineStatus?.fyers_ws_first_tick_at) return `First tick ${formatRelativeTime(engineStatus.fyers_ws_first_tick_at)}`;
+            return 'Socket open; no market tick yet';
+          })()}
+        />
+        <DiagnosticItem
+          label="Last Tick"
+          value={formatRelativeTime(engineStatus?.last_tick_at)}
+          tone={hasRecentTick ? 'text-[#22c55e]' : 'text-[#f59e0b]'}
+        />
+        <DiagnosticItem
+          label="Last Symbol"
+          value={engineStatus?.last_tick_symbol ? `${engineStatus.last_tick_symbol} @ ${formatNumber(engineStatus.last_tick_ltp)}` : '--'}
+        />
+        <DiagnosticItem
+          label="Tick Coverage"
+          value={`${engineStatus?.symbols_with_ticks || 0} / ${engineStatus?.active_live_feed_symbol_count || engineStatus?.live_feed_symbol_count || engineStatus?.watchlist_count || 0} symbols`}
+        />
+        <DiagnosticItem
+          label="Closed Candles"
+          value={`${engineStatus?.closed_candle_count || 0} total`}
+          detail={engineStatus?.last_candle_close_at ? `Last ${formatRelativeTime(engineStatus.last_candle_close_at)}` : 'Waiting'}
+        />
+      </section>
+      <FeedHealthPanel engineStatus={engineStatus} />
+    </div>
+  );
+}
+
+function FeedHealthPanel({ engineStatus }: { engineStatus: any }) {
+  const feedStatuses = Object.entries(engineStatus?.fyers_feed_statuses || {}) as [string, any][];
+  const activePlans = Array.isArray(engineStatus?.active_live_feed_plan_names) ? engineStatus.active_live_feed_plan_names : [];
+
+  return (
+    <section className="rounded border border-[#1f2937] bg-[#111827] p-3 text-xs">
+      <div className="flex flex-wrap items-center justify-between gap-2">
+        <div>
+          <div className="label">Feed Health</div>
+          <div className="mt-1 text-[11px] text-gray-500">
+            Watch each FYERS socket separately so we can tell whether `general` or `silver` is the one misbehaving.
+          </div>
+        </div>
+        <div className="text-[11px] text-gray-500">
+          Active feeds: {activePlans.length ? activePlans.join(', ') : 'None'}
+        </div>
+      </div>
+
+      {!feedStatuses.length ? (
+        <div className="mt-3 rounded border border-dashed border-[#1f2937] bg-[#0d1117] px-3 py-4 text-[11px] text-gray-500">
+          No active feed sockets right now.
+        </div>
+      ) : (
+        <div className="mt-3 grid gap-2 lg:grid-cols-2">
+          {feedStatuses.map(([feedName, feed]) => {
+            const feedState = getFeedStatusSummary(feed, engineStatus);
+            return (
+              <div key={feedName} className="rounded border border-[#1f2937] bg-[#0d1117] p-3">
+                <div className="flex flex-wrap items-center justify-between gap-2">
+                  <div className="flex items-center gap-2">
+                    <i className={`ri-checkbox-blank-circle-fill text-[8px] ${feedState.tone}`} />
+                    <div className="text-sm font-semibold text-gray-100">{formatFeedName(feedName)}</div>
+                    <span className={`rounded px-1.5 py-0.5 text-[10px] font-semibold ${feed?.litemode ? 'bg-[#3b82f6]/15 text-[#60a5fa]' : 'bg-[#6b7280]/20 text-gray-300'}`}>
+                      {feed?.litemode ? 'LITE' : 'FULL'}
+                    </span>
+                  </div>
+                  <div className={`text-xs font-semibold ${feedState.tone}`}>{feedState.label}</div>
+                </div>
+
+                <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">
+                  <FeedHealthStat label="Symbols" value={String(feed?.symbol_count ?? feed?.symbols?.length ?? 0)} />
+                  <FeedHealthStat label="Subscribed" value={String(feed?.subscribed_symbols ?? 0)} />
+                  <FeedHealthStat label="First Tick" value={feed?.first_tick_at ? formatRelativeTime(feed.first_tick_at, '--') : feed?.first_tick_received ? 'Seen' : '--'} />
+                  <FeedHealthStat label="Last Event" value={formatRelativeTime(feed?.last_event_at, '--')} />
+                </div>
+
+                <div className="mt-3 grid gap-1 text-[11px] text-gray-500">
+                  <div>
+                    <span className="text-gray-400">Symbols:</span>{' '}
+                    {Array.isArray(feed?.symbols) && feed.symbols.length ? feed.symbols.join(', ') : '--'}
+                  </div>
+                  <div>
+                    <span className="text-gray-400">Message:</span>{' '}
+                    {feed?.message || feed?.error || 'No extra message'}
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
     </section>
   );
+}
+
+function FeedHealthStat({ label, value }: { label: string; value: string }) {
+  return (
+    <div className="rounded border border-[#1f2937] bg-[#111827] px-2 py-2">
+      <div className="label text-[10px]">{label}</div>
+      <div className="mt-1 text-xs font-semibold text-gray-100">{value}</div>
+    </div>
+  );
+}
+
+function getFeedStatusSummary(feed: any, engineStatus: any) {
+  const circuit = Number(engineStatus?.ws_circuit_open_seconds_remaining || 0);
+  if (feed?.connected) return { label: 'Connected', tone: 'text-[#22c55e]' };
+  if (feed?.pending) return { label: 'Starting', tone: 'text-[#f59e0b]' };
+  if (circuit > 0) return { label: 'Paused', tone: 'text-[#f59e0b]' };
+  if (feed?.error) return { label: 'Degraded', tone: 'text-[#ef4444]' };
+  return { label: 'Waiting', tone: 'text-[#f59e0b]' };
+}
+
+function formatFeedName(value: string) {
+  if (!value) return '--';
+  return value.charAt(0).toUpperCase() + value.slice(1);
 }
 
 function DiagnosticItem({ label, value, tone = 'text-gray-100', detail }: { label: string; value: string; tone?: string; detail?: string }) {
