@@ -10,15 +10,19 @@ export default function FyersLoginButton({
   connected = false,
   mode = 'paper',
   autoRecovering = false,
+  sessionState,
 }: {
   connected?: boolean;
   mode?: 'paper' | 'live';
   autoRecovering?: boolean;
+  sessionState?: string;
 }) {
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState('');
   const searchParams = useSearchParams();
   const connectedFromRedirect = searchParams.get('fyers_login') === 'success';
+  const isVerifyingSession = sessionState === 'token_present_settling';
+  const isRecoveringFeed = sessionState === 'token_present_ws_recovering';
 
   async function handleClick() {
     if (autoRecovering) {
@@ -77,14 +81,18 @@ export default function FyersLoginButton({
   // Show a transient "Verifying" state instead of falsely claiming connected
   // — this was the 2026-08-18 bug: users on PAPER mode saw "Fyers Connected"
   // for a LIVE-mode redirect even though no PAPER token existed.
-  if (connectedFromRedirect) {
+  if (connectedFromRedirect || isVerifyingSession || isRecoveringFeed) {
     return (
       <div
         className="flex items-center gap-2 text-sm text-[#f59e0b]"
-        title="Fyers OAuth callback succeeded — verifying session with backend."
+        title={
+          isRecoveringFeed
+            ? 'Fyers token is present and the live feed is reconnecting.'
+            : 'Fyers token is present and the backend is verifying the session.'
+        }
       >
         <i className="ri-refresh-line text-sm text-[#f59e0b] animate-spin" />
-        Verifying Fyers session…
+        {isRecoveringFeed ? 'Reconnecting Fyers feed…' : 'Verifying Fyers session…'}
       </div>
     );
   }

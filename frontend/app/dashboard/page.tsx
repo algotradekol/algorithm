@@ -68,6 +68,7 @@ function DashboardContent() {
     connected: boolean;
     verified?: boolean;
     status: string;
+    session_state?: string;
     message: string;
     trading_mode?: 'paper' | 'live';
   } | null>(null);
@@ -76,6 +77,13 @@ function DashboardContent() {
     state: string;
     trading_mode?: string;
     error?: string | null;
+    fyers_session_state?: string;
+    fyers_recovery_id?: string | null;
+    fyers_recovery_owner?: string | null;
+    fyers_recovery_reason?: string | null;
+    fyers_recovery_started_at?: string | null;
+    fyers_recovery_settling_until?: string | null;
+    fyers_recovery_last_event?: string | null;
     watchlist_count: number;
     live_feed_symbol_count?: number;
     strategies_running: string[];
@@ -102,26 +110,30 @@ function DashboardContent() {
   const router = useRouter();
   const searchParams = useSearchParams();
   const tradingMode = (engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper';
+  const sessionState = fyersStatus?.session_state || engineStatus?.fyers_session_state || 'token_missing';
   const fyersConnectedForMode = Boolean(
     fyersStatus?.verified
     && (!fyersStatus.trading_mode || fyersStatus.trading_mode === tradingMode)
   );
-  const tradingReady = Boolean(fyersConnectedForMode && engineStatus?.state === 'running');
+  const sessionRecovering = sessionState === 'token_present_settling' || sessionState === 'token_present_ws_recovering';
+  const tradingReady = Boolean((fyersConnectedForMode || sessionRecovering) && engineStatus?.state === 'running');
   const statusText = fyersConnectedForMode
     ? 'LIVE'
-    : fyersStatus?.status === 'disconnected'
+    : sessionState === 'token_missing'
       ? 'TOKEN MISSING'
-      : fyersStatus?.status === 'expired'
-        ? 'EXPIRED'
-        : fyersStatus?.status === 'checking' || fyersStatus?.status === 'rechecking' || fyersStatus?.status === 'degraded'
-          ? 'CHECKING'
-          : 'STOPPED';
+      : sessionState === 'token_present_settling'
+        ? 'VERIFYING'
+        : sessionState === 'token_present_ws_recovering'
+          ? 'RECOVERING'
+          : fyersStatus?.status === 'expired'
+            ? 'EXPIRED'
+            : 'DEGRADED';
   const wsText = wsStatus === 'connected' ? 'Live' : wsStatus === 'reconnecting' ? 'Reconnecting' : 'Offline';
   const statusIconTone = fyersConnectedForMode
     ? 'text-[#22c55e]'
-    : fyersStatus?.status === 'disconnected'
+    : sessionState === 'token_missing'
       ? 'text-[#f59e0b]'
-      : fyersStatus?.status === 'checking' || fyersStatus?.status === 'rechecking' || fyersStatus?.status === 'degraded'
+      : sessionRecovering || fyersStatus?.status === 'checking' || fyersStatus?.status === 'rechecking' || fyersStatus?.status === 'degraded'
         ? 'text-[#f59e0b]'
         : 'text-[#ef4444]';
   const wsIconTone = wsStatus === 'connected' ? 'text-[#22c55e]' : wsStatus === 'reconnecting' ? 'text-[#f59e0b]' : 'text-[#ef4444]';
@@ -296,6 +308,7 @@ function DashboardContent() {
               connected={fyersConnectedForMode}
               mode={tradingMode}
               autoRecovering={Boolean(engineStatus?.auto_recovering)}
+              sessionState={sessionState}
             />
             <button
               onClick={async () => { clearPinToken(); await supabase.auth.signOut(); router.replace('/login'); }}
@@ -339,7 +352,7 @@ function DashboardContent() {
               <StatusCard
                 label="Fyers"
                 dotClass={statusIconTone}
-                value={fyersStatus ? (fyersConnectedForMode ? 'Connected' : fyersStatus.status) : 'Checking'}
+                value={fyersStatus ? (fyersConnectedForMode ? 'Connected' : sessionState.replaceAll('_', ' ')) : 'Checking'}
                 detail={fyersStatus?.message || 'Waiting for broker status check.'}
               />
               <StatusCard

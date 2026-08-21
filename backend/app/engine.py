@@ -12,6 +12,7 @@ below. Nothing else in this file changes.
 import datetime
 import threading
 import time
+import uuid
 
 from .broadcaster import broadcast_sync
 from .timezone import IST
@@ -106,6 +107,7 @@ _feed_disconnected_since: float = 0.0
 # avoids the deploy-race.
 _BOOT_WS_DELAY_SECONDS = 45.0
 _process_started_at = time.time()
+_RECOVERY_SETTLING_SECONDS = 45.0
 
 
 def _boot_grace_remaining() -> float:
@@ -233,11 +235,125 @@ _engine_status = {
     "tick_count": 0,
     "last_candle_close_at": None,
     "closed_candle_count": 0,
+    "fyers_session_state": "token_missing",
+    "fyers_recovery_id": None,
+    "fyers_recovery_owner": None,
+    "fyers_recovery_reason": None,
+    "fyers_recovery_started_at": None,
+    "fyers_recovery_settling_until": None,
+    "fyers_recovery_last_event": None,
 }
 
 
 def _utc_now() -> str:
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+
+def _iso_after(seconds: float) -> str:
+    return (
+        datetime.datetime.now(datetime.timezone.utc) + datetime.timedelta(seconds=max(0.0, seconds))
+    ).isoformat()
+
+
+def _parse_iso_datetime(value: str | None) -> datetime.datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=datetime.timezone.utc)
+    return parsed
+
+
+def _recovery_owner_from_reason(reason: str) -> str:
+    lowered = str(reason or "manual").lower()
+    if lowered.startswith("fyers_oauth_callback"):
+        return "oauth_callback"
+    if lowered.startswith("token_refresh"):
+        return "token_refresh"
+    if lowered.startswith("trading_mode"):
+        return "mode_switch"
+    if lowered.startswith("watchdog") or lowered.startswith("scheduled_"):
+        return "watchdog"
+    if lowered.startswith("startup") or lowered.startswith("boot"):
+        return "startup"
+    if lowered.startswith("manual_disconnect"):
+        return "manual_disconnect"
+    return "manual"
+
+
+def _recovery_window_active(now: datetime.datetime | None = None) -> bool:
+    now = now or datetime.datetime.now(datetime.timezone.utc)
+    settling_until = _parse_iso_datetime(_engine_status.get("fyers_recovery_settling_until"))
+    started_at = _parse_iso_datetime(_engine_status.get("fyers_recovery_started_at"))
+    if settling_until and settling_until > now:
+        return True
+    if started_at and (now - started_at).total_seconds() <= _RECOVERY_SETTLING_SECONDS:
+        return True
+    return False
+
+
+def _set_fyers_session_state(state: str, *, note: str | None = None):
+    with _engine_lock:
+        _engine_status["fyers_session_state"] = state
+        _engine_status["fyers_recovery_last_event"] = note or state
+
+
+def _begin_fyers_recovery(owner: str, reason: str, *, settling_seconds: float = _RECOVERY_SETTLING_SECONDS) -> tuple[bool, str | None]:
+    now = datetime.datetime.now(datetime.timezone.utc)
+    with _engine_lock:
+        current_owner = _engine_status.get("fyers_recovery_owner")
+        current_reason = _engine_status.get("fyers_recovery_reason")
+        current_id = _engine_status.get("fyers_recovery_id")
+        if current_owner and _recovery_window_active(now):
+            if current_owner == owner and current_reason == reason:
+                print(
+                    f"[engine] fyers recovery suppressed owner={owner} reason={reason} "
+                    f"recovery_id={current_id} (duplicate in settling window)"
+                )
+                return False, current_id
+            print(
+                f"[engine] fyers recovery suppressed owner={owner} reason={reason} "
+                f"recovery_id={current_id} active_owner={current_owner} active_reason={current_reason}"
+            )
+            return False, current_id
+        recovery_id = uuid.uuid4().hex[:8]
+        session_state = (
+            "token_present_ws_recovering"
+            if owner == "watchdog"
+            else "token_present_settling"
+        )
+        _engine_status.update({
+            "fyers_session_state": session_state,
+            "fyers_recovery_id": recovery_id,
+            "fyers_recovery_owner": owner,
+            "fyers_recovery_reason": reason,
+            "fyers_recovery_started_at": now.isoformat(),
+            "fyers_recovery_settling_until": _iso_after(settling_seconds),
+            "fyers_recovery_last_event": f"recovery_started:{reason}",
+        })
+    print(f"[engine] fyers recovery start recovery_id={recovery_id} owner={owner} reason={reason}")
+    return True, recovery_id
+
+
+def _complete_fyers_recovery(state: str, note: str):
+    with _engine_lock:
+        recovery_id = _engine_status.get("fyers_recovery_id")
+        _engine_status.update({
+            "fyers_session_state": state,
+            "fyers_recovery_last_event": note,
+        })
+        if state in {"token_present_connected", "token_missing", "token_present_degraded"}:
+            _engine_status.update({
+                "fyers_recovery_id": None,
+                "fyers_recovery_owner": None,
+                "fyers_recovery_reason": None,
+                "fyers_recovery_started_at": None,
+                "fyers_recovery_settling_until": None,
+            })
+    print(f"[engine] fyers recovery complete recovery_id={recovery_id} state={state} note={note}")
 
 
 def _hhmm_minus_minutes(hhmm: str, minutes: int) -> str:
@@ -291,6 +407,8 @@ def _on_live_feed_status(status: dict):
     global _feed_disconnected_since
     with _engine_lock:
         was_connected = bool(_engine_status.get("fyers_ws_connected"))
+        current_session_state = _engine_status.get("fyers_session_state")
+        in_recovery_window = _recovery_window_active()
         update = {
             "fyers_ws_connected": connected,
             "fyers_ws_error": None if connected else error,
@@ -301,6 +419,23 @@ def _on_live_feed_status(status: dict):
             update["fyers_ws_subscribed_symbols"] = int(status["subscribed_symbols"])
         if status.get("first_tick_received") and not _engine_status.get("fyers_ws_first_tick_at"):
             update["fyers_ws_first_tick_at"] = _utc_now()
+        if connected:
+            update.update({
+                "fyers_session_state": "token_present_connected",
+                "fyers_recovery_last_event": "ws_open",
+                "fyers_recovery_id": None,
+                "fyers_recovery_owner": None,
+                "fyers_recovery_reason": None,
+                "fyers_recovery_started_at": None,
+                "fyers_recovery_settling_until": None,
+            })
+        elif current_session_state != "token_missing":
+            update["fyers_session_state"] = (
+                "token_present_settling"
+                if in_recovery_window and current_session_state == "token_present_settling"
+                else "token_present_ws_recovering"
+            )
+            update["fyers_recovery_last_event"] = "ws_close"
         _engine_status.update(update)
         # Track the disconnected-since timestamp so /api/engine/status can
         # tell the frontend how long we've been down (F14 debounce).
@@ -1093,6 +1228,7 @@ def start_live_feed_if_ready(force: bool = False) -> bool:
         return False
 
     if get_stored_access_token() is None:
+        _complete_fyers_recovery("token_missing", "start_skipped:no_token")
         print("[engine] no Fyers access token in Supabase yet, waiting for manual login")
         return False
 
@@ -1128,6 +1264,13 @@ def start_live_feed_if_ready(force: bool = False) -> bool:
                         "fyers_ws_error": str(exc),
                         "fyers_ws_last_event_at": _utc_now(),
                         "live_feed_started": False,
+                        "fyers_session_state": "token_present_degraded",
+                        "fyers_recovery_last_event": f"ws_start_failed:{exc}",
+                        "fyers_recovery_id": None,
+                        "fyers_recovery_owner": None,
+                        "fyers_recovery_reason": None,
+                        "fyers_recovery_started_at": None,
+                        "fyers_recovery_settling_until": None,
                     })
                 with _live_feed_lock:
                     _live_feed_started = False
@@ -1147,6 +1290,7 @@ def start_live_feed_if_ready(force: bool = False) -> bool:
                 "fyers_ws_last_event_at": _utc_now(),
                 "fyers_ws_subscribed_symbols": 0,
                 "fyers_ws_first_tick_at": None,
+                "fyers_recovery_last_event": "feed_restart_requested",
             })
         print(f"[engine] live feed start requested for {len(feed_symbols)} symbols")
         for strategy in STRATEGIES.values():
@@ -1162,11 +1306,16 @@ def restart_live_feed(reason: str = "manual", ignore_backoff: bool = False) -> b
     breaker; human/UI actions can bypass with ignore_backoff=True, which also
     resets the failure counter since a fresh login/mode-switch/OAuth means
     the previous run is no longer representative."""
+    owner = _recovery_owner_from_reason(reason)
+    began, recovery_id = _begin_fyers_recovery(owner, reason)
+    if not began:
+        return False
     if ignore_backoff:
         _reset_feed_circuit(f"human action: {reason}")
     else:
         circuit_wait = _circuit_open_remaining()
         if circuit_wait > 0:
+            _set_fyers_session_state("token_present_ws_recovering", note=f"restart_suppressed:circuit:{reason}")
             print(
                 f"[engine] restart_live_feed skipped ({reason}): "
                 f"circuit breaker open, {int(circuit_wait)}s remaining"
@@ -1176,9 +1325,10 @@ def restart_live_feed(reason: str = "manual", ignore_backoff: bool = False) -> b
         backoff_needed = _current_backoff_seconds()
         if since_last < backoff_needed:
             wait_left = int(backoff_needed - since_last)
+            _set_fyers_session_state("token_present_ws_recovering", note=f"restart_suppressed:backoff:{reason}")
             print(f"[engine] restart_live_feed skipped ({reason}): {wait_left}s backoff remaining")
             return False
-    print(f"[engine] restarting Fyers live feed ({reason})")
+    print(f"[engine] restarting Fyers live feed ({reason}) recovery_id={recovery_id} owner={owner}")
     return start_live_feed_if_ready(force=True)
 
 
@@ -1205,6 +1355,13 @@ def stop_live_feed(reason: str = "manual") -> bool:
             "live_feed_started": False,
             "fyers_ws_connected": False,
             "fyers_ws_error": f"Stopped ({reason})",
+            "fyers_session_state": "token_missing" if "disconnect" in reason else "token_present_degraded",
+            "fyers_recovery_last_event": f"stopped:{reason}",
+            "fyers_recovery_id": None,
+            "fyers_recovery_owner": None,
+            "fyers_recovery_reason": None,
+            "fyers_recovery_started_at": None,
+            "fyers_recovery_settling_until": None,
         })
 
     print(f"[engine] stopped Fyers live feed ({reason})")
@@ -1231,6 +1388,13 @@ def get_engine_status() -> dict:
         "state": _engine_status["state"],
         "error": _engine_status["error"],
         "trading_mode": get_runtime_trading_mode(),
+        "fyers_session_state": _engine_status.get("fyers_session_state"),
+        "fyers_recovery_id": _engine_status.get("fyers_recovery_id"),
+        "fyers_recovery_owner": _engine_status.get("fyers_recovery_owner"),
+        "fyers_recovery_reason": _engine_status.get("fyers_recovery_reason"),
+        "fyers_recovery_started_at": _engine_status.get("fyers_recovery_started_at"),
+        "fyers_recovery_settling_until": _engine_status.get("fyers_recovery_settling_until"),
+        "fyers_recovery_last_event": _engine_status.get("fyers_recovery_last_event"),
         "ws_reconnect_failure_count": _feed_reconnect_failure_count,
         "ws_circuit_open_seconds_remaining": circuit_left,
         "ws_next_backoff_seconds": int(_current_backoff_seconds()),
@@ -1328,6 +1492,8 @@ def try_refresh_access_token(reason: str = "manual_or_startup") -> bool:
             _engine_status.update({
                 "last_token_refresh": _utc_now(),
                 "last_token_refresh_error": None,
+                "fyers_session_state": "token_present_settling",
+                "fyers_recovery_last_event": f"token_refresh_ok:{reason}",
             })
         print(f"[engine] Fyers access token refreshed via refresh token ({reason})")
         # A brand new token invalidates whatever 429 backoff we were sitting in
@@ -1337,6 +1503,11 @@ def try_refresh_access_token(reason: str = "manual_or_startup") -> bool:
     except Exception as exc:
         with _engine_lock:
             _engine_status["last_token_refresh_error"] = str(exc)
+            if get_stored_access_token() is None:
+                _engine_status["fyers_session_state"] = "token_missing"
+            else:
+                _engine_status["fyers_session_state"] = "token_present_degraded"
+            _engine_status["fyers_recovery_last_event"] = f"token_refresh_failed:{reason}"
         print(f"[engine] Fyers refresh-token refresh skipped/failed ({reason}): {exc}")
         return False
 
@@ -1402,6 +1573,12 @@ def apply_trading_mode(mode: str) -> dict:
 
     with _engine_lock:
         _engine_status["trading_mode"] = normalized_mode
+        if get_stored_access_token(normalized_mode):
+            _engine_status["fyers_session_state"] = "token_present_settling"
+            _engine_status["fyers_recovery_last_event"] = f"mode_switch:{normalized_mode}"
+        else:
+            _engine_status["fyers_session_state"] = "token_missing"
+            _engine_status["fyers_recovery_last_event"] = f"mode_switch_no_token:{normalized_mode}"
 
     _last_mode_switch_at = time.time()
     # Mode switch is a human UI action and uses a different token/client_id,
@@ -1468,6 +1645,21 @@ def start_engine():
             STRATEGIES.clear()
             STRATEGIES.update(strategies)
             _engine_status.update({"state": "running", "error": None})
+            if get_stored_access_token() is None:
+                _engine_status.update({
+                    "fyers_session_state": "token_missing",
+                    "fyers_recovery_last_event": "boot:no_token",
+                })
+            else:
+                _engine_status.update({
+                    "fyers_session_state": "token_present_settling",
+                    "fyers_recovery_id": uuid.uuid4().hex[:8],
+                    "fyers_recovery_owner": "startup",
+                    "fyers_recovery_reason": "startup_boot",
+                    "fyers_recovery_started_at": _utc_now(),
+                    "fyers_recovery_settling_until": _iso_after(_BOOT_WS_DELAY_SECONDS + _RECOVERY_SETTLING_SECONDS),
+                    "fyers_recovery_last_event": "boot:token_found",
+                })
 
         if not _scheduler_started:
             threading.Thread(target=_scheduler_loop, daemon=True).start()

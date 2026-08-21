@@ -1119,6 +1119,34 @@ def test_connection_status_connected_requires_successful_verify():
           f"got verified={result.get('verified')}")
 
 
+def test_connection_status_token_present_settling_survives_redeploy():
+    print("\n26bb. Connection status — stored token + settling engine state stays in verifying mode")
+    from unittest.mock import patch
+    import app.fyers_client as fc
+
+    class FakeProfile:
+        def get_profile(self):
+            raise RuntimeError("backend restart in progress")
+
+    fake_token_row = {"access_token": "T", "refresh_token": "R"}
+    with patch.object(fc, "get_active_broker_key", return_value="fyers_paper"), \
+         patch.object(fc, "get_stored_token_row", return_value=fake_token_row), \
+         patch.object(fc, "get_runtime_trading_mode", return_value="paper"), \
+         patch.object(fc, "_is_recent_token_row", return_value=True), \
+         patch.object(fc, "get_fyers_model", return_value=FakeProfile()), \
+         patch("app.engine.get_engine_status", return_value={
+             "fyers_session_state": "token_present_settling",
+             "fyers_recovery_owner": "startup",
+         }):
+        result = fc.get_connection_status()
+    check("session_state remains token_present_settling",
+          result.get("session_state") == "token_present_settling",
+          f"got session_state={result.get('session_state')!r}")
+    check("status remains rechecking, not disconnected",
+          result.get("status") == "rechecking",
+          f"got status={result.get('status')!r}")
+
+
 def test_silver_setup_history_naive_ist_stores_as_correct_utc():
     print("\n26c. Silver setup history — naive IST candle time stores as correct UTC")
     import datetime as _dt
@@ -1360,6 +1388,34 @@ def test_post_recovery_grace_ignores_immediate_failure():
     # Reset
     eng._feed_reconnect_failure_count = 0
     eng._feed_last_recovery_at = 0.0
+
+
+def test_restart_live_feed_suppresses_duplicate_watchdog_during_settling():
+    print("\n29b. Recovery owner lock suppresses duplicate watchdog restart during settling")
+    from unittest.mock import patch
+    import app.engine as eng
+
+    old_status = dict(eng._engine_status)
+    try:
+        eng._engine_status.update({
+            "fyers_recovery_id": "abcd1234",
+            "fyers_recovery_owner": "oauth_callback",
+            "fyers_recovery_reason": "fyers_oauth_callback:paper",
+            "fyers_recovery_started_at": eng._utc_now(),
+            "fyers_recovery_settling_until": eng._iso_after(30),
+            "fyers_session_state": "token_present_settling",
+        })
+        with patch.object(eng, "start_live_feed_if_ready", return_value=True):
+            started = eng.restart_live_feed(reason="watchdog_missing_first_tick", ignore_backoff=False)
+        check("watchdog restart suppressed while oauth recovery is settling",
+              started is False,
+              f"started={started}")
+        check("existing recovery owner preserved",
+              eng._engine_status.get("fyers_recovery_owner") == "oauth_callback",
+              f"owner={eng._engine_status.get('fyers_recovery_owner')!r}")
+    finally:
+        eng._engine_status.clear()
+        eng._engine_status.update(old_status)
 
 
 # ── 30. F6 minimum backoff floor ───────────────────────────────────────
@@ -2764,6 +2820,7 @@ def main():
     test_oauth_throttle_serializes_exchanges()
     test_connection_status_429_stays_degraded_not_expired()
     test_connection_status_connected_requires_successful_verify()
+    test_connection_status_token_present_settling_survives_redeploy()
     test_silver_setup_history_naive_ist_stores_as_correct_utc()
     test_silver_setup_history_repairs_future_shifted_legacy_rows()
     test_pre_market_no_tick_not_counted_as_failure()
@@ -2771,6 +2828,7 @@ def main():
     test_engine_rest_fallback_targets_stale_non_nse_symbols()
     test_engine_rest_fallback_injects_synthetic_tick_into_algo3()
     test_post_recovery_grace_ignores_immediate_failure()
+    test_restart_live_feed_suppresses_duplicate_watchdog_during_settling()
     test_current_backoff_respects_min_floor()
     test_hidden_tabs_env_normalizes_aliases()
     test_flat_candle_batch_path_rejects()
