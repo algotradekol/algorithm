@@ -519,6 +519,28 @@ def _symbol_needs_rest_fallback(symbol: str, max_age_seconds: float = 15.0) -> b
     return age is None or age >= max_age_seconds
 
 
+def _stale_open_position_symbols(max_age_seconds: float = 10.0) -> set[str]:
+    """Return open-position symbols whose own feed has gone stale.
+
+    Important: this must be per-symbol, not based on the global engine
+    last-tick time. A fresh NSE tick must not suppress REST protection for
+    an open MCX Silver position whose own ticks have gone quiet.
+    """
+    symbols: set[str] = set()
+    for strategy in STRATEGIES.values():
+        brokers = getattr(strategy, "_active_brokers", None)
+        broker_list = brokers() if callable(brokers) else [strategy.broker]
+        for broker in broker_list:
+            try:
+                for position in broker.open_positions():
+                    sym = position.get("symbol")
+                    if sym and _symbol_needs_rest_fallback(sym, max_age_seconds=max_age_seconds):
+                        symbols.add(sym)
+            except Exception:
+                continue
+    return symbols
+
+
 def _inject_rest_tick(symbol: str, ltp: float) -> None:
     _on_tick({
         "symbol": symbol,
@@ -949,40 +971,13 @@ def _open_position_ltp_poll_loop():
                 time.sleep(10)
                 continue
 
-            # Collect every open position across all strategies AND all
-            # brokers (primary + shadow paper if parallel is on).
-            symbols_needing_ltp: set[str] = set()
-            for strategy in STRATEGIES.values():
-                brokers = getattr(strategy, "_active_brokers", None)
-                if callable(brokers):
-                    broker_list = brokers()
-                else:
-                    broker_list = [strategy.broker]
-                for broker in broker_list:
-                    try:
-                        for position in broker.open_positions():
-                            sym = position.get("symbol")
-                            if sym:
-                                symbols_needing_ltp.add(sym)
-                    except Exception:
-                        continue
+            # Only protect OPEN symbols whose own feed has gone stale.
+            # Fresh NSE traffic must not disable REST protection for MCX.
+            symbols_needing_ltp = _stale_open_position_symbols(max_age_seconds=10.0)
 
             if not symbols_needing_ltp:
                 time.sleep(10)
                 continue
-
-            # A fresh WS tick within the last 10s means the WS is doing
-            # the job — skip the REST poll to save Fyers quota.
-            last_tick_at = _engine_status.get("last_tick_at")
-            if last_tick_at:
-                try:
-                    tick_time = datetime.datetime.fromisoformat(last_tick_at.replace("Z", "+00:00"))
-                    tick_age = (datetime.datetime.now(datetime.timezone.utc) - tick_time).total_seconds()
-                    if tick_age < 10:
-                        time.sleep(10)
-                        continue
-                except (TypeError, ValueError):
-                    pass
 
             try:
                 ltps = get_live_ltp_batch(list(symbols_needing_ltp), mode="live")
@@ -994,21 +989,12 @@ def _open_position_ltp_poll_loop():
             for symbol, ltp in ltps.items():
                 if not ltp:
                     continue
-                last_ltp[symbol] = ltp
-                # Push through each strategy the same way _on_tick would,
-                # so check_exits fires and update_position_range moves.
-                for strategy in STRATEGIES.values():
-                    watchlist = getattr(strategy, "watchlist", [])
-                    if watchlist and symbol not in watchlist:
-                        continue
-                    try:
-                        for position in strategy.broker.open_positions():
-                            if position["symbol"] == symbol:
-                                position["_last_ltp"] = ltp
-                                strategy.broker.update_position_range(position, ltp)
-                        strategy.check_exits()
-                    except Exception as exc:
-                        print(f"[engine] LTP-poll check_exits failed for {strategy.algo_id} {symbol}: {exc}")
+                # Reuse the normal tick pathway so UI, per-symbol last-tick
+                # bookkeeping, trailing, and exit checks all move together.
+                try:
+                    _inject_rest_tick(symbol, ltp)
+                except Exception as exc:
+                    print(f"[engine] LTP-poll tick inject failed for {symbol}: {exc}")
 
         except Exception as exc:
             print(f"[engine] open-position LTP poll loop error: {exc}")

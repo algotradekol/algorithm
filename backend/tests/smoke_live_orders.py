@@ -1239,6 +1239,47 @@ def test_engine_rest_fallback_targets_stale_non_nse_symbols():
           "expected False for fresh tick")
 
 
+def test_open_position_rest_fallback_ignores_fresh_nse_ticks():
+    print("\n28bb. Open-position REST fallback ignores fresh NSE ticks when Silver itself is stale")
+    import time as _time
+    import datetime as _dt
+    import app.engine as eng
+
+    symbol = "MCX:SILVERMIC26AUGFUT"
+    stale = (_time.time() - 25)
+    fresh = (_time.time() - 2)
+
+    eng._symbol_last_tick_at.clear()
+    eng._symbol_last_tick_at[symbol] = _dt.datetime.fromtimestamp(
+        stale, tz=_dt.timezone.utc
+    ).isoformat()
+    eng._engine_status["last_tick_at"] = _dt.datetime.fromtimestamp(
+        fresh, tz=_dt.timezone.utc
+    ).isoformat()
+
+    strat = _make_bare_algo3()
+    strat.symbol = symbol
+    strat.watchlist = [symbol]
+    strat.broker._open_positions = [{
+        "symbol": symbol,
+        "side": "BUY",
+        "qty": 1,
+        "entry_price": 246886.0,
+        "sl_price": 248380.0,
+        "target_price": 249886.0,
+    }]
+
+    old_strategies = dict(eng.STRATEGIES)
+    try:
+        eng.STRATEGIES = {"algo3": strat}
+        stale_symbols = eng._stale_open_position_symbols(max_age_seconds=10.0)
+        check("stale Silver open position still qualifies for REST fallback despite fresh global tick",
+              stale_symbols == {symbol},
+              f"stale_symbols={stale_symbols}")
+    finally:
+        eng.STRATEGIES = old_strategies
+
+
 def test_engine_rest_fallback_injects_synthetic_tick_into_algo3():
     print("\n28c. Engine REST fallback — synthetic REST tick updates engine + algo3 state")
     import app.engine as eng
