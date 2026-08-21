@@ -48,7 +48,7 @@ from collections import deque
 
 from .base import Strategy
 from ..config import SILVER_MICRO_SYMBOL_OVERRIDE
-from ..fyers_client import get_intraday_candles_for_range
+from ..fyers_client import get_intraday_candle_at, get_intraday_candles_for_range
 from ..broker_factory import create_broker
 from ..mcx_symbols import get_active_mcx_contract
 from ..silver_setup_history import record_setup_event
@@ -436,6 +436,7 @@ class Algo3SilverMicro(Strategy):
             "volume": sum(c["volume"] for c in self._minute_buffer),
             "minute_count": len(self._minute_buffer),
         }
+        bar = self._rest_verify_live_bar(bar, allow_signals=allow_signals)
         self._bars.append(bar)
         self._ema20 = _ema_step(self._ema20, bar["close"])
         self._last_bar_at = bar["time"].isoformat()
@@ -464,6 +465,57 @@ class Algo3SilverMicro(Strategy):
         if allow_signals:
             self._check_candle_close_trigger(bar)
         self._update_setups(bar, log=allow_signals)
+
+    def _rest_verify_live_bar(self, bar: dict, allow_signals: bool) -> dict:
+        """Prefer FYERS's closed 15m candle over a thin local aggregate.
+
+        Silver's local 15m builder depends on receiving enough 1m candles,
+        which can lag or go sparse on MCX. For live setup updates we fetch
+        the exact closed 15m candle from FYERS and overwrite the local
+        OHLCV if it is available, so BUY/SELL setup levels always come
+        from the real closed bar rather than a partial buffer.
+        """
+        if not allow_signals or not self.symbol:
+            return bar
+        try:
+            authoritative = get_intraday_candle_at(self.symbol, bar["time"], resolution="15")
+        except Exception as exc:
+            print(
+                f"[algo3] 15m REST verify FAILED for {self.symbol} @ {bar['time'].isoformat()}: {exc}; "
+                f"using local close {bar['close']:.2f} (minutes={bar['minute_count']})"
+            )
+            return bar
+        if not authoritative:
+            print(
+                f"[algo3] 15m REST verify MISSING for {self.symbol} @ {bar['time'].isoformat()}; "
+                f"using local close {bar['close']:.2f} (minutes={bar['minute_count']})"
+            )
+            return bar
+        if (
+            float(authoritative["open"]) != float(bar["open"])
+            or float(authoritative["high"]) != float(bar["high"])
+            or float(authoritative["low"]) != float(bar["low"])
+            or float(authoritative["close"]) != float(bar["close"])
+            or float(authoritative["volume"]) != float(bar["volume"])
+        ):
+            print(
+                f"[algo3] 15m REST verify OVERRIDE for {self.symbol} @ {bar['time'].isoformat()}: "
+                f"local O={bar['open']:.2f} H={bar['high']:.2f} L={bar['low']:.2f} C={bar['close']:.2f} "
+                f"V={bar['volume']:.0f} minutes={bar['minute_count']} -> "
+                f"REST O={float(authoritative['open']):.2f} H={float(authoritative['high']):.2f} "
+                f"L={float(authoritative['low']):.2f} C={float(authoritative['close']):.2f} "
+                f"V={float(authoritative['volume']):.0f}"
+            )
+        verified = dict(bar)
+        verified.update({
+            "open": float(authoritative["open"]),
+            "high": float(authoritative["high"]),
+            "low": float(authoritative["low"]),
+            "close": float(authoritative["close"]),
+            "volume": float(authoritative["volume"]),
+            "source": "rest_verified_15m",
+        })
+        return verified
 
     def flush_clock_closed_bar(self, allow_signals: bool | None = None) -> bool:
         """Finalize the current 15m bucket once its time window has elapsed.

@@ -1698,6 +1698,47 @@ def test_algo3_closed_15m_bucket_finalizes_without_next_bucket_tick():
           f"buy_setup={strat._buy_setup_close}")
 
 
+def test_algo3_live_15m_setup_uses_fyers_verified_bar_close():
+    print("\n33g. algo3 live setup uses FYERS-verified 15m close instead of partial local close")
+    import datetime as _dt
+    from unittest.mock import patch
+    import app.strategies.algo3_silver_micro as algo3_mod
+
+    strat = _make_bare_algo3()
+    strat._ema20 = 246000.0
+    bucket = _dt.datetime(2026, 8, 21, 14, 15)
+    strat._current_bucket = bucket
+    strat._minute_buffer = [
+        {
+            "time": bucket + _dt.timedelta(minutes=minute),
+            "open": 247100.0,
+            "high": 247800.0,
+            "low": 247000.0,
+            "close": 247691.0,
+            "volume": 100.0,
+        }
+        for minute in range(15)
+    ]
+
+    with patch.object(algo3_mod, "get_intraday_candle_at", return_value={
+        "time": bucket,
+        "open": 248350.0,
+        "high": 248600.0,
+        "low": 248058.0,
+        "close": 248351.0,
+        "volume": 2190.0,
+    }):
+        strat._finalize_bar(allow_signals=True, require_closed=False)
+
+    check("one 15m bar stored", len(strat._bars) == 1, f"bars={len(strat._bars)}")
+    check("stored 15m bar close came from FYERS verified bar",
+          float(strat._bars[-1]["close"]) == 248351.0,
+          f"close={strat._bars[-1]['close']}")
+    check("BUY setup came from FYERS verified close",
+          float(strat._buy_setup_close) == 248351.0,
+          f"buy_setup={strat._buy_setup_close}")
+
+
 # ── 34-35. Setup capture (green above / red below) + overwrite ─────────
 def test_algo3_setup_captures_and_overwrites():
     print("\n34. algo3 setup: green-above-EMA and red-below-EMA candles are stored, later ones overwrite")
