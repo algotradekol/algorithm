@@ -1311,6 +1311,8 @@ def _simulate_silver_micro_range(
     ema20: float | None = None
     buy_setup_close: float | None = None
     sell_setup_close: float | None = None
+    buy_setup_context: dict | None = None
+    sell_setup_context: dict | None = None
     minute_buffer: list[dict] = []
     current_bucket: datetime.datetime | None = None
     prev_ltp: float | None = None
@@ -1323,7 +1325,7 @@ def _simulate_silver_micro_range(
     def finalize_15m_bar(allow_signals: bool):
         """Aggregate the minute_buffer into one 15m bar, update EMA20
         and the BUY/SELL setup levels."""
-        nonlocal minute_buffer, ema20, buy_setup_close, sell_setup_close, bars_finalized
+        nonlocal minute_buffer, ema20, buy_setup_close, sell_setup_close, buy_setup_context, sell_setup_context, bars_finalized
         if not minute_buffer or current_bucket is None:
             return
         bar = {
@@ -1345,8 +1347,28 @@ def _simulate_silver_micro_range(
         previous_sell_reference_close = sell_setup_close
         if is_green and ema20 is not None and bar["close"] > ema20:
             buy_setup_close = bar["close"]
+            buy_setup_context = {
+                "side": "BUY",
+                "setup_time": bar["time"].isoformat(),
+                "setup_close": round(bar["close"], 2),
+                "trigger_level": round(bar["close"] + n, 2),
+                "ema20": _round_or_none(ema20),
+                "n_points": n,
+                "previous_red_reference_close": None,
+                "current_qualifying_red_close": None,
+            }
             setup_event = {"side": "BUY", "close": bar["close"], "bar": bar}
         elif is_red and ema20 is not None and bar["close"] < ema20:
+            sell_setup_context = {
+                "side": "SELL",
+                "setup_time": bar["time"].isoformat(),
+                "setup_close": round(bar["close"], 2),
+                "trigger_level": round(bar["close"] - n, 2),
+                "ema20": _round_or_none(ema20),
+                "n_points": n,
+                "previous_red_reference_close": _round_or_none(previous_sell_reference_close),
+                "current_qualifying_red_close": round(bar["close"], 2),
+            }
             setup_event = {
                 "side": "SELL",
                 "close": bar["close"],
@@ -1511,15 +1533,17 @@ def _simulate_silver_micro_range(
             source_candidate["entry_price"] = round(float(entry_price), 2)
             source_candidate["sl_price"] = round(float(sl_price), 2)
             source_candidate["target_price"] = round(float(target_price), 2)
+        active_setup_context = buy_setup_context if side == "BUY" else sell_setup_context
+        setup_source = source_candidate or active_setup_context or {}
         setup_context = {
-            "side": source_candidate.get("side") if source_candidate else side,
-            "setup_time": source_candidate.get("setup_time") if source_candidate else None,
-            "setup_close": source_candidate.get("setup_close") if source_candidate else None,
-            "trigger_level": source_candidate.get("trigger_level") if source_candidate else None,
-            "ema20": source_candidate.get("ema20") if source_candidate else None,
-            "n_points": source_candidate.get("n_points") if source_candidate else None,
-            "previous_red_reference_close": source_candidate.get("previous_red_reference_close") if source_candidate else None,
-            "current_qualifying_red_close": source_candidate.get("current_qualifying_red_close") if source_candidate else None,
+            "side": setup_source.get("side") or side,
+            "setup_time": setup_source.get("setup_time"),
+            "setup_close": setup_source.get("setup_close"),
+            "trigger_level": setup_source.get("trigger_level"),
+            "ema20": setup_source.get("ema20"),
+            "n_points": setup_source.get("n_points"),
+            "previous_red_reference_close": setup_source.get("previous_red_reference_close"),
+            "current_qualifying_red_close": setup_source.get("current_qualifying_red_close"),
         }
         position["setup_context"] = setup_context
         position["max_favorable_points"] = 0.0

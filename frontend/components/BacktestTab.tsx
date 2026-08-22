@@ -9,6 +9,8 @@ const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).for
 const defaultStart = new Date(`${today}T00:00:00`);
 defaultStart.setDate(defaultStart.getDate() - 6);
 const weekAgo = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(defaultStart);
+const BACKTEST_STORAGE_KEY = 'backtest-tab-state-v1';
+const BACKTEST_UI_STORAGE_KEY = 'backtest-tab-ui-v1';
 
 export default function BacktestTab() {
   const [algoId, setAlgoId] = useState('algo1');
@@ -16,7 +18,44 @@ export default function BacktestTab() {
   const [endDate, setEndDate] = useState(today);
   const [job, setJob] = useState<any>(null);
   const [error, setError] = useState('');
+  const [storageReady, setStorageReady] = useState(false);
   const active = ['queued', 'running', 'cancelling'].includes(job?.status);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(BACKTEST_STORAGE_KEY);
+      if (!raw) {
+        setStorageReady(true);
+        return;
+      }
+      const snapshot = JSON.parse(raw);
+      if (snapshot?.algoId) setAlgoId(snapshot.algoId);
+      if (snapshot?.startDate) setStartDate(snapshot.startDate);
+      if (snapshot?.endDate) setEndDate(snapshot.endDate);
+      if (snapshot?.job) setJob(snapshot.job);
+      if (snapshot?.error) setError(snapshot.error);
+    } catch {
+      // Ignore corrupted local snapshots and start fresh.
+    } finally {
+      setStorageReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!storageReady) return;
+    try {
+      window.localStorage.setItem(BACKTEST_STORAGE_KEY, JSON.stringify({
+        algoId,
+        startDate,
+        endDate,
+        job,
+        error,
+        savedAt: Date.now(),
+      }));
+    } catch {
+      // Best-effort persistence only.
+    }
+  }, [algoId, startDate, endDate, job, error, storageReady]);
 
   async function run() {
     setError('');
@@ -67,6 +106,21 @@ export default function BacktestTab() {
     }, 2_000);
     return () => window.clearInterval(timer);
   }, [job?.id, job?.status]);
+
+  useEffect(() => {
+    if (!storageReady || !job?.id || !['queued', 'running', 'cancelling'].includes(job.status)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const latest = await api.backtestStatus(job.id);
+        if (!cancelled) setJob(latest);
+      } catch (e: any) {
+        const message = e?.message || 'Could not restore backtest progress';
+        if (!cancelled && !message.includes('API error 404')) setError(message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [job?.id, job?.status, storageReady]);
 
   const replaying = job?.phase === 'replaying';
   const progressCompleted = replaying ? Number(job.replay_completed || 0) : Number(job?.completed_symbols || 0);
@@ -158,10 +212,38 @@ function BacktestResult({ result }: { result: any }) {
     levels: true,
     trailing: true,
   });
+  const [uiStorageReady, setUiStorageReady] = useState(false);
   const sectorBreakdown = Array.isArray(result.sector_breakdown) ? result.sector_breakdown : [];
   const visibleTrades = result.algo_id === 'algo3' && selectedChartDate
     ? allTrades.filter((trade: any) => trade.session_date === selectedChartDate)
     : allTrades;
+  const resultStorageId = `${result.algo_id}:${result.start_date}:${result.end_date}`;
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(BACKTEST_UI_STORAGE_KEY);
+      if (!raw) {
+        setUiStorageReady(true);
+        return;
+      }
+      const snapshot = JSON.parse(raw);
+      if (snapshot?.resultStorageId === resultStorageId) {
+        if (typeof snapshot.selectedChartDate === 'string') setSelectedChartDate(snapshot.selectedChartDate);
+        if (typeof snapshot.selectedTradeId === 'string' || snapshot.selectedTradeId === null) setSelectedTradeId(snapshot.selectedTradeId);
+        if (snapshot.chartOverlays) setChartOverlays({
+          ema: snapshot.chartOverlays.ema !== false,
+          setups: snapshot.chartOverlays.setups === true,
+          trades: snapshot.chartOverlays.trades !== false,
+          levels: snapshot.chartOverlays.levels !== false,
+          trailing: snapshot.chartOverlays.trailing !== false,
+        });
+      }
+    } catch {
+      // Ignore corrupted chart UI snapshots.
+    } finally {
+      setUiStorageReady(true);
+    }
+  }, [resultStorageId]);
 
   useEffect(() => {
     if (!silverChartDays.length) {
@@ -177,6 +259,21 @@ function BacktestResult({ result }: { result: any }) {
     const trades = Array.isArray(selectedDay?.chart?.trades) ? selectedDay.chart.trades : [];
     setSelectedTradeId((current) => trades.some((trade: any) => trade.trade_id === current) ? current : (trades[trades.length - 1]?.trade_id || null));
   }, [selectedChartDate, silverChartDays]);
+
+  useEffect(() => {
+    if (!uiStorageReady) return;
+    try {
+      window.localStorage.setItem(BACKTEST_UI_STORAGE_KEY, JSON.stringify({
+        resultStorageId,
+        selectedChartDate,
+        selectedTradeId,
+        chartOverlays,
+        savedAt: Date.now(),
+      }));
+    } catch {
+      // Best-effort persistence only.
+    }
+  }, [uiStorageReady, resultStorageId, selectedChartDate, selectedTradeId, chartOverlays]);
 
   function focusTrade(trade: any, openModal = false) {
     setSelectedChartDate(trade.session_date);
@@ -226,26 +323,35 @@ function BacktestResult({ result }: { result: any }) {
       <div className="panel p-4"><h3 className="text-sm font-semibold text-gray-100">Trade Quality</h3><div className="mt-3 grid grid-cols-2 gap-2 text-sm"><Metric label="Gross profit" value={money(summary.gross_profit)} positive /><Metric label="Gross loss" value={money(-Number(summary.gross_loss || 0))} negative /><Metric label="Average win" value={money(summary.average_win)} positive /><Metric label="Average loss" value={money(summary.average_loss)} negative /><Metric label="Average net / trade" value={money(summary.average_net_per_trade)} tone={Number(summary.average_net_per_trade)} /><Metric label="Max drawdown" value={money(summary.max_drawdown)} negative /></div></div>
       <div className="panel p-4"><h3 className="text-sm font-semibold text-gray-100">Execution And Range</h3><div className="mt-3 grid grid-cols-2 gap-2 text-sm"><Metric label="Gross P&L" value={money(summary.gross_pnl)} tone={Number(summary.gross_pnl)} /><Metric label="Charges" value={money(summary.total_charges)} /><Metric label="Capital deployed" value={money(summary.capital_deployed)} /><Metric label="Net return / deployed" value={`${number(summary.net_return_on_deployed_pct)}%`} tone={Number(summary.net_return_on_deployed_pct)} /><Metric label="Best day" value={result.best_day ? `${result.best_day.date}: ${money(result.best_day.net_pnl)}` : '-'} tone={Number(result.best_day?.net_pnl)} /><Metric label="Worst day" value={result.worst_day ? `${result.worst_day.date}: ${money(result.worst_day.net_pnl)}` : '-'} tone={Number(result.worst_day?.net_pnl)} /></div><p className="mt-3 text-xs text-gray-500">Exits: Target {exits.TARGET || 0}, SL {exits.SL || 0}, EOD {exits.EOD_SQUAREOFF || 0}.</p></div>
     </section>
-    {silverChartDays.length > 0 && (
-      <SilverBacktestChart
-        days={silverChartDays}
-        selectedDate={selectedChartDate}
-        onSelectedDateChange={setSelectedChartDate}
+    {silverChartDays.length > 0 ? (
+      <section className="grid items-start gap-4 2xl:grid-cols-[minmax(0,1.18fr)_minmax(0,0.92fr)]">
+        <SilverBacktestChart
+          days={silverChartDays}
+          selectedDate={selectedChartDate}
+          onSelectedDateChange={setSelectedChartDate}
+          selectedTradeId={selectedTradeId}
+          onSelectedTradeIdChange={setSelectedTradeId}
+          overlays={chartOverlays}
+          onOverlaysChange={setChartOverlays}
+          onOpenModal={() => setChartModalOpen(true)}
+        />
+        <BacktestTrades
+          rows={visibleTrades}
+          selectedTradeId={selectedTradeId}
+          onFocusTrade={focusTrade}
+          selectedDate={result.algo_id === 'algo3' ? selectedChartDate : null}
+          compact
+        />
+      </section>
+    ) : (
+      <BacktestTrades
+        rows={visibleTrades}
         selectedTradeId={selectedTradeId}
-        onSelectedTradeIdChange={setSelectedTradeId}
-        overlays={chartOverlays}
-        onOverlaysChange={setChartOverlays}
-        onOpenModal={() => setChartModalOpen(true)}
+        onFocusTrade={focusTrade}
+        selectedDate={result.algo_id === 'algo3' ? selectedChartDate : null}
       />
     )}
-    <BacktestTrades
-      rows={visibleTrades}
-      selectedTradeId={selectedTradeId}
-      onFocusTrade={focusTrade}
-      selectedDate={result.algo_id === 'algo3' ? selectedChartDate : null}
-    />
     <DailyResults rows={daily} />
-    <BacktestCandidates days={daily} />
     {chartModalOpen && silverChartDays.length > 0 && (
       <BacktestChartModal onClose={() => setChartModalOpen(false)}>
         <SilverBacktestChart
@@ -393,11 +499,13 @@ function BacktestTrades({
   selectedTradeId,
   onFocusTrade,
   selectedDate,
+  compact = false,
 }: {
   rows: any[];
   selectedTradeId: string | null;
   onFocusTrade: (trade: any, openModal?: boolean) => void;
   selectedDate: string | null;
+  compact?: boolean;
 }) {
   const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
   const [selectedDiagnosticTrade, setSelectedDiagnosticTrade] = useState<any | null>(null);
@@ -412,7 +520,7 @@ function BacktestTrades({
             : 'Times are based on the historical one-minute candle used for simulated entry and exit.'}
         </p>
       </div>
-      <div className="overflow-x-auto">
+      <div className={compact ? 'max-h-[920px] overflow-auto' : 'overflow-x-auto'}>
         <table className="w-full min-w-[1880px] text-xs">
           <thead className="bg-[#111827]">
             <tr>{['Date', 'Symbol', 'Side', 'Qty', 'Entry Time', 'Entry', 'Exit Time', 'Exit', 'Initial SL', 'Final SL', 'Target', 'Trailing SL', 'Chart', 'Why loss?', 'Reason', 'Net'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr>

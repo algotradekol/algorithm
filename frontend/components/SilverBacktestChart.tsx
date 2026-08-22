@@ -105,8 +105,8 @@ export default function SilverBacktestChart({
     );
   }
 
-  const width = expanded ? 1560 : 1280;
-  const priceHeight = expanded ? 420 : 330;
+  const width = expanded ? 1720 : 1460;
+  const priceHeight = expanded ? 420 : 350;
   const volumeHeight = 76;
   const totalHeight = priceHeight + volumeHeight + 34;
   const candleWidth = width / Math.max(visible.length, 1);
@@ -153,6 +153,7 @@ export default function SilverBacktestChart({
         }
       : null
   );
+  const timeTicks = buildTimeTicks(visible, start, candleWidth, expanded ? 8 : 6);
 
   function y(price: number) {
     return 16 + ((high - price) / priceSpan) * (priceHeight - 32);
@@ -321,7 +322,8 @@ export default function SilverBacktestChart({
                 return (
                   <g key={ratio}>
                     <line x1={0} x2={width} y1={lineY} y2={lineY} stroke="#1f2937" strokeWidth="1" />
-                    <text x={8} y={lineY - 4} fill="#6b7280" fontSize="12.5" fontFamily="ui-monospace">{formatNumber(price)}</text>
+                    <rect x={width - 116} y={lineY - 14} width={108} height={22} rx={4} fill="#111827" stroke="#334155" />
+                    <text x={width - 16} y={lineY + 1} textAnchor="end" fill="#cbd5e1" fontSize="12.5" fontFamily="ui-monospace">{formatNumber(price)}</text>
                   </g>
                 );
               })}
@@ -380,17 +382,22 @@ export default function SilverBacktestChart({
                 const exitIndex = Math.max(start, trade.exitIndex) - start;
                 const entryX = entryIndex * candleWidth + candleWidth / 2;
                 const exitX = exitIndex * candleWidth + candleWidth / 2;
+                const entryCandle = normalized[Math.max(0, Math.min(normalized.length - 1, trade.entryIndex))];
                 const entryY = y(Number(trade.entry_price));
                 const exitY = y(Number(trade.exit_price));
                 const isBuy = trade.side === 'BUY';
-                const color = isBuy ? '#60a5fa' : '#ef4444';
+                const color = isBuy ? '#38bdf8' : '#fb7185';
+                const exitMarkerFill = '#f8fafc';
                 const opacity = trade.selected ? 1 : 0.55;
-                const arrowOffset = trade.selected ? 34 : 28;
-                const shaftStartY = isBuy ? entryY - arrowOffset : entryY + arrowOffset;
-                const shaftEndY = isBuy ? entryY - 8 : entryY + 8;
+                const candleBoundaryY = isBuy ? y(Number(entryCandle?.high ?? trade.entry_price)) : y(Number(entryCandle?.low ?? trade.entry_price));
+                const arrowGap = trade.selected ? 10 : 8;
+                const arrowReach = trade.selected ? 44 : 36;
+                const tipY = isBuy ? candleBoundaryY - arrowGap : candleBoundaryY + arrowGap;
+                const shaftStartY = isBuy ? tipY - arrowReach : tipY + arrowReach;
+                const shaftEndY = isBuy ? tipY - 12 : tipY + 12;
                 const arrowHeadPoints = isBuy
-                  ? `${entryX - 6},${entryY - 8} ${entryX + 6},${entryY - 8} ${entryX},${entryY + 2}`
-                  : `${entryX - 6},${entryY + 8} ${entryX + 6},${entryY + 8} ${entryX},${entryY - 2}`;
+                  ? `${entryX - 7},${tipY - 12} ${entryX + 7},${tipY - 12} ${entryX},${tipY}`
+                  : `${entryX - 7},${tipY + 12} ${entryX + 7},${tipY + 12} ${entryX},${tipY}`;
                 return (
                   <g
                     key={trade.trade_id}
@@ -398,10 +405,10 @@ export default function SilverBacktestChart({
                     onClick={() => onSelectedTradeIdChange(trade.trade_id)}
                     style={{ cursor: 'pointer' }}
                   >
-                    <line x1={entryX} x2={exitX} y1={entryY} y2={exitY} stroke={color} strokeWidth={trade.selected ? 2.2 : 1.2} strokeDasharray={trade.selected ? undefined : '4 4'} />
-                    <line x1={entryX} x2={entryX} y1={shaftStartY} y2={shaftEndY} stroke={color} strokeWidth={trade.selected ? 2.8 : 2.2} strokeLinecap="round" />
-                    <polygon points={arrowHeadPoints} fill={color} />
-                    <circle cx={exitX} cy={exitY} r={trade.selected ? 4.6 : 3.6} fill={color} opacity="0.85" />
+                    <line x1={entryX} x2={exitX} y1={entryY} y2={exitY} stroke={color} strokeWidth={trade.selected ? 2.4 : 1.5} strokeDasharray={trade.selected ? undefined : '5 4'} />
+                    <line x1={entryX} x2={entryX} y1={shaftStartY} y2={shaftEndY} stroke={color} strokeWidth={trade.selected ? 3 : 2.4} strokeLinecap="round" />
+                    <polygon points={arrowHeadPoints} fill={color} stroke="#e5e7eb" strokeWidth="0.8" />
+                    <circle cx={exitX} cy={exitY} r={trade.selected ? 5.4 : 4.3} fill={exitMarkerFill} stroke={color} strokeWidth={trade.selected ? 2.4 : 2} opacity="1" />
                   </g>
                 );
               })}
@@ -459,8 +466,19 @@ export default function SilverBacktestChart({
               )}
 
               <line x1={0} x2={width} y1={priceHeight + 18} y2={priceHeight + 18} stroke="#1f2937" />
-              <text x={8} y={totalHeight - 8} fill="#6b7280" fontSize="12.5" fontFamily="ui-monospace">
-                {activeCandle ? `${activeCandle.time}  |  window ${first.time} -> ${last.time}` : `${first.time} -> ${last.time}`}
+              {timeTicks.map((tick) => (
+                <g key={tick.key}>
+                  <line x1={tick.x} x2={tick.x} y1={priceHeight + 18} y2={priceHeight + 24} stroke="#334155" strokeWidth="1" />
+                  <text x={tick.x} y={totalHeight - 8} textAnchor="middle" fill="#94a3b8" fontSize="11.5" fontFamily="ui-monospace">
+                    {tick.label}
+                  </text>
+                </g>
+              ))}
+              <text x={8} y={totalHeight - 22} fill="#64748b" fontSize="11.5" fontFamily="ui-monospace">
+                15m candles · IST
+              </text>
+              <text x={8} y={totalHeight - 8} fill="#6b7280" fontSize="12" fontFamily="ui-monospace">
+                {activeCandle ? `Focused ${formatAxisDateTime(activeCandle.time)}  |  window ${formatAxisDateTime(first.time)} -> ${formatAxisDateTime(last.time)}` : `${formatAxisDateTime(first.time)} -> ${formatAxisDateTime(last.time)}`}
               </text>
             </svg>
           </div>
@@ -604,6 +622,26 @@ function buildTrailingPath(
   return path;
 }
 
+function buildTimeTicks(visibleCandles: any[], startIndex: number, candleWidth: number, desiredCount: number) {
+  if (!visibleCandles.length) return [];
+  const count = Math.max(2, desiredCount);
+  const rawStep = Math.max(1, Math.floor((visibleCandles.length - 1) / Math.max(1, count - 1)));
+  const indices = new Set<number>([0, visibleCandles.length - 1]);
+  for (let index = rawStep; index < visibleCandles.length - 1; index += rawStep) {
+    indices.add(index);
+  }
+  return Array.from(indices)
+    .sort((left, right) => left - right)
+    .map((visibleIndex) => {
+      const candle = visibleCandles[visibleIndex];
+      return {
+        key: `${startIndex + visibleIndex}-${candle.time}`,
+        x: visibleIndex * candleWidth + candleWidth / 2,
+        label: formatAxisTime(candle.time),
+      };
+    });
+}
+
 function formatNumber(value: number) {
   return Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
 }
@@ -628,6 +666,30 @@ function formatDateTimeShort(value: string | null | undefined) {
     hour: '2-digit',
     minute: '2-digit',
     second: '2-digit',
+    hour12: false,
+  });
+}
+
+function formatAxisTime(value: string | null | undefined) {
+  const date = parseMaybeDate(value);
+  if (!date) return '--';
+  return date.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function formatAxisDateTime(value: string | null | undefined) {
+  const date = parseMaybeDate(value);
+  if (!date) return '--';
+  return date.toLocaleString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    month: 'short',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
     hour12: false,
   });
 }
