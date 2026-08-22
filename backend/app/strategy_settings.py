@@ -1,5 +1,6 @@
 import datetime
 
+from .runtime_mode import get_runtime_trading_mode, normalize_trading_mode
 from .storage_namespace import namespaced_value
 
 DEFAULT_SETTINGS = {
@@ -167,15 +168,18 @@ def default_settings_for(algo_id: str) -> dict:
     return {**DEFAULT_SETTINGS, **STRATEGY_DEFAULT_OVERRIDES.get(algo_id, {})}
 
 
-def get_settings_storage_key(algo_id: str) -> str:
-    """Per-deployment settings key.
+def get_settings_storage_key(algo_id: str, mode: str | None = None) -> str:
+    """Per-deployment, per-mode settings key.
 
-    When multiple backends share one Supabase, plain algo_id rows collide
-    across deployments. Reuse BROKER_KEY_SUFFIX so strategy settings follow
-    the same tenant split as broker_tokens. Empty suffix preserves the
-    historical single-row behavior.
+    The frontend promises that paper/live settings save independently, so the
+    storage key must include the active runtime mode as well as the deployment
+    namespace. This keeps the paper scan toggle from re-enabling live trading
+    after a mode switch, while still preserving historical shared rows as a
+    read-only fallback until each mode saves once.
     """
-    return namespaced_value(algo_id)
+    normalized_algo_id = str(algo_id or "").strip()
+    effective_mode = normalize_trading_mode(mode or get_runtime_trading_mode())
+    return namespaced_value(f"{normalized_algo_id}__{effective_mode}")
 
 
 def _normalize(settings: dict, algo_id: str) -> dict:
@@ -206,19 +210,28 @@ def _normalize(settings: dict, algo_id: str) -> dict:
     return normalized
 
 
-def get_settings(algo_id: str) -> dict:
+def get_settings(algo_id: str, mode: str | None = None) -> dict:
     """Read settings for this algo from Supabase. Fall back to hardcoded defaults if missing."""
     from .supabase_client import supabase
 
-    storage_key = get_settings_storage_key(algo_id)
+    effective_mode = normalize_trading_mode(mode or get_runtime_trading_mode())
+    storage_key = get_settings_storage_key(algo_id, mode=effective_mode)
     result = supabase.table("strategy_settings").select("*").eq("algo_id", storage_key).execute()
     if result.data:
         return _normalize(result.data[0], algo_id)
-    # Backward-compatible fallback: if this deployment has never saved its
-    # own namespaced row yet, hydrate from the legacy shared algo_id row so
-    # the app still starts with the old settings until the next save/reset.
-    if storage_key != algo_id:
-        legacy_result = supabase.table("strategy_settings").select("*").eq("algo_id", algo_id).execute()
+    # Backward-compatible fallbacks:
+    # 1. deployment-scoped legacy shared row: algo3__client
+    # 2. historical global shared row: algo3
+    # Only hydrate from these when the mode-specific row does not exist yet.
+    legacy_candidates: list[str] = []
+    deployment_legacy_key = namespaced_value(str(algo_id or "").strip())
+    if deployment_legacy_key != storage_key:
+        legacy_candidates.append(deployment_legacy_key)
+    plain_legacy_key = str(algo_id or "").strip()
+    if plain_legacy_key not in legacy_candidates and plain_legacy_key != storage_key:
+        legacy_candidates.append(plain_legacy_key)
+    for legacy_key in legacy_candidates:
+        legacy_result = supabase.table("strategy_settings").select("*").eq("algo_id", legacy_key).execute()
         if legacy_result.data:
             return _normalize(legacy_result.data[0], algo_id)
     return _normalize({}, algo_id)
@@ -244,13 +257,17 @@ _NEW_COLUMNS_TOLERATE_MISSING = {
 }
 
 
-def _upsert_settings_with_fallback(algo_id: str, settings: dict) -> None:
+def _upsert_settings_with_fallback(algo_id: str, settings: dict, mode: str | None = None) -> None:
     """Try to write every setting; if Supabase rejects an unknown column,
     strip that column from the payload and retry once. Prevents the whole
     save from silently failing when a new field hasn't been migrated yet."""
     from .supabase_client import supabase
 
-    payload = {"algo_id": get_settings_storage_key(algo_id), **settings, "updated_at": "now()"}
+    payload = {
+        "algo_id": get_settings_storage_key(algo_id, mode=mode),
+        **settings,
+        "updated_at": "now()",
+    }
     try:
         supabase.table("strategy_settings").upsert(payload).execute()
         return
@@ -267,14 +284,14 @@ def _upsert_settings_with_fallback(algo_id: str, settings: dict) -> None:
         supabase.table("strategy_settings").upsert(payload).execute()
 
 
-def update_settings(algo_id: str, settings: dict):
+def update_settings(algo_id: str, settings: dict, mode: str | None = None):
     """Write updated settings back to Supabase."""
     settings = _normalize(settings, algo_id)
-    _upsert_settings_with_fallback(algo_id, settings)
+    _upsert_settings_with_fallback(algo_id, settings, mode=mode)
 
 
-def reset_settings(algo_id: str) -> dict:
+def reset_settings(algo_id: str, mode: str | None = None) -> dict:
     """Restore the strategy to its default Tradetron-style settings."""
     settings = _normalize({}, algo_id)
-    _upsert_settings_with_fallback(algo_id, settings)
+    _upsert_settings_with_fallback(algo_id, settings, mode=mode)
     return settings

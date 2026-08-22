@@ -618,6 +618,11 @@ def test_trailing_metadata_tracks_activation_and_bumps():
           f"got={t2.get('update_count')}")
     check("tick #2: sl_price bumped above initial", p2["sl_price"] > 99.0,
           f"sl_price={p2['sl_price']}")
+    check("tick #2: trailing current_sl matches position sl_price",
+          t2.get("current_sl") == p2["sl_price"],
+          f"current_sl={t2.get('current_sl')} sl_price={p2['sl_price']}")
+    check("tick #2: first trail event captured", len(t2.get("events") or []) == 1,
+          f"events={t2.get('events')}")
 
     # Tick 3 — price at 102 (higher). SL bumps again.
     p3 = broker.apply_trailing_stop(p2, ltp=102.0, settings=settings)
@@ -627,6 +632,10 @@ def test_trailing_metadata_tracks_activation_and_bumps():
     check("tick #3: first_activated_at is preserved", t3.get("first_activated_at") == t2.get("first_activated_at"))
     check("tick #3: last_updated_at is fresher than first_activated_at OR equal",
           t3.get("last_updated_at") >= t3.get("first_activated_at"))
+    check("tick #3: second trail event captured", len(t3.get("events") or []) == 2,
+          f"events={t3.get('events')}")
+    check("tick #3: trailing current_sl stays synced", t3.get("current_sl") == p3["sl_price"],
+          f"current_sl={t3.get('current_sl')} sl_price={p3['sl_price']}")
 
     # Tick 4 — price DROPS to 101.7 (still profitable but below prev high).
     # highest stays at 102. new_sl computed from highest (unchanged) so SL
@@ -636,6 +645,8 @@ def test_trailing_metadata_tracks_activation_and_bumps():
     check("tick #4 no new high: update_count stays at 2 (no false bump)",
           t4.get("update_count") == 2,
           f"got={t4.get('update_count')}")
+    check("tick #4: trail event list is preserved", len(t4.get("events") or []) == 2,
+          f"events={t4.get('events')}")
 
 
 # ── 13. WS pre-market warmup gating (fix 17, 2026-08-12) ────────────
@@ -1980,6 +1991,59 @@ def test_algo3_setup_persistence_rejects_wrong_candle_color():
           calls == [], f"calls={calls}")
 
 
+def test_algo3_sell_reference_survives_green_candles_and_rearms_on_new_red():
+    print("\n35d. algo3 SELL candle-close still compares against the previous red across green candles")
+    import datetime as _dt
+
+    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
+    strat._ema20 = 1000.0
+
+    first_red = {"open": 950.0, "close": 900.0, "time": _dt.datetime(2026, 8, 20, 15, 0)}
+    strat._update_setups(first_red)
+    check("first qualifying red becomes initial sell reference",
+          strat._sell_setup_close == 900.0, f"sell={strat._sell_setup_close}")
+
+    strat._update_setups({"open": 1005.0, "close": 1100.0, "time": _dt.datetime(2026, 8, 20, 15, 15)})
+    strat._update_setups({"open": 1010.0, "close": 1080.0, "time": _dt.datetime(2026, 8, 20, 15, 30)})
+    check("green-above-EMA candles do not reset the stored red reference",
+          strat._sell_setup_close == 900.0, f"sell={strat._sell_setup_close}")
+
+    # The older red setup was already consumed earlier; the fresh red must
+    # still be allowed to fire based on the OLD reference close.
+    strat._last_fired_sell_bar_at = strat._sell_setup_bar_at
+
+    second_red = {"open": 860.0, "close": 700.0, "time": _dt.datetime(2026, 8, 20, 15, 45)}
+    strat._check_candle_close_trigger(second_red)
+    check("fresh red 200 below previous red still fires SELL even if the old setup was consumed",
+          len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "SELL",
+          f"opens={strat.broker.opens}")
+    check("SELL fire is stamped to the new red candle identity",
+          strat._last_fired_sell_bar_at == second_red["time"],
+          f"last_fired={strat._last_fired_sell_bar_at}")
+
+    strat._update_setups(second_red)
+    check("after close, that red becomes the new reference for the next loop",
+          strat._sell_setup_close == 700.0, f"sell={strat._sell_setup_close}")
+
+
+def test_algo3_sell_reference_shifts_when_gap_is_under_n():
+    print("\n35e. algo3 SELL reference shifts when the next qualifying red is less than 200 lower")
+    import datetime as _dt
+
+    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
+    strat._ema20 = 1000.0
+    strat._update_setups({"open": 950.0, "close": 900.0, "time": _dt.datetime(2026, 8, 20, 15, 0)})
+
+    next_red = {"open": 890.0, "close": 850.0, "time": _dt.datetime(2026, 8, 20, 15, 15)}
+    strat._check_candle_close_trigger(next_red)
+    check("red less than 200 below previous reference does not fire SELL",
+          len(strat.broker.opens) == 0, f"opens={strat.broker.opens}")
+
+    strat._update_setups(next_red)
+    check("non-triggering qualifying red becomes the next sell reference",
+          strat._sell_setup_close == 850.0, f"sell={strat._sell_setup_close}")
+
+
 # ── 36-38. Trigger detection ───────────────────────────────────────────
 def test_algo3_buy_trigger_only_on_upward_cross():
     print("\n36. algo3 BUY trigger fires ONLY on an upward cross of (setup + n)")
@@ -2364,23 +2428,36 @@ def test_strategy_settings_storage_key_isolates_deployments():
     import importlib, os
     from unittest.mock import patch
     with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "client"}, clear=False):
-        import app.config, app.strategy_settings
+        import app.config, app.runtime_mode, app.strategy_settings
         importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
         importlib.reload(app.strategy_settings)
-        client_key = app.strategy_settings.get_settings_storage_key("algo3")
+        client_paper_key = app.strategy_settings.get_settings_storage_key("algo3", mode="paper")
+        client_live_key = app.strategy_settings.get_settings_storage_key("algo3", mode="live")
     with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": "dev"}, clear=False):
         importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
         importlib.reload(app.strategy_settings)
-        dev_key = app.strategy_settings.get_settings_storage_key("algo3")
+        dev_paper_key = app.strategy_settings.get_settings_storage_key("algo3", mode="paper")
+        dev_live_key = app.strategy_settings.get_settings_storage_key("algo3", mode="live")
 
-    check("client settings key is algo3__client",
-          client_key == "algo3__client", f"got={client_key}")
-    check("dev settings key is algo3__dev",
-          dev_key == "algo3__dev", f"got={dev_key}")
-    check("client and dev settings keys differ (no settings collision)",
-          client_key != dev_key)
+    check("client paper settings key is algo3__paper__client",
+          client_paper_key == "algo3__paper__client", f"got={client_paper_key}")
+    check("client live settings key is algo3__live__client",
+          client_live_key == "algo3__live__client", f"got={client_live_key}")
+    check("dev paper settings key is algo3__paper__dev",
+          dev_paper_key == "algo3__paper__dev", f"got={dev_paper_key}")
+    check("dev live settings key is algo3__live__dev",
+          dev_live_key == "algo3__live__dev", f"got={dev_live_key}")
+    check("paper and live settings keys differ inside one deployment",
+          client_paper_key != client_live_key)
+    check("client and dev paper settings keys differ (no settings collision)",
+          client_paper_key != dev_paper_key)
+    check("client and dev live settings keys differ (no settings collision)",
+          client_live_key != dev_live_key)
     with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": ""}, clear=False):
         importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
         importlib.reload(app.strategy_settings)
 
 
@@ -2389,13 +2466,17 @@ def test_strategy_settings_storage_key_empty_preserves_legacy_algo_id():
     import importlib, os
     from unittest.mock import patch
     with patch.dict(os.environ, {"BROKER_KEY_SUFFIX": ""}, clear=False):
-        import app.config, app.strategy_settings
+        import app.config, app.runtime_mode, app.strategy_settings
         importlib.reload(app.config)
+        importlib.reload(app.runtime_mode)
         importlib.reload(app.strategy_settings)
-        storage_key = app.strategy_settings.get_settings_storage_key("algo3")
+        paper_storage_key = app.strategy_settings.get_settings_storage_key("algo3", mode="paper")
+        live_storage_key = app.strategy_settings.get_settings_storage_key("algo3", mode="live")
 
-    check("empty suffix: settings key stays plain algo_id",
-          storage_key == "algo3", f"got={storage_key}")
+    check("empty suffix: paper settings key still includes mode",
+          paper_storage_key == "algo3__paper", f"got={paper_storage_key}")
+    check("empty suffix: live settings key still includes mode",
+          live_storage_key == "algo3__live", f"got={live_storage_key}")
 
 
 def test_runtime_mode_setting_key_isolates_deployments():
