@@ -927,6 +927,16 @@ def _silver_micro_execution_assumption(history_resolution: str, settings: dict) 
     n = int(settings.get("silver_breakout_points", 150))
     sl_pts = int(settings.get("sl_points", 100))
     target_pts = int(settings.get("target_points", 300))
+    tsl_enabled = bool(settings.get("trailing_sl_enabled"))
+    tsl_trigger = int(settings.get("tsl_trigger_points", 0) or 0)
+    tsl_distance = int(settings.get("tsl_distance_points", 0) or 0)
+    exit_mode = str(settings.get("exit_mode") or "fixed_target_trailing_sl")
+    trailing_clause = (
+        f" Trailing SL is ON: activates after {tsl_trigger} points profit and trails by "
+        f"{tsl_distance} points."
+        if tsl_enabled and exit_mode in {"trailing_sl_only", "fixed_target_trailing_sl"}
+        else " Trailing SL is OFF for this replay."
+    )
     return (
         f"Silver Micro replays 15-minute bars aggregated from 1-minute history "
         f"({history_resolution}). Each closed 15m bar updates EMA20; a green candle "
@@ -939,6 +949,7 @@ def _silver_micro_execution_assumption(history_resolution: str, settings: dict) 
         f"points, both fixed rupee distances from entry. If a 1-minute bar touches "
         f"both SL and target, SL is assumed first (conservative). Reversal on "
         f"contra trigger closes the current position and flips at the same bar."
+        f"{trailing_clause}"
     )
 
 
@@ -1023,7 +1034,8 @@ def _simulate_silver_micro_range(
     target_pts = float(settings.get("target_points", 300))
     tsl_trigger_pts = float(settings.get("tsl_trigger_points", 0))
     tsl_distance_pts = float(settings.get("tsl_distance_points", 0))
-    tsl_enabled = bool(settings.get("trailing_sl_enabled")) or settings.get("exit_mode") in {"trailing_sl_only", "fixed_target_trailing_sl"}
+    exit_mode = str(settings.get("exit_mode") or "fixed_target_trailing_sl")
+    tsl_enabled = bool(settings.get("trailing_sl_enabled")) and exit_mode in {"trailing_sl_only", "fixed_target_trailing_sl"}
 
     # Pre-count 1m bars per day so the UI can show how much data existed.
     minute_bars_by_day: dict[datetime.date, int] = defaultdict(int)
@@ -1160,10 +1172,16 @@ def _simulate_silver_micro_range(
             "qty": qty,
             "entry_price": float(entry_price),
             "entry_time": entry_time,
+            "initial_sl_price": float(sl_price),
             "sl_price": sl_price,
             "target_price": target_price,
             "highest": float(entry_price),
             "lowest": float(entry_price),
+            "trailing_sl_enabled": bool(tsl_enabled),
+            "trailing_sl_active": False,
+            "trailing_trigger_points": float(tsl_trigger_pts),
+            "trailing_distance_points": float(tsl_distance_pts),
+            "trailing_moves": [],
         }
         # Latest matching-side setup in this day's candidates is the source
         # candidate we mark as selected_for_trade.
@@ -1192,15 +1210,37 @@ def _simulate_silver_micro_range(
         if side == "BUY":
             gain = float(position["highest"]) - entry
             if gain >= tsl_trigger_pts:
+                position["trailing_sl_active"] = True
                 new_sl = float(position["highest"]) - tsl_distance_pts
                 if new_sl > float(position["sl_price"]):
+                    previous_sl = float(position["sl_price"])
                     position["sl_price"] = new_sl
+                    position.setdefault("trailing_moves", []).append({
+                        "time": position.get("_last_trail_time"),
+                        "side": side,
+                        "gain_points": round(gain, 2),
+                        "reference_price": round(float(position["highest"]), 2),
+                        "previous_sl": round(previous_sl, 2),
+                        "new_sl": round(new_sl, 2),
+                        "protected_points": round(new_sl - entry, 2),
+                    })
         else:
             gain = entry - float(position["lowest"])
             if gain >= tsl_trigger_pts:
+                position["trailing_sl_active"] = True
                 new_sl = float(position["lowest"]) + tsl_distance_pts
                 if new_sl < float(position["sl_price"]):
+                    previous_sl = float(position["sl_price"])
                     position["sl_price"] = new_sl
+                    position.setdefault("trailing_moves", []).append({
+                        "time": position.get("_last_trail_time"),
+                        "side": side,
+                        "gain_points": round(gain, 2),
+                        "reference_price": round(float(position["lowest"]), 2),
+                        "previous_sl": round(previous_sl, 2),
+                        "new_sl": round(new_sl, 2),
+                        "protected_points": round(entry - new_sl, 2),
+                    })
 
     for candle in normalized_history:
         _raise_if_cancelled(job_id)
@@ -1263,13 +1303,14 @@ def _simulate_silver_micro_range(
             if position:
                 position["highest"] = max(float(position["highest"]), candle["high"])
                 position["lowest"] = min(float(position["lowest"]), candle["low"])
+                position["_last_trail_time"] = ts.isoformat()
                 side = position["side"]
                 sl = float(position["sl_price"])
                 target = float(position["target_price"])
                 entry = float(position["entry_price"])
                 stop_hit = candle["low"] <= sl if side == "BUY" else candle["high"] >= sl
                 target_hit = candle["high"] >= target if side == "BUY" else candle["low"] <= target
-                use_target = settings.get("exit_mode") != "trailing_sl_only"
+                use_target = exit_mode != "trailing_sl_only"
                 if stop_hit:
                     close_position(sl, ts, "SL", day)
                 elif target_hit and use_target:
@@ -1315,8 +1356,17 @@ def _close_silver_micro_position(
     side = position["side"]
     qty = int(position["qty"])
     entry = float(position["entry_price"])
+    initial_sl = float(position.get("initial_sl_price") or position["sl_price"])
     sl = float(position["sl_price"])
     target = float(position["target_price"])
+    trailing_moves = list(position.get("trailing_moves") or [])
+    trailing_active = bool(position.get("trailing_sl_active"))
+    trailing_enabled = bool(position.get("trailing_sl_enabled"))
+    max_protected_points = 0.0
+    if side == "BUY":
+        max_protected_points = max(0.0, sl - entry)
+    else:
+        max_protected_points = max(0.0, entry - sl)
     buy_value = entry * qty if side == "BUY" else exit_price * qty
     sell_value = exit_price * qty if side == "BUY" else entry * qty
     charges = calculate_charges(buy_value, sell_value, charges_config)
@@ -1332,6 +1382,14 @@ def _close_silver_micro_position(
         "exit_reason": exit_reason,
         "target_price": round(target, 2),
         "sl_price": round(sl, 2),
+        "initial_sl_price": round(initial_sl, 2),
+        "trailing_sl_enabled": trailing_enabled,
+        "trailing_sl_active": trailing_active,
+        "trailing_trigger_points": round(float(position.get("trailing_trigger_points") or 0), 2),
+        "trailing_distance_points": round(float(position.get("trailing_distance_points") or 0), 2),
+        "trailing_move_count": len(trailing_moves),
+        "trailing_moves": trailing_moves,
+        "max_protected_points": round(max_protected_points, 2),
         "entry_trigger": f"Historical {position['entry_time'].date().isoformat()} Silver Micro 15m breakout replay.",
         **charges,
         "gross_pnl": round(gross_pnl, 2),

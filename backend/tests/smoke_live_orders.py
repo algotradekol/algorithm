@@ -2770,6 +2770,151 @@ def test_algo3_candle_close_trigger_fires():
           f"opens={strat.broker.opens}")
 
 
+def test_algo3_backtest_trailing_metadata():
+    print("\n50b. algo3 backtest records trailing SL metadata and moves")
+    import datetime as _dt
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    symbol = "MCX:TEST-EQ"
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+
+    def push(offset, o, h, l, c, v=100):
+        history.append({
+            "time": base + _dt.timedelta(minutes=offset),
+            "open": o, "high": h, "low": l, "close": c, "volume": v,
+        })
+
+    for b in range(20):
+        for m in range(15):
+            push(b * 15 + m, 90000, 90000, 90000, 90000)
+
+    for m in range(14):
+        push(20 * 15 + m, 90000, 90200, 89950, 90100)
+    push(20 * 15 + 14, 90100, 90500, 90050, 90500)
+
+    push(21 * 15 + 0, 90620, 90680, 90620, 90670)
+    push(21 * 15 + 1, 90670, 90920, 90660, 90890)
+    push(21 * 15 + 2, 90890, 90910, 90740, 90760)
+    for m in range(3, 15):
+        push(21 * 15 + m, 90760, 90790, 90720, 90750)
+    push(22 * 15, 90750, 90750, 90750, 90750)
+
+    settings = {
+        "silver_breakout_points": 150,
+        "sl_points": 100,
+        "target_points": 1000,
+        "trailing_sl_enabled": True,
+        "tsl_trigger_points": 200,
+        "tsl_distance_points": 100,
+        "exit_mode": "fixed_target_trailing_sl",
+        "silver_lots": 1,
+    }
+    charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0, "exchange_pct": 0,
+               "sebi_pct": 0, "gst_pct": 0, "stamp_duty_pct": 0}
+    first_date = _dt.date(2026, 8, 19)
+
+    with _lock:
+        _jobs["trail-meta-test"] = {"cancel_requested": False}
+    try:
+        results = bt._simulate_silver_micro_range(
+            job_id="trail-meta-test",
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=first_date,
+            symbol=symbol,
+            history=history,
+            trading_days=[first_date],
+            settings=settings,
+            charges_config=charges,
+        )
+    finally:
+        with _lock:
+            _jobs.pop("trail-meta-test", None)
+
+    trades = results[0]["trades"]
+    check("backtest trailing metadata produced a trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        trade = trades[0]
+        check("trade marked trailing enabled", trade.get("trailing_sl_enabled") is True, f"trade={trade}")
+        check("trade marked trailing active", trade.get("trailing_sl_active") is True, f"trade={trade}")
+        check("trade saved at least one trail move", int(trade.get("trailing_move_count") or 0) >= 1, f"trade={trade}")
+        check("final SL moved above initial SL for BUY", float(trade.get("sl_price") or 0) > float(trade.get("initial_sl_price") or 0), f"trade={trade}")
+
+
+def test_algo3_backtest_respects_trailing_toggle():
+    print("\n50c. algo3 backtest respects trailing toggle the same way live does")
+    import datetime as _dt
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    symbol = "MCX:TEST-EQ"
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+
+    def push(offset, o, h, l, c, v=100):
+        history.append({
+            "time": base + _dt.timedelta(minutes=offset),
+            "open": o, "high": h, "low": l, "close": c, "volume": v,
+        })
+
+    for b in range(20):
+        for m in range(15):
+            push(b * 15 + m, 90000, 90000, 90000, 90000)
+
+    for m in range(14):
+        push(20 * 15 + m, 90000, 90200, 89950, 90100)
+    push(20 * 15 + 14, 90100, 90500, 90050, 90500)
+
+    push(21 * 15 + 0, 90620, 90680, 90620, 90670)
+    push(21 * 15 + 1, 90670, 90920, 90660, 90890)
+    push(21 * 15 + 2, 90890, 90910, 90740, 90760)
+    for m in range(3, 15):
+        push(21 * 15 + m, 90760, 90790, 90720, 90750)
+    push(22 * 15, 90750, 90750, 90750, 90750)
+
+    settings = {
+        "silver_breakout_points": 150,
+        "sl_points": 100,
+        "target_points": 1000,
+        "trailing_sl_enabled": False,
+        "tsl_trigger_points": 200,
+        "tsl_distance_points": 100,
+        "exit_mode": "fixed_target_trailing_sl",
+        "silver_lots": 1,
+    }
+    charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0, "exchange_pct": 0,
+               "sebi_pct": 0, "gst_pct": 0, "stamp_duty_pct": 0}
+    first_date = _dt.date(2026, 8, 19)
+
+    with _lock:
+        _jobs["trail-toggle-test"] = {"cancel_requested": False}
+    try:
+        results = bt._simulate_silver_micro_range(
+            job_id="trail-toggle-test",
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=first_date,
+            symbol=symbol,
+            history=history,
+            trading_days=[first_date],
+            settings=settings,
+            charges_config=charges,
+        )
+    finally:
+        with _lock:
+            _jobs.pop("trail-toggle-test", None)
+
+    trades = results[0]["trades"]
+    check("backtest with trailing toggle off still produced a trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        trade = trades[0]
+        check("trailing toggle off leaves trailing disabled", trade.get("trailing_sl_enabled") is False, f"trade={trade}")
+        check("trailing toggle off leaves no trail moves", int(trade.get("trailing_move_count") or 0) == 0, f"trade={trade}")
+        check("trailing toggle off keeps final SL at initial SL", abs(float(trade.get("sl_price") or 0) - float(trade.get("initial_sl_price") or 0)) < 1e-9, f"trade={trade}")
+
+
 def test_broker_positions_entry_time_from_tradebook():
     """Positions opened directly in the Fyers app show accurate entry_time
     sourced from the intraday tradebook (client's 2026-08-20 ask)."""
@@ -3468,6 +3613,8 @@ def main():
     test_algo3_gap_through_fires_immediately()
     test_algo3_previous_day_buy_setup_gap_open_fires_immediately()
     test_algo3_candle_close_trigger_fires()
+    test_algo3_backtest_trailing_metadata()
+    test_algo3_backtest_respects_trailing_toggle()
     test_algo3_lot_based_qty()
     test_broker_positions_entry_time_from_tradebook()
     test_algo3_warmup_end_date_is_today()

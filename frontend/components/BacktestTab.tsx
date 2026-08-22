@@ -306,7 +306,107 @@ function BacktestCandidates({ days }: { days: any[] }) {
   );
 }
 function BacktestTrades({ rows }: { rows: any[] }) {
-  return <section className="panel overflow-hidden"><div className="border-b border-[#1f2937] p-4"><h3 className="text-sm font-semibold text-gray-100">Simulated Trades</h3><p className="mt-1 text-xs text-gray-500">Times are based on the historical one-minute candle used for simulated entry and exit.</p></div><div className="overflow-x-auto"><table className="w-full min-w-[1150px] text-xs"><thead className="bg-[#111827]"><tr>{['Date', 'Symbol', 'Side', 'Qty', 'Entry Time', 'Entry', 'Exit Time', 'Exit', 'Reason', 'Net'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr></thead><tbody>{!rows.length ? <tr><td colSpan={10} className="table-cell text-gray-500">No simulated trades in this range.</td></tr> : rows.map((trade, index) => <tr key={`${trade.session_date}-${trade.symbol}-${index}`} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}><td className="table-cell num">{trade.session_date}</td><td className="table-cell font-mono text-gray-100">{trade.symbol}</td><td className={`table-cell font-semibold ${trade.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{trade.side}</td><td className="table-cell num">{trade.qty}</td><td className="table-cell num">{formatTime(trade.entry_time)}</td><td className="table-cell num">{number(trade.entry_price)}</td><td className="table-cell num">{formatTime(trade.exit_time)}</td><td className="table-cell num">{number(trade.exit_price)}</td><td className="table-cell">{trade.exit_reason}</td><td className={`table-cell num font-semibold ${tone(trade.net_pnl)}`}>{money(trade.net_pnl)}</td></tr>)}</tbody></table></div></section>;
+  const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
+
+  return <>
+    <section className="panel overflow-hidden">
+      <div className="border-b border-[#1f2937] p-4">
+        <h3 className="text-sm font-semibold text-gray-100">Simulated Trades</h3>
+        <p className="mt-1 text-xs text-gray-500">Times are based on the historical one-minute candle used for simulated entry and exit.</p>
+      </div>
+      <div className="overflow-x-auto">
+        <table className="w-full min-w-[1550px] text-xs">
+          <thead className="bg-[#111827]">
+            <tr>{['Date', 'Symbol', 'Side', 'Qty', 'Entry Time', 'Entry', 'Exit Time', 'Exit', 'Initial SL', 'Final SL', 'Target', 'Trailing SL', 'Reason', 'Net'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr>
+          </thead>
+          <tbody>
+            {!rows.length ? <tr><td colSpan={14} className="table-cell text-gray-500">No simulated trades in this range.</td></tr> : rows.map((trade, index) => <tr key={`${trade.session_date}-${trade.symbol}-${index}`} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}>
+              <td className="table-cell num">{trade.session_date}</td>
+              <td className="table-cell font-mono text-gray-100">{trade.symbol}</td>
+              <td className={`table-cell font-semibold ${trade.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{trade.side}</td>
+              <td className="table-cell num">{trade.qty}</td>
+              <td className="table-cell num">{formatTime(trade.entry_time)}</td>
+              <td className="table-cell num">{number(trade.entry_price)}</td>
+              <td className="table-cell num">{formatTime(trade.exit_time)}</td>
+              <td className="table-cell num">{number(trade.exit_price)}</td>
+              <td className="table-cell num">{optionalNumber(trade.initial_sl_price)}</td>
+              <td className="table-cell num">{optionalNumber(trade.sl_price)}</td>
+              <td className="table-cell num">{optionalNumber(trade.target_price)}</td>
+              <td className="table-cell">
+                <div className="flex min-w-[170px] items-center gap-2">
+                  <span className={trade.trailing_sl_enabled ? (trade.trailing_sl_active ? 'text-[#22c55e]' : 'text-[#f59e0b]') : 'text-gray-500'}>
+                    {backtestTrailingLabel(trade)}
+                  </span>
+                  {Number(trade.trailing_move_count || 0) > 0 && (
+                    <button
+                      onClick={() => setSelectedTrade(trade)}
+                      className="rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1 text-[11px] font-semibold text-[#93c5fd]"
+                    >
+                      View {trade.trailing_move_count}
+                    </button>
+                  )}
+                </div>
+              </td>
+              <td className="table-cell">{trade.exit_reason}</td>
+              <td className={`table-cell num font-semibold ${tone(trade.net_pnl)}`}>{money(trade.net_pnl)}</td>
+            </tr>)}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {selectedTrade && <BacktestTrailModal trade={selectedTrade} onClose={() => setSelectedTrade(null)} />}
+  </>;
+}
+
+function BacktestTrailModal({ trade, onClose }: { trade: any; onClose: () => void }) {
+  const moves = Array.isArray(trade.trailing_moves) ? trade.trailing_moves : [];
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="max-h-[85vh] w-full max-w-4xl overflow-hidden rounded-xl border border-[#1f2937] bg-[#0b1220] shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-[#1f2937] px-5 py-4">
+          <div>
+            <h3 className="text-xl font-semibold text-white">Backtest trailing SL history</h3>
+            <p className="mt-1 text-sm text-gray-400">{trade.symbol} · {trade.side} · {trade.session_date}</p>
+          </div>
+          <button onClick={onClose} className="text-2xl leading-none text-gray-400 hover:text-white">×</button>
+        </div>
+        <div className="grid gap-3 border-b border-[#1f2937] px-5 py-4 sm:grid-cols-5">
+          <TrailStat label="Initial SL" value={optionalNumber(trade.initial_sl_price)} />
+          <TrailStat label="Final SL" value={optionalNumber(trade.sl_price)} />
+          <TrailStat label="Trigger" value={`${number(trade.trailing_trigger_points || 0)} pts`} />
+          <TrailStat label="Distance" value={`${number(trade.trailing_distance_points || 0)} pts`} />
+          <TrailStat label="Protected" value={`${number(trade.max_protected_points || 0)} pts`} />
+        </div>
+        <div className="max-h-[50vh] overflow-auto px-5 py-4">
+          {!moves.length ? (
+            <p className="text-sm text-gray-500">No per-step trailing moves were recorded for this backtest trade.</p>
+          ) : (
+            <table className="w-full min-w-[760px] text-xs">
+              <thead className="bg-[#111827]">
+                <tr>{['Time', 'Gain', 'Reference', 'Previous SL', 'New SL', 'Protected'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr>
+              </thead>
+              <tbody>
+                {moves.map((move: any, index: number) => (
+                  <tr key={`${trade.symbol}-${trade.session_date}-${index}`} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}>
+                    <td className="table-cell num">{formatTime(move.time)}</td>
+                    <td className="table-cell num">{optionalNumber(move.gain_points)}</td>
+                    <td className="table-cell num">{optionalNumber(move.reference_price)}</td>
+                    <td className="table-cell num">{optionalNumber(move.previous_sl)}</td>
+                    <td className="table-cell num text-[#22c55e]">{optionalNumber(move.new_sl)}</td>
+                    <td className="table-cell num">{optionalNumber(move.protected_points)}</td>
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          )}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TrailStat({ label, value }: { label: string; value: string }) {
+  return <div className="rounded border border-[#1f2937] bg-[#111827] p-3"><div className="label">{label}</div><div className="num mt-2 text-sm text-gray-100">{value}</div></div>;
 }
 
 function Card({ label, value, tone: valueTone }: { label: string; value: any; tone?: number }) { return <div className="rounded border border-[#1f2937] bg-[#111827] p-3"><div className="label">{label}</div><div className={`num mt-2 text-lg font-semibold ${tone(valueTone)}`}>{value}</div></div>; }
@@ -332,14 +432,14 @@ function tone(value?: number) { return value && value > 0 ? 'text-[#22c55e]' : v
 function formatTime(value: unknown) { if (!value) return '--'; const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }); }
 
 function downloadBacktestCsv(result: any) {
-  const headers = ['Record Type', 'Date', 'Symbol', 'Sector', 'Side', 'Open', 'High', 'Low', 'Close', 'Volume', 'Previous Close', 'Gap %', 'Shape Passed', 'Gap Passed', 'Filters Passed', 'Selected For Trade', 'Rejection Reason', 'VWAP', 'RSI', 'ADX', 'Quantity', 'Entry Time IST', 'Entry Price', 'Exit Time IST', 'Exit Price', 'Exit Reason', 'Gross P&L', 'Charges', 'Net P&L', 'Metric', 'Value'];
+  const headers = ['Record Type', 'Date', 'Symbol', 'Sector', 'Side', 'Open', 'High', 'Low', 'Close', 'Volume', 'Previous Close', 'Gap %', 'Shape Passed', 'Gap Passed', 'Filters Passed', 'Selected For Trade', 'Rejection Reason', 'VWAP', 'RSI', 'ADX', 'Quantity', 'Entry Time IST', 'Entry Price', 'Exit Time IST', 'Exit Price', 'Initial SL', 'Final SL', 'Target', 'Trailing Enabled', 'Trailing Active', 'Trailing Trigger Points', 'Trailing Distance Points', 'Trailing Move Count', 'Trailing Moves', 'Exit Reason', 'Gross P&L', 'Charges', 'Net P&L', 'Metric', 'Value'];
   const rows: any[][] = [];
   Object.entries(result.summary || {}).forEach(([metric, value]) => rows.push(['Summary', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', metric, typeof value === 'object' ? JSON.stringify(value) : value]));
   (result.daily_results || []).forEach((day: any) => {
     const summary = day.summary || {};
     rows.push(['Daily Result', day.date, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', summary.gross_pnl, summary.total_charges, summary.net_pnl, 'Trades / wins / losses', `${summary.trade_count || 0} / ${summary.win_count || 0} / ${summary.loss_count || 0}`]);
-    (day.trades || []).forEach((trade: any) => rows.push(['Trade', day.date, trade.symbol, trade.sector || '', trade.side, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', trade.qty, formatTime(trade.entry_time), trade.entry_price, formatTime(trade.exit_time), trade.exit_price, trade.exit_reason, trade.gross_pnl, trade.total_charges, trade.net_pnl, '', '']));
-    (day.candidates || []).forEach((row: any) => rows.push(['Candidate', day.date, row.symbol, row.sector || '', row.side, row.open, row.high, row.low, row.close, row.volume, row.prev_close, row.gap_pct, row.shape_passed, row.gap_passed, row.filters_passed, row.selected_for_trade, row.rejection_reason, row.indicator_results?.vwap?.value, row.indicator_results?.rsi?.value, row.indicator_results?.adx?.value, '', '', '', '', '', '', '', '', '', '', '']));
+    (day.trades || []).forEach((trade: any) => rows.push(['Trade', day.date, trade.symbol, trade.sector || '', trade.side, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', trade.qty, formatTime(trade.entry_time), trade.entry_price, formatTime(trade.exit_time), trade.exit_price, trade.initial_sl_price, trade.sl_price, trade.target_price, trade.trailing_sl_enabled, trade.trailing_sl_active, trade.trailing_trigger_points, trade.trailing_distance_points, trade.trailing_move_count, JSON.stringify(trade.trailing_moves || []), trade.exit_reason, trade.gross_pnl, trade.total_charges, trade.net_pnl, '', '']));
+    (day.candidates || []).forEach((row: any) => rows.push(['Candidate', day.date, row.symbol, row.sector || '', row.side, row.open, row.high, row.low, row.close, row.volume, row.prev_close, row.gap_pct, row.shape_passed, row.gap_passed, row.filters_passed, row.selected_for_trade, row.rejection_reason, row.indicator_results?.vwap?.value, row.indicator_results?.rsi?.value, row.indicator_results?.adx?.value, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']));
   });
   const csv = [headers, ...rows].map((row) => row.map(csvValue).join(',')).join('\r\n');
   const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
@@ -356,4 +456,10 @@ function csvValue(value: unknown) {
   // Avoid spreadsheet formula execution when a symbol or text begins with a formula prefix.
   const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
   return `"${safe.replace(/"/g, '""')}"`;
+}
+
+function backtestTrailingLabel(trade: any) {
+  if (!trade.trailing_sl_enabled) return 'OFF';
+  if (!trade.trailing_sl_active) return `armed · ${number(trade.trailing_trigger_points || 0)} pts`;
+  return `active @ ${number(trade.sl_price || 0)}`;
 }
