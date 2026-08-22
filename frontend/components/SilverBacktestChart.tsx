@@ -17,8 +17,6 @@ type Props = {
   selectedTradeId: string | null;
   onSelectedTradeIdChange: (value: string | null) => void;
   overlays: OverlayState;
-  onOverlaysChange: (value: OverlayState) => void;
-  onOpenModal: () => void;
   expanded?: boolean;
 };
 
@@ -29,8 +27,6 @@ export default function SilverBacktestChart({
   selectedTradeId,
   onSelectedTradeIdChange,
   overlays,
-  onOverlaysChange,
-  onOpenModal,
   expanded = false,
 }: Props) {
   const selectedDay = days.find((day) => day.date === selectedDate) || days[0];
@@ -59,6 +55,7 @@ export default function SilverBacktestChart({
   const pinchRef = useRef<{ distance: number; ratio: number } | null>(null);
   const dragRef = useRef<{ x: number; offset: number } | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
+  const [scrollLeft, setScrollLeft] = useState(0);
 
   const maxVisible = Math.max(10, normalized.length);
   const clampedVisible = Math.min(Math.max(visibleCount, 10), maxVisible);
@@ -162,6 +159,12 @@ export default function SilverBacktestChart({
       : null
   );
   const timeTicks = buildTimeTicks(visible, start, candleWidth, expanded ? 8 : 6);
+  const chartHeight = expanded ? 680 : 600;
+  const fixedPlotViewportWidth = Math.max(0, (containerWidth || width) - priceScaleWidth);
+  const visibleTimeTicks = timeTicks.filter((tick) => {
+    const x = tick.x - scrollLeft;
+    return x >= -24 && x <= fixedPlotViewportWidth + 24;
+  });
 
   function y(price: number) {
     return 16 + ((high - price) / priceSpan) * (priceHeight - 32);
@@ -271,11 +274,6 @@ export default function SilverBacktestChart({
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <DateSelector days={days} selectedDate={selectedDate} onSelectedDateChange={onSelectedDateChange} />
-          {!expanded && (
-            <button onClick={onOpenModal} className="rounded border border-[#3b82f6]/50 bg-[#3b82f6]/10 px-3 py-2 text-xs font-semibold text-[#93c5fd]">
-              View chart
-            </button>
-          )}
         </div>
       </div>
 
@@ -305,26 +303,28 @@ export default function SilverBacktestChart({
             <button onClick={() => selectedTrade && fitTradeWindow(selectedTrade, 3)} disabled={!selectedTrade} className="rounded border border-[#1f2937] px-2 py-1 text-xs text-gray-400 disabled:cursor-not-allowed disabled:opacity-50">Focus selected trade</button>
           </div>
 
-          <div
-            ref={chartRef}
-            onPointerDown={handlePointerDown}
-            onPointerMove={handlePointerMove}
-            onPointerUp={handlePointerUp}
-            onPointerCancel={() => { dragRef.current = null; }}
-            onTouchStart={handleTouchStart}
-            onTouchMove={handleTouchMove}
-            onTouchEnd={(event) => { if (event.touches.length < 2) pinchRef.current = null; }}
-            onTouchCancel={() => { pinchRef.current = null; }}
-            className="overscroll-contain overflow-x-auto overflow-y-hidden border border-[#1f2937] bg-[#0a0e14]"
-            style={{ overscrollBehavior: 'contain', touchAction: 'none' }}
-          >
+          <div className="relative overflow-hidden border border-[#1f2937] bg-[#0a0e14]" style={{ height: chartHeight }}>
+            <div
+              ref={chartRef}
+              onScroll={() => setScrollLeft(chartRef.current?.scrollLeft || 0)}
+              onPointerDown={handlePointerDown}
+              onPointerMove={handlePointerMove}
+              onPointerUp={handlePointerUp}
+              onPointerCancel={() => { dragRef.current = null; }}
+              onTouchStart={handleTouchStart}
+              onTouchMove={handleTouchMove}
+              onTouchEnd={(event) => { if (event.touches.length < 2) pinchRef.current = null; }}
+              onTouchCancel={() => { pinchRef.current = null; }}
+              className="h-full overscroll-contain overflow-x-auto overflow-y-hidden bg-[#0a0e14]"
+              style={{ overscrollBehavior: 'contain', touchAction: 'none' }}
+            >
             <svg
               viewBox={`0 0 ${width} ${totalHeight}`}
               width={width}
-              height={expanded ? 680 : 600}
+              height={chartHeight}
               preserveAspectRatio="none"
               className="block max-w-none cursor-crosshair"
-              style={{ width: `${width}px`, minWidth: '100%', height: expanded ? 680 : 600 }}
+              style={{ width: `${width}px`, minWidth: '100%', height: chartHeight }}
               onMouseMove={handleMouseMove}
               onMouseLeave={() => setCrosshair(null)}
             >
@@ -334,8 +334,6 @@ export default function SilverBacktestChart({
                 return (
                   <g key={ratio}>
                     <line x1={0} x2={plotWidth} y1={lineY} y2={lineY} stroke="#1f2937" strokeWidth="1" />
-                    <rect x={plotWidth + 8} y={lineY - 15} width={priceScaleWidth - 16} height={25} rx={4} fill="#111827" stroke="#334155" />
-                    <text x={width - 12} y={lineY + 2} textAnchor="end" fill="#e2e8f0" fontSize="13.5" fontWeight="600" fontFamily="ui-monospace">{formatNumber(price)}</text>
                   </g>
                 );
               })}
@@ -366,12 +364,30 @@ export default function SilverBacktestChart({
                 const bodyWidth = Math.max(2, candleWidth * 0.58);
                 const volumeBarHeight = candle.volume / maxVolume * (volumeHeight - 10);
                 const volumeY = priceHeight + 18 + (volumeHeight - volumeBarHeight);
+                const absoluteIndex = start + index;
+                const highlighted = Boolean(
+                  selectedTradeOverlay
+                  && absoluteIndex >= selectedTradeOverlay.entryIndex
+                  && absoluteIndex <= selectedTradeOverlay.exitIndex,
+                );
                 return (
                   <g key={`${candle.time}-${index}`}>
                     <title>{`${candle.time}\nO ${formatNumber(candle.open)} H ${formatNumber(candle.high)} L ${formatNumber(candle.low)} C ${formatNumber(candle.close)}\nEMA20 ${formatNumber(candle.ema20)}\nVol ${candle.volume.toLocaleString('en-IN')}`}</title>
                     <line x1={x} x2={x} y1={highY} y2={lowY} stroke={color} strokeWidth="1.2" />
                     <rect x={x - bodyWidth / 2} y={bodyTop} width={bodyWidth} height={bodyHeight} fill={color} opacity={bullish ? 0.85 : 0.75} />
                     <rect x={x - bodyWidth / 2} y={volumeY} width={bodyWidth} height={volumeBarHeight} fill={color} opacity="0.35" />
+                    {highlighted && (
+                      <rect
+                        x={x - bodyWidth / 2 - 6}
+                        y={Math.max(4, highY - 7)}
+                        width={bodyWidth + 12}
+                        height={Math.max(12, Math.min(priceHeight - 8, lowY + 7) - Math.max(4, highY - 7))}
+                        fill="none"
+                        stroke="#facc15"
+                        strokeWidth="1.4"
+                        rx="2"
+                      />
+                    )}
                   </g>
                 );
               })}
@@ -458,10 +474,6 @@ export default function SilverBacktestChart({
                 <g pointerEvents="none">
                   <line x1={activeX} x2={activeX} y1={0} y2={priceHeight + 18} stroke="#9ca3af" strokeDasharray="5 5" strokeWidth="1" opacity="0.75" />
                   <line x1={0} x2={plotWidth} y1={crosshair.y} y2={crosshair.y} stroke="#9ca3af" strokeDasharray="5 5" strokeWidth="1" opacity="0.75" />
-                  <rect x={plotWidth + 8} y={Math.max(2, Math.min(priceHeight - 25, crosshair.y - 13))} width={priceScaleWidth - 16} height={25} fill="#172033" stroke="#60a5fa" />
-                  <text x={width - 12} y={Math.max(18, Math.min(priceHeight - 7, crosshair.y + 5))} textAnchor="end" fill="#f8fafc" fontSize="13.5" fontWeight="600" fontFamily="ui-monospace">
-                    {formatNumber(activePrice)}
-                  </text>
                 </g>
               )}
 
@@ -484,6 +496,53 @@ export default function SilverBacktestChart({
                 {activeCandle ? `Focused ${formatAxisDateTime(activeCandle.time)}  |  window ${formatAxisDateTime(first.time)} -> ${formatAxisDateTime(last.time)}` : `${formatAxisDateTime(first.time)} -> ${formatAxisDateTime(last.time)}`}
               </text>
             </svg>
+            </div>
+
+            <div
+              className="pointer-events-none absolute right-0 top-0 z-20 border-l border-[#334155] bg-[#0a0e14]"
+              style={{ width: priceScaleWidth, height: chartHeight }}
+              aria-label="Fixed price scale"
+            >
+              <svg viewBox={`0 0 ${priceScaleWidth} ${totalHeight}`} width={priceScaleWidth} height={chartHeight} preserveAspectRatio="none">
+                {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
+                  const price = high - priceSpan * ratio;
+                  const lineY = y(price);
+                  return (
+                    <g key={`fixed-price-${ratio}`}>
+                      <line x1={0} x2={8} y1={lineY} y2={lineY} stroke="#475569" strokeWidth="1" />
+                      <rect x={8} y={lineY - 15} width={priceScaleWidth - 16} height={25} rx={4} fill="#111827" stroke="#334155" />
+                      <text x={priceScaleWidth - 12} y={lineY + 2} textAnchor="end" fill="#e2e8f0" fontSize="13.5" fontWeight="600" fontFamily="ui-monospace">{formatNumber(price)}</text>
+                    </g>
+                  );
+                })}
+                {crosshair && activePrice !== null && (
+                  <g>
+                    <rect x={8} y={Math.max(2, Math.min(priceHeight - 25, crosshair.y - 13))} width={priceScaleWidth - 16} height={25} fill="#172033" stroke="#60a5fa" />
+                    <text x={priceScaleWidth - 12} y={Math.max(18, Math.min(priceHeight - 7, crosshair.y + 5))} textAnchor="end" fill="#f8fafc" fontSize="13.5" fontWeight="700" fontFamily="ui-monospace">{formatNumber(activePrice)}</text>
+                  </g>
+                )}
+              </svg>
+            </div>
+
+            <div
+              className="pointer-events-none absolute bottom-0 left-0 z-20 border-t border-[#334155] bg-[#0a0e14]"
+              style={{ right: priceScaleWidth, height: 76 }}
+              aria-label="Fixed time scale"
+            >
+              <svg viewBox={`0 0 ${Math.max(fixedPlotViewportWidth, 1)} 76`} width="100%" height="76" preserveAspectRatio="none">
+                <text x={8} y={18} fill="#60a5fa" fontSize="13" fontWeight="600" fontFamily="ui-monospace">15-minute candles · IST</text>
+                {visibleTimeTicks.map((tick) => {
+                  const x = tick.x - scrollLeft;
+                  return (
+                    <g key={`fixed-time-${tick.key}`}>
+                      <line x1={x} x2={x} y1={0} y2={10} stroke="#64748b" strokeWidth="1" />
+                      <text x={x} y={39} textAnchor="middle" fill="#cbd5e1" fontSize="12.5" fontWeight="600" fontFamily="ui-monospace">{tick.dateLabel}</text>
+                      <text x={x} y={61} textAnchor="middle" fill="#f8fafc" fontSize="14" fontWeight="700" fontFamily="ui-monospace">{tick.label}</text>
+                    </g>
+                  );
+                })}
+              </svg>
+            </div>
           </div>
         </div>
 

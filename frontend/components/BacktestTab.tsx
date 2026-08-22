@@ -1,6 +1,6 @@
 'use client';
 
-import { type ReactNode, useEffect, useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { PAGE_SIZE, PaginationControls } from './PaginationControls';
 import SilverBacktestChart from './SilverBacktestChart';
@@ -204,7 +204,6 @@ function BacktestResult({ result }: { result: any }) {
   );
   const [selectedChartDate, setSelectedChartDate] = useState('');
   const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null);
-  const [chartModalOpen, setChartModalOpen] = useState(false);
   const [chartOverlays, setChartOverlays] = useState({
     ema: true,
     setups: false,
@@ -275,10 +274,9 @@ function BacktestResult({ result }: { result: any }) {
     }
   }, [uiStorageReady, resultStorageId, selectedChartDate, selectedTradeId, chartOverlays]);
 
-  function focusTrade(trade: any, openModal = false) {
+  function focusTrade(trade: any) {
     setSelectedChartDate(trade.session_date);
     setSelectedTradeId(trade.trade_id || null);
-    if (openModal) setChartModalOpen(true);
   }
 
   return <>
@@ -332,8 +330,6 @@ function BacktestResult({ result }: { result: any }) {
           selectedTradeId={selectedTradeId}
           onSelectedTradeIdChange={setSelectedTradeId}
           overlays={chartOverlays}
-          onOverlaysChange={setChartOverlays}
-          onOpenModal={() => setChartModalOpen(true)}
         />
         <BacktestTrades
           rows={visibleTrades}
@@ -352,21 +348,6 @@ function BacktestResult({ result }: { result: any }) {
       />
     )}
     <DailyResults rows={daily} />
-    {chartModalOpen && silverChartDays.length > 0 && (
-      <BacktestChartModal onClose={() => setChartModalOpen(false)}>
-        <SilverBacktestChart
-          days={silverChartDays}
-          selectedDate={selectedChartDate}
-          onSelectedDateChange={setSelectedChartDate}
-          selectedTradeId={selectedTradeId}
-          onSelectedTradeIdChange={setSelectedTradeId}
-          overlays={chartOverlays}
-          onOverlaysChange={setChartOverlays}
-          onOpenModal={() => {}}
-          expanded
-        />
-      </BacktestChartModal>
-    )}
   </>;
 }
 
@@ -564,7 +545,7 @@ function BacktestTrades({
 }: {
   rows: any[];
   selectedTradeId: string | null;
-  onFocusTrade: (trade: any, openModal?: boolean) => void;
+  onFocusTrade: (trade: any) => void;
   selectedDate: string | null;
   compact?: boolean;
 }) {
@@ -617,13 +598,13 @@ function BacktestTrades({
               <td className="table-cell">
                 <div className="flex min-w-[140px] items-center gap-2">
                   <button
-                    onClick={() => onFocusTrade(trade, false)}
+                    onClick={() => onFocusTrade(trade)}
                     className="rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1 text-[11px] font-semibold text-[#93c5fd]"
                   >
                     Focus
                   </button>
                   <button
-                    onClick={() => onFocusTrade(trade, true)}
+                    onClick={() => onFocusTrade(trade)}
                     className="rounded border border-[#60a5fa]/40 bg-[#1d4ed8]/10 px-2 py-1 text-[11px] font-semibold text-[#bfdbfe]"
                   >
                     View chart
@@ -653,25 +634,6 @@ function BacktestTrades({
     {selectedTrade && <BacktestTrailModal trade={selectedTrade} onClose={() => setSelectedTrade(null)} />}
     {selectedDiagnosticTrade && <BacktestDiagnosticModal trade={selectedDiagnosticTrade} onClose={() => setSelectedDiagnosticTrade(null)} />}
   </>;
-}
-
-function BacktestChartModal({ children, onClose }: { children: ReactNode; onClose: () => void }) {
-  return (
-    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/75 p-4">
-      <div className="max-h-[94vh] w-full max-w-[1680px] overflow-hidden rounded-xl border border-[#1f2937] bg-[#0b1220] shadow-2xl">
-        <div className="flex items-start justify-between gap-4 border-b border-[#1f2937] px-5 py-4">
-          <div>
-            <h3 className="text-xl font-semibold text-white">Silver backtest chart</h3>
-            <p className="mt-1 text-sm text-gray-400">Expanded replay view with the same selected day and trade focus.</p>
-          </div>
-          <button onClick={onClose} className="text-2xl leading-none text-gray-400 hover:text-white">×</button>
-        </div>
-        <div className="max-h-[85vh] overflow-auto p-4">
-          {children}
-        </div>
-      </div>
-    </div>
-  );
 }
 
 function BacktestTrailModal({ trade, onClose }: { trade: any; onClose: () => void }) {
