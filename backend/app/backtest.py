@@ -941,11 +941,13 @@ def _silver_micro_execution_assumption(history_resolution: str, settings: dict) 
         f"Silver Micro replays 15-minute bars aggregated from 1-minute history "
         f"({history_resolution}). Each closed 15m bar updates EMA20; a green candle "
         f"closing above EMA20 stores its close as the BUY level, a red candle "
-        f"closing below EMA20 stores the SELL level (levels overwrite on each new "
-        f"qualifier). Entry fires when a subsequent 1-minute bar's high (BUY) or "
-        f"low (SELL) crosses (setup_close +/- n={n} points) — the backtest "
-        f"approximates the live tick-cross using 1-minute bar extremes and enters "
-        f"at the trigger level itself. SL={sl_pts} points, target={target_pts} "
+        f"closing below EMA20 stores the SELL red-reference close. BUY entry fires "
+        f"when a subsequent 1-minute bar's high crosses (setup_close + n={n} points). "
+        f"SELL entry fires only when a later qualifying red 15m candle closes at "
+        f"least n points below the previous stored red reference close; green candles "
+        f"in between do not reset that stored red reference. BUY entries use 1-minute "
+        f"bar extremes and enter at the trigger level itself. SELL red-chain entries "
+        f"enter at the qualifying red candle's close. SL={sl_pts} points, target={target_pts} "
         f"points, both fixed rupee distances from entry. If a 1-minute bar touches "
         f"both SL and target, SL is assumed first (conservative). Reversal on "
         f"contra trigger closes the current position and flips at the same bar."
@@ -960,8 +962,9 @@ def _new_silver_micro_day_result(symbol: str, day: datetime.date, bar_count: int
         "mode": "historical_mcx_replay",
         "execution_assumption": (
             "Silver Micro (15m EMA breakout): green candle above EMA20 sets BUY level, "
-            "red candle below EMA20 sets SELL level. Entry fires when live price crosses "
-            "(setup_close +/- n) in the setup direction."
+            "red candle below EMA20 stores a SELL red reference. BUY uses setup close + n; "
+            "SELL fires only when a later qualifying red closes at least n points below "
+            "the previous stored red reference."
         ),
         "data_available_symbols": 1 if bar_count else 0,
         "summary": {},
@@ -1101,7 +1104,6 @@ def _simulate_silver_micro_range(
             buy_setup_close = bar["close"]
             setup_event = {"side": "BUY", "close": bar["close"], "bar": bar}
         elif is_red and ema20 is not None and bar["close"] < ema20:
-            sell_setup_close = bar["close"]
             setup_event = {"side": "SELL", "close": bar["close"], "bar": bar}
         if setup_event and allow_signals and first_date <= bar["time"].date() <= last_date:
             day_result = daily_results.get(bar["time"].date())
@@ -1133,6 +1135,27 @@ def _simulate_silver_micro_range(
                 }
                 day_result["candidates"].append(candidate)
                 day_result["condition_breakdown"][2]["passed"] += 1
+        if (
+            allow_signals
+            and first_date <= bar["time"].date() <= last_date
+            and bars_finalized >= EMA_PERIOD
+            and setup_event
+            and setup_event["side"] == "SELL"
+            and sell_setup_close is not None
+        ):
+            sell_level = sell_setup_close - n
+            if float(bar["close"]) <= float(sell_level):
+                current_position = position
+                if current_position and current_position["side"] == "SELL":
+                    pass
+                else:
+                    if current_position and current_position["side"] != "SELL":
+                        close_position(float(bar["close"]), bar["time"], "REVERSAL_CONTRA_SIGNAL", bar["time"].date())
+                    open_position("SELL", float(bar["close"]), bar["time"], bar["time"].date())
+        if is_green and ema20 is not None and bar["close"] > ema20:
+            buy_setup_close = bar["close"]
+        elif is_red and ema20 is not None and bar["close"] < ema20:
+            sell_setup_close = bar["close"]
 
     def close_position(exit_price: float, exit_time: datetime.datetime, exit_reason: str, day: datetime.date):
         nonlocal position, position_candidate
@@ -1291,13 +1314,6 @@ def _simulate_silver_micro_range(
                     if position and position["side"] != "BUY":
                         close_position(buy_level, ts, "REVERSAL_CONTRA_SIGNAL", day)
                     open_position("BUY", buy_level, ts, day)
-
-            # SELL cross: prev_ltp > level AND this minute's low <= level.
-            if position is None or position.get("side") != "SELL":
-                if sell_level is not None and prev_ltp is not None and prev_ltp > sell_level >= candle["low"]:
-                    if position and position["side"] != "SELL":
-                        close_position(sell_level, ts, "REVERSAL_CONTRA_SIGNAL", day)
-                    open_position("SELL", sell_level, ts, day)
 
             # Exit management for whatever's currently open.
             if position:

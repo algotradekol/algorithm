@@ -18,9 +18,14 @@ Rules per spec:
                 settings["silver_breakout_points"].
 
   SELL setup:   a red candle (close < open) closes below EMA20.
-                Its close is stored / overwritten same way.
-  SELL trigger: live LTP crosses (setup_close - n) in a DOWNWARD
-                direction.
+                Its close is stored as the SELL reference close.
+                On the NEXT qualifying red candle, compare that new red
+                close against the PREVIOUS stored red reference close.
+                If the new red closes at least n points lower, SELL
+                triggers at the new candle's close. Whether it triggers
+                or not, that new red close becomes the next stored sell
+                reference. Green candles in between do not clear the
+                stored red reference.
 
   Reversal:     if a contra trigger fires while a position is open,
                 close the current position at LTP and open the new
@@ -749,7 +754,6 @@ class Algo3SilverMicro(Strategy):
             return
 
         buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
-        sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
         prev = self._prev_ltp
 
         # Gap-through case: first live tick after warmup (or after a
@@ -767,17 +771,6 @@ class Algo3SilverMicro(Strategy):
             if self._fire_entry("BUY", ltp, buy_level):
                 self._mark_fired("BUY")
                 return
-        if (
-            sell_level is not None
-            and ltp <= sell_level
-            and self._sell_setup_bar_at is not None
-            and not self._already_consumed_this_setup("SELL")
-        ):
-            print(f"[algo3] TRIGGER SELL (gap-through): LTP {ltp:.2f} <= level {sell_level:.2f} (setup {self._sell_setup_close:.2f} - n={n:.0f})")
-            if self._fire_entry("SELL", ltp, sell_level):
-                self._mark_fired("SELL")
-                return
-
         # Classic live tick-cross for the case where a normal live tick
         # walks through the level (not a gap-open). Guard against
         # double-firing when the gap-through path already handled it.
@@ -792,15 +785,6 @@ class Algo3SilverMicro(Strategy):
             if self._fire_entry("BUY", ltp, buy_level):
                 self._mark_fired("BUY")
                 return
-        if (
-            sell_level is not None
-            and prev > sell_level >= ltp
-            and not self._already_consumed_this_setup("SELL")
-        ):
-            print(f"[algo3] TRIGGER SELL (tick-cross): prev {prev:.2f} -> LTP {ltp:.2f} crossed level {sell_level:.2f}")
-            if self._fire_entry("SELL", ltp, sell_level):
-                self._mark_fired("SELL")
-
     def _check_candle_close_trigger(self, bar: dict):
         """Fallback trigger check on every completed 15m bar.
 
@@ -821,7 +805,7 @@ class Algo3SilverMicro(Strategy):
         buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
         sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
         buy_setup_identity = bar_at if buy_qualifies else self._buy_setup_bar_at
-        sell_setup_identity = bar_at if sell_qualifies else self._sell_setup_bar_at
+        sell_setup_identity = bar_at if sell_qualifies else None
 
         if (
             buy_level is not None
@@ -835,11 +819,16 @@ class Algo3SilverMicro(Strategy):
                 return
         if (
             sell_level is not None
+            and sell_qualifies
             and close <= sell_level
             and sell_setup_identity is not None
             and not self._already_consumed_this_setup("SELL", sell_setup_identity)
         ):
-            print(f"[algo3] TRIGGER SELL (candle-close): bar close {close:.2f} <= level {sell_level:.2f} (setup {self._sell_setup_close:.2f} - n={n:.0f})")
+            print(
+                f"[algo3] TRIGGER SELL (red-chain close): qualifying red close {close:.2f} "
+                f"<= previous red reference {self._sell_setup_close:.2f} - n={n:.0f} "
+                f"(level {sell_level:.2f})"
+            )
             if self._fire_entry("SELL", close, sell_level, setup_bar_at_override=sell_setup_identity):
                 self._mark_fired("SELL", setup_bar_at=sell_setup_identity)
 
@@ -922,11 +911,17 @@ class Algo3SilverMicro(Strategy):
     def _entry_trigger(self, side: str, entry_price: float, trigger_level: float) -> str:
         n = self.settings.get("silver_breakout_points", 150)
         setup_close = self._buy_setup_close if side == "BUY" else self._sell_setup_close
-        direction = "upward" if side == "BUY" else "downward"
+        if side == "BUY":
+            return (
+                f"15m silver buy breakout on {self.symbol}: setup close "
+                f"{_fmt(setup_close)} + n={n} = trigger {_fmt(trigger_level)}, "
+                f"LTP crossed upward through the level at {entry_price:.2f}. "
+                f"EMA20 {_fmt(self._ema20)}."
+            )
         return (
-            f"15m silver {side.lower()} breakout on {self.symbol}: setup close "
-            f"{_fmt(setup_close)} + n={n} = trigger {_fmt(trigger_level)}, "
-            f"LTP crossed {direction} through the level at {entry_price:.2f}. "
+            f"15m silver sell red-chain on {self.symbol}: previous red reference close "
+            f"{_fmt(setup_close)} - n={n} = trigger {_fmt(trigger_level)}, "
+            f"current qualifying red candle closed at {entry_price:.2f}. "
             f"EMA20 {_fmt(self._ema20)}."
         )
 

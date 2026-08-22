@@ -2071,22 +2071,21 @@ def test_algo3_buy_trigger_only_on_upward_cross():
           len(strat3.broker.opens) == 0)
 
 
-def test_algo3_sell_trigger_only_on_downward_cross():
-    print("\n37. algo3 SELL trigger fires ONLY on a downward cross of (setup - n)")
+def test_algo3_sell_does_not_fire_from_tick_cross():
+    print("\n37. algo3 SELL no longer fires from tick-cross; it waits for a qualifying red close chain")
     strat = _make_bare_algo3()
     strat._sell_setup_close = 89000.0
-    # sell_level = 88850
     strat._prev_ltp = 88900  # above
-    strat._check_triggers(88800)  # crossed down through 88850
-    check("downward cross fires SELL entry",
-          len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "SELL",
+    strat._check_triggers(88800)
+    check("downward tick-cross does not fire SELL entry anymore",
+          len(strat.broker.opens) == 0,
           f"opens={strat.broker.opens}")
 
     strat2 = _make_bare_algo3()
     strat2._sell_setup_close = 89000.0
     strat2._prev_ltp = 88800  # already below
     strat2._check_triggers(88700)
-    check("moving further down while already below: no double entry",
+    check("moving further down while already below still does not fire SELL",
           len(strat2.broker.opens) == 0)
 
 
@@ -2118,16 +2117,22 @@ def test_algo3_configurable_n_parameter():
 # ── 40-41. Reversal & no-reentry ───────────────────────────────────────
 def test_algo3_reversal_on_contra_signal():
     print("\n40. algo3 contra trigger closes existing position and flips at LTP")
-    strat = _make_bare_algo3()
+    import datetime as _dt
+    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
     strat._buy_setup_close = 92000.0
-    strat._sell_setup_close = 89000.0
     # Fire BUY first.
     strat._prev_ltp = 92100
     strat._check_triggers(92200)
     check("initial BUY open", len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "BUY")
-    # Now fire SELL — should close the BUY and open a SELL.
-    strat._prev_ltp = 88900
-    strat._check_triggers(88800)
+    # Now fire SELL via the alternate red-chain candle-close rule.
+    strat._ema20 = 1000.0
+    strat._sell_setup_close = 900.0
+    strat._sell_setup_bar_at = _dt.datetime(2026, 8, 20, 15, 0)
+    strat._check_candle_close_trigger({
+        "open": 860.0,
+        "close": 700.0,
+        "time": _dt.datetime(2026, 8, 20, 15, 15),
+    })
     check("existing BUY closed with REVERSAL_CONTRA_SIGNAL",
           any(c["reason"] == "REVERSAL_CONTRA_SIGNAL" for c in strat.broker.closes),
           f"closes={strat.broker.closes}")
@@ -2297,12 +2302,12 @@ def test_algo3_black_box_end_to_end():
       - 20 warmup bars establish EMA20
       - Bar 21: green closes above EMA -> buy setup stored
       - Ticks after that cross the buy level -> BUY entered
-      - Later bar: red closes below EMA -> sell setup stored
-      - Ticks cross the sell level -> reversal to SELL
+      - Later qualifying red closes 200 below the previous red reference
+        -> reversal to SELL on candle close
     """
-    print("\n45. algo3 BLACK-BOX: candles + ticks produce expected entries + reversal")
+    print("\n45. algo3 BLACK-BOX: buy tick-cross + sell red-chain close produce expected reversal")
     import datetime as _dt
-    strat = _make_bare_algo3()
+    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
 
     def minute_candle(minute_offset, open_, high, low, close, vol=100):
         base = _dt.datetime(2026, 8, 19, 9, 0)
@@ -2339,31 +2344,44 @@ def test_algo3_black_box_end_to_end():
           strat._buy_setup_close is not None and strat._buy_setup_close > 90000,
           f"got={strat._buy_setup_close}")
 
-    # Now feed live ticks that cross (setup + 150).
-    # Note: the "on_tick" pathway uses self.settings["silver_breakout_points"]=150.
-    buy_level = strat._buy_setup_close + 150
+    # Now feed live ticks that cross (setup + 200).
+    buy_level = strat._buy_setup_close + 200
     strat.on_tick("MCX:SILVERMIC26AUGFUT", buy_level - 20, None)
     strat.on_tick("MCX:SILVERMIC26AUGFUT", buy_level + 5, None)
-    check("black-box: BUY fires on upward tick-cross of setup+150",
+    check("black-box: BUY fires on upward tick-cross of setup+200",
           len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "BUY",
           f"opens={strat.broker.opens}")
 
-    # Later 15-min bar: red closing 500 below EMA -> SELL setup
+    # Later 15-min bar: first qualifying red becomes the SELL reference.
     for m in range(1, 15):
         offset = 21 * 15 + m
-        # Use a wide down bar (open above ema, close below)
         strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
-                              minute_candle(offset, 90000, 90100, 89400, 89500), {})
+                              minute_candle(offset, 90000, 90100, 89850, 90000), {})
     strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
-                          minute_candle(22 * 15, 89500, 89500, 89500, 89500), {})
-    check("black-box: red-below-EMA bar captured as sell setup",
+                          minute_candle(22 * 15, 90000, 90000, 90000, 90000), {})
+    check("black-box: first red-below-EMA bar captured as sell reference",
           strat._sell_setup_close is not None and strat._sell_setup_close < strat._ema20,
           f"got sell={strat._sell_setup_close}, ema={strat._ema20}")
 
-    # Ticks that cross (sell setup - 150) downward -> REVERSAL to SELL
-    sell_level = strat._sell_setup_close - 150
-    strat.on_tick("MCX:SILVERMIC26AUGFUT", sell_level + 20, None)
-    strat.on_tick("MCX:SILVERMIC26AUGFUT", sell_level - 5, None)
+    # Green candles in between must not clear that red reference.
+    for m in range(1, 15):
+        offset = 22 * 15 + m
+        strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                              minute_candle(offset, 90100, 91100, 90050, 91000), {})
+    strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                          minute_candle(23 * 15, 91000, 91000, 91000, 91000), {})
+    check("black-box: intervening green bar did not clear sell reference",
+          strat._sell_setup_close == 90000,
+          f"sell_ref={strat._sell_setup_close}")
+
+    # Next qualifying red closes 200 below the previous red reference:
+    # 90000 -> 89800, so reversal to SELL should happen on candle close.
+    for m in range(1, 15):
+        offset = 23 * 15 + m
+        strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                              minute_candle(offset, 89950, 90000, 89750, 89800), {})
+    strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                          minute_candle(24 * 15, 89800, 89800, 89800, 89800), {})
     check("black-box: existing BUY closed as REVERSAL",
           any(c["reason"] == "REVERSAL_CONTRA_SIGNAL" for c in strat.broker.closes),
           f"closes={strat.broker.closes}")
@@ -2716,15 +2734,15 @@ def test_algo3_gap_through_fires_immediately():
     check("gap-through BUY does NOT re-fire on same setup",
           len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
 
-    # SELL side gap-down
+    # SELL side no longer gap-fires; it waits for a fully closed
+    # qualifying red candle to compare against the previous red reference.
     strat2 = _make_bare_algo3()
     strat2._sell_setup_close = 231000.0
     strat2._sell_setup_bar_at = _dt.datetime(2026, 8, 19, 23, 45)
     strat2._prev_ltp = None
-    # sell_level = 231000 - 150 = 230850; opening at 228000 is well past.
     strat2.on_tick("MCX:SILVERMIC26AUGFUT", 228000, None)
-    check("gap-through SELL fires on first tick already past level",
-          len(strat2.broker.opens) == 1 and strat2.broker.opens[0]["side"] == "SELL",
+    check("gap-through SELL does not fire on first tick anymore",
+          len(strat2.broker.opens) == 0,
           f"opens={strat2.broker.opens}")
 
 
@@ -2768,6 +2786,83 @@ def test_algo3_candle_close_trigger_fires():
     check("candle-close BUY fires when bar closes past buy_level",
           len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "BUY",
           f"opens={strat.broker.opens}")
+
+
+def test_algo3_backtest_sell_red_chain_survives_green_candles():
+    print("\n50a. algo3 backtest SELL uses previous red reference across green candles")
+    import datetime as _dt
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    symbol = "MCX:TEST-EQ"
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+
+    def push(offset, o, h, l, c, v=100):
+        history.append({
+            "time": base + _dt.timedelta(minutes=offset),
+            "open": o, "high": h, "low": l, "close": c, "volume": v,
+        })
+
+    for b in range(20):
+        for m in range(15):
+            push(b * 15 + m, 90000, 90000, 90000, 90000)
+
+    # First qualifying red reference close = 89900.
+    for m in range(14):
+        push(20 * 15 + m, 90020, 90030, 89880, 89900)
+    push(20 * 15 + 14, 90000, 90010, 89870, 89900)
+
+    # Intervening green-above-EMA bar must not clear the red reference.
+    for m in range(15):
+        push(21 * 15 + m, 90020, 90160, 90010, 90150)
+
+    # Next qualifying red closes exactly 200 below the previous red reference:
+    # 89900 - 200 = 89700 -> SELL must trigger at this red close.
+    for m in range(15):
+        push(22 * 15 + m, 89850, 89870, 89690, 89700)
+
+    # One more minute forces the 11:30 bar to finalize.
+    push(23 * 15, 89700, 89700, 89700, 89700)
+
+    settings = {
+        "silver_breakout_points": 200,
+        "sl_points": 100,
+        "target_points": 300,
+        "trailing_sl_enabled": False,
+        "tsl_trigger_points": 0,
+        "tsl_distance_points": 0,
+        "exit_mode": "fixed_target_sl",
+        "silver_lots": 1,
+    }
+    charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0, "exchange_pct": 0,
+               "sebi_pct": 0, "gst_pct": 0, "stamp_duty_pct": 0}
+    first_date = _dt.date(2026, 8, 19)
+
+    with _lock:
+        _jobs["sell-chain-test"] = {"cancel_requested": False}
+    try:
+        results = bt._simulate_silver_micro_range(
+            job_id="sell-chain-test",
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=first_date,
+            symbol=symbol,
+            history=history,
+            trading_days=[first_date],
+            settings=settings,
+            charges_config=charges,
+        )
+    finally:
+        with _lock:
+            _jobs.pop("sell-chain-test", None)
+
+    trades = results[0]["trades"]
+    check("backtest produced one SELL trade from the red-chain close", len(trades) == 1, f"trades={trades}")
+    if trades:
+        trade = trades[0]
+        check("trade side is SELL", trade.get("side") == "SELL", f"trade={trade}")
+        check("SELL entry is the qualifying red close itself", abs(float(trade.get("entry_price") or 0) - 89700.0) < 1e-9, f"trade={trade}")
 
 
 def test_algo3_backtest_trailing_metadata():
@@ -3590,7 +3685,7 @@ def main():
     test_algo3_setup_persistence_emits_history_event()
     test_algo3_setup_persistence_rejects_wrong_candle_color()
     test_algo3_buy_trigger_only_on_upward_cross()
-    test_algo3_sell_trigger_only_on_downward_cross()
+    test_algo3_sell_does_not_fire_from_tick_cross()
     test_algo3_no_trigger_before_first_prev_ltp()
     test_algo3_configurable_n_parameter()
     test_algo3_reversal_on_contra_signal()
@@ -3613,6 +3708,7 @@ def main():
     test_algo3_gap_through_fires_immediately()
     test_algo3_previous_day_buy_setup_gap_open_fires_immediately()
     test_algo3_candle_close_trigger_fires()
+    test_algo3_backtest_sell_red_chain_survives_green_candles()
     test_algo3_backtest_trailing_metadata()
     test_algo3_backtest_respects_trailing_toggle()
     test_algo3_lot_based_qty()
