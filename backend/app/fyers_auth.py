@@ -15,6 +15,8 @@ import sys
 import base64
 import datetime
 import hashlib
+import json
+import re
 import threading
 import time
 import requests
@@ -59,6 +61,48 @@ def _is_proxy_connectivity_error(exc: Exception) -> bool:
             "proxy",
         )
     )
+
+
+def _strip_html_and_whitespace(value: str) -> str:
+    text = re.sub(r"<[^>]+>", " ", value or "")
+    text = re.sub(r"\s+", " ", text).strip()
+    return text
+
+
+def _summarize_refresh_failure(raw_error: object, *, status_code: int | None = None, content_type: str | None = None) -> str:
+    if isinstance(raw_error, dict):
+        code = raw_error.get("code")
+        message = str(raw_error.get("message") or raw_error.get("error") or "").strip()
+        if message:
+            cleaned = _strip_html_and_whitespace(message)
+            if "refresh token api is currently disabled" in cleaned.lower():
+                return cleaned
+            if "<!doctype" in message.lower() or "<html" in message.lower():
+                prefix = f"HTML response from FYERS (HTTP {status_code})" if status_code else "HTML response from FYERS"
+                if content_type:
+                    prefix += f", content-type {content_type}"
+                return f"{prefix}. FYERS rejected the refresh request before returning JSON."
+            if code not in (None, ""):
+                return f"{cleaned} (code {code})"
+            return cleaned
+        try:
+            return json.dumps(raw_error, ensure_ascii=True)
+        except Exception:
+            return str(raw_error)
+
+    text = str(raw_error or "").strip()
+    if not text:
+        return "Unknown refresh-token validation failure"
+    lowered = text.lower()
+    if "<!doctype" in lowered or "<html" in lowered:
+        cleaned = _strip_html_and_whitespace(text)
+        prefix = f"HTML response from FYERS (HTTP {status_code})" if status_code else "HTML response from FYERS"
+        if content_type:
+            prefix += f", content-type {content_type}"
+        if "cloudflare" in cleaned.lower():
+            return f"{prefix}. Cloudflare/FYERS blocked the refresh request."
+        return f"{prefix}. FYERS rejected the refresh request before returning JSON."
+    return _strip_html_and_whitespace(text)
 
 
 def _b64(value: str) -> str:
@@ -389,12 +433,25 @@ def refresh_access_token_from_refresh_token(mode: str | None = None) -> str:
         try:
             data = response.json()
         except ValueError:
-            data = {"s": "error", "message": response.text}
+            data = {
+                "s": "error",
+                "message": _summarize_refresh_failure(
+                    response.text,
+                    status_code=response.status_code,
+                    content_type=response.headers.get("content-type"),
+                ),
+                "raw_body_preview": response.text[:500],
+            }
         if response.ok and data.get("access_token"):
             store_broker_tokens(data, mode=mode)
             audit_log("fyers", "refresh-token validation succeeded", mode=mode or "runtime", broker=get_active_broker_key(mode))
             return data["access_token"]
         last_error = data
+        concise_error = _summarize_refresh_failure(
+            data,
+            status_code=response.status_code,
+            content_type=response.headers.get("content-type"),
+        )
         audit_log(
             "fyers",
             "refresh-token validation rejected",
@@ -402,11 +459,12 @@ def refresh_access_token_from_refresh_token(mode: str | None = None) -> str:
             broker=get_active_broker_key(mode),
             proxy_enabled=bool(fyers_proxies),
             status_code=response.status_code,
-            error=data.get("message") or data.get("error") or response.text[:500],
+            error=concise_error,
+            raw_body_preview=(data.get("raw_body_preview") if isinstance(data, dict) else None) or response.text[:500],
         )
         if data.get("code") != -371:
             break
-    message = f"Fyers refresh-token validation failed: {last_error}"
+    message = f"Fyers refresh-token validation failed: {_summarize_refresh_failure(last_error)}"
     _record_refresh_error(message, mode=mode)
     _record_refresh_log("failed", message, mode=mode)
     audit_log("fyers", "refresh-token validation failed", mode=mode or "runtime", broker=get_active_broker_key(mode), error=message)
