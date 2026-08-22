@@ -483,7 +483,11 @@ export default function AlgoTab({
             delta={formatSignedMoney(totalCapital - startingCapital)}
             pnl={totalCapital - startingCapital}
           />
-          <MetricCard label="Trades Today" value={`${summary.trade_count_today} / ${summary.max_trades_per_day || 10}`} />
+          <MetricCard
+            label="Trades Today"
+            value={String(summary.trade_count_today ?? 0)}
+            helper={`${summary.buy_count_today ?? 0} buy / ${summary.sell_count_today ?? 0} sell`}
+          />
           <MetricCard label="Realized Gross P&L" value={formatMoney(grossPnl)} pnl={grossPnl} />
           <MetricCard label="Live Net P&L" value={formatMoney(liveNetPnl)} pnl={liveNetPnl} important />
         </div>
