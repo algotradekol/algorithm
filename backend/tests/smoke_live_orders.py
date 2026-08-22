@@ -3010,6 +3010,396 @@ def test_algo3_backtest_respects_trailing_toggle():
         check("trailing toggle off keeps final SL at initial SL", abs(float(trade.get("sl_price") or 0) - float(trade.get("initial_sl_price") or 0)) < 1e-9, f"trade={trade}")
 
 
+def _algo3_backtest_push(history, base, offset, o, h, l, c, v=100):
+    import datetime as _dt
+    history.append({
+        "time": base + _dt.timedelta(minutes=offset),
+        "open": o,
+        "high": h,
+        "low": l,
+        "close": c,
+        "volume": v,
+    })
+
+
+def _algo3_backtest_seed_flat(history, base, bars=20, price=90000):
+    for b in range(bars):
+        for m in range(15):
+            _algo3_backtest_push(history, base, b * 15 + m, price, price, price, price)
+
+
+def _run_algo3_backtest_case(job_id: str, history: list[dict], settings: dict, first_date, charges=None):
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    charges = charges or {
+        "brokerage_flat": 0,
+        "brokerage_pct": 0,
+        "stt_pct": 0,
+        "exchange_pct": 0,
+        "sebi_pct": 0,
+        "gst_pct": 0,
+        "stamp_duty_pct": 0,
+    }
+
+    with _lock:
+        _jobs[job_id] = {"cancel_requested": False}
+    try:
+        results = bt._simulate_silver_micro_range(
+            job_id=job_id,
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=first_date,
+            symbol="MCX:TEST-EQ",
+            history=history,
+            trading_days=[first_date],
+            settings=settings,
+            charges_config=charges,
+        )
+    finally:
+        with _lock:
+            _jobs.pop(job_id, None)
+    return results[0]
+
+
+def test_algo3_backtest_plain_sl_diagnostics():
+    print("\n50d. algo3 backtest diagnostics classify plain SL before trailing trigger")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    _algo3_backtest_push(history, base, 21 * 15 + 1, 90670, 90720, 90620, 90710)
+    _algo3_backtest_push(history, base, 21 * 15 + 2, 90710, 90730, 90520, 90540)
+
+    result = _run_algo3_backtest_case(
+        "diag-plain-sl",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 100,
+            "target_points": 1000,
+            "trailing_sl_enabled": True,
+            "tsl_trigger_points": 200,
+            "tsl_distance_points": 100,
+            "exit_mode": "fixed_target_trailing_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+    )
+
+    trades = result["trades"]
+    check("plain SL scenario produced one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        diagnostics = trades[0].get("diagnostics") or {}
+        check("primary cause is stop_loss_hit", diagnostics.get("primary_cause_code") == "stop_loss_hit", f"diagnostics={diagnostics}")
+        check("warning includes never_reached_trailing_trigger", "never_reached_trailing_trigger" in (diagnostics.get("warning_codes") or []), f"diagnostics={diagnostics}")
+
+
+def test_algo3_backtest_trailing_stop_diagnostics():
+    print("\n50e. algo3 backtest diagnostics classify trailing stop exits")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    _algo3_backtest_push(history, base, 21 * 15 + 1, 90670, 90920, 90660, 90890)
+    _algo3_backtest_push(history, base, 21 * 15 + 2, 90890, 90910, 90740, 90760)
+    for m in range(3, 15):
+        _algo3_backtest_push(history, base, 21 * 15 + m, 90760, 90790, 90720, 90750)
+    _algo3_backtest_push(history, base, 22 * 15, 90750, 90750, 90750, 90750)
+
+    result = _run_algo3_backtest_case(
+        "diag-trailing-stop",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 100,
+            "target_points": 1000,
+            "trailing_sl_enabled": True,
+            "tsl_trigger_points": 200,
+            "tsl_distance_points": 100,
+            "exit_mode": "fixed_target_trailing_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+    )
+
+    trades = result["trades"]
+    check("trailing stop scenario produced one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        diagnostics = trades[0].get("diagnostics") or {}
+        check("primary cause is trailing_stop_hit", diagnostics.get("primary_cause_code") == "trailing_stop_hit", f"diagnostics={diagnostics}")
+        check("trailing stop keeps move count", int(trades[0].get("trailing_move_count") or 0) >= 1, f"trade={trades[0]}")
+
+
+def test_algo3_backtest_eod_loss_diagnostics():
+    print("\n50f. algo3 backtest diagnostics classify EOD red exits")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    for m in range(1, 15):
+        _algo3_backtest_push(history, base, 21 * 15 + m, 90660, 90720, 90590, 90620)
+    _algo3_backtest_push(history, base, 22 * 15, 90620, 90640, 90580, 90600)
+
+    result = _run_algo3_backtest_case(
+        "diag-eod-loss",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 500,
+            "target_points": 1500,
+            "trailing_sl_enabled": False,
+            "tsl_trigger_points": 0,
+            "tsl_distance_points": 0,
+            "exit_mode": "fixed_target_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+    )
+
+    trades = result["trades"]
+    check("EOD loss scenario produced one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        diagnostics = trades[0].get("diagnostics") or {}
+        check("primary cause is target_not_reached_eod", diagnostics.get("primary_cause_code") == "target_not_reached_eod", f"diagnostics={diagnostics}")
+        check("exit reason stays EOD_SQUAREOFF", trades[0].get("exit_reason") == "EOD_SQUAREOFF", f"trade={trades[0]}")
+
+
+def test_algo3_backtest_reversal_diagnostics():
+    print("\n50g. algo3 backtest diagnostics classify reversal exits")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    for m in range(1, 14):
+        _algo3_backtest_push(history, base, 21 * 15 + m, 90450, 90480, 89890, 89920)
+    _algo3_backtest_push(history, base, 21 * 15 + 14, 89920, 89940, 89780, 89800)
+    for m in range(15):
+        _algo3_backtest_push(history, base, 22 * 15 + m, 90020, 90160, 90010, 90150)
+    for m in range(15):
+        _algo3_backtest_push(history, base, 23 * 15 + m, 89720, 89740, 89590, 89600)
+    _algo3_backtest_push(history, base, 24 * 15, 89600, 89600, 89600, 89600)
+
+    result = _run_algo3_backtest_case(
+        "diag-reversal",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 1500,
+            "target_points": 5000,
+            "trailing_sl_enabled": False,
+            "tsl_trigger_points": 0,
+            "tsl_distance_points": 0,
+            "exit_mode": "fixed_target_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+    )
+
+    buy_trade = next((trade for trade in result["trades"] if trade.get("side") == "BUY"), None)
+    check("reversal scenario produced a BUY trade", buy_trade is not None, f"trades={result['trades']}")
+    if buy_trade:
+        diagnostics = buy_trade.get("diagnostics") or {}
+        check("BUY trade exited on contra reversal", buy_trade.get("exit_reason") == "REVERSAL_CONTRA_SIGNAL", f"trade={buy_trade}")
+        check("primary cause is reversal_contra_signal", diagnostics.get("primary_cause_code") == "reversal_contra_signal", f"diagnostics={diagnostics}")
+
+
+def test_algo3_backtest_same_candle_stop_priority_diagnostics():
+    print("\n50h. algo3 backtest diagnostics flag same-candle stop-first behavior")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    _algo3_backtest_push(history, base, 21 * 15 + 1, 90670, 90760, 90540, 90600)
+
+    result = _run_algo3_backtest_case(
+        "diag-same-candle",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 100,
+            "target_points": 100,
+            "trailing_sl_enabled": False,
+            "tsl_trigger_points": 0,
+            "tsl_distance_points": 0,
+            "exit_mode": "fixed_target_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+    )
+
+    trades = result["trades"]
+    check("same-candle scenario produced one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        diagnostics = trades[0].get("diagnostics") or {}
+        check("same-candle scenario still exits via SL", trades[0].get("exit_reason") == "SL", f"trade={trades[0]}")
+        check("warning includes same_candle_sl_priority", "same_candle_sl_priority" in (diagnostics.get("warning_codes") or []), f"diagnostics={diagnostics}")
+
+
+def test_algo3_backtest_charges_deepen_loss_warning():
+    print("\n50i. algo3 backtest diagnostics flag when charges materially worsen a loss")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    for m in range(1, 15):
+        _algo3_backtest_push(history, base, 21 * 15 + m, 90660, 90690, 90600, 90620)
+    _algo3_backtest_push(history, base, 22 * 15, 90620, 90620, 90610, 90620)
+
+    result = _run_algo3_backtest_case(
+        "diag-charges",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 500,
+            "target_points": 1500,
+            "trailing_sl_enabled": False,
+            "tsl_trigger_points": 0,
+            "tsl_distance_points": 0,
+            "exit_mode": "fixed_target_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+        charges={
+            "brokerage_flat": 150,
+            "brokerage_pct": 100,
+            "stt_pct": 0,
+            "exchange_pct": 0,
+            "sebi_pct": 0,
+            "gst_pct": 0,
+            "stamp_duty_pct": 0,
+        },
+    )
+
+    trades = result["trades"]
+    check("charges scenario produced one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        diagnostics = trades[0].get("diagnostics") or {}
+        check("warning includes charges_deepened_loss", "charges_deepened_loss" in (diagnostics.get("warning_codes") or []), f"diagnostics={diagnostics}")
+        check("net loss is worse than gross loss", abs(float(trades[0].get("net_pnl") or 0)) > abs(float(trades[0].get("gross_pnl") or 0)), f"trade={trades[0]}")
+
+
+def test_algo3_backtest_sell_chain_diagnostics_context():
+    print("\n50j. algo3 backtest diagnostics keep SELL red-chain reference context and never claim broker errors")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90020, 90030, 89880, 89900)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90000, 90010, 89870, 89900)
+    for m in range(15):
+        _algo3_backtest_push(history, base, 21 * 15 + m, 90020, 90160, 90010, 90150)
+    for m in range(15):
+        _algo3_backtest_push(history, base, 22 * 15 + m, 89850, 89870, 89690, 89700)
+    _algo3_backtest_push(history, base, 23 * 15, 89700, 89700, 89700, 89700)
+
+    result = _run_algo3_backtest_case(
+        "diag-sell-context",
+        history,
+        {
+            "silver_breakout_points": 200,
+            "sl_points": 100,
+            "target_points": 300,
+            "trailing_sl_enabled": False,
+            "tsl_trigger_points": 0,
+            "tsl_distance_points": 0,
+            "exit_mode": "fixed_target_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+    )
+
+    trades = result["trades"]
+    check("sell-context scenario produced one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        diagnostics = trades[0].get("diagnostics") or {}
+        entry = diagnostics.get("entry_context") or {}
+        check("SELL diagnostics store previous red reference close", abs(float(entry.get("previous_red_reference_close") or 0) - 89900.0) < 1e-9, f"entry={entry}")
+        check("SELL diagnostics store current qualifying red close", abs(float(entry.get("current_qualifying_red_close") or 0) - 89700.0) < 1e-9, f"entry={entry}")
+        check("diagnostics object has required keys", all(key in diagnostics for key in ("primary_cause_code", "primary_cause_label", "summary", "entry_context", "exit_context", "path_metrics", "warning_codes", "warning_messages")), f"diagnostics={diagnostics}")
+        check("backtest never claims broker_error", "broker" not in str(diagnostics.get("primary_cause_code") or "").lower() and not any("broker" in str(code).lower() for code in (diagnostics.get("warning_codes") or [])), f"diagnostics={diagnostics}")
+
+
+def test_algo3_backtest_chart_payload():
+    print("\n50k. algo3 backtest chart payload exposes candles, setups, overlays, and viewport hints")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 21, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    _algo3_backtest_push(history, base, 21 * 15 + 1, 90670, 90920, 90660, 90890)
+    _algo3_backtest_push(history, base, 21 * 15 + 2, 90890, 90910, 90740, 90760)
+    for m in range(3, 15):
+        _algo3_backtest_push(history, base, 21 * 15 + m, 90760, 90790, 90720, 90750)
+    _algo3_backtest_push(history, base, 22 * 15, 90750, 90750, 90750, 90750)
+
+    result = _run_algo3_backtest_case(
+        "diag-chart-payload",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 100,
+            "target_points": 1000,
+            "trailing_sl_enabled": True,
+            "tsl_trigger_points": 200,
+            "tsl_distance_points": 100,
+            "exit_mode": "fixed_target_trailing_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 21),
+    )
+
+    chart = result.get("chart") or {}
+    candles = chart.get("candles") or []
+    setups = chart.get("setups") or []
+    overlays = chart.get("trades") or []
+    trades = result.get("trades") or []
+
+    check("chart payload includes 15m candles", len(candles) >= 2, f"chart={chart}")
+    check("chart payload includes EMA20 per candle", candles and candles[-1].get("ema20") is not None, f"candles={candles}")
+    check("chart payload includes setup events", any(setup.get("side") == "BUY" for setup in setups), f"setups={setups}")
+    check("chart payload includes trade overlays", len(overlays) == len(trades) == 1, f"overlays={overlays} trades={trades}")
+    if overlays and trades:
+        check("overlay trade_id matches trade row", overlays[0].get("trade_id") == trades[0].get("trade_id"), f"overlay={overlays[0]} trade={trades[0]}")
+        check("viewport defaults to trade focus when trades exist", chart.get("viewport_hint", {}).get("mode") == "trade_window", f"viewport={chart.get('viewport_hint')}")
+
+
 def test_broker_positions_entry_time_from_tradebook():
     """Positions opened directly in the Fyers app show accurate entry_time
     sourced from the intraday tradebook (client's 2026-08-20 ask)."""
