@@ -672,8 +672,9 @@ def _range_result(
             "candidates": day["candidates"],
             "chart": day.get("chart"),
         })
-    best_day = max(daily_rows, key=lambda day: float(day["summary"]["net_pnl"]), default=None)
-    worst_day = min(daily_rows, key=lambda day: float(day["summary"]["net_pnl"]), default=None)
+    ranked_daily_rows = [day for day in daily_rows if int(day["summary"].get("trade_count") or 0) > 0] or daily_rows
+    best_day = max(ranked_daily_rows, key=lambda day: float(day["summary"]["net_pnl"]), default=None)
+    worst_day = min(ranked_daily_rows, key=lambda day: float(day["summary"]["net_pnl"]), default=None)
     return {
         "algo_id": algo_id,
         "start_date": first_date.isoformat(),

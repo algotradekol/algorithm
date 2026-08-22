@@ -232,7 +232,7 @@ function BacktestResult({ result }: { result: any }) {
         if (typeof snapshot.selectedTradeId === 'string' || snapshot.selectedTradeId === null) setSelectedTradeId(snapshot.selectedTradeId);
         if (snapshot.chartOverlays) setChartOverlays({
           ema: snapshot.chartOverlays.ema !== false,
-          setups: snapshot.chartOverlays.setups === true,
+          setups: false,
           trades: snapshot.chartOverlays.trades !== false,
           levels: snapshot.chartOverlays.levels !== false,
           trailing: snapshot.chartOverlays.trailing !== false,
@@ -267,7 +267,7 @@ function BacktestResult({ result }: { result: any }) {
         resultStorageId,
         selectedChartDate,
         selectedTradeId,
-        chartOverlays,
+        chartOverlays: { ...chartOverlays, setups: false },
         savedAt: Date.now(),
       }));
     } catch {
@@ -324,7 +324,7 @@ function BacktestResult({ result }: { result: any }) {
       <div className="panel p-4"><h3 className="text-sm font-semibold text-gray-100">Execution And Range</h3><div className="mt-3 grid grid-cols-2 gap-2 text-sm"><Metric label="Gross P&L" value={money(summary.gross_pnl)} tone={Number(summary.gross_pnl)} /><Metric label="Charges" value={money(summary.total_charges)} /><Metric label="Capital deployed" value={money(summary.capital_deployed)} /><Metric label="Net return / deployed" value={`${number(summary.net_return_on_deployed_pct)}%`} tone={Number(summary.net_return_on_deployed_pct)} /><Metric label="Best day" value={result.best_day ? `${result.best_day.date}: ${money(result.best_day.net_pnl)}` : '-'} tone={Number(result.best_day?.net_pnl)} /><Metric label="Worst day" value={result.worst_day ? `${result.worst_day.date}: ${money(result.worst_day.net_pnl)}` : '-'} tone={Number(result.worst_day?.net_pnl)} /></div><p className="mt-3 text-xs text-gray-500">Exits: Target {exits.TARGET || 0}, SL {exits.SL || 0}, EOD {exits.EOD_SQUAREOFF || 0}.</p></div>
     </section>
     {silverChartDays.length > 0 ? (
-      <section className="grid items-start gap-4 2xl:grid-cols-[minmax(0,1.18fr)_minmax(0,0.92fr)]">
+      <section className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.24fr)_minmax(400px,0.96fr)]">
         <SilverBacktestChart
           days={silverChartDays}
           selectedDate={selectedChartDate}
@@ -374,6 +374,67 @@ function DailyResults({ rows }: { rows: any[] }) {
   const [page, setPage] = useState(0);
   const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
   const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+  const isSilver = rows[0]?.algo_id === 'algo3';
+
+  if (isSilver) {
+    return (
+      <section className="panel overflow-hidden">
+        <div className="border-b border-[#1f2937] p-4">
+          <h3 className="text-sm font-semibold text-gray-100">Daily Results</h3>
+          <p className="mt-1 text-xs text-gray-500">Silver rows now show actual replay depth per day: available 1-minute history, built 15-minute bars, captured setups, and executed entries.</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1040px] text-xs">
+            <thead className="bg-[#111827]">
+              <tr>
+                {['Date', '1m bars', '15m bars', 'Setups', 'Entries', 'Trades', 'Wins / Losses', 'Net', 'Status'].map((name) => (
+                  <th key={name} className="table-cell label">{name}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.map((day: any, index: number) => {
+                const summary = day.summary || {};
+                const steps = Array.isArray(day.condition_breakdown) ? day.condition_breakdown : [];
+                const barsProcessed = steps.find((step: any) => step.label === '15m bars processed');
+                const setupsCaptured = steps.find((step: any) => step.label === 'Setups captured (green above / red below EMA20)');
+                const entriesExecuted = steps.find((step: any) => step.label === 'Final: entries executed');
+                const minuteBars = Number(barsProcessed?.total || 0);
+                const fifteenMinuteBars = Number(barsProcessed?.passed || 0);
+                const setups = Number(setupsCaptured?.passed || 0);
+                const entries = Number(entriesExecuted?.passed || 0);
+                const trades = Number(summary.trade_count || 0);
+                const status = minuteBars <= 0
+                  ? { label: 'No intraday history', tone: 'text-[#f59e0b]' }
+                  : trades > 0
+                    ? { label: 'Trades replayed', tone: 'text-[#22c55e]' }
+                    : setups > 0
+                      ? { label: 'Setups seen, no entry', tone: 'text-[#93c5fd]' }
+                      : { label: 'Bars replayed, no setup', tone: 'text-gray-400' };
+                return (
+                  <tr key={day.date} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}>
+                    <td className="table-cell num text-gray-100">{day.date}</td>
+                    <td className="table-cell num">{minuteBars}</td>
+                    <td className="table-cell num">{fifteenMinuteBars}</td>
+                    <td className="table-cell num">{setups}</td>
+                    <td className="table-cell num">{entries}</td>
+                    <td className="table-cell num">{trades}</td>
+                    <td className="table-cell num">{summary.win_count || 0} / {summary.loss_count || 0}</td>
+                    <td className={`table-cell num font-semibold ${tone(summary.net_pnl)}`}>{money(summary.net_pnl)}</td>
+                    <td className={`table-cell text-xs font-medium ${status.tone}`}>{status.label}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="px-4 pb-4">
+          <PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} />
+        </div>
+      </section>
+    );
+  }
+
   return <section className="panel overflow-hidden"><div className="border-b border-[#1f2937] p-4"><h3 className="text-sm font-semibold text-gray-100">Daily Results</h3></div><div className="overflow-x-auto"><table className="w-full min-w-[900px] text-xs"><thead className="bg-[#111827]"><tr>{['Date', 'Data coverage', 'Trades', 'Wins / Losses', 'Win rate', 'Gross', 'Charges', 'Net', 'Selected'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr></thead><tbody>{visibleRows.map((day: any, index: number) => { const s = day.summary || {}; const selected = (day.condition_breakdown || []).find((step: any) => step.label === 'Final: selected for trade'); return <tr key={day.date} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}><td className="table-cell num text-gray-100">{day.date}</td><td className="table-cell num">{day.data_available_symbols}</td><td className="table-cell num">{s.trade_count || 0}</td><td className="table-cell num">{s.win_count || 0} / {s.loss_count || 0}</td><td className="table-cell num">{number(s.win_rate_pct)}%</td><td className={`table-cell num ${tone(s.gross_pnl)}`}>{money(s.gross_pnl)}</td><td className="table-cell num">{money(s.total_charges)}</td><td className={`table-cell num font-semibold ${tone(s.net_pnl)}`}>{money(s.net_pnl)}</td><td className="table-cell num">{selected?.passed || 0}</td></tr>; })}</tbody></table></div><div className="px-4 pb-4"><PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} /></div></section>;
 }
 
@@ -601,7 +662,7 @@ function BacktestChartModal({ children, onClose }: { children: ReactNode; onClos
         <div className="flex items-start justify-between gap-4 border-b border-[#1f2937] px-5 py-4">
           <div>
             <h3 className="text-xl font-semibold text-white">Silver backtest chart</h3>
-            <p className="mt-1 text-sm text-gray-400">Expanded replay view with the same selected day, trade focus, and overlay toggles.</p>
+            <p className="mt-1 text-sm text-gray-400">Expanded replay view with the same selected day and trade focus.</p>
           </div>
           <button onClick={onClose} className="text-2xl leading-none text-gray-400 hover:text-white">×</button>
         </div>

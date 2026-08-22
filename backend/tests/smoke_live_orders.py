@@ -3400,6 +3400,68 @@ def test_algo3_backtest_chart_payload():
         check("viewport defaults to trade focus when trades exist", chart.get("viewport_hint", {}).get("mode") == "trade_window", f"viewport={chart.get('viewport_hint')}")
 
 
+def test_algo3_backtest_best_worst_day_ignore_empty_days():
+    print("\n50l. algo3 range summary ranks best/worst from traded days, not empty replay days")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    _algo3_backtest_push(history, base, 21 * 15 + 1, 90670, 90720, 90620, 90710)
+    _algo3_backtest_push(history, base, 21 * 15 + 2, 90710, 90550, 90540, 90540)
+    _algo3_backtest_push(history, base, 22 * 15, 90540, 90540, 90540, 90540)
+
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    settings = {
+        "silver_breakout_points": 150,
+        "sl_points": 100,
+        "target_points": 1000,
+        "trailing_sl_enabled": False,
+        "tsl_trigger_points": 0,
+        "tsl_distance_points": 0,
+        "exit_mode": "fixed_target_sl",
+        "silver_lots": 1,
+    }
+    charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0, "exchange_pct": 0, "sebi_pct": 0, "gst_pct": 0, "stamp_duty_pct": 0}
+    first_date = _dt.date(2026, 8, 19)
+    last_date = _dt.date(2026, 8, 20)
+
+    with _lock:
+        _jobs["best-worst-days"] = {"cancel_requested": False}
+    try:
+        day_results = bt._simulate_silver_micro_range(
+            job_id="best-worst-days",
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=last_date,
+            symbol="MCX:TEST-EQ",
+            history=history,
+            trading_days=[first_date, last_date],
+            settings=settings,
+            charges_config=charges,
+        )
+        result = bt._range_result(
+            "algo3",
+            first_date,
+            last_date,
+            day_results,
+            {"available": 1, "requested": 1},
+        )
+    finally:
+        with _lock:
+            _jobs.pop("best-worst-days", None)
+
+    check("range result has a traded best day", result.get("best_day", {}).get("date") == "2026-08-19", f"best_day={result.get('best_day')}")
+    check("range result has a traded worst day", result.get("worst_day", {}).get("date") == "2026-08-19", f"worst_day={result.get('worst_day')}")
+    check("empty replay day stays in daily_results", len(result.get("daily_results") or []) == 2, f"daily_results={result.get('daily_results')}")
+
+
 def test_broker_positions_entry_time_from_tradebook():
     """Positions opened directly in the Fyers app show accurate entry_time
     sourced from the intraday tradebook (client's 2026-08-20 ask)."""

@@ -52,12 +52,13 @@ export default function SilverBacktestChart({
   })).filter((candle: any) => Number.isFinite(candle.close)), [chartCandles]);
 
   const selectedTrade = chartTrades.find((trade: any) => trade.trade_id === selectedTradeId) || null;
-  const [visibleCount, setVisibleCount] = useState(80);
+  const [visibleCount, setVisibleCount] = useState(48);
   const [offsetFromEnd, setOffsetFromEnd] = useState(0);
   const [crosshair, setCrosshair] = useState<{ x: number; y: number } | null>(null);
   const chartRef = useRef<HTMLDivElement | null>(null);
   const pinchRef = useRef<{ distance: number; ratio: number } | null>(null);
   const dragRef = useRef<{ x: number; offset: number } | null>(null);
+  const [containerWidth, setContainerWidth] = useState(0);
 
   const maxVisible = Math.max(10, normalized.length);
   const clampedVisible = Math.min(Math.max(visibleCount, 10), maxVisible);
@@ -66,6 +67,16 @@ export default function SilverBacktestChart({
   const end = normalized.length - clampedOffset;
   const start = Math.max(0, end - clampedVisible);
   const visible = normalized.slice(start, end);
+
+  useEffect(() => {
+    const element = chartRef.current;
+    if (!element) return;
+    const updateWidth = () => setContainerWidth(Math.round(element.clientWidth));
+    updateWidth();
+    const observer = new ResizeObserver(updateWidth);
+    observer.observe(element);
+    return () => observer.disconnect();
+  }, [selectedDate, expanded]);
 
   useEffect(() => {
     fitInitialViewport();
@@ -79,9 +90,12 @@ export default function SilverBacktestChart({
     function handleWheel(event: WheelEvent) {
       event.preventDefault();
       if (!normalized.length) return;
-      const rect = chartRef.current?.getBoundingClientRect();
+      const element = chartRef.current;
+      const rect = element?.getBoundingClientRect();
       if (!rect) return;
-      const ratio = Math.min(1, Math.max(0, (event.clientX - rect.left) / Math.max(rect.width, 1)));
+      const svg = element?.querySelector('svg');
+      const svgRect = svg?.getBoundingClientRect() || rect;
+      const ratio = Math.min(1, Math.max(0, (event.clientX - svgRect.left) / Math.max(svgRect.width, 1)));
       zoomAtRatio(ratio, event.deltaY < 0);
     }
 
@@ -105,11 +119,14 @@ export default function SilverBacktestChart({
     );
   }
 
-  const width = expanded ? 1720 : 1460;
-  const priceHeight = expanded ? 420 : 350;
-  const volumeHeight = 76;
-  const totalHeight = priceHeight + volumeHeight + 34;
-  const candleWidth = width / Math.max(visible.length, 1);
+  const priceScaleWidth = expanded ? 148 : 136;
+  const minCandleSpacing = expanded ? 30 : 26;
+  const width = Math.max(containerWidth || (expanded ? 1200 : 900), visible.length * minCandleSpacing + priceScaleWidth);
+  const plotWidth = Math.max(480, width - priceScaleWidth);
+  const priceHeight = expanded ? 500 : 420;
+  const volumeHeight = expanded ? 96 : 88;
+  const totalHeight = priceHeight + volumeHeight + 76;
+  const candleWidth = plotWidth / Math.max(visible.length, 1);
   const high = Math.max(...visible.map((candle: any) => candle.high));
   const low = Math.min(...visible.map((candle: any) => candle.low));
   const maxVolume = Math.max(...visible.map((candle: any) => candle.volume), 1);
@@ -123,15 +140,6 @@ export default function SilverBacktestChart({
   const statCandle = activeCandle || last;
   const activeX = activeIndex !== null ? activeIndex * candleWidth + candleWidth / 2 : 0;
   const activePrice = crosshair ? high - ((crosshair.y - 16) / (priceHeight - 32)) * priceSpan : null;
-  const tooltipWidth = 290;
-  const tooltipHeight = 128;
-  const tooltipGap = 18;
-  const tooltipX = activeX > width / 2
-    ? Math.max(8, activeX - tooltipWidth - tooltipGap)
-    : Math.min(width - tooltipWidth - 8, activeX + tooltipGap);
-  const tooltipY = crosshair && crosshair.y < tooltipHeight + 34
-    ? Math.min(priceHeight - tooltipHeight - 8, crosshair.y + tooltipGap)
-    : 18;
   const visibleSetupOverlays = chartSetups
     .map((setup: any) => ({ ...setup, index: indexForTime(normalized, setup.time) }))
     .filter((setup: any) => setup.index >= start && setup.index < end);
@@ -161,7 +169,7 @@ export default function SilverBacktestChart({
 
   function fitInitialViewport() {
     if (!normalized.length) {
-      setVisibleCount(80);
+      setVisibleCount(48);
       setOffsetFromEnd(0);
       return;
     }
@@ -275,9 +283,9 @@ export default function SilverBacktestChart({
         <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="font-mono text-sm font-semibold text-gray-100">{chart.symbol} / 15m / {selectedDay.date}</div>
-              <div className="mt-1 text-xs text-gray-500">
-                {activeCandle ? `Focused candle: ${activeCandle.time}` : `Showing candles ${start + 1}-${end} of ${normalized.length}`}
+              <div className="font-mono text-base font-semibold text-gray-100">{chart.symbol} / 15-minute candles / {selectedDay.date}</div>
+              <div className="mt-1 text-sm text-gray-400">
+                {activeCandle ? `Focused candle: ${formatAxisDateTime(activeCandle.time)} IST` : `Showing candles ${start + 1}-${end} of ${normalized.length}`}
               </div>
             </div>
             <div className="flex flex-wrap items-center gap-4 text-xs">
@@ -307,12 +315,16 @@ export default function SilverBacktestChart({
             onTouchMove={handleTouchMove}
             onTouchEnd={(event) => { if (event.touches.length < 2) pinchRef.current = null; }}
             onTouchCancel={() => { pinchRef.current = null; }}
-            className="overscroll-contain overflow-hidden border border-[#1f2937] bg-[#0a0e14]"
+            className="overscroll-contain overflow-x-auto overflow-y-hidden border border-[#1f2937] bg-[#0a0e14]"
             style={{ overscrollBehavior: 'contain', touchAction: 'none' }}
           >
             <svg
               viewBox={`0 0 ${width} ${totalHeight}`}
-              className={expanded ? 'h-[560px] w-full cursor-crosshair' : 'h-[450px] w-full cursor-crosshair'}
+              width={width}
+              height={expanded ? 680 : 600}
+              preserveAspectRatio="none"
+              className="block max-w-none cursor-crosshair"
+              style={{ width: `${width}px`, minWidth: '100%', height: expanded ? 680 : 600 }}
               onMouseMove={handleMouseMove}
               onMouseLeave={() => setCrosshair(null)}
             >
@@ -321,9 +333,9 @@ export default function SilverBacktestChart({
                 const lineY = y(price);
                 return (
                   <g key={ratio}>
-                    <line x1={0} x2={width} y1={lineY} y2={lineY} stroke="#1f2937" strokeWidth="1" />
-                    <rect x={width - 116} y={lineY - 14} width={108} height={22} rx={4} fill="#111827" stroke="#334155" />
-                    <text x={width - 16} y={lineY + 1} textAnchor="end" fill="#cbd5e1" fontSize="12.5" fontFamily="ui-monospace">{formatNumber(price)}</text>
+                    <line x1={0} x2={plotWidth} y1={lineY} y2={lineY} stroke="#1f2937" strokeWidth="1" />
+                    <rect x={plotWidth + 8} y={lineY - 15} width={priceScaleWidth - 16} height={25} rx={4} fill="#111827" stroke="#334155" />
+                    <text x={width - 12} y={lineY + 2} textAnchor="end" fill="#e2e8f0" fontSize="13.5" fontWeight="600" fontFamily="ui-monospace">{formatNumber(price)}</text>
                   </g>
                 );
               })}
@@ -370,8 +382,8 @@ export default function SilverBacktestChart({
                 const setupColor = setup.side === 'BUY' ? '#22c55e' : '#ef4444';
                 return (
                   <g key={`${setup.side}-${setup.time}-${index}`}>
-                    <line x1={pointX} x2={width} y1={y(Number(setup.setup_close))} y2={y(Number(setup.setup_close))} stroke={setupColor} strokeWidth="1.4" opacity="0.45" />
-                    <line x1={pointX} x2={width} y1={y(Number(setup.trigger_level))} y2={y(Number(setup.trigger_level))} stroke={setupColor} strokeWidth="1" strokeDasharray="5 4" opacity="0.7" />
+                    <line x1={pointX} x2={plotWidth} y1={y(Number(setup.setup_close))} y2={y(Number(setup.setup_close))} stroke={setupColor} strokeWidth="1.4" opacity="0.45" />
+                    <line x1={pointX} x2={plotWidth} y1={y(Number(setup.trigger_level))} y2={y(Number(setup.trigger_level))} stroke={setupColor} strokeWidth="1" strokeDasharray="5 4" opacity="0.7" />
                     <circle cx={pointX} cy={y(Number(setup.setup_close))} r={4} fill={setupColor} />
                   </g>
                 );
@@ -390,9 +402,11 @@ export default function SilverBacktestChart({
                 const exitMarkerFill = '#f8fafc';
                 const opacity = trade.selected ? 1 : 0.55;
                 const candleBoundaryY = isBuy ? y(Number(entryCandle?.high ?? trade.entry_price)) : y(Number(entryCandle?.low ?? trade.entry_price));
-                const arrowGap = trade.selected ? 10 : 8;
-                const arrowReach = trade.selected ? 44 : 36;
-                const tipY = isBuy ? candleBoundaryY - arrowGap : candleBoundaryY + arrowGap;
+                const arrowGap = trade.selected ? 20 : 16;
+                const arrowReach = trade.selected ? 52 : 44;
+                const tipY = isBuy
+                  ? Math.max(18, candleBoundaryY - arrowGap)
+                  : Math.min(priceHeight - 12, candleBoundaryY + arrowGap);
                 const shaftStartY = isBuy ? tipY - arrowReach : tipY + arrowReach;
                 const shaftEndY = isBuy ? tipY - 12 : tipY + 12;
                 const arrowHeadPoints = isBuy
@@ -415,9 +429,9 @@ export default function SilverBacktestChart({
 
               {overlays.levels && selectedTradeOverlay && (
                 <g pointerEvents="none">
-                  <line x1={Math.max(0, selectedTradeOverlay.entryIndex - start) * candleWidth + candleWidth / 2} x2={width} y1={y(Number(selectedTradeOverlay.initial_sl_price))} y2={y(Number(selectedTradeOverlay.initial_sl_price))} stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="6 4" />
-                  <line x1={Math.max(0, selectedTradeOverlay.entryIndex - start) * candleWidth + candleWidth / 2} x2={width} y1={y(Number(selectedTradeOverlay.final_sl_price))} y2={y(Number(selectedTradeOverlay.final_sl_price))} stroke="#f97316" strokeWidth="1.8" />
-                  <line x1={Math.max(0, selectedTradeOverlay.entryIndex - start) * candleWidth + candleWidth / 2} x2={width} y1={y(Number(selectedTradeOverlay.target_price))} y2={y(Number(selectedTradeOverlay.target_price))} stroke="#a78bfa" strokeWidth="1.5" strokeDasharray="4 3" />
+                  <line x1={Math.max(0, selectedTradeOverlay.entryIndex - start) * candleWidth + candleWidth / 2} x2={plotWidth} y1={y(Number(selectedTradeOverlay.initial_sl_price))} y2={y(Number(selectedTradeOverlay.initial_sl_price))} stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="6 4" />
+                  <line x1={Math.max(0, selectedTradeOverlay.entryIndex - start) * candleWidth + candleWidth / 2} x2={plotWidth} y1={y(Number(selectedTradeOverlay.final_sl_price))} y2={y(Number(selectedTradeOverlay.final_sl_price))} stroke="#f97316" strokeWidth="1.8" />
+                  <line x1={Math.max(0, selectedTradeOverlay.entryIndex - start) * candleWidth + candleWidth / 2} x2={plotWidth} y1={y(Number(selectedTradeOverlay.target_price))} y2={y(Number(selectedTradeOverlay.target_price))} stroke="#a78bfa" strokeWidth="1.5" strokeDasharray="4 3" />
                 </g>
               )}
 
@@ -443,73 +457,50 @@ export default function SilverBacktestChart({
               {crosshair && activeCandle && activePrice !== null && (
                 <g pointerEvents="none">
                   <line x1={activeX} x2={activeX} y1={0} y2={priceHeight + 18} stroke="#9ca3af" strokeDasharray="5 5" strokeWidth="1" opacity="0.75" />
-                  <line x1={0} x2={width} y1={crosshair.y} y2={crosshair.y} stroke="#9ca3af" strokeDasharray="5 5" strokeWidth="1" opacity="0.75" />
-                  <rect x={width - 110} y={Math.max(2, Math.min(priceHeight - 24, crosshair.y - 12))} width={102} height={24} fill="#111827" stroke="#1f2937" />
-                  <text x={width - 102} y={Math.max(17, Math.min(priceHeight - 6, crosshair.y + 5))} fill="#e5e7eb" fontSize="12.5" fontFamily="ui-monospace">
+                  <line x1={0} x2={plotWidth} y1={crosshair.y} y2={crosshair.y} stroke="#9ca3af" strokeDasharray="5 5" strokeWidth="1" opacity="0.75" />
+                  <rect x={plotWidth + 8} y={Math.max(2, Math.min(priceHeight - 25, crosshair.y - 13))} width={priceScaleWidth - 16} height={25} fill="#172033" stroke="#60a5fa" />
+                  <text x={width - 12} y={Math.max(18, Math.min(priceHeight - 7, crosshair.y + 5))} textAnchor="end" fill="#f8fafc" fontSize="13.5" fontWeight="600" fontFamily="ui-monospace">
                     {formatNumber(activePrice)}
-                  </text>
-                  <rect x={tooltipX} y={tooltipY} width={tooltipWidth} height={tooltipHeight} fill="#111827" stroke="#1f2937" />
-                  <text x={tooltipX + 12} y={tooltipY + 22} fill="#e5e7eb" fontSize="12.5" fontFamily="ui-monospace">{activeCandle.time}</text>
-                  <text x={tooltipX + 12} y={tooltipY + 44} fill="#9ca3af" fontSize="12.5" fontFamily="ui-monospace">
-                    O {formatNumber(activeCandle.open)}  H {formatNumber(activeCandle.high)}
-                  </text>
-                  <text x={tooltipX + 12} y={tooltipY + 66} fill="#9ca3af" fontSize="12.5" fontFamily="ui-monospace">
-                    L {formatNumber(activeCandle.low)}  C {formatNumber(activeCandle.close)}
-                  </text>
-                  <text x={tooltipX + 12} y={tooltipY + 88} fill="#60a5fa" fontSize="12.5" fontFamily="ui-monospace">
-                    EMA20 {formatNumber(activeCandle.ema20)}
-                  </text>
-                  <text x={tooltipX + 12} y={tooltipY + 110} fill="#9ca3af" fontSize="12.5" fontFamily="ui-monospace">
-                    Vol {activeCandle.volume.toLocaleString('en-IN')}
                   </text>
                 </g>
               )}
 
-              <line x1={0} x2={width} y1={priceHeight + 18} y2={priceHeight + 18} stroke="#1f2937" />
+              <line x1={0} x2={plotWidth} y1={priceHeight + 18} y2={priceHeight + 18} stroke="#1f2937" />
               {timeTicks.map((tick) => (
                 <g key={tick.key}>
-                  <line x1={tick.x} x2={tick.x} y1={priceHeight + 18} y2={priceHeight + 24} stroke="#334155" strokeWidth="1" />
-                  <text x={tick.x} y={totalHeight - 8} textAnchor="middle" fill="#94a3b8" fontSize="11.5" fontFamily="ui-monospace">
+                  <line x1={tick.x} x2={tick.x} y1={priceHeight + 18} y2={priceHeight + 30} stroke="#334155" strokeWidth="1" />
+                  <text x={tick.x} y={totalHeight - 28} textAnchor="middle" fill="#cbd5e1" fontSize="13" fontWeight="600" fontFamily="ui-monospace">
+                    {tick.dateLabel}
+                  </text>
+                  <text x={tick.x} y={totalHeight - 10} textAnchor="middle" fill="#f8fafc" fontSize="14" fontWeight="700" fontFamily="ui-monospace">
                     {tick.label}
                   </text>
                 </g>
               ))}
-              <text x={8} y={totalHeight - 22} fill="#64748b" fontSize="11.5" fontFamily="ui-monospace">
-                15m candles · IST
+              <text x={8} y={totalHeight - 46} fill="#60a5fa" fontSize="13" fontWeight="600" fontFamily="ui-monospace">
+                15-minute candles · time in IST
               </text>
-              <text x={8} y={totalHeight - 8} fill="#6b7280" fontSize="12" fontFamily="ui-monospace">
+              <text x={8} y={totalHeight - 10} fill="#94a3b8" fontSize="12" fontFamily="ui-monospace">
                 {activeCandle ? `Focused ${formatAxisDateTime(activeCandle.time)}  |  window ${formatAxisDateTime(first.time)} -> ${formatAxisDateTime(last.time)}` : `${formatAxisDateTime(first.time)} -> ${formatAxisDateTime(last.time)}`}
               </text>
             </svg>
           </div>
         </div>
 
-        <div className="grid gap-3 xl:grid-cols-[minmax(0,260px)_minmax(0,1fr)_minmax(0,220px)]">
-          <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
-            <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">Overlay toggles</div>
-            <div className="mt-3 space-y-2 text-sm text-gray-300">
-              <Toggle label="EMA20 (blue)" checked={overlays.ema} onChange={() => onOverlaysChange({ ...overlays, ema: !overlays.ema })} />
-              <Toggle label="Setup markers" checked={overlays.setups} onChange={() => onOverlaysChange({ ...overlays, setups: !overlays.setups })} />
-              <Toggle label="Trades" checked={overlays.trades} onChange={() => onOverlaysChange({ ...overlays, trades: !overlays.trades })} />
-              <Toggle label="SL / target" checked={overlays.levels} onChange={() => onOverlaysChange({ ...overlays, levels: !overlays.levels })} />
-              <Toggle label="Trailing path" checked={overlays.trailing} onChange={() => onOverlaysChange({ ...overlays, trailing: !overlays.trailing })} />
-            </div>
-            <p className="mt-3 text-xs text-gray-500">Setup markers stay off by default so the chart opens cleaner and the trade arrows stay easy to read.</p>
-          </div>
-
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,1.55fr)_minmax(0,280px)]">
           <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
             <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">Selected trade</div>
             {!selectedTrade ? (
               <p className="mt-3 text-sm text-gray-500">No trade selected for this day yet. Pick a trade row or marker to focus it.</p>
             ) : (
-              <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2 xl:grid-cols-3">
-                <ChartMetric label="Trade ID" value={String(selectedTrade.trade_id)} mono />
+              <div className="mt-3 grid gap-2 text-sm md:grid-cols-2">
+                <ChartMetric label="Trade ID" value={String(selectedTrade.trade_id)} mono className="md:col-span-2" valueClassName="text-[12px] leading-5 break-all" />
                 <ChartMetric label="Side" value={selectedTrade.side} tone={selectedTrade.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
-                <ChartMetric label="Entry" value={`${formatDateTimeShort(selectedTrade.entry_time)} @ ${formatNumber(Number(selectedTrade.entry_price))}`} />
-                <ChartMetric label="Exit" value={`${formatDateTimeShort(selectedTrade.exit_time)} @ ${formatNumber(Number(selectedTrade.exit_price))}`} />
+                <ChartMetric label="Net P&L" value={money(Number(selectedTrade.net_pnl || 0))} tone={Number(selectedTrade.net_pnl || 0) >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
+                <ChartMetric label="Entry" value={`${formatDateTimeShort(selectedTrade.entry_time)} @ ${formatNumber(Number(selectedTrade.entry_price))}`} className="md:col-span-2" valueClassName="leading-5 whitespace-normal" />
+                <ChartMetric label="Exit" value={`${formatDateTimeShort(selectedTrade.exit_time)} @ ${formatNumber(Number(selectedTrade.exit_price))}`} className="md:col-span-2" valueClassName="leading-5 whitespace-normal" />
                 <ChartMetric label="Final SL" value={formatNumber(Number(selectedTrade.final_sl_price))} />
                 <ChartMetric label="Target" value={formatNumber(Number(selectedTrade.target_price))} />
-                <ChartMetric label="Net P&L" value={money(Number(selectedTrade.net_pnl || 0))} tone={Number(selectedTrade.net_pnl || 0) >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
               </div>
             )}
           </div>
@@ -562,11 +553,25 @@ function Stat({ label, value, tone = 'text-gray-100' }: { label: string; value: 
   );
 }
 
-function ChartMetric({ label, value, tone = 'text-gray-100', mono = false }: { label: string; value: string; tone?: string; mono?: boolean }) {
+function ChartMetric({
+  label,
+  value,
+  tone = 'text-gray-100',
+  mono = false,
+  className = '',
+  valueClassName = '',
+}: {
+  label: string;
+  value: string;
+  tone?: string;
+  mono?: boolean;
+  className?: string;
+  valueClassName?: string;
+}) {
   return (
-    <div className="rounded border border-[#1f2937] bg-[#0d1117] p-2">
+    <div className={`min-w-0 rounded border border-[#1f2937] bg-[#0d1117] p-2 ${className}`}>
       <div className="label">{label}</div>
-      <div className={`mt-1 text-sm ${tone} ${mono ? 'font-mono break-all' : 'num'}`}>{value}</div>
+      <div className={`mt-1 text-sm ${tone} ${mono ? 'font-mono break-all' : 'num whitespace-normal'} ${valueClassName}`}>{value}</div>
     </div>
   );
 }
@@ -638,6 +643,7 @@ function buildTimeTicks(visibleCandles: any[], startIndex: number, candleWidth: 
         key: `${startIndex + visibleIndex}-${candle.time}`,
         x: visibleIndex * candleWidth + candleWidth / 2,
         label: formatAxisTime(candle.time),
+        dateLabel: formatAxisDate(candle.time),
       };
     });
 }
@@ -678,6 +684,16 @@ function formatAxisTime(value: string | null | undefined) {
     hour: '2-digit',
     minute: '2-digit',
     hour12: false,
+  });
+}
+
+function formatAxisDate(value: string | null | undefined) {
+  const date = parseMaybeDate(value);
+  if (!date) return '--';
+  return date.toLocaleDateString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
   });
 }
 
