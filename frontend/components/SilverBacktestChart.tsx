@@ -56,6 +56,7 @@ export default function SilverBacktestChart({
   const dragRef = useRef<{ x: number; offset: number } | null>(null);
   const [containerWidth, setContainerWidth] = useState(0);
   const [scrollLeft, setScrollLeft] = useState(0);
+  const [fullDayFit, setFullDayFit] = useState(false);
 
   const maxVisible = Math.max(10, normalized.length);
   const clampedVisible = Math.min(Math.max(visibleCount, 10), maxVisible);
@@ -118,7 +119,10 @@ export default function SilverBacktestChart({
 
   const priceScaleWidth = expanded ? 148 : 136;
   const minCandleSpacing = expanded ? 30 : 26;
-  const width = Math.max(containerWidth || (expanded ? 1200 : 900), visible.length * minCandleSpacing + priceScaleWidth);
+  const viewportWidth = containerWidth || (expanded ? 1200 : 900);
+  const width = fullDayFit && clampedVisible >= maxVisible
+    ? viewportWidth
+    : Math.max(viewportWidth, visible.length * minCandleSpacing + priceScaleWidth);
   const plotWidth = Math.max(480, width - priceScaleWidth);
   const priceHeight = expanded ? 500 : 420;
   const volumeHeight = expanded ? 96 : 88;
@@ -192,6 +196,7 @@ export default function SilverBacktestChart({
     const paddedStart = Math.max(0, startIndex - padBars);
     const paddedEnd = Math.min(normalized.length - 1, endIndex + padBars);
     const nextVisible = Math.min(maxVisible, Math.max(10, paddedEnd - paddedStart + 1));
+    setFullDayFit(false);
     setVisibleCount(nextVisible);
     setOffsetFromEnd(Math.max(0, normalized.length - (paddedStart + nextVisible)));
   }
@@ -201,8 +206,11 @@ export default function SilverBacktestChart({
   }
 
   function showFullDay() {
+    setFullDayFit(true);
     setVisibleCount(maxVisible);
     setOffsetFromEnd(0);
+    setScrollLeft(0);
+    chartRef.current?.scrollTo({ left: 0, behavior: 'smooth' });
   }
 
   function zoomAtRatio(ratio: number, zoomingIn: boolean) {
@@ -212,8 +220,18 @@ export default function SilverBacktestChart({
     const nextVisible = Math.min(maxVisible, Math.max(10, zoomingIn ? currentVisible - step : currentVisible + step));
     const nextStart = Math.round(anchorIndex - ratio * Math.max(0, nextVisible - 1));
     const clampedStart = Math.min(Math.max(0, nextStart), Math.max(0, normalized.length - nextVisible));
+    setFullDayFit(nextVisible >= maxVisible);
     setVisibleCount(nextVisible);
     setOffsetFromEnd(Math.max(0, normalized.length - (clampedStart + nextVisible)));
+  }
+
+  function moveTimeline(direction: 'left' | 'right') {
+    const step = Math.max(1, Math.round(clampedVisible * 0.25));
+    const nextOffset = direction === 'left'
+      ? Math.min(maxOffset, clampedOffset + step)
+      : Math.max(0, clampedOffset - step);
+    setFullDayFit(false);
+    setOffsetFromEnd(nextOffset);
   }
 
   function handleMouseMove(event: React.MouseEvent<SVGSVGElement>) {
@@ -295,10 +313,12 @@ export default function SilverBacktestChart({
             </div>
           </div>
 
-          <div className="mb-3 flex flex-wrap items-center gap-2">
-            <button onClick={() => zoomAtRatio(0.5, true)} className="rounded border border-[#3b82f6] px-2 py-1 text-xs text-[#3b82f6]">Zoom In</button>
-            <button onClick={() => zoomAtRatio(0.5, false)} className="rounded border border-[#3b82f6] px-2 py-1 text-xs text-[#3b82f6]">Zoom Out</button>
-            <button onClick={showFullDay} className="rounded border border-[#1f2937] px-2 py-1 text-xs text-gray-400">Show full day</button>
+          <div className="mb-3 flex flex-wrap items-center gap-1.5">
+            <button onClick={() => zoomAtRatio(0.5, false)} disabled={clampedVisible >= maxVisible} aria-label="Zoom out" title="Zoom out" className="inline-flex h-8 w-8 items-center justify-center rounded border border-[#334155] bg-[#1f2937] text-base font-bold text-gray-100 shadow-sm disabled:cursor-not-allowed disabled:opacity-40">−</button>
+            <button onClick={() => zoomAtRatio(0.5, true)} disabled={clampedVisible <= 10} aria-label="Zoom in" title="Zoom in" className="inline-flex h-8 w-8 items-center justify-center rounded border border-[#334155] bg-[#1f2937] text-base font-bold text-gray-100 shadow-sm disabled:cursor-not-allowed disabled:opacity-40">+</button>
+            <button onClick={() => moveTimeline('left')} disabled={maxOffset === 0 || clampedOffset >= maxOffset} aria-label="Move earlier" title="Move earlier" className="inline-flex h-8 w-8 items-center justify-center rounded border border-[#334155] bg-[#1f2937] text-lg text-gray-100 shadow-sm disabled:cursor-not-allowed disabled:opacity-40">‹</button>
+            <button onClick={() => moveTimeline('right')} disabled={maxOffset === 0 || clampedOffset <= 0} aria-label="Move later" title="Move later" className="inline-flex h-8 w-8 items-center justify-center rounded border border-[#334155] bg-[#1f2937] text-lg text-gray-100 shadow-sm disabled:cursor-not-allowed disabled:opacity-40">›</button>
+            <button onClick={showFullDay} aria-label="Reset zoom to full day" title="Reset zoom to full day" className="inline-flex h-8 w-8 items-center justify-center rounded border border-[#334155] bg-[#1f2937] text-base text-gray-100 shadow-sm">↻</button>
             <button onClick={() => selectedTrade && fitTradeWindow(selectedTrade, 8)} disabled={!selectedTrade} className="rounded border border-[#1f2937] px-2 py-1 text-xs text-gray-400 disabled:cursor-not-allowed disabled:opacity-50">Fit trade window</button>
             <button onClick={() => selectedTrade && fitTradeWindow(selectedTrade, 3)} disabled={!selectedTrade} className="rounded border border-[#1f2937] px-2 py-1 text-xs text-gray-400 disabled:cursor-not-allowed disabled:opacity-50">Focus selected trade</button>
           </div>
