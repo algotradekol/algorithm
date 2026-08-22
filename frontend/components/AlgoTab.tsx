@@ -1,5 +1,5 @@
 'use client';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { api } from '../lib/api';
 import StrategySettingsPanel from './StrategySettingsPanel';
 import ScanResultsPanel from './ScanResultsPanel';
@@ -539,6 +539,7 @@ function SilverFeedPanel({ status }: { status: any }) {
   const [historyRows, setHistoryRows] = useState<any[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
   const [historyError, setHistoryError] = useState('');
+  const [historySelectedDate, setHistorySelectedDate] = useState<string | null>(null);
   // All five feed timestamps use the with-date formatter so it's obvious
   // whether "16:15" is today's tick or yesterday's stale warmup value.
   const lastTick = formatDateTimeWithDate(status?.last_tick_at);
@@ -558,19 +559,32 @@ function SilverFeedPanel({ status }: { status: any }) {
   const n = status?.n_points ?? 150;
   const buyTrigger = buySetupClose != null ? Number(buySetupClose) + Number(n) : null;
   const sellTrigger = sellSetupClose != null ? Number(sellSetupClose) - Number(n) : null;
+  const historyGroups = useMemo(() => buildSetupHistoryGroups(historyRows), [historyRows]);
+  const activeHistoryGroup = useMemo(() => {
+    if (!historyGroups.length) return null;
+    const explicit = historySelectedDate
+      ? historyGroups.find((group) => group.dateKey === historySelectedDate)
+      : null;
+    return explicit || historyGroups[0];
+  }, [historyGroups, historySelectedDate]);
   async function openHistory(side: 'BUY' | 'SELL') {
     setHistoryOpenSide(side);
     setHistoryBusy(true);
     setHistoryError('');
+    setHistorySelectedDate(null);
     try {
       const result = await api.setupHistory('algo3', side, 30, 100, {
         currentSessionOnly: true,
         liveOnly: true,
       });
-      setHistoryRows(Array.isArray(result?.rows) ? result.rows : []);
+      const nextRows = Array.isArray(result?.rows) ? result.rows : [];
+      setHistoryRows(nextRows);
+      const nextGroups = buildSetupHistoryGroups(nextRows);
+      setHistorySelectedDate(nextGroups[0]?.dateKey || null);
       setHistoryError(result?.warning || '');
     } catch (e: any) {
       setHistoryRows([]);
+      setHistorySelectedDate(null);
       setHistoryError(e?.message || 'Failed to load setup history');
     } finally {
       setHistoryBusy(false);
@@ -658,31 +672,76 @@ function SilverFeedPanel({ status }: { status: any }) {
               ) : !historyRows.length ? (
                 <p className="text-sm text-gray-400">No saved {historyOpenSide.toLowerCase()} setup candles yet.</p>
               ) : (
-                <div className="overflow-x-auto rounded border border-[#1f2937]">
-                  <table className="w-full min-w-[980px] border-collapse text-xs">
-                    <thead className="bg-[#111827]">
-                      <tr>
-                        {['Time', 'Open', 'High', 'Low', 'Close', 'EMA20', 'Trigger', 'Volume', 'Source'].map((column) => (
-                          <th key={column} className="table-cell label">{column}</th>
-                        ))}
-                      </tr>
-                    </thead>
-                    <tbody>
-                      {historyRows.map((row, index) => (
-                        <tr key={`${row.setup_side}-${row.candle_time}-${index}`} className={index % 2 === 0 ? 'bg-[#0d1117]' : 'bg-[#111827]'}>
-                          <td className="table-cell text-gray-300">{formatDateTimeWithDate(row.candle_time)}</td>
-                          <td className="table-cell num text-gray-100">{formatNumber(row.candle_open)}</td>
-                          <td className="table-cell num text-gray-100">{formatNumber(row.candle_high)}</td>
-                          <td className="table-cell num text-gray-100">{formatNumber(row.candle_low)}</td>
-                          <td className="table-cell num text-gray-100">{formatNumber(row.candle_close)}</td>
-                          <td className="table-cell num text-gray-100">{formatNumber(row.ema20)}</td>
-                          <td className="table-cell num text-gray-100">{formatNumber(row.trigger_level)}</td>
-                          <td className="table-cell num text-gray-100">{formatNumber(row.candle_volume)}</td>
-                          <td className="table-cell text-gray-400">{row.source || '--'}</td>
-                        </tr>
-                      ))}
-                    </tbody>
-                  </table>
+                <div className="space-y-4">
+                  <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
+                    <div className="mb-2 flex flex-wrap items-center justify-between gap-2">
+                      <div>
+                        <div className="text-xs font-semibold text-gray-200">Grouped by trading date</div>
+                        <div className="text-[11px] text-gray-500">Pick a day to inspect only that session's saved setup candles.</div>
+                      </div>
+                      <div className="text-[11px] text-gray-500">{historyRows.length} setup rows loaded</div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      {historyGroups.map((group) => {
+                        const selected = activeHistoryGroup?.dateKey === group.dateKey;
+                        return (
+                          <button
+                            key={group.dateKey}
+                            type="button"
+                            onClick={() => setHistorySelectedDate(group.dateKey)}
+                            className={`rounded border px-3 py-2 text-left transition ${
+                              selected
+                                ? historyOpenSide === 'BUY'
+                                  ? 'border-[#22c55e]/60 bg-[#22c55e]/10 text-[#22c55e]'
+                                  : 'border-[#ef4444]/60 bg-[#ef4444]/10 text-[#ef4444]'
+                                : 'border-[#1f2937] bg-[#0d1117] text-gray-300 hover:border-[#334155]'
+                            }`}
+                          >
+                            <div className="text-xs font-semibold">{group.dateLabel}</div>
+                            <div className="mt-0.5 text-[11px] text-gray-500">{group.rows.length} candle{group.rows.length === 1 ? '' : 's'}</div>
+                          </button>
+                        );
+                      })}
+                    </div>
+                  </div>
+
+                  {activeHistoryGroup && (
+                    <>
+                      <SetupHistoryChart side={historyOpenSide} group={activeHistoryGroup} />
+                      <div className="grid gap-2 sm:grid-cols-4">
+                        <FeedStat label="Selected date" value={activeHistoryGroup.dateLabel} />
+                        <FeedStat label="Candles saved" value={activeHistoryGroup.rows.length} />
+                        <FeedStat label="Latest close" value={formatNumber(activeHistoryGroup.rows[activeHistoryGroup.rows.length - 1]?.candle_close)} />
+                        <FeedStat label="Latest trigger" value={formatNumber(activeHistoryGroup.rows[activeHistoryGroup.rows.length - 1]?.trigger_level)} />
+                      </div>
+                      <div className="overflow-x-auto rounded border border-[#1f2937]">
+                        <table className="w-full min-w-[980px] border-collapse text-xs">
+                          <thead className="bg-[#111827]">
+                            <tr>
+                              {['Time', 'Open', 'High', 'Low', 'Close', 'EMA20', 'Trigger', 'Volume', 'Source'].map((column) => (
+                                <th key={column} className="table-cell label">{column}</th>
+                              ))}
+                            </tr>
+                          </thead>
+                          <tbody>
+                            {activeHistoryGroup.rows.map((row, index) => (
+                              <tr key={`${row.setup_side}-${row.candle_time}-${index}`} className={index % 2 === 0 ? 'bg-[#0d1117]' : 'bg-[#111827]'}>
+                                <td className="table-cell text-gray-300">{formatDateTimeWithDate(row.candle_time)}</td>
+                                <td className="table-cell num text-gray-100">{formatNumber(row.candle_open)}</td>
+                                <td className="table-cell num text-gray-100">{formatNumber(row.candle_high)}</td>
+                                <td className="table-cell num text-gray-100">{formatNumber(row.candle_low)}</td>
+                                <td className="table-cell num text-gray-100">{formatNumber(row.candle_close)}</td>
+                                <td className="table-cell num text-gray-100">{formatNumber(row.ema20)}</td>
+                                <td className="table-cell num text-gray-100">{formatNumber(row.trigger_level)}</td>
+                                <td className="table-cell num text-gray-100">{formatNumber(row.candle_volume)}</td>
+                                <td className="table-cell text-gray-400">{row.source || '--'}</td>
+                              </tr>
+                            ))}
+                          </tbody>
+                        </table>
+                      </div>
+                    </>
+                  )}
                 </div>
               )}
             </div>
@@ -747,6 +806,166 @@ function FeedStat({ label, value }: { label: string; value: any }) {
     <div className="rounded border border-[#1f2937] bg-[#111827] p-2">
       <div className="label text-[10px]">{label}</div>
       <div className="num mt-1 truncate text-xs font-semibold text-gray-100">{String(value ?? '--')}</div>
+    </div>
+  );
+}
+
+function SetupHistoryChart({
+  side,
+  group,
+}: {
+  side: 'BUY' | 'SELL';
+  group: { dateKey: string; dateLabel: string; rows: any[] };
+}) {
+  const candles = useMemo(() => group.rows.map((row) => ({
+    ...row,
+    open: Number(row.candle_open),
+    high: Number(row.candle_high),
+    low: Number(row.candle_low),
+    close: Number(row.candle_close),
+    ema20: Number(row.ema20),
+    trigger: Number(row.trigger_level),
+    volume: Number(row.candle_volume || 0),
+  })).filter((row) => (
+    Number.isFinite(row.open)
+    && Number.isFinite(row.high)
+    && Number.isFinite(row.low)
+    && Number.isFinite(row.close)
+  )), [group.rows]);
+
+  if (!candles.length) return null;
+
+  const width = 960;
+  const height = 360;
+  const leftPad = 56;
+  const rightPad = 24;
+  const topPad = 18;
+  const priceBottom = 232;
+  const volumeTop = 252;
+  const volumeBottom = 320;
+  const plotWidth = width - leftPad - rightPad;
+  const candleSlot = plotWidth / Math.max(candles.length, 1);
+  const candleBodyWidth = Math.max(8, candleSlot * 0.56);
+  const rangeHigh = Math.max(...candles.flatMap((row) => [row.high, row.ema20, row.trigger]));
+  const rangeLow = Math.min(...candles.flatMap((row) => [row.low, row.ema20, row.trigger]));
+  const priceSpan = Math.max(rangeHigh - rangeLow, 1);
+  const maxVolume = Math.max(...candles.map((row) => row.volume), 1);
+  const rowTone = side === 'BUY' ? '#22c55e' : '#ef4444';
+  const emaPoints = candles
+    .filter((row) => Number.isFinite(row.ema20))
+    .map((row, index) => `${x(index)},${y(row.ema20)}`)
+    .join(' ');
+  const triggerPoints = candles
+    .filter((row) => Number.isFinite(row.trigger))
+    .map((row, index) => `${x(index)},${y(row.trigger)}`)
+    .join(' ');
+
+  function x(index: number) {
+    return leftPad + index * candleSlot + candleSlot / 2;
+  }
+
+  function y(price: number) {
+    return topPad + ((rangeHigh - price) / priceSpan) * (priceBottom - topPad);
+  }
+
+  function volumeY(volume: number) {
+    return volumeBottom - (volume / maxVolume) * (volumeBottom - volumeTop);
+  }
+
+  const yTicks = Array.from({ length: 5 }, (_, index) => rangeLow + (priceSpan * index) / 4).reverse();
+  const labelStep = Math.max(1, Math.ceil(candles.length / 8));
+
+  return (
+    <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
+      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
+        <div>
+          <div className="text-xs font-semibold text-gray-100">{group.dateLabel} candle map</div>
+          <div className="text-[11px] text-gray-500">Qualifying {side.toLowerCase()} setup candles with EMA20 overlay and trigger guide.</div>
+        </div>
+        <div className="flex flex-wrap gap-3 text-[11px] text-gray-400">
+          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#22c55e]" /> Bull candle</span>
+          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#ef4444]" /> Bear candle</span>
+          <span className="inline-flex items-center gap-1"><span className="h-[2px] w-4 bg-white/80" /> EMA20</span>
+          <span className="inline-flex items-center gap-1"><span className="h-[2px] w-4 bg-amber-400" /> Trigger</span>
+        </div>
+      </div>
+      <div className="overflow-x-auto">
+        <svg viewBox={`0 0 ${width} ${height}`} className="min-w-[760px]">
+          <rect x="0" y="0" width={width} height={height} fill="#0d1117" rx="12" />
+
+          {yTicks.map((tick, index) => (
+            <g key={`tick-${index}`}>
+              <line x1={leftPad} x2={width - rightPad} y1={y(tick)} y2={y(tick)} stroke="rgba(148, 163, 184, 0.12)" strokeDasharray="4 6" />
+              <text x={leftPad - 8} y={y(tick) + 4} fill="#94a3b8" fontSize="11" textAnchor="end">{formatNumber(tick)}</text>
+            </g>
+          ))}
+
+          <line x1={leftPad} x2={width - rightPad} y1={volumeTop} y2={volumeTop} stroke="rgba(148, 163, 184, 0.12)" />
+
+          {triggerPoints && (
+            <polyline
+              fill="none"
+              stroke="#fbbf24"
+              strokeWidth="1.8"
+              strokeDasharray="6 6"
+              points={triggerPoints}
+            />
+          )}
+          {emaPoints && (
+            <polyline
+              fill="none"
+              stroke="rgba(255,255,255,0.85)"
+              strokeWidth="2.2"
+              points={emaPoints}
+            />
+          )}
+
+          {candles.map((row, index) => {
+            const bullish = row.close >= row.open;
+            const candleColor = bullish ? '#22c55e' : '#ef4444';
+            const centerX = x(index);
+            const bodyTop = y(Math.max(row.open, row.close));
+            const bodyBottom = y(Math.min(row.open, row.close));
+            const bodyHeight = Math.max(2, bodyBottom - bodyTop);
+            const volumeHeight = Math.max(2, volumeBottom - volumeY(row.volume));
+            return (
+              <g key={`${row.candle_time}-${index}`}>
+                <line x1={centerX} x2={centerX} y1={y(row.high)} y2={y(row.low)} stroke={candleColor} strokeWidth="1.5" />
+                <rect
+                  x={centerX - candleBodyWidth / 2}
+                  y={bodyTop}
+                  width={candleBodyWidth}
+                  height={bodyHeight}
+                  rx="2"
+                  fill={candleColor}
+                  opacity="0.92"
+                />
+                <rect
+                  x={centerX - candleBodyWidth / 2}
+                  y={volumeY(row.volume)}
+                  width={candleBodyWidth}
+                  height={volumeHeight}
+                  rx="1.5"
+                  fill={candleColor}
+                  opacity="0.38"
+                />
+                {index % labelStep === 0 && (
+                  <text x={centerX} y={height - 18} fill="#94a3b8" fontSize="11" textAnchor="middle">
+                    {formatTimeOnly(row.candle_time)}
+                  </text>
+                )}
+              </g>
+            );
+          })}
+
+          <text x={leftPad} y={height - 42} fill={rowTone} fontSize="11" fontWeight="600">
+            {side} chain reference view
+          </text>
+          <text x={width - rightPad} y={height - 42} fill="#94a3b8" fontSize="11" textAnchor="end">
+            {candles.length} candle{candles.length === 1 ? '' : 's'}
+          </text>
+        </svg>
+      </div>
     </div>
   );
 }
@@ -1393,6 +1612,74 @@ function formatDateTimeWithDate(value: unknown) {
     second: '2-digit',
     hour12: false,
   });
+}
+
+function formatDateOnly(value: unknown) {
+  if (!value) return '--';
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleDateString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    day: '2-digit',
+    month: 'short',
+    year: 'numeric',
+  });
+}
+
+function formatTimeOnly(value: unknown) {
+  if (!value) return '--';
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleTimeString('en-IN', {
+    timeZone: 'Asia/Kolkata',
+    hour: '2-digit',
+    minute: '2-digit',
+    hour12: false,
+  });
+}
+
+function toKolkataDateKey(value: unknown) {
+  if (!value) return null;
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return null;
+  const parts = new Intl.DateTimeFormat('en-US', {
+    timeZone: 'Asia/Kolkata',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).formatToParts(date);
+  const year = parts.find((part) => part.type === 'year')?.value;
+  const month = parts.find((part) => part.type === 'month')?.value;
+  const day = parts.find((part) => part.type === 'day')?.value;
+  if (!year || !month || !day) return null;
+  return `${year}-${month}-${day}`;
+}
+
+function buildSetupHistoryGroups(rows: any[]) {
+  const groups = new Map<string, { dateKey: string; dateLabel: string; latestTime: number; rows: any[] }>();
+  for (const row of rows) {
+    const dateKey = toKolkataDateKey(row?.candle_time);
+    if (!dateKey) continue;
+    const candleTime = new Date(String(row.candle_time)).getTime();
+    const current = groups.get(dateKey);
+    if (!current) {
+      groups.set(dateKey, {
+        dateKey,
+        dateLabel: formatDateOnly(row.candle_time),
+        latestTime: candleTime,
+        rows: [row],
+      });
+      continue;
+    }
+    current.rows.push(row);
+    if (candleTime > current.latestTime) current.latestTime = candleTime;
+  }
+  return Array.from(groups.values())
+    .map((group) => ({
+      ...group,
+      rows: [...group.rows].sort((a, b) => new Date(String(a.candle_time)).getTime() - new Date(String(b.candle_time)).getTime()),
+    }))
+    .sort((a, b) => b.latestTime - a.latestTime);
 }
 
 function formatNumber(value: unknown) {
