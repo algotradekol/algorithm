@@ -1,6 +1,6 @@
 'use client';
 import { Suspense, useEffect, useState } from 'react';
-import { useRouter, useSearchParams } from 'next/navigation';
+import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
 import AlgoTab from '../../components/AlgoTab';
 import CompareTab from '../../components/CompareTab';
@@ -14,9 +14,12 @@ import { getAuthToken } from '../../lib/authToken';
 import { clearPinToken } from '../../lib/pinAuth';
 import { api } from '../../lib/api';
 import { WebSocketState } from '../../lib/useWebSocket';
-
-const ALL_TABS = ['Simple', 'Filter', 'Silver Micro', 'Backtest', 'Compare', 'History', 'Calendar', 'Charges'] as const;
-type TabName = (typeof ALL_TABS)[number];
+import {
+  ALL_DASHBOARD_TABS,
+  DASHBOARD_ROUTE_TO_TAB,
+  DASHBOARD_TAB_ROUTES,
+  type DashboardTabName,
+} from '../../lib/dashboardTabs';
 
 // Comma-separated list of tab keys to hide, read from NEXT_PUBLIC_HIDDEN_TABS.
 // Keys are lowercased and space-stripped so "Silver Micro" matches "silvermicro"
@@ -43,7 +46,7 @@ function tabKey(name: string): string {
 function isTabHidden(name: string): boolean {
   return HIDDEN_TABS.has(tabKey(name));
 }
-const TABS = ALL_TABS.filter((t) => !isTabHidden(t)) as readonly TabName[];
+const TABS = ALL_DASHBOARD_TABS.filter((t) => !isTabHidden(t)) as readonly DashboardTabName[];
 
 function formatIstTime() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -55,10 +58,17 @@ function formatIstTime() {
   }).format(new Date());
 }
 
+function resolveDashboardTab(pathname: string | null, visibleTabs: readonly DashboardTabName[]): DashboardTabName {
+  const fallback = (visibleTabs[0] as DashboardTabName | undefined) || 'Simple';
+  if (!pathname) return fallback;
+  const mapped = DASHBOARD_ROUTE_TO_TAB[pathname];
+  if (mapped && visibleTabs.includes(mapped)) return mapped;
+  return fallback;
+}
+
 function DashboardContent() {
   // Fall back to the first visible tab if "Simple" is hidden in this
   // deployment. Prevents landing on a tab that renders nothing.
-  const [tab, setTab] = useState<TabName>((TABS[0] as TabName | undefined) || 'Simple');
   const [ready, setReady] = useState(false);
   const [showFyersBanner, setShowFyersBanner] = useState(true);
   const [fyersLoginResult, setFyersLoginResult] = useState<'success' | 'failed' | null>(null);
@@ -124,7 +134,9 @@ function DashboardContent() {
   } | null>(null);
   const [wsStatus, setWsStatus] = useState<WebSocketState>('reconnecting');
   const router = useRouter();
+  const pathname = usePathname();
   const searchParams = useSearchParams();
+  const tab = resolveDashboardTab(pathname, TABS);
   const tradingMode = (engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper';
   const sessionState = fyersStatus?.session_state || engineStatus?.fyers_session_state || 'token_missing';
   const fyersConnectedForMode = Boolean(
@@ -343,7 +355,7 @@ function DashboardContent() {
           {TABS.map((t) => (
             <button
               key={t}
-              onClick={() => setTab(t)}
+              onClick={() => router.push(DASHBOARD_TAB_ROUTES[t])}
               className={`min-h-10 whitespace-nowrap border-b-2 px-0 py-3 text-sm font-medium ${
                 tab === t
                   ? 'border-[#3b82f6] text-gray-100'
@@ -355,9 +367,9 @@ function DashboardContent() {
           ))}
         </nav>
 
-        {tradingReady && <LiveDiagnostics engineStatus={engineStatus} />}
+        {tradingReady && tab !== 'Feed Health' && <LiveDiagnostics engineStatus={engineStatus} />}
 
-        {!tradingReady && !['Backtest', 'Compare', 'History', 'Calendar', 'Charges'].includes(tab) ? (
+        {!tradingReady && !['Feed Health', 'Backtest', 'Compare', 'History', 'Calendar', 'Charges'].includes(tab) ? (
           <section className="panel p-4">
             <div className="flex items-center gap-2 text-sm font-semibold text-gray-100">
               <i className={`ri-checkbox-blank-circle-fill text-[8px] ${statusIconTone}`} />
@@ -423,6 +435,9 @@ function DashboardContent() {
                 />
               </div>
             )}
+            {tab === 'Feed Health' && !isTabHidden('Feed Health') && (
+              <FeedHealthTab engineStatus={engineStatus} tradingReady={tradingReady} />
+            )}
             {tab === 'Backtest' && !isTabHidden('Backtest') && <BacktestTab />}
             {tab === 'Compare' && !isTabHidden('Compare') && <CompareTab />}
             {tab === 'History' && !isTabHidden('History') && (
@@ -465,79 +480,95 @@ function StatusCard({ label, dotClass, value, detail }: { label: string; dotClas
 }
 
 function LiveDiagnostics({ engineStatus }: { engineStatus: any }) {
+  return <div className="mb-4"><FeedHealthSummary engineStatus={engineStatus} /></div>;
+}
+
+function FeedHealthTab({ engineStatus, tradingReady }: { engineStatus: any; tradingReady: boolean }) {
+  return (
+    <section className="space-y-4">
+      {!tradingReady ? (
+        <div className="rounded border border-[#1f2937] bg-[#111827] px-4 py-3 text-sm text-gray-400">
+          Feed health stays visible here even while FYERS is reconnecting, so we can inspect socket state without jumping back into Silver.
+        </div>
+      ) : null}
+      <FeedHealthSummary engineStatus={engineStatus} />
+      <FeedHealthPanel engineStatus={engineStatus} />
+    </section>
+  );
+}
+
+function FeedHealthSummary({ engineStatus }: { engineStatus: any }) {
   const hasRecentTick = isRecent(engineStatus?.last_tick_at, 90);
   const subscribedSymbols = Number(engineStatus?.fyers_ws_subscribed_symbols || 0);
+
   return (
-    <div className="mb-4 grid gap-3">
-      <section className="grid gap-2 rounded border border-[#1f2937] bg-[#111827] p-3 text-xs sm:grid-cols-2 lg:grid-cols-6">
-        <DiagnosticItem
-          label="Fyers Feed"
-          value={hasRecentTick ? 'Receiving ticks' : subscribedSymbols ? 'Subscribed, waiting for tick' : engineStatus?.live_feed_started ? 'Start requested' : 'Not started'}
-          tone={hasRecentTick ? 'text-[#22c55e]' : engineStatus?.live_feed_started ? 'text-[#f59e0b]' : 'text-[#ef4444]'}
-          detail={subscribedSymbols ? `${subscribedSymbols} symbols subscribed` : undefined}
-        />
-        <DiagnosticItem
-          label="Fyers WS"
-          value={(() => {
-            if (engineStatus?.fyers_ws_connected) return 'Connected';
-            const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
-            if (circuit > 0) {
-              const m = Math.floor(circuit / 60);
-              const s = circuit % 60;
-              return m > 0 ? `Paused ${m}m ${s}s` : `Paused ${s}s`;
-            }
-            const downFor = engineStatus?.disconnected_since_seconds ?? 0;
-            if (engineStatus?.auto_recovering || downFor < 60) return 'Reconnecting…';
-            return 'Disconnected';
-          })()}
-          tone={(() => {
-            if (engineStatus?.fyers_ws_connected) return 'text-[#22c55e]';
-            const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
-            if (circuit > 0) return 'text-[#f59e0b]';
-            const downFor = engineStatus?.disconnected_since_seconds ?? 0;
-            if (engineStatus?.auto_recovering || downFor < 60) return 'text-[#f59e0b]';
-            return 'text-[#ef4444]';
-          })()}
-          detail={(() => {
-            const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
-            const failures = engineStatus?.ws_reconnect_failure_count ?? 0;
-            const nextBackoff = engineStatus?.ws_next_backoff_seconds ?? 0;
-            const err = engineStatus?.fyers_ws_error;
-            const downFor = engineStatus?.disconnected_since_seconds ?? 0;
-            if (circuit > 0) {
-              return `Circuit breaker open after ${failures} failures. Auto-retry in ${Math.floor(circuit / 60)}m ${circuit % 60}s. Positions monitored via REST poll (10s).`;
-            }
-            if (!engineStatus?.fyers_ws_connected && (engineStatus?.auto_recovering || downFor < 60)) {
-              return `Brief Fyers disconnects are normal (Fyers closes idle sockets every ~30s). Auto-reconnecting${downFor > 0 ? ` (${downFor}s)` : ''}.`;
-            }
-            if (err && !engineStatus?.fyers_ws_connected) {
-              return `${String(err).slice(0, 120)}${failures > 0 ? ` (attempt ${failures + 1}, next backoff ${nextBackoff}s)` : ''}`;
-            }
-            if (engineStatus?.fyers_ws_first_tick_at) return `First tick ${formatRelativeTime(engineStatus.fyers_ws_first_tick_at)}`;
-            return 'Socket open; no market tick yet';
-          })()}
-        />
-        <DiagnosticItem
-          label="Last Tick"
-          value={formatRelativeTime(engineStatus?.last_tick_at)}
-          tone={hasRecentTick ? 'text-[#22c55e]' : 'text-[#f59e0b]'}
-        />
-        <DiagnosticItem
-          label="Last Symbol"
-          value={engineStatus?.last_tick_symbol ? `${engineStatus.last_tick_symbol} @ ${formatNumber(engineStatus.last_tick_ltp)}` : '--'}
-        />
-        <DiagnosticItem
-          label="Tick Coverage"
-          value={`${engineStatus?.symbols_with_ticks || 0} / ${engineStatus?.active_live_feed_symbol_count || engineStatus?.live_feed_symbol_count || engineStatus?.watchlist_count || 0} symbols`}
-        />
-        <DiagnosticItem
-          label="Closed Candles"
-          value={`${engineStatus?.closed_candle_count || 0} total`}
-          detail={engineStatus?.last_candle_close_at ? `Last ${formatRelativeTime(engineStatus.last_candle_close_at)}` : 'Waiting'}
-        />
-      </section>
-      <FeedHealthPanel engineStatus={engineStatus} />
-    </div>
+    <section className="grid gap-2 rounded border border-[#1f2937] bg-[#111827] p-3 text-xs sm:grid-cols-2 lg:grid-cols-6">
+      <DiagnosticItem
+        label="Fyers Feed"
+        value={hasRecentTick ? 'Receiving ticks' : subscribedSymbols ? 'Subscribed, waiting for tick' : engineStatus?.live_feed_started ? 'Start requested' : 'Not started'}
+        tone={hasRecentTick ? 'text-[#22c55e]' : engineStatus?.live_feed_started ? 'text-[#f59e0b]' : 'text-[#ef4444]'}
+        detail={subscribedSymbols ? `${subscribedSymbols} symbols subscribed` : undefined}
+      />
+      <DiagnosticItem
+        label="Fyers WS"
+        value={(() => {
+          if (engineStatus?.fyers_ws_connected) return 'Connected';
+          const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
+          if (circuit > 0) {
+            const m = Math.floor(circuit / 60);
+            const s = circuit % 60;
+            return m > 0 ? `Paused ${m}m ${s}s` : `Paused ${s}s`;
+          }
+          const downFor = engineStatus?.disconnected_since_seconds ?? 0;
+          if (engineStatus?.auto_recovering || downFor < 60) return 'Reconnecting…';
+          return 'Disconnected';
+        })()}
+        tone={(() => {
+          if (engineStatus?.fyers_ws_connected) return 'text-[#22c55e]';
+          const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
+          if (circuit > 0) return 'text-[#f59e0b]';
+          const downFor = engineStatus?.disconnected_since_seconds ?? 0;
+          if (engineStatus?.auto_recovering || downFor < 60) return 'text-[#f59e0b]';
+          return 'text-[#ef4444]';
+        })()}
+        detail={(() => {
+          const circuit = engineStatus?.ws_circuit_open_seconds_remaining ?? 0;
+          const failures = engineStatus?.ws_reconnect_failure_count ?? 0;
+          const nextBackoff = engineStatus?.ws_next_backoff_seconds ?? 0;
+          const err = engineStatus?.fyers_ws_error;
+          const downFor = engineStatus?.disconnected_since_seconds ?? 0;
+          if (circuit > 0) {
+            return `Circuit breaker open after ${failures} failures. Auto-retry in ${Math.floor(circuit / 60)}m ${circuit % 60}s. Positions monitored via REST poll (10s).`;
+          }
+          if (!engineStatus?.fyers_ws_connected && (engineStatus?.auto_recovering || downFor < 60)) {
+            return `Brief Fyers disconnects are normal (Fyers closes idle sockets every ~30s). Auto-reconnecting${downFor > 0 ? ` (${downFor}s)` : ''}.`;
+          }
+          if (err && !engineStatus?.fyers_ws_connected) {
+            return `${String(err).slice(0, 120)}${failures > 0 ? ` (attempt ${failures + 1}, next backoff ${nextBackoff}s)` : ''}`;
+          }
+          if (engineStatus?.fyers_ws_first_tick_at) return `First tick ${formatRelativeTime(engineStatus.fyers_ws_first_tick_at)}`;
+          return 'Socket open; no market tick yet';
+        })()}
+      />
+      <DiagnosticItem
+        label="Last Tick"
+        value={formatRelativeTime(engineStatus?.last_tick_at)}
+        tone={hasRecentTick ? 'text-[#22c55e]' : 'text-[#f59e0b]'}
+      />
+      <DiagnosticItem
+        label="Last Symbol"
+        value={engineStatus?.last_tick_symbol ? `${engineStatus.last_tick_symbol} @ ${formatNumber(engineStatus.last_tick_ltp)}` : '--'}
+      />
+      <DiagnosticItem
+        label="Tick Coverage"
+        value={`${engineStatus?.symbols_with_ticks || 0} / ${engineStatus?.active_live_feed_symbol_count || engineStatus?.live_feed_symbol_count || engineStatus?.watchlist_count || 0} symbols`}
+      />
+      <DiagnosticItem
+        label="Closed Candles"
+        value={`${engineStatus?.closed_candle_count || 0} total`}
+        detail={engineStatus?.last_candle_close_at ? `Last ${formatRelativeTime(engineStatus.last_candle_close_at)}` : 'Waiting'}
+      />
+    </section>
   );
 }
 
@@ -564,9 +595,12 @@ function FeedHealthPanel({ engineStatus }: { engineStatus: any }) {
           No active feed sockets right now.
         </div>
       ) : (
-        <div className="mt-3 grid gap-2 lg:grid-cols-2">
+        <div className="mt-3 grid gap-3 xl:grid-cols-2">
           {feedStatuses.map(([feedName, feed]) => {
             const feedState = getFeedStatusSummary(feed, engineStatus);
+            const feedSymbols: string[] = Array.isArray(feed?.symbols) ? feed.symbols.filter((symbol: unknown): symbol is string => typeof symbol === 'string') : [];
+            const previewSymbols = feedSymbols.slice(0, 6);
+            const hiddenCount = Math.max(feedSymbols.length - previewSymbols.length, 0);
             return (
               <div key={feedName} className="rounded border border-[#1f2937] bg-[#0d1117] p-3">
                 <div className="flex flex-wrap items-center justify-between gap-2">
@@ -587,14 +621,42 @@ function FeedHealthPanel({ engineStatus }: { engineStatus: any }) {
                   <FeedHealthStat label="Last Event" value={formatRelativeTime(feed?.last_event_at, '--')} />
                 </div>
 
-                <div className="mt-3 grid gap-1 text-[11px] text-gray-500">
-                  <div>
-                    <span className="text-gray-400">Symbols:</span>{' '}
-                    {Array.isArray(feed?.symbols) && feed.symbols.length ? feed.symbols.join(', ') : '--'}
+                <div className="mt-3 space-y-3 text-[11px] text-gray-500">
+                  <div className="rounded border border-[#1f2937] bg-[#111827] p-2.5">
+                    <div className="mb-2 flex items-center justify-between gap-2">
+                      <span className="text-gray-400">Symbol Preview</span>
+                      <span className="text-[10px] uppercase tracking-wider text-gray-500">
+                        {feedSymbols.length ? `${feedSymbols.length} total` : 'No symbols'}
+                      </span>
+                    </div>
+                    {previewSymbols.length ? (
+                      <div className="flex flex-wrap gap-1.5">
+                        {previewSymbols.map((symbol) => (
+                          <span key={symbol} className="rounded border border-[#1f2937] bg-[#0a0e14] px-2 py-1 font-mono text-[10px] text-gray-300">
+                            {symbol}
+                          </span>
+                        ))}
+                        {hiddenCount > 0 ? (
+                          <span className="rounded border border-[#1f2937] bg-[#0a0e14] px-2 py-1 text-[10px] text-gray-400">
+                            +{hiddenCount} more
+                          </span>
+                        ) : null}
+                      </div>
+                    ) : (
+                      <div className="text-gray-500">--</div>
+                    )}
                   </div>
-                  <div>
+                  <div className="rounded border border-[#1f2937] bg-[#111827] p-2.5">
                     <span className="text-gray-400">Message:</span>{' '}
                     {feed?.message || feed?.error || 'No extra message'}
+                  </div>
+                  <div className="rounded border border-[#1f2937] bg-[#111827] p-2.5">
+                    <span className="text-gray-400">Feed Name:</span>{' '}
+                    {formatFeedName(feedName)}
+                  </div>
+                  <div className="rounded border border-[#1f2937] bg-[#111827] p-2.5">
+                    <span className="text-gray-400">Status:</span>{' '}
+                    {feedState.label}
                   </div>
                 </div>
               </div>
@@ -661,10 +723,14 @@ function isRecent(value: string | null | undefined, maxAgeSeconds: number) {
   return Date.now() - date.getTime() <= maxAgeSeconds * 1000;
 }
 
-export default function Dashboard() {
+export function DashboardPage() {
   return (
     <Suspense fallback={null}>
       <DashboardContent />
     </Suspense>
   );
+}
+
+export default function Dashboard() {
+  return <DashboardPage />;
 }
