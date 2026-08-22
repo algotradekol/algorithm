@@ -433,7 +433,7 @@ export default function AlgoTab({
   ];
 
   return (
-    <section className="space-y-4">
+    <section className="min-w-0 space-y-4">
       <div className="flex items-start justify-between gap-4">
         <div>
           <h2 className="text-base font-semibold text-gray-100">{displayName}</h2>
@@ -514,13 +514,13 @@ export default function AlgoTab({
 
       <ScanResultsPanel algoId={algoId} results={scanResults} openPositions={positions} onRefresh={loadData} />
 
-      <div className="grid gap-4">
-        <section>
+      <div className="grid min-w-0 gap-4">
+        <section className="min-w-0">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Open Positions</h3>
           <PositionsTable rows={openPositionRows} onExit={exitPosition} exitingPositionId={exitingPositionId} tradingMode={tradingMode} />
         </section>
 
-        <section>
+        <section className="min-w-0">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Closed Trades Today</h3>
           <TradesTable rows={trades} />
         </section>
@@ -855,8 +855,8 @@ function PositionsTable({
           );
         })}
       </div>
-      <div className="hidden w-full overflow-x-auto rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1320px] border-collapse text-xs">
+      <div className="hidden w-full max-w-full overflow-x-auto overscroll-x-contain rounded border border-[#1f2937] sm:block">
+        <table className="w-full min-w-[1320px] table-fixed border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
             {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Trailing SL', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
@@ -881,8 +881,8 @@ function PositionsTable({
             return (
               <tr key={row.id || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
                 <td className="table-cell num text-gray-500">{safePage * PAGE_SIZE + index + 1}</td>
-                <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
-                <td className="table-cell"><PositionSourceBadge row={row} /></td>
+                <td className="table-cell w-[180px] font-mono text-gray-100">{row.symbol}</td>
+                <td className="table-cell w-[120px]"><PositionSourceBadge row={row} /></td>
                 <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
                   <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} mr-1 text-sm`} />
                   {row.side === 'SELL' ? 'S' : 'B'}
@@ -895,19 +895,19 @@ function PositionsTable({
                 <td className="table-cell num text-gray-100">{formatNumber(row.low_price ?? row.lowest_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.sl_price)}</td>
                 <td className="table-cell num text-gray-100">{formatNumber(row.target_price)}</td>
-                <td className="table-cell min-w-[160px]"><TrailingBadge row={row} /></td>
-                <td className="table-cell min-w-[180px] text-gray-400">
+                <td className="table-cell w-[170px]"><TrailingBadge row={row} /></td>
+                <td className="table-cell w-[220px] text-gray-400 align-top">
                   <div className="max-h-24 overflow-y-auto pr-1">
                     <SignalAudit row={row} />
                   </div>
                 </td>
-                <td className="table-cell min-w-[220px] text-gray-400">
+                <td className="table-cell w-[280px] text-gray-400 align-top">
                   <div className="max-h-24 overflow-y-auto break-words whitespace-normal pr-1">
                     {formatTrigger(row.entry_trigger)}
                   </div>
                 </td>
-                <td className={`table-cell num font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
-                <td className="table-cell"><ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} tradingMode={tradingMode} /></td>
+                <td className={`table-cell w-[120px] num font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
+                <td className="table-cell w-[110px]"><ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} tradingMode={tradingMode} /></td>
               </tr>
             );
           })}
@@ -955,8 +955,8 @@ function TradesTable({ rows }: { rows: any[] }) {
           </div>
         ))}
       </div>
-      <div className="hidden w-full max-w-full overflow-x-auto rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1280px] border-collapse text-xs">
+      <div className="hidden w-full max-w-full overflow-x-auto overscroll-x-contain rounded border border-[#1f2937] sm:block">
+        <table className="w-full min-w-[1280px] table-fixed border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
             {["Symbol", "Side", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Trailing SL", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
@@ -971,7 +971,7 @@ function TradesTable({ rows }: { rows: any[] }) {
             </tr>
           ) : visibleRows.map((row, index) => (
             <tr key={row.id || index} className={index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}>
-              <td className="table-cell font-mono text-gray-100">{row.symbol}</td>
+              <td className="table-cell w-[180px] font-mono text-gray-100">{row.symbol}</td>
               <td className={`table-cell font-semibold ${row.side === "SELL" ? "text-[#ef4444]" : "text-[#22c55e]"}`}>
                 <i className={`${row.side === "SELL" ? "ri-indeterminate-circle-fill" : "ri-add-circle-fill"} mr-1 text-sm`} />
                 {row.side === "SELL" ? "S" : "B"}
@@ -984,12 +984,12 @@ function TradesTable({ rows }: { rows: any[] }) {
                 {reasonIcon(row.exit_reason)}
                 {formatReason(row.exit_reason)}
               </td>
-              <td className="table-cell min-w-[150px]"><TrailingBadge row={row} /></td>
-              <td className="table-cell min-w-[220px] text-gray-400"><SignalAudit row={row} /></td>
-              <td className="table-cell max-w-[300px] break-words whitespace-normal text-gray-400">{formatTrigger(row.entry_trigger)}</td>
-              <td className={`table-cell num ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
-              <td className="table-cell num text-gray-100">{formatMoney(row.total_charges)}</td>
-              <td className={`table-cell num font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>{formatMoney(row.net_pnl)}</td>
+              <td className="table-cell w-[170px]"><TrailingBadge row={row} /></td>
+              <td className="table-cell w-[220px] text-gray-400 align-top"><SignalAudit row={row} /></td>
+              <td className="table-cell w-[300px] break-words whitespace-normal text-gray-400 align-top">{formatTrigger(row.entry_trigger)}</td>
+              <td className={`table-cell w-[110px] num ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
+              <td className="table-cell w-[110px] num text-gray-100">{formatMoney(row.total_charges)}</td>
+              <td className={`table-cell w-[120px] num font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>{formatMoney(row.net_pnl)}</td>
             </tr>
           ))}
         </tbody>
@@ -1141,7 +1141,13 @@ function TrailingBadge({ row }: { row: any }) {
     ? trailing.events.filter((event: any) => event && typeof event === 'object')
     : [];
   const latestEvent = events.length ? events[events.length - 1] : null;
-  const currentSl = optionalNumber(row?.sl_price, latestEvent?.new_sl);
+  const isStopExit = String(row?.exit_reason || '').toUpperCase().includes('SL');
+  const currentSl = optionalPositiveNumber(
+    latestEvent?.new_sl,
+    trailing?.current_sl,
+    row?.sl_price,
+    isStopExit ? row?.exit_price : null,
+  );
   const currentSlIsFinite = Number.isFinite(currentSl);
 
   if (!activated) {
@@ -1169,6 +1175,7 @@ function TrailingBadge({ row }: { row: any }) {
       })
     : null;
   const bumps = Math.max(Number(trailing?.update_count) || 0, events.length);
+  const legacySummaryOnly = activated && bumps > 0 && !events.length;
 
   return (
     <>
@@ -1234,7 +1241,18 @@ function TrailingBadge({ row }: { row: any }) {
           </div>
           <div className="max-h-[60vh] overflow-auto px-4 py-3 sm:px-5">
             {!events.length ? (
-              <p className="text-sm text-gray-400">No per-step trail entries were saved for this legacy trade yet.</p>
+              <div className="space-y-2 text-sm text-gray-400">
+                <p>
+                  {legacySummaryOnly
+                    ? 'This older trade only saved the trailing summary. Activation time and total bumps are available, but the per-step trail list was not captured for that trade.'
+                    : 'No trailing-stop step history was saved for this trade.'}
+                </p>
+                {legacySummaryOnly ? (
+                  <p className="text-xs text-gray-500">
+                    Newer trades save every trail move, so this modal will show the full list going forward.
+                  </p>
+                ) : null}
+              </div>
             ) : (
               <div className="overflow-x-auto rounded border border-[#1f2937]">
                 <table className="w-full min-w-[640px] border-collapse text-xs">
@@ -1315,6 +1333,15 @@ function optionalNumber(...values: unknown[]) {
     if (value === null || value === undefined || value === '') continue;
     const number = Number(value);
     if (Number.isFinite(number)) return number;
+  }
+  return null;
+}
+
+function optionalPositiveNumber(...values: unknown[]) {
+  for (const value of values) {
+    if (value === null || value === undefined || value === '') continue;
+    const number = Number(value);
+    if (Number.isFinite(number) && number > 0) return number;
   }
   return null;
 }

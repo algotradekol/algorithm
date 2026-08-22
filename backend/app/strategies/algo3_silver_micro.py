@@ -585,6 +585,20 @@ class Algo3SilverMicro(Strategy):
                 f"(close={close:.2f}, EMA20={_fmt(self._ema20)})"
             )
 
+    def _qualifies_as_buy_setup(self, bar: dict) -> bool:
+        if self._ema20 is None:
+            return False
+        close = float(bar.get("close") or 0)
+        open_price = float(bar.get("open") or 0)
+        return close > open_price and close > self._ema20
+
+    def _qualifies_as_sell_setup(self, bar: dict) -> bool:
+        if self._ema20 is None:
+            return False
+        close = float(bar.get("close") or 0)
+        open_price = float(bar.get("open") or 0)
+        return close < open_price and close < self._ema20
+
     def _persist_setup_event(self, side: str, bar: dict, source: str) -> None:
         if not self.symbol:
             return
@@ -617,7 +631,7 @@ class Algo3SilverMicro(Strategy):
         )
 
     # ── tick-based trigger detection ─────────────────────────────────
-    def _already_fired_this_setup(self, side: str) -> bool:
+    def _already_fired_this_setup(self, side: str, setup_bar_at: datetime.datetime | None = None) -> bool:
         """True if we've already fired an entry for the current stored setup.
 
         Keyed on the setup bar's timestamp: a fresh qualifying candle
@@ -626,41 +640,49 @@ class Algo3SilverMicro(Strategy):
         bar_at, the guard is skipped so classic tick-cross logic still
         works.
         """
+        if setup_bar_at is None:
+            setup_bar_at = self._buy_setup_bar_at if side == "BUY" else self._sell_setup_bar_at
         if side == "BUY":
             return (
-                self._buy_setup_bar_at is not None
-                and self._last_fired_buy_bar_at == self._buy_setup_bar_at
+                setup_bar_at is not None
+                and self._last_fired_buy_bar_at == setup_bar_at
             )
         return (
-            self._sell_setup_bar_at is not None
-            and self._last_fired_sell_bar_at == self._sell_setup_bar_at
+            setup_bar_at is not None
+            and self._last_fired_sell_bar_at == setup_bar_at
         )
 
-    def _already_attempted_this_setup(self, side: str) -> bool:
+    def _already_attempted_this_setup(self, side: str, setup_bar_at: datetime.datetime | None = None) -> bool:
+        if setup_bar_at is None:
+            setup_bar_at = self._buy_setup_bar_at if side == "BUY" else self._sell_setup_bar_at
         if side == "BUY":
             return (
-                self._buy_setup_bar_at is not None
-                and self._last_attempted_buy_bar_at == self._buy_setup_bar_at
+                setup_bar_at is not None
+                and self._last_attempted_buy_bar_at == setup_bar_at
             )
         return (
-            self._sell_setup_bar_at is not None
-            and self._last_attempted_sell_bar_at == self._sell_setup_bar_at
+            setup_bar_at is not None
+            and self._last_attempted_sell_bar_at == setup_bar_at
         )
 
-    def _already_consumed_this_setup(self, side: str) -> bool:
-        return self._already_attempted_this_setup(side) or self._already_fired_this_setup(side)
+    def _already_consumed_this_setup(self, side: str, setup_bar_at: datetime.datetime | None = None) -> bool:
+        return self._already_attempted_this_setup(side, setup_bar_at) or self._already_fired_this_setup(side, setup_bar_at)
 
-    def _mark_fired(self, side: str) -> None:
+    def _mark_fired(self, side: str, setup_bar_at: datetime.datetime | None = None) -> None:
+        if setup_bar_at is None:
+            setup_bar_at = self._buy_setup_bar_at if side == "BUY" else self._sell_setup_bar_at
         if side == "BUY":
-            self._last_fired_buy_bar_at = self._buy_setup_bar_at
+            self._last_fired_buy_bar_at = setup_bar_at
         else:
-            self._last_fired_sell_bar_at = self._sell_setup_bar_at
+            self._last_fired_sell_bar_at = setup_bar_at
 
-    def _mark_attempted(self, side: str) -> None:
+    def _mark_attempted(self, side: str, setup_bar_at: datetime.datetime | None = None) -> None:
+        if setup_bar_at is None:
+            setup_bar_at = self._buy_setup_bar_at if side == "BUY" else self._sell_setup_bar_at
         if side == "BUY":
-            self._last_attempted_buy_bar_at = self._buy_setup_bar_at
+            self._last_attempted_buy_bar_at = setup_bar_at
         else:
-            self._last_attempted_sell_bar_at = self._sell_setup_bar_at
+            self._last_attempted_sell_bar_at = setup_bar_at
         if not self._is_live_broker():
             return
         cooldown = float(self.settings.get("silver_entry_cooldown_seconds", ENTRY_ATTEMPT_COOLDOWN_SECONDS) or 0)
@@ -793,31 +815,41 @@ class Algo3SilverMicro(Strategy):
             return
         close = float(bar["close"])
         bar_at = bar["time"]
+        buy_qualifies = self._qualifies_as_buy_setup(bar)
+        sell_qualifies = self._qualifies_as_sell_setup(bar)
 
         buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
         sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
+        buy_setup_identity = bar_at if buy_qualifies else self._buy_setup_bar_at
+        sell_setup_identity = bar_at if sell_qualifies else self._sell_setup_bar_at
 
         if (
             buy_level is not None
             and close >= buy_level
-            and self._buy_setup_bar_at is not None
-            and not self._already_consumed_this_setup("BUY")
+            and buy_setup_identity is not None
+            and not self._already_consumed_this_setup("BUY", buy_setup_identity)
         ):
             print(f"[algo3] TRIGGER BUY (candle-close): bar close {close:.2f} >= level {buy_level:.2f} (setup {self._buy_setup_close:.2f} + n={n:.0f})")
-            if self._fire_entry("BUY", close, buy_level):
-                self._mark_fired("BUY")
+            if self._fire_entry("BUY", close, buy_level, setup_bar_at_override=buy_setup_identity):
+                self._mark_fired("BUY", setup_bar_at=buy_setup_identity)
                 return
         if (
             sell_level is not None
             and close <= sell_level
-            and self._sell_setup_bar_at is not None
-            and not self._already_consumed_this_setup("SELL")
+            and sell_setup_identity is not None
+            and not self._already_consumed_this_setup("SELL", sell_setup_identity)
         ):
             print(f"[algo3] TRIGGER SELL (candle-close): bar close {close:.2f} <= level {sell_level:.2f} (setup {self._sell_setup_close:.2f} - n={n:.0f})")
-            if self._fire_entry("SELL", close, sell_level):
-                self._mark_fired("SELL")
+            if self._fire_entry("SELL", close, sell_level, setup_bar_at_override=sell_setup_identity):
+                self._mark_fired("SELL", setup_bar_at=sell_setup_identity)
 
-    def _fire_entry(self, side: str, ltp: float, trigger_level: float) -> bool:
+    def _fire_entry(
+        self,
+        side: str,
+        ltp: float,
+        trigger_level: float,
+        setup_bar_at_override: datetime.datetime | None = None,
+    ) -> bool:
         current = self._open_position()
         if current and current["side"] == side:
             # Log so "trigger fired but no entry" is answerable from logs.
@@ -827,17 +859,17 @@ class Algo3SilverMicro(Strategy):
             if self._entry_attempt_in_flight:
                 print(f"[algo3] entry SKIPPED for {side}: another Silver entry attempt is already in flight")
                 return False
-            if self._already_consumed_this_setup(side):
+            if self._already_consumed_this_setup(side, setup_bar_at_override):
                 print(f"[algo3] entry SKIPPED for {side}: current setup already consumed")
                 return False
             if self._live_broker_symbol_busy(current):
-                self._mark_attempted(side)
+                self._mark_attempted(side, setup_bar_at_override)
                 return False
             cooldown_left = self._entry_cooldown_remaining()
             if cooldown_left > 0:
                 print(f"[algo3] entry SKIPPED for {side}: cooldown active ({cooldown_left:.0f}s remaining)")
                 return False
-            self._mark_attempted(side)
+            self._mark_attempted(side, setup_bar_at_override)
             self._entry_attempt_in_flight = True
         try:
             if current and current["side"] != side:

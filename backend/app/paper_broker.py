@@ -181,6 +181,7 @@ class PaperBroker:
             "last_updated_at": None,
             "update_count": 0,
             "last_sl_before_trail": float(sl_price),
+            "current_sl": float(sl_price),
             "events": [],
         })
 
@@ -323,6 +324,7 @@ class PaperBroker:
             merged_snapshot = current_snapshot  # need to write
 
         if merged_snapshot is not None:
+            trailing_meta["current_sl"] = float(current_sl)
             trailing_meta["events"] = trailing_events
             merged_snapshot["trailing"] = trailing_meta
             # Preserve initial_sl_price if it existed; older positions

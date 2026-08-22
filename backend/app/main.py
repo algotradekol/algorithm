@@ -743,6 +743,7 @@ def set_algo_scan_enabled(algo_id: str, payload: dict, _user=Depends(require_aut
     on) until the user toggles again — no midnight auto-reset."""
     from .strategy_settings import get_settings, update_settings
     strategy = get_strategy_or_raise(algo_id)
+    active_mode = get_runtime_trading_mode()
     enabled = bool(payload.get("enabled", True))
     current = get_settings(algo_id)
     current["scan_enabled"] = enabled
@@ -753,9 +754,10 @@ def set_algo_scan_enabled(algo_id: str, payload: dict, _user=Depends(require_aut
     saved = get_settings(algo_id)
     if hasattr(strategy, "reload_settings"):
         strategy.reload_settings()
-    audit_log("strategy", "scan_enabled toggled", algo_id=algo_id, enabled=enabled)
+    audit_log("strategy", "scan_enabled toggled", algo_id=algo_id, enabled=enabled, trading_mode=active_mode)
     return {
         "algo_id": algo_id,
+        "trading_mode": active_mode,
         "scan_enabled": bool(saved.get("scan_enabled", True)),
     }
 
