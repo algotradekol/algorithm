@@ -165,10 +165,12 @@ export default function SilverBacktestChart({
   const timeTicks = buildTimeTicks(visible, start, candleWidth, expanded ? 8 : 6);
   const chartHeight = expanded ? 680 : 600;
   const fixedPlotViewportWidth = Math.max(0, (containerWidth || width) - priceScaleWidth);
-  const visibleTimeTicks = timeTicks.filter((tick) => {
-    const x = tick.x - scrollLeft;
-    return x >= -24 && x <= fixedPlotViewportWidth + 24;
-  });
+  const visibleTimeTicks = fitTimeTicksToViewport(
+    timeTicks,
+    scrollLeft,
+    fixedPlotViewportWidth,
+    expanded ? 112 : 96,
+  );
 
   function y(price: number) {
     return 16 + ((high - price) / priceSpan) * (priceHeight - 32);
@@ -552,12 +554,12 @@ export default function SilverBacktestChart({
               <svg viewBox={`0 0 ${Math.max(fixedPlotViewportWidth, 1)} 76`} width="100%" height="76" preserveAspectRatio="none">
                 <text x={8} y={18} fill="#60a5fa" fontSize="13" fontWeight="600" fontFamily="ui-monospace">15-minute candles · IST</text>
                 {visibleTimeTicks.map((tick) => {
-                  const x = tick.x - scrollLeft;
+                  const x = tick.x;
                   return (
                     <g key={`fixed-time-${tick.key}`}>
                       <line x1={x} x2={x} y1={0} y2={10} stroke="#64748b" strokeWidth="1" />
-                      <text x={x} y={39} textAnchor="middle" fill="#cbd5e1" fontSize="12.5" fontWeight="600" fontFamily="ui-monospace">{tick.dateLabel}</text>
-                      <text x={x} y={61} textAnchor="middle" fill="#f8fafc" fontSize="14" fontWeight="700" fontFamily="ui-monospace">{tick.label}</text>
+                      <text x={tick.labelX} y={39} textAnchor="middle" fill="#cbd5e1" fontSize="12.5" fontWeight="600" fontFamily="ui-monospace">{tick.dateLabel}</text>
+                      <text x={tick.labelX} y={61} textAnchor="middle" fill="#f8fafc" fontSize="14" fontWeight="700" fontFamily="ui-monospace">{tick.label}</text>
                     </g>
                   );
                 })}
@@ -725,6 +727,35 @@ function buildTimeTicks(visibleCandles: any[], startIndex: number, candleWidth: 
         dateLabel: formatAxisDate(candle.time),
       };
     });
+}
+
+function fitTimeTicksToViewport(ticks: any[], scrollLeft: number, viewportWidth: number, minimumGap: number) {
+  if (!ticks.length || viewportWidth <= 0) return [];
+
+  const labelHalfWidth = 38;
+  const candidates = ticks
+    .map((tick) => {
+      const x = tick.x - scrollLeft;
+      return {
+        ...tick,
+        x,
+        labelX: Math.min(viewportWidth - labelHalfWidth, Math.max(labelHalfWidth, x)),
+      };
+    })
+    .filter((tick) => tick.x >= -labelHalfWidth && tick.x <= viewportWidth + labelHalfWidth);
+
+  const selected: any[] = [];
+  candidates.forEach((candidate, index) => {
+    const previous = selected[selected.length - 1];
+    const isLastCandidate = index === candidates.length - 1;
+    if (!previous || candidate.labelX - previous.labelX >= minimumGap) {
+      selected.push(candidate);
+    } else if (isLastCandidate) {
+      selected[selected.length - 1] = candidate;
+    }
+  });
+
+  return selected;
 }
 
 function formatNumber(value: number) {

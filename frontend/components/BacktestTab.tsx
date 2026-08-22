@@ -11,9 +11,20 @@ defaultStart.setDate(defaultStart.getDate() - 6);
 const weekAgo = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(defaultStart);
 const BACKTEST_STORAGE_KEY = 'backtest-tab-state-v1';
 const BACKTEST_UI_STORAGE_KEY = 'backtest-tab-ui-v1';
+const SILVER_SELL_PLANS = {
+  red_chain: {
+    label: 'Red-chain comparison (current)',
+    description: 'Compare each new qualifying red close with the previous red reference. Green candles do not reset it.',
+  },
+  latest_reference: {
+    label: 'Latest red reference (legacy)',
+    description: 'Replace the reference on every qualifying red candle, then wait for a later 1-minute break below it.',
+  },
+};
 
 export default function BacktestTab() {
   const [algoId, setAlgoId] = useState('algo1');
+  const [silverSellPlan, setSilverSellPlan] = useState('red_chain');
   const [startDate, setStartDate] = useState(weekAgo);
   const [endDate, setEndDate] = useState(today);
   const [job, setJob] = useState<any>(null);
@@ -30,6 +41,7 @@ export default function BacktestTab() {
       }
       const snapshot = JSON.parse(raw);
       if (snapshot?.algoId) setAlgoId(snapshot.algoId);
+      if (snapshot?.silverSellPlan === 'red_chain' || snapshot?.silverSellPlan === 'latest_reference') setSilverSellPlan(snapshot.silverSellPlan);
       if (snapshot?.startDate) setStartDate(snapshot.startDate);
       if (snapshot?.endDate) setEndDate(snapshot.endDate);
       if (snapshot?.job) setJob(snapshot.job);
@@ -46,6 +58,7 @@ export default function BacktestTab() {
     try {
       window.localStorage.setItem(BACKTEST_STORAGE_KEY, JSON.stringify({
         algoId,
+        silverSellPlan,
         startDate,
         endDate,
         job,
@@ -55,7 +68,7 @@ export default function BacktestTab() {
     } catch {
       // Best-effort persistence only.
     }
-  }, [algoId, startDate, endDate, job, error, storageReady]);
+  }, [algoId, silverSellPlan, startDate, endDate, job, error, storageReady]);
 
   async function run() {
     setError('');
@@ -73,7 +86,12 @@ export default function BacktestTab() {
       return;
     }
     try {
-      setJob(await api.startBacktest({ algo_id: algoId, start_date: startDate, end_date: endDate }));
+      setJob(await api.startBacktest({
+        algo_id: algoId,
+        start_date: startDate,
+        end_date: endDate,
+        ...(algoId === 'algo3' ? { silver_sell_plan: silverSellPlan } : {}),
+      }));
     } catch (e: any) {
       setError(e?.message || 'Could not start backtest');
     }
@@ -145,6 +163,7 @@ export default function BacktestTab() {
         <p className="mt-1 max-w-3xl text-sm text-gray-500">{introCopy.body}</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option><option value="algo3">Silver Micro (MCX:SILVERMIC26AUGFUT)</option></select></label>
+          {algoId === 'algo3' && <label><span className="label">Silver sell plan</span><select value={silverSellPlan} onChange={(e) => setSilverSellPlan(e.target.value)} className="control mt-1"><option value="red_chain">{SILVER_SELL_PLANS.red_chain.label}</option><option value="latest_reference">{SILVER_SELL_PLANS.latest_reference.label}</option></select><span className="mt-1 block text-[11px] leading-4 text-gray-500">{SILVER_SELL_PLANS[silverSellPlan as keyof typeof SILVER_SELL_PLANS].description}</span></label>}
           <label><span className="label">Start date</span><input value={startDate} onChange={(e) => setStartDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <label><span className="label">End date</span><input value={endDate} onChange={(e) => setEndDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <div className="flex items-end">
@@ -216,7 +235,7 @@ function BacktestResult({ result }: { result: any }) {
   const visibleTrades = result.algo_id === 'algo3' && selectedChartDate
     ? allTrades.filter((trade: any) => trade.session_date === selectedChartDate)
     : allTrades;
-  const resultStorageId = `${result.algo_id}:${result.start_date}:${result.end_date}`;
+  const resultStorageId = `${result.algo_id}:${result.start_date}:${result.end_date}:${result.silver_sell_plan || ''}`;
 
   useEffect(() => {
     try {
@@ -281,7 +300,7 @@ function BacktestResult({ result }: { result: any }) {
 
   return <>
     <section className="panel p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-semibold text-gray-100">{result.start_date} to {result.end_date}</h3><p className="mt-1 max-w-3xl text-xs text-gray-500">{result.execution_assumption}</p></div><div className="flex items-center gap-3"><div className="text-xs text-gray-500">History coverage: <span className="num text-gray-100">{coverage.symbols_with_history} / {coverage.requested_symbols}</span></div><button onClick={() => downloadBacktestCsv(result)} className="inline-flex min-h-10 items-center gap-2 rounded border border-[#22c55e] bg-[#22c55e]/10 px-3 py-2 text-xs font-semibold text-[#22c55e]"><i className="ri-file-download-fill text-sm" />Download CSV</button></div></div>
+       <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-semibold text-gray-100">{result.start_date} to {result.end_date}</h3><p className="mt-1 max-w-3xl text-xs text-gray-500">{result.execution_assumption}</p>{result.algo_id === 'algo3' && <div className="mt-2 inline-flex items-center gap-2 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1 text-xs text-[#bfdbfe]"><span className="font-semibold">Sell plan:</span>{result.silver_sell_plan_label || result.silver_sell_plan || 'Red-chain comparison (current)'}</div>}</div><div className="flex items-center gap-3"><div className="text-xs text-gray-500">History coverage: <span className="num text-gray-100">{coverage.symbols_with_history} / {coverage.requested_symbols}</span></div><button onClick={() => downloadBacktestCsv(result)} className="inline-flex min-h-10 items-center gap-2 rounded border border-[#22c55e] bg-[#22c55e]/10 px-3 py-2 text-xs font-semibold text-[#22c55e]"><i className="ri-file-download-fill text-sm" />Download CSV</button></div></div>
       <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <Card label="Trading days" value={summary.trading_days_replayed || 0} />
         <Card label="Trades" value={summary.trade_count || 0} />

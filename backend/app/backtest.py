@@ -32,6 +32,12 @@ OPENING_WINDOW_START = "09:15"
 OPENING_WINDOW_END = "09:16"
 ENTRY_TIME = "09:16"
 EXIT_SCAN_START = "09:17"
+SILVER_SELL_PLAN_RED_CHAIN = "red_chain"
+SILVER_SELL_PLAN_LATEST_REFERENCE = "latest_reference"
+SILVER_SELL_PLAN_LABELS = {
+    SILVER_SELL_PLAN_RED_CHAIN: "Red-chain comparison (current)",
+    SILVER_SELL_PLAN_LATEST_REFERENCE: "Latest red reference (legacy)",
+}
 
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -51,6 +57,13 @@ def _raise_if_cancelled(job_id: str) -> None:
 def _ema_step(previous: float | None, value: float, period: int = EMA_PERIOD) -> float:
     k = 2 / (period + 1)
     return float(value) if previous is None else float(value) * k + previous * (1 - k)
+
+
+def normalize_silver_sell_plan(value: str | None) -> str:
+    plan = str(value or SILVER_SELL_PLAN_RED_CHAIN).strip().lower()
+    if plan not in SILVER_SELL_PLAN_LABELS:
+        raise ValueError("Unknown Silver sell plan. Choose red_chain or latest_reference.")
+    return plan
 
 
 class BacktestHistoryCache:
@@ -83,6 +96,7 @@ def start_backtest(
     start_date: str,
     end_date: str,
     watchlist: list[str],
+    silver_sell_plan: str | None = None,
 ) -> dict:
     if algo_id not in SUPPORTED_ALGOS:
         raise ValueError("Backtesting is currently available for Simple, Filter, and Silver Micro only.")
@@ -97,12 +111,14 @@ def start_backtest(
         raise ValueError(f"Choose a range of {MAX_BACKTEST_DAYS} calendar days or fewer.")
     if not watchlist:
         raise ValueError("The NSE 500 watchlist is not ready yet.")
+    normalized_sell_plan = normalize_silver_sell_plan(silver_sell_plan) if algo_id == "algo3" else None
 
     job_id = uuid.uuid4().hex
     job = {
         "id": job_id,
         "status": "queued",
         "algo_id": algo_id,
+        "silver_sell_plan": normalized_sell_plan,
         "start_date": first_date.isoformat(),
         "end_date": last_date.isoformat(),
         "total_symbols": len(watchlist),
@@ -129,7 +145,11 @@ def start_backtest(
             raise ValueError("A backtest is already running. Wait for it to finish before starting another one.")
         _jobs[job_id] = job
     _persist_job(job)
-    threading.Thread(target=_run_job, args=(job_id, algo_id, first_date, last_date, list(watchlist)), daemon=True).start()
+    threading.Thread(
+        target=_run_job,
+        args=(job_id, algo_id, first_date, last_date, list(watchlist), normalized_sell_plan),
+        daemon=True,
+    ).start()
     return _public_job(job)
 
 
@@ -228,6 +248,7 @@ def _run_job(
     first_date: datetime.date,
     last_date: datetime.date,
     watchlist: list[str],
+    silver_sell_plan: str | None = None,
 ):
     history_cache = BacktestHistoryCache()
     try:
@@ -236,7 +257,10 @@ def _run_job(
         if algo_id == "algo3":
             if not watchlist:
                 raise ValueError("The Silver Micro contract could not be resolved for backtesting.")
-            _run_silver_micro_job(job_id, algo_id, first_date, last_date, watchlist[0], settings, history_cache)
+            _run_silver_micro_job(
+                job_id, algo_id, first_date, last_date, watchlist[0], settings, history_cache,
+                silver_sell_plan or SILVER_SELL_PLAN_RED_CHAIN,
+            )
             return
         _update(
             job_id,
@@ -855,6 +879,7 @@ def _run_silver_micro_job(
     symbol: str,
     settings: dict,
     history_cache: BacktestHistoryCache,
+    silver_sell_plan: str,
 ) -> None:
     _raise_if_cancelled(job_id)
     lookback_start = first_date - datetime.timedelta(days=WARMUP_LOOKBACK_DAYS)
@@ -903,6 +928,7 @@ def _run_silver_micro_job(
         trading_days,
         settings,
         charges_config,
+        silver_sell_plan,
     )
     _raise_if_cancelled(job_id)
     data_coverage = {
@@ -919,13 +945,19 @@ def _run_silver_micro_job(
         daily_results,
         data_coverage,
         mode="historical_mcx_replay",
-        execution_assumption=_silver_micro_execution_assumption(history_resolution, settings),
+        execution_assumption=_silver_micro_execution_assumption(history_resolution, settings, silver_sell_plan),
     )
+    result["silver_sell_plan"] = silver_sell_plan
+    result["silver_sell_plan_label"] = SILVER_SELL_PLAN_LABELS[silver_sell_plan]
     _raise_if_cancelled(job_id)
     _update(job_id, status="complete", phase="complete", message="Silver Micro backtest complete.", result=result)
 
 
-def _silver_micro_execution_assumption(history_resolution: str, settings: dict) -> str:
+def _silver_micro_execution_assumption(
+    history_resolution: str,
+    settings: dict,
+    silver_sell_plan: str = SILVER_SELL_PLAN_RED_CHAIN,
+) -> str:
     n = int(settings.get("silver_breakout_points", 150))
     sl_pts = int(settings.get("sl_points", 100))
     target_pts = int(settings.get("target_points", 300))
@@ -939,17 +971,25 @@ def _silver_micro_execution_assumption(history_resolution: str, settings: dict) 
         if tsl_enabled and exit_mode in {"trailing_sl_only", "fixed_target_trailing_sl"}
         else " Trailing SL is OFF for this replay."
     )
+    sell_plan_text = (
+        "SELL compares each later qualifying red 15m close with the previous red reference; "
+        "green candles do not reset that reference."
+        if silver_sell_plan == SILVER_SELL_PLAN_RED_CHAIN
+        else "SELL replaces the reference on every qualifying red 15m candle, then waits for a later 1-minute break below that latest reference."
+    )
+    sell_entry_text = (
+        "SELL red-chain entries enter at the qualifying red candle's close."
+        if silver_sell_plan == SILVER_SELL_PLAN_RED_CHAIN
+        else "SELL latest-reference entries enter at the 1-minute trigger level."
+    )
     return (
         f"Silver Micro replays 15-minute bars aggregated from 1-minute history "
         f"({history_resolution}). Each closed 15m bar updates EMA20; a green candle "
         f"closing above EMA20 stores its close as the BUY level, a red candle "
         f"closing below EMA20 stores the SELL red-reference close. BUY entry fires "
         f"when a subsequent 1-minute bar's high crosses (setup_close + n={n} points). "
-        f"SELL entry fires only when a later qualifying red 15m candle closes at "
-        f"least n points below the previous stored red reference close; green candles "
-        f"in between do not reset that stored red reference. BUY entries use 1-minute "
-        f"bar extremes and enter at the trigger level itself. SELL red-chain entries "
-        f"enter at the qualifying red candle's close. SL={sl_pts} points, target={target_pts} "
+        f"{sell_plan_text} BUY entries use 1-minute "
+        f"bar extremes and enter at the trigger level itself. {sell_entry_text} SL={sl_pts} points, target={target_pts} "
         f"points, both fixed rupee distances from entry. If a 1-minute bar touches "
         f"both SL and target, SL is assumed first (conservative). Reversal on "
         f"contra trigger closes the current position and flips at the same bar."
@@ -957,16 +997,27 @@ def _silver_micro_execution_assumption(history_resolution: str, settings: dict) 
     )
 
 
-def _new_silver_micro_day_result(symbol: str, day: datetime.date, bar_count: int) -> dict:
+def _new_silver_micro_day_result(
+    symbol: str,
+    day: datetime.date,
+    bar_count: int,
+    silver_sell_plan: str = SILVER_SELL_PLAN_RED_CHAIN,
+) -> dict:
+    sell_plan = normalize_silver_sell_plan(silver_sell_plan)
+    sell_plan_text = (
+        "SELL compares a later qualifying red close with the previous red reference; green candles do not reset it."
+        if sell_plan == SILVER_SELL_PLAN_RED_CHAIN
+        else "SELL replaces the reference on each qualifying red candle, then waits for a later 1-minute break below that latest reference."
+    )
     return {
         "algo_id": "algo3",
         "date": day.isoformat(),
         "mode": "historical_mcx_replay",
+        "silver_sell_plan": sell_plan,
+        "silver_sell_plan_label": SILVER_SELL_PLAN_LABELS[sell_plan],
         "execution_assumption": (
             "Silver Micro (15m EMA breakout): green candle above EMA20 sets BUY level, "
-            "red candle below EMA20 stores a SELL red reference. BUY uses setup close + n; "
-            "SELL fires only when a later qualifying red closes at least n points below "
-            "the previous stored red reference."
+            f"red candle below EMA20 stores a SELL red reference. BUY uses setup close + n; {sell_plan_text}"
         ),
         "data_available_symbols": 1 if bar_count else 0,
         "summary": {},
@@ -1264,6 +1315,7 @@ def _simulate_silver_micro_range(
     trading_days: list[datetime.date],
     settings: dict,
     charges_config: dict,
+    silver_sell_plan: str = SILVER_SELL_PLAN_RED_CHAIN,
 ) -> list[dict]:
     """15m EMA breakout replay (2026-08-19 rewrite).
 
@@ -1275,6 +1327,7 @@ def _simulate_silver_micro_range(
     (conservative). SL/target/TSL are in POINTS from entry, matching the
     live strategy exactly.
     """
+    silver_sell_plan = normalize_silver_sell_plan(silver_sell_plan)
     n = float(settings.get("silver_breakout_points", 150))
     sl_pts = float(settings.get("sl_points", 100))
     target_pts = float(settings.get("target_points", 300))
@@ -1304,7 +1357,7 @@ def _simulate_silver_micro_range(
             minute_bars_by_day[ts.date()] += 1
 
     daily_results = {
-        day: _new_silver_micro_day_result(symbol, day, minute_bars_by_day.get(day, 0))
+        day: _new_silver_micro_day_result(symbol, day, minute_bars_by_day.get(day, 0), silver_sell_plan)
         for day in trading_days
     }
 
@@ -1431,7 +1484,8 @@ def _simulate_silver_micro_range(
                 })
                 day_result["condition_breakdown"][2]["passed"] += 1
         if (
-            allow_signals
+            silver_sell_plan == SILVER_SELL_PLAN_RED_CHAIN
+            and allow_signals
             and first_date <= bar["time"].date() <= last_date
             and bars_finalized >= EMA_PERIOD
             and setup_event
@@ -1652,6 +1706,21 @@ def _simulate_silver_micro_range(
                     if position and position["side"] != "BUY":
                         close_position(buy_level, ts, "REVERSAL_CONTRA_SIGNAL", day)
                     open_position("BUY", buy_level, ts, day)
+
+            # Legacy comparison plan: every qualifying red candle replaces the
+            # reference, then a later 1-minute low crossing reference - n enters
+            # at the trigger level. The red-chain plan enters from the finalized
+            # qualifying red close above instead.
+            if (
+                silver_sell_plan == SILVER_SELL_PLAN_LATEST_REFERENCE
+                and (position is None or position.get("side") != "SELL")
+                and sell_level is not None
+                and prev_ltp is not None
+                and prev_ltp > sell_level >= candle["low"]
+            ):
+                if position and position["side"] != "SELL":
+                    close_position(sell_level, ts, "REVERSAL_CONTRA_SIGNAL", day)
+                open_position("SELL", sell_level, ts, day)
 
             # Exit management for whatever's currently open.
             if position:
