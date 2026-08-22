@@ -1,6 +1,6 @@
 'use client';
 
-import { type ReactNode, useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { PAGE_SIZE, PaginationControls } from './PaginationControls';
 import SilverBacktestChart from './SilverBacktestChart';
@@ -137,17 +137,23 @@ function BacktestResult({ result }: { result: any }) {
   const summary = result.summary || {};
   const coverage = result.data_coverage || {};
   const exits = summary.exit_counts || {};
-  const daily = result.daily_results || [];
-  const allTrades = daily.flatMap((day: any) => (day.trades || []).map((trade: any) => ({ ...trade, session_date: day.date })));
-  const silverChartDays = result.algo_id === 'algo3'
-    ? daily.filter((day: any) => Array.isArray(day?.chart?.candles) && day.chart.candles.length > 0)
-    : [];
+  const daily = useMemo(() => Array.isArray(result.daily_results) ? result.daily_results : [], [result.daily_results]);
+  const allTrades = useMemo(
+    () => daily.flatMap((day: any) => (day.trades || []).map((trade: any) => ({ ...trade, session_date: day.date }))),
+    [daily],
+  );
+  const silverChartDays = useMemo(
+    () => result.algo_id === 'algo3'
+      ? daily.filter((day: any) => Array.isArray(day?.chart?.candles) && day.chart.candles.length > 0)
+      : [],
+    [daily, result.algo_id],
+  );
   const [selectedChartDate, setSelectedChartDate] = useState('');
   const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null);
   const [chartModalOpen, setChartModalOpen] = useState(false);
   const [chartOverlays, setChartOverlays] = useState({
     ema: true,
-    setups: true,
+    setups: false,
     trades: true,
     levels: true,
     trailing: true,
@@ -232,14 +238,14 @@ function BacktestResult({ result }: { result: any }) {
         onOpenModal={() => setChartModalOpen(true)}
       />
     )}
-    <DailyResults rows={daily} />
-    <BacktestCandidates days={daily} />
     <BacktestTrades
       rows={visibleTrades}
       selectedTradeId={selectedTradeId}
       onFocusTrade={focusTrade}
       selectedDate={result.algo_id === 'algo3' ? selectedChartDate : null}
     />
+    <DailyResults rows={daily} />
+    <BacktestCandidates days={daily} />
     {chartModalOpen && silverChartDays.length > 0 && (
       <BacktestChartModal onClose={() => setChartModalOpen(false)}>
         <SilverBacktestChart
@@ -271,10 +277,15 @@ function BacktestCandidates({ days }: { days: any[] }) {
   const [showMissing, setShowMissing] = useState(false);
   const [sortKey, setSortKey] = useState('symbol');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  const availableDates = useMemo(() => days.map((day) => day.date), [days]);
 
   useEffect(() => {
-    if (days.length && !days.some((day) => day.date === selectedDate)) setSelectedDate(days[0].date);
-  }, [days, selectedDate]);
+    if (!availableDates.length) {
+      setSelectedDate('');
+      return;
+    }
+    setSelectedDate((current) => availableDates.includes(current) ? current : availableDates[0]);
+  }, [availableDates]);
 
   const day = days.find((item) => item.date === selectedDate) || days[0];
   const candidates = (day?.candidates || [])
@@ -319,7 +330,7 @@ function BacktestCandidates({ days }: { days: any[] }) {
           <p className="mt-1 text-xs text-gray-500">{candidates.length} visible symbols. Missing 9:15 data is hidden by default, but remains available for audit.</p>
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
-          <select value={day?.date || ''} onChange={(e) => setSelectedDate(e.target.value)} className="control text-sm">
+          <select value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="control text-sm">
             {days.map((item) => <option key={item.date} value={item.date}>{item.date}</option>)}
           </select>
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter symbols..." className="control text-sm" />

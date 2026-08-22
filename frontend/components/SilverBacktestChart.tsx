@@ -120,10 +120,11 @@ export default function SilverBacktestChart({
   const changePct = first.open ? change / first.open * 100 : 0;
   const activeIndex = crosshair ? Math.min(visible.length - 1, Math.max(0, Math.floor(crosshair.x / candleWidth))) : null;
   const activeCandle = activeIndex !== null ? visible[activeIndex] : null;
+  const statCandle = activeCandle || last;
   const activeX = activeIndex !== null ? activeIndex * candleWidth + candleWidth / 2 : 0;
   const activePrice = crosshair ? high - ((crosshair.y - 16) / (priceHeight - 32)) * priceSpan : null;
-  const tooltipWidth = 250;
-  const tooltipHeight = 110;
+  const tooltipWidth = 290;
+  const tooltipHeight = 128;
   const tooltipGap = 18;
   const tooltipX = activeX > width / 2
     ? Math.max(8, activeX - tooltipWidth - tooltipGap)
@@ -269,18 +270,20 @@ export default function SilverBacktestChart({
         </div>
       </div>
 
-      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_320px]">
+      <div className="mt-4 space-y-3">
         <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div>
               <div className="font-mono text-sm font-semibold text-gray-100">{chart.symbol} / 15m / {selectedDay.date}</div>
-              <div className="mt-1 text-xs text-gray-500">Showing candles {start + 1}-{end} of {normalized.length}</div>
+              <div className="mt-1 text-xs text-gray-500">
+                {activeCandle ? `Focused candle: ${activeCandle.time}` : `Showing candles ${start + 1}-${end} of ${normalized.length}`}
+              </div>
             </div>
             <div className="flex flex-wrap items-center gap-4 text-xs">
-              <Stat label="Open" value={formatNumber(first.open)} />
-              <Stat label="High" value={formatNumber(high)} />
-              <Stat label="Low" value={formatNumber(low)} />
-              <Stat label="Close" value={formatNumber(last.close)} />
+              <Stat label="Open" value={formatNumber(statCandle.open)} />
+              <Stat label="High" value={formatNumber(statCandle.high)} />
+              <Stat label="Low" value={formatNumber(statCandle.low)} />
+              <Stat label="Close" value={formatNumber(statCandle.close)} />
               <Stat label="Change" value={`${change >= 0 ? '+' : ''}${formatNumber(change)} (${changePct.toFixed(2)}%)`} tone={change >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
             </div>
           </div>
@@ -318,7 +321,7 @@ export default function SilverBacktestChart({
                 return (
                   <g key={ratio}>
                     <line x1={0} x2={width} y1={lineY} y2={lineY} stroke="#1f2937" strokeWidth="1" />
-                    <text x={8} y={lineY - 4} fill="#6b7280" fontSize="11" fontFamily="ui-monospace">{formatNumber(price)}</text>
+                    <text x={8} y={lineY - 4} fill="#6b7280" fontSize="12.5" fontFamily="ui-monospace">{formatNumber(price)}</text>
                   </g>
                 );
               })}
@@ -377,8 +380,17 @@ export default function SilverBacktestChart({
                 const exitIndex = Math.max(start, trade.exitIndex) - start;
                 const entryX = entryIndex * candleWidth + candleWidth / 2;
                 const exitX = exitIndex * candleWidth + candleWidth / 2;
-                const color = trade.side === 'BUY' ? '#22c55e' : '#ef4444';
-                const opacity = trade.selected ? 1 : 0.45;
+                const entryY = y(Number(trade.entry_price));
+                const exitY = y(Number(trade.exit_price));
+                const isBuy = trade.side === 'BUY';
+                const color = isBuy ? '#60a5fa' : '#ef4444';
+                const opacity = trade.selected ? 1 : 0.55;
+                const arrowOffset = trade.selected ? 34 : 28;
+                const shaftStartY = isBuy ? entryY - arrowOffset : entryY + arrowOffset;
+                const shaftEndY = isBuy ? entryY - 8 : entryY + 8;
+                const arrowHeadPoints = isBuy
+                  ? `${entryX - 6},${entryY - 8} ${entryX + 6},${entryY - 8} ${entryX},${entryY + 2}`
+                  : `${entryX - 6},${entryY + 8} ${entryX + 6},${entryY + 8} ${entryX},${entryY - 2}`;
                 return (
                   <g
                     key={trade.trade_id}
@@ -386,9 +398,10 @@ export default function SilverBacktestChart({
                     onClick={() => onSelectedTradeIdChange(trade.trade_id)}
                     style={{ cursor: 'pointer' }}
                   >
-                    <line x1={entryX} x2={exitX} y1={y(Number(trade.entry_price))} y2={y(Number(trade.exit_price))} stroke={color} strokeWidth={trade.selected ? 2 : 1} />
-                    <circle cx={entryX} cy={y(Number(trade.entry_price))} r={trade.selected ? 5 : 4} fill={color} />
-                    <rect x={exitX - 4} y={y(Number(trade.exit_price)) - 4} width={8} height={8} fill={color} />
+                    <line x1={entryX} x2={exitX} y1={entryY} y2={exitY} stroke={color} strokeWidth={trade.selected ? 2.2 : 1.2} strokeDasharray={trade.selected ? undefined : '4 4'} />
+                    <line x1={entryX} x2={entryX} y1={shaftStartY} y2={shaftEndY} stroke={color} strokeWidth={trade.selected ? 2.8 : 2.2} strokeLinecap="round" />
+                    <polygon points={arrowHeadPoints} fill={color} />
+                    <circle cx={exitX} cy={exitY} r={trade.selected ? 4.6 : 3.6} fill={color} opacity="0.85" />
                   </g>
                 );
               })}
@@ -424,45 +437,46 @@ export default function SilverBacktestChart({
                 <g pointerEvents="none">
                   <line x1={activeX} x2={activeX} y1={0} y2={priceHeight + 18} stroke="#9ca3af" strokeDasharray="5 5" strokeWidth="1" opacity="0.75" />
                   <line x1={0} x2={width} y1={crosshair.y} y2={crosshair.y} stroke="#9ca3af" strokeDasharray="5 5" strokeWidth="1" opacity="0.75" />
-                  <rect x={width - 88} y={Math.max(2, Math.min(priceHeight - 20, crosshair.y - 10))} width={82} height={20} fill="#111827" stroke="#1f2937" />
-                  <text x={width - 82} y={Math.max(15, Math.min(priceHeight - 7, crosshair.y + 4))} fill="#e5e7eb" fontSize="11" fontFamily="ui-monospace">
+                  <rect x={width - 110} y={Math.max(2, Math.min(priceHeight - 24, crosshair.y - 12))} width={102} height={24} fill="#111827" stroke="#1f2937" />
+                  <text x={width - 102} y={Math.max(17, Math.min(priceHeight - 6, crosshair.y + 5))} fill="#e5e7eb" fontSize="12.5" fontFamily="ui-monospace">
                     {formatNumber(activePrice)}
                   </text>
                   <rect x={tooltipX} y={tooltipY} width={tooltipWidth} height={tooltipHeight} fill="#111827" stroke="#1f2937" />
-                  <text x={tooltipX + 10} y={tooltipY + 20} fill="#e5e7eb" fontSize="11" fontFamily="ui-monospace">{activeCandle.time}</text>
-                  <text x={tooltipX + 10} y={tooltipY + 38} fill="#9ca3af" fontSize="11" fontFamily="ui-monospace">
+                  <text x={tooltipX + 12} y={tooltipY + 22} fill="#e5e7eb" fontSize="12.5" fontFamily="ui-monospace">{activeCandle.time}</text>
+                  <text x={tooltipX + 12} y={tooltipY + 44} fill="#9ca3af" fontSize="12.5" fontFamily="ui-monospace">
                     O {formatNumber(activeCandle.open)}  H {formatNumber(activeCandle.high)}
                   </text>
-                  <text x={tooltipX + 10} y={tooltipY + 56} fill="#9ca3af" fontSize="11" fontFamily="ui-monospace">
+                  <text x={tooltipX + 12} y={tooltipY + 66} fill="#9ca3af" fontSize="12.5" fontFamily="ui-monospace">
                     L {formatNumber(activeCandle.low)}  C {formatNumber(activeCandle.close)}
                   </text>
-                  <text x={tooltipX + 10} y={tooltipY + 74} fill="#60a5fa" fontSize="11" fontFamily="ui-monospace">
+                  <text x={tooltipX + 12} y={tooltipY + 88} fill="#60a5fa" fontSize="12.5" fontFamily="ui-monospace">
                     EMA20 {formatNumber(activeCandle.ema20)}
                   </text>
-                  <text x={tooltipX + 10} y={tooltipY + 92} fill="#9ca3af" fontSize="11" fontFamily="ui-monospace">
+                  <text x={tooltipX + 12} y={tooltipY + 110} fill="#9ca3af" fontSize="12.5" fontFamily="ui-monospace">
                     Vol {activeCandle.volume.toLocaleString('en-IN')}
                   </text>
                 </g>
               )}
 
               <line x1={0} x2={width} y1={priceHeight + 18} y2={priceHeight + 18} stroke="#1f2937" />
-              <text x={8} y={totalHeight - 8} fill="#6b7280" fontSize="11" fontFamily="ui-monospace">
-                {`${first.time} -> ${last.time}`}
+              <text x={8} y={totalHeight - 8} fill="#6b7280" fontSize="12.5" fontFamily="ui-monospace">
+                {activeCandle ? `${activeCandle.time}  |  window ${first.time} -> ${last.time}` : `${first.time} -> ${last.time}`}
               </text>
             </svg>
           </div>
         </div>
 
-        <div className="space-y-3">
+        <div className="grid gap-3 xl:grid-cols-[minmax(0,260px)_minmax(0,1fr)_minmax(0,220px)]">
           <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
             <div className="text-xs font-semibold uppercase tracking-wide text-gray-400">Overlay toggles</div>
             <div className="mt-3 space-y-2 text-sm text-gray-300">
               <Toggle label="EMA20 (blue)" checked={overlays.ema} onChange={() => onOverlaysChange({ ...overlays, ema: !overlays.ema })} />
-              <Toggle label="Setups" checked={overlays.setups} onChange={() => onOverlaysChange({ ...overlays, setups: !overlays.setups })} />
+              <Toggle label="Setup markers" checked={overlays.setups} onChange={() => onOverlaysChange({ ...overlays, setups: !overlays.setups })} />
               <Toggle label="Trades" checked={overlays.trades} onChange={() => onOverlaysChange({ ...overlays, trades: !overlays.trades })} />
               <Toggle label="SL / target" checked={overlays.levels} onChange={() => onOverlaysChange({ ...overlays, levels: !overlays.levels })} />
               <Toggle label="Trailing path" checked={overlays.trailing} onChange={() => onOverlaysChange({ ...overlays, trailing: !overlays.trailing })} />
             </div>
+            <p className="mt-3 text-xs text-gray-500">Setup markers stay off by default so the chart opens cleaner and the trade arrows stay easy to read.</p>
           </div>
 
           <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
@@ -470,7 +484,7 @@ export default function SilverBacktestChart({
             {!selectedTrade ? (
               <p className="mt-3 text-sm text-gray-500">No trade selected for this day yet. Pick a trade row or marker to focus it.</p>
             ) : (
-              <div className="mt-3 grid gap-2 text-sm">
+              <div className="mt-3 grid gap-2 text-sm sm:grid-cols-2 xl:grid-cols-3">
                 <ChartMetric label="Trade ID" value={String(selectedTrade.trade_id)} mono />
                 <ChartMetric label="Side" value={selectedTrade.side} tone={selectedTrade.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
                 <ChartMetric label="Entry" value={`${formatDateTimeShort(selectedTrade.entry_time)} @ ${formatNumber(Number(selectedTrade.entry_price))}`} />
