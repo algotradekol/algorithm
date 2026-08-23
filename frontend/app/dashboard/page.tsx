@@ -115,6 +115,22 @@ function DashboardContent() {
     symbols_with_ticks?: number;
     last_candle_close_at?: string | null;
     closed_candle_count?: number;
+    fyers_feed_statuses?: Record<string, {
+      name?: string;
+      connected?: boolean;
+      pending?: boolean;
+      error?: string | null;
+      message?: string | null;
+      last_event_at?: string | null;
+      litemode?: boolean;
+      symbols?: string[];
+      symbol_count?: number;
+      subscribed_symbols?: number;
+      first_tick_received?: boolean;
+      first_tick_at?: string | null;
+    }>;
+    active_live_feed_plan_names?: string[];
+    active_live_feed_symbol_count?: number;
   } | null>(null);
   const [wsStatus, setWsStatus] = useState<WebSocketState>('reconnecting');
   const router = useRouter();

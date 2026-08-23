@@ -456,14 +456,19 @@ def get_previous_close(symbol: str) -> float | None:
 def get_price_history(symbol: str, resolution: str = "15", days: int = 5) -> dict:
     """Recent historical candles normalized for the frontend history tab."""
     fyers = get_fyers_model(use_proxy=False)
-    today = datetime.date.today()
-    start_date = today - datetime.timedelta(days=max(days, 1))
+    end_date = datetime.date.today()
+    # FYERS rejects a history range ending on a Sunday/Saturday for some
+    # contracts. History is still available on weekends; anchor the request
+    # to the last market day instead of asking for a non-trading date.
+    while end_date.weekday() >= 5:
+        end_date -= datetime.timedelta(days=1)
+    start_date = end_date - datetime.timedelta(days=max(days, 1))
     data = {
         "symbol": symbol,
         "resolution": resolution,
         "date_format": "1",
         "range_from": start_date.isoformat(),
-        "range_to": today.isoformat(),
+        "range_to": end_date.isoformat(),
         "cont_flag": "1",
     }
     response = fyers.history(data)
@@ -518,8 +523,49 @@ def get_recent_intraday_candles(symbol: str, resolution: str = "1", days: int = 
     return normalized[-limit:]
 
 
-def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_date: datetime.date, resolution: str = "1") -> list[dict]:
-    """Fetch normalized intraday candles for an explicit historical range."""
+def _history_response_error(
+    response,
+    *,
+    symbol: str,
+    start_date: datetime.date,
+    end_date: datetime.date,
+    resolution: str,
+) -> str | None:
+    """Return a compact FYERS history error without leaking a raw HTML body."""
+    if not isinstance(response, dict):
+        return (
+            f"FYERS returned an invalid history response for {symbol} "
+            f"({resolution}m, {start_date.isoformat()} to {end_date.isoformat()})"
+        )
+    if str(response.get("s") or "").lower() != "error":
+        return None
+    code = response.get("code")
+    message = response.get("message") or response.get("errmsg") or response.get("error") or "unknown FYERS error"
+    message = " ".join(str(message).split())
+    if len(message) > 240:
+        message = f"{message[:237]}..."
+    code_text = f" (code {code})" if code is not None else ""
+    return (
+        f"FYERS history failed for {symbol} at {resolution}m "
+        f"({start_date.isoformat()} to {end_date.isoformat()}){code_text}: {message}"
+    )
+
+
+def get_intraday_candles_for_range(
+    symbol: str,
+    start_date: datetime.date,
+    end_date: datetime.date,
+    resolution: str = "1",
+    *,
+    raise_on_error: bool = False,
+) -> list[dict]:
+    """Fetch normalized intraday candles for an explicit historical range.
+
+    Live warmup callers historically treat an empty response as a missing day,
+    so that remains the default. Backtest callers can opt into raising a
+    compact error instead of confusing an expired token or API throttle with
+    a day that simply has no candles.
+    """
     fyers = get_fyers_model(use_proxy=False)
     response = fyers.history({
         "symbol": symbol,
@@ -529,6 +575,17 @@ def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_d
         "range_to": end_date.isoformat(),
         "cont_flag": "1",
     })
+    error = _history_response_error(
+        response,
+        symbol=symbol,
+        start_date=start_date,
+        end_date=end_date,
+        resolution=resolution,
+    )
+    if error:
+        if raise_on_error:
+            raise RuntimeError(error)
+        return []
     candles = response.get("candles", [])
     return [
         {
@@ -1519,7 +1576,14 @@ def _missing_critical_live_feed_symbols(subscribed_symbols: list[str], seen_symb
     return [symbol for symbol in _critical_live_feed_symbols(subscribed_symbols) if symbol not in seen_symbols]
 
 
-def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=None):
+def connect_live_feed(
+    symbols: list[str],
+    on_tick_callback,
+    on_status_callback=None,
+    *,
+    feed_name: str = "general",
+    litemode: bool = False,
+):
     if data_ws is None:
         raise RuntimeError(
             "Fyers websocket SDK is not installed in this environment. "
@@ -1529,8 +1593,12 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
     if not token:
         raise RuntimeError("No Fyers access token in Supabase yet")
 
+    feed_label = f"[fyers:{feed_name}]"
+
     def report_status(**data):
         if on_status_callback:
+            data.setdefault("feed_name", feed_name)
+            data.setdefault("litemode", litemode)
             on_status_callback(data)
 
     first_tick_received = False
@@ -1559,7 +1627,7 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
                 shape_key = f"{sym_val}|{sorted(message.keys()) if isinstance(message, dict) else type(message).__name__}"
                 if shape_key not in _mcx_shapes_seen:
                     _mcx_shapes_seen.add(shape_key)
-                    print(f"[fyers] MCX raw message shape: {message}")
+                    print(f"{feed_label} MCX raw message shape: {message}")
         except Exception:
             pass
         if not first_tick_received and symbol and ltp is not None:
@@ -1593,19 +1661,23 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
                         # Emit before subscribe so if the call raises we know
                         # what was in flight. MCX list is short enough to
                         # print fully — helps confirm SILVERMIC made it.
-                        print(f"[fyers] WS subscribe breakdown: NSE={nse_count} BSE={bse_count} MCX={len(mcx_syms)} (MCX symbols: {mcx_syms})")
+                        print(
+                            f"{feed_label} WS subscribe breakdown: "
+                            f"NSE={nse_count} BSE={bse_count} MCX={len(mcx_syms)} "
+                            f"(MCX symbols: {mcx_syms})"
+                        )
                         for i in range(0, len(symbols), 50):
                             socket.subscribe(symbols=symbols[i:i+50], data_type="SymbolUpdate")
                         subscription_sent = True
                     except Exception as exc:
-                        print("Fyers WS subscription error:", exc)
+                        print(f"{feed_label} WS subscription error:", exc)
                         report_status(
                             connected=False,
                             error=str(exc),
                             message="Fyers websocket subscription failed",
                         )
                         return
-                print(f"[fyers] websocket subscribed to {len(symbols)} symbols")
+                print(f"{feed_label} websocket subscribed to {len(symbols)} symbols")
                 report_status(
                     connected=True,
                     subscribed_symbols=len(symbols),
@@ -1624,7 +1696,7 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
         threading.Thread(target=subscribe_when_ready, daemon=True).start()
 
     def on_error(message):
-        print("Fyers WS error:", message)
+        print(f"{feed_label} WS error:", message)
         text = str(message)
         classified = "Fyers websocket error"
         if "429" in text or "Too Many Requests" in text:
@@ -1635,13 +1707,13 @@ def connect_live_feed(symbols: list[str], on_tick_callback, on_status_callback=N
         nonlocal subscription_sent
         with subscription_lock:
             subscription_sent = False
-        print("Fyers WS closed:", message)
+        print(f"{feed_label} WS closed:", message)
         report_status(connected=False, error=str(message), message="Fyers websocket closed")
 
     socket = data_ws.FyersDataSocket(
         access_token=f"{get_fyers_config()['client_id']}:{token}",
         log_path="",
-        litemode=False,
+        litemode=litemode,
         # SDK auto-reconnect stacks with our watchdog and produces Fyers-side
         # 429 (Too Many Requests) on the WS handshake. We handle reconnects
         # ourselves with exponential backoff in engine._live_feed_watchdog_loop.

@@ -1,21 +1,74 @@
 'use client';
 
-import { useEffect, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { PAGE_SIZE, PaginationControls } from './PaginationControls';
+import SilverBacktestChart from './SilverBacktestChart';
 
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
 const defaultStart = new Date(`${today}T00:00:00`);
 defaultStart.setDate(defaultStart.getDate() - 6);
 const weekAgo = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(defaultStart);
+const BACKTEST_STORAGE_KEY = 'backtest-tab-state-v1';
+const BACKTEST_UI_STORAGE_KEY = 'backtest-tab-ui-v1';
+const SILVER_SELL_PLANS = {
+  red_chain: {
+    label: 'Red-chain comparison (current)',
+    description: 'Compare each new qualifying red close with the previous red reference. Green candles do not reset it.',
+  },
+  latest_reference: {
+    label: 'Latest red reference (legacy)',
+    description: 'Replace the reference on every qualifying red candle, then wait for a later 1-minute break below it.',
+  },
+};
 
 export default function BacktestTab() {
   const [algoId, setAlgoId] = useState('algo1');
+  const [silverSellPlan, setSilverSellPlan] = useState('red_chain');
   const [startDate, setStartDate] = useState(weekAgo);
   const [endDate, setEndDate] = useState(today);
   const [job, setJob] = useState<any>(null);
   const [error, setError] = useState('');
+  const [storageReady, setStorageReady] = useState(false);
   const active = ['queued', 'running', 'cancelling'].includes(job?.status);
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(BACKTEST_STORAGE_KEY);
+      if (!raw) {
+        setStorageReady(true);
+        return;
+      }
+      const snapshot = JSON.parse(raw);
+      if (snapshot?.algoId) setAlgoId(snapshot.algoId);
+      if (snapshot?.silverSellPlan === 'red_chain' || snapshot?.silverSellPlan === 'latest_reference') setSilverSellPlan(snapshot.silverSellPlan);
+      if (snapshot?.startDate) setStartDate(snapshot.startDate);
+      if (snapshot?.endDate) setEndDate(snapshot.endDate);
+      if (snapshot?.job) setJob(snapshot.job);
+      if (snapshot?.error) setError(snapshot.error);
+    } catch {
+      // Ignore corrupted local snapshots and start fresh.
+    } finally {
+      setStorageReady(true);
+    }
+  }, []);
+
+  useEffect(() => {
+    if (!storageReady) return;
+    try {
+      window.localStorage.setItem(BACKTEST_STORAGE_KEY, JSON.stringify({
+        algoId,
+        silverSellPlan,
+        startDate,
+        endDate,
+        job,
+        error,
+        savedAt: Date.now(),
+      }));
+    } catch {
+      // Best-effort persistence only.
+    }
+  }, [algoId, silverSellPlan, startDate, endDate, job, error, storageReady]);
 
   async function run() {
     setError('');
@@ -33,7 +86,12 @@ export default function BacktestTab() {
       return;
     }
     try {
-      setJob(await api.startBacktest({ algo_id: algoId, start_date: startDate, end_date: endDate }));
+      setJob(await api.startBacktest({
+        algo_id: algoId,
+        start_date: startDate,
+        end_date: endDate,
+        ...(algoId === 'algo3' ? { silver_sell_plan: silverSellPlan } : {}),
+      }));
     } catch (e: any) {
       setError(e?.message || 'Could not start backtest');
     }
@@ -67,6 +125,21 @@ export default function BacktestTab() {
     return () => window.clearInterval(timer);
   }, [job?.id, job?.status]);
 
+  useEffect(() => {
+    if (!storageReady || !job?.id || !['queued', 'running', 'cancelling'].includes(job.status)) return;
+    let cancelled = false;
+    (async () => {
+      try {
+        const latest = await api.backtestStatus(job.id);
+        if (!cancelled) setJob(latest);
+      } catch (e: any) {
+        const message = e?.message || 'Could not restore backtest progress';
+        if (!cancelled && !message.includes('API error 404')) setError(message);
+      }
+    })();
+    return () => { cancelled = true; };
+  }, [job?.id, job?.status, storageReady]);
+
   const replaying = job?.phase === 'replaying';
   const progressCompleted = replaying ? Number(job.replay_completed || 0) : Number(job?.completed_symbols || 0);
   const progressTotal = replaying ? Number(job.replay_total || 0) : Number(job?.total_symbols || 0);
@@ -90,6 +163,7 @@ export default function BacktestTab() {
         <p className="mt-1 max-w-3xl text-sm text-gray-500">{introCopy.body}</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option><option value="algo3">Silver Micro (MCX:SILVERMIC26AUGFUT)</option></select></label>
+          {algoId === 'algo3' && <label><span className="label">Silver logic</span><select value={silverSellPlan} onChange={(e) => setSilverSellPlan(e.target.value)} className="control mt-1"><option value="red_chain">{SILVER_SELL_PLANS.red_chain.label}</option><option value="latest_reference">{SILVER_SELL_PLANS.latest_reference.label}</option></select><span className="mt-1 block text-[11px] leading-4 text-gray-500">{SILVER_SELL_PLANS[silverSellPlan as keyof typeof SILVER_SELL_PLANS].description}</span></label>}
           <label><span className="label">Start date</span><input value={startDate} onChange={(e) => setStartDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <label><span className="label">End date</span><input value={endDate} onChange={(e) => setEndDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <div className="flex items-end">
@@ -136,11 +210,97 @@ function BacktestResult({ result }: { result: any }) {
   const summary = result.summary || {};
   const coverage = result.data_coverage || {};
   const exits = summary.exit_counts || {};
-  const daily = result.daily_results || [];
+  const daily = useMemo(() => Array.isArray(result.daily_results) ? result.daily_results : [], [result.daily_results]);
+  const allTrades = useMemo(
+    () => daily.flatMap((day: any) => (day.trades || []).map((trade: any) => ({ ...trade, session_date: day.date }))),
+    [daily],
+  );
+  const silverChartDays = useMemo(
+    () => result.algo_id === 'algo3'
+      ? daily.filter((day: any) => Array.isArray(day?.chart?.candles) && day.chart.candles.length > 0)
+      : [],
+    [daily, result.algo_id],
+  );
+  const [selectedChartDate, setSelectedChartDate] = useState('');
+  const [selectedTradeId, setSelectedTradeId] = useState<string | null>(null);
+  const [chartOverlays, setChartOverlays] = useState({
+    ema: true,
+    setups: false,
+    trades: true,
+    levels: true,
+    trailing: true,
+  });
+  const [uiStorageReady, setUiStorageReady] = useState(false);
   const sectorBreakdown = Array.isArray(result.sector_breakdown) ? result.sector_breakdown : [];
+  const visibleTrades = result.algo_id === 'algo3' && selectedChartDate
+    ? allTrades.filter((trade: any) => trade.session_date === selectedChartDate)
+    : allTrades;
+  const resultStorageId = `${result.algo_id}:${result.start_date}:${result.end_date}:${result.silver_sell_plan || ''}`;
+
+  useEffect(() => {
+    try {
+      const raw = window.localStorage.getItem(BACKTEST_UI_STORAGE_KEY);
+      if (!raw) {
+        setUiStorageReady(true);
+        return;
+      }
+      const snapshot = JSON.parse(raw);
+      if (snapshot?.resultStorageId === resultStorageId) {
+        if (typeof snapshot.selectedChartDate === 'string') setSelectedChartDate(snapshot.selectedChartDate);
+        if (typeof snapshot.selectedTradeId === 'string' || snapshot.selectedTradeId === null) setSelectedTradeId(snapshot.selectedTradeId);
+        if (snapshot.chartOverlays) setChartOverlays({
+          ema: snapshot.chartOverlays.ema !== false,
+          setups: false,
+          trades: snapshot.chartOverlays.trades !== false,
+          levels: snapshot.chartOverlays.levels !== false,
+          trailing: snapshot.chartOverlays.trailing !== false,
+        });
+      }
+    } catch {
+      // Ignore corrupted chart UI snapshots.
+    } finally {
+      setUiStorageReady(true);
+    }
+  }, [resultStorageId]);
+
+  useEffect(() => {
+    if (!silverChartDays.length) {
+      setSelectedChartDate('');
+      return;
+    }
+    const defaultDay = [...silverChartDays].reverse().find((day: any) => (day.trades || []).length > 0) || silverChartDays[silverChartDays.length - 1];
+    setSelectedChartDate((current) => silverChartDays.some((day: any) => day.date === current) ? current : defaultDay.date);
+  }, [silverChartDays]);
+
+  useEffect(() => {
+    const selectedDay = silverChartDays.find((day: any) => day.date === selectedChartDate) || null;
+    const trades = Array.isArray(selectedDay?.chart?.trades) ? selectedDay.chart.trades : [];
+    setSelectedTradeId((current) => trades.some((trade: any) => trade.trade_id === current) ? current : null);
+  }, [selectedChartDate, silverChartDays]);
+
+  useEffect(() => {
+    if (!uiStorageReady) return;
+    try {
+      window.localStorage.setItem(BACKTEST_UI_STORAGE_KEY, JSON.stringify({
+        resultStorageId,
+        selectedChartDate,
+        selectedTradeId,
+        chartOverlays: { ...chartOverlays, setups: false },
+        savedAt: Date.now(),
+      }));
+    } catch {
+      // Best-effort persistence only.
+    }
+  }, [uiStorageReady, resultStorageId, selectedChartDate, selectedTradeId, chartOverlays]);
+
+  function focusTrade(trade: any) {
+    setSelectedChartDate(trade.session_date);
+    setSelectedTradeId(trade.trade_id || null);
+  }
+
   return <>
     <section className="panel p-4">
-      <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-semibold text-gray-100">{result.start_date} to {result.end_date}</h3><p className="mt-1 max-w-3xl text-xs text-gray-500">{result.execution_assumption}</p></div><div className="flex items-center gap-3"><div className="text-xs text-gray-500">History coverage: <span className="num text-gray-100">{coverage.symbols_with_history} / {coverage.requested_symbols}</span></div><button onClick={() => downloadBacktestCsv(result)} className="inline-flex min-h-10 items-center gap-2 rounded border border-[#22c55e] bg-[#22c55e]/10 px-3 py-2 text-xs font-semibold text-[#22c55e]"><i className="ri-file-download-fill text-sm" />Download CSV</button></div></div>
+       <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-semibold text-gray-100">{result.start_date} to {result.end_date}</h3><p className="mt-1 max-w-3xl text-xs text-gray-500">{result.execution_assumption}</p>{result.algo_id === 'algo3' && <div className="mt-2 inline-flex items-center gap-2 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1 text-xs text-[#bfdbfe]"><span className="font-semibold">Sell plan:</span>{result.silver_sell_plan_label || result.silver_sell_plan || 'Red-chain comparison (current)'}</div>}</div><div className="flex items-center gap-3"><div className="text-xs text-gray-500">History coverage: <span className="num text-gray-100">{coverage.symbols_with_history} / {coverage.requested_symbols}</span></div><button onClick={() => downloadBacktestCsv(result)} className="inline-flex min-h-10 items-center gap-2 rounded border border-[#22c55e] bg-[#22c55e]/10 px-3 py-2 text-xs font-semibold text-[#22c55e]"><i className="ri-file-download-fill text-sm" />Download CSV</button></div></div>
       <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <Card label="Trading days" value={summary.trading_days_replayed || 0} />
         <Card label="Trades" value={summary.trade_count || 0} />
@@ -180,9 +340,35 @@ function BacktestResult({ result }: { result: any }) {
       <div className="panel p-4"><h3 className="text-sm font-semibold text-gray-100">Trade Quality</h3><div className="mt-3 grid grid-cols-2 gap-2 text-sm"><Metric label="Gross profit" value={money(summary.gross_profit)} positive /><Metric label="Gross loss" value={money(-Number(summary.gross_loss || 0))} negative /><Metric label="Average win" value={money(summary.average_win)} positive /><Metric label="Average loss" value={money(summary.average_loss)} negative /><Metric label="Average net / trade" value={money(summary.average_net_per_trade)} tone={Number(summary.average_net_per_trade)} /><Metric label="Max drawdown" value={money(summary.max_drawdown)} negative /></div></div>
       <div className="panel p-4"><h3 className="text-sm font-semibold text-gray-100">Execution And Range</h3><div className="mt-3 grid grid-cols-2 gap-2 text-sm"><Metric label="Gross P&L" value={money(summary.gross_pnl)} tone={Number(summary.gross_pnl)} /><Metric label="Charges" value={money(summary.total_charges)} /><Metric label="Capital deployed" value={money(summary.capital_deployed)} /><Metric label="Net return / deployed" value={`${number(summary.net_return_on_deployed_pct)}%`} tone={Number(summary.net_return_on_deployed_pct)} /><Metric label="Best day" value={result.best_day ? `${result.best_day.date}: ${money(result.best_day.net_pnl)}` : '-'} tone={Number(result.best_day?.net_pnl)} /><Metric label="Worst day" value={result.worst_day ? `${result.worst_day.date}: ${money(result.worst_day.net_pnl)}` : '-'} tone={Number(result.worst_day?.net_pnl)} /></div><p className="mt-3 text-xs text-gray-500">Exits: Target {exits.TARGET || 0}, SL {exits.SL || 0}, EOD {exits.EOD_SQUAREOFF || 0}.</p></div>
     </section>
+    {silverChartDays.length > 0 ? (
+      <section className="grid items-start gap-4 xl:grid-cols-[minmax(0,1.24fr)_minmax(400px,0.96fr)]">
+        <SilverBacktestChart
+          days={silverChartDays}
+          selectedDate={selectedChartDate}
+          onSelectedDateChange={setSelectedChartDate}
+          selectedTradeId={selectedTradeId}
+          onSelectedTradeIdChange={setSelectedTradeId}
+          overlays={chartOverlays}
+        />
+        <BacktestTrades
+          rows={visibleTrades}
+          selectedTradeId={selectedTradeId}
+          onViewChart={focusTrade}
+          selectedDate={result.algo_id === 'algo3' ? selectedChartDate : null}
+          isSilver={result.algo_id === 'algo3'}
+          compact
+        />
+      </section>
+    ) : (
+      <BacktestTrades
+        rows={visibleTrades}
+        selectedTradeId={selectedTradeId}
+        onViewChart={focusTrade}
+        selectedDate={result.algo_id === 'algo3' ? selectedChartDate : null}
+        isSilver={result.algo_id === 'algo3'}
+      />
+    )}
     <DailyResults rows={daily} />
-    <BacktestCandidates days={daily} />
-    <BacktestTrades rows={daily.flatMap((day: any) => (day.trades || []).map((trade: any) => ({ ...trade, session_date: day.date })))} />
   </>;
 }
 
@@ -190,6 +376,67 @@ function DailyResults({ rows }: { rows: any[] }) {
   const [page, setPage] = useState(0);
   const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
   const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
+  const isSilver = rows[0]?.algo_id === 'algo3';
+
+  if (isSilver) {
+    return (
+      <section className="panel overflow-hidden">
+        <div className="border-b border-[#1f2937] p-4">
+          <h3 className="text-sm font-semibold text-gray-100">Daily Results</h3>
+          <p className="mt-1 text-xs text-gray-500">Silver rows now show actual replay depth per day: available 1-minute history, built 15-minute bars, captured setups, and executed entries.</p>
+        </div>
+        <div className="overflow-x-auto">
+          <table className="w-full min-w-[1040px] text-xs">
+            <thead className="bg-[#111827]">
+              <tr>
+                {['Date', '1m bars', '15m bars', 'Setups', 'Entries', 'Trades', 'Wins / Losses', 'Net', 'Status'].map((name) => (
+                  <th key={name} className="table-cell label">{name}</th>
+                ))}
+              </tr>
+            </thead>
+            <tbody>
+              {visibleRows.map((day: any, index: number) => {
+                const summary = day.summary || {};
+                const steps = Array.isArray(day.condition_breakdown) ? day.condition_breakdown : [];
+                const barsProcessed = steps.find((step: any) => step.label === '15m bars processed');
+                const setupsCaptured = steps.find((step: any) => step.label === 'Setups captured (green above / red below EMA20)');
+                const entriesExecuted = steps.find((step: any) => step.label === 'Final: entries executed');
+                const minuteBars = Number(barsProcessed?.total || 0);
+                const fifteenMinuteBars = Number(barsProcessed?.passed || 0);
+                const setups = Number(setupsCaptured?.passed || 0);
+                const entries = Number(entriesExecuted?.passed || 0);
+                const trades = Number(summary.trade_count || 0);
+                const status = minuteBars <= 0
+                  ? { label: 'No intraday history', tone: 'text-[#f59e0b]' }
+                  : trades > 0
+                    ? { label: 'Trades replayed', tone: 'text-[#22c55e]' }
+                    : setups > 0
+                      ? { label: 'Setups seen, no entry', tone: 'text-[#93c5fd]' }
+                      : { label: 'Bars replayed, no setup', tone: 'text-gray-400' };
+                return (
+                  <tr key={day.date} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}>
+                    <td className="table-cell num text-gray-100">{day.date}</td>
+                    <td className="table-cell num">{minuteBars}</td>
+                    <td className="table-cell num">{fifteenMinuteBars}</td>
+                    <td className="table-cell num">{setups}</td>
+                    <td className="table-cell num">{entries}</td>
+                    <td className="table-cell num">{trades}</td>
+                    <td className="table-cell num">{summary.win_count || 0} / {summary.loss_count || 0}</td>
+                    <td className={`table-cell num font-semibold ${tone(summary.net_pnl)}`}>{money(summary.net_pnl)}</td>
+                    <td className={`table-cell text-xs font-medium ${status.tone}`}>{status.label}</td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
+        </div>
+        <div className="px-4 pb-4">
+          <PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} />
+        </div>
+      </section>
+    );
+  }
+
   return <section className="panel overflow-hidden"><div className="border-b border-[#1f2937] p-4"><h3 className="text-sm font-semibold text-gray-100">Daily Results</h3></div><div className="overflow-x-auto"><table className="w-full min-w-[900px] text-xs"><thead className="bg-[#111827]"><tr>{['Date', 'Data coverage', 'Trades', 'Wins / Losses', 'Win rate', 'Gross', 'Charges', 'Net', 'Selected'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr></thead><tbody>{visibleRows.map((day: any, index: number) => { const s = day.summary || {}; const selected = (day.condition_breakdown || []).find((step: any) => step.label === 'Final: selected for trade'); return <tr key={day.date} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}><td className="table-cell num text-gray-100">{day.date}</td><td className="table-cell num">{day.data_available_symbols}</td><td className="table-cell num">{s.trade_count || 0}</td><td className="table-cell num">{s.win_count || 0} / {s.loss_count || 0}</td><td className="table-cell num">{number(s.win_rate_pct)}%</td><td className={`table-cell num ${tone(s.gross_pnl)}`}>{money(s.gross_pnl)}</td><td className="table-cell num">{money(s.total_charges)}</td><td className={`table-cell num font-semibold ${tone(s.net_pnl)}`}>{money(s.net_pnl)}</td><td className="table-cell num">{selected?.passed || 0}</td></tr>; })}</tbody></table></div><div className="px-4 pb-4"><PaginationControls page={safePage} totalRows={rows.length} onPageChange={setPage} /></div></section>;
 }
 
@@ -199,10 +446,15 @@ function BacktestCandidates({ days }: { days: any[] }) {
   const [showMissing, setShowMissing] = useState(false);
   const [sortKey, setSortKey] = useState('symbol');
   const [sortDirection, setSortDirection] = useState<'asc' | 'desc'>('asc');
+  const availableDates = useMemo(() => days.map((day) => day.date), [days]);
 
   useEffect(() => {
-    if (days.length && !days.some((day) => day.date === selectedDate)) setSelectedDate(days[0].date);
-  }, [days, selectedDate]);
+    if (!availableDates.length) {
+      setSelectedDate('');
+      return;
+    }
+    setSelectedDate((current) => availableDates.includes(current) ? current : availableDates[0]);
+  }, [availableDates]);
 
   const day = days.find((item) => item.date === selectedDate) || days[0];
   const candidates = (day?.candidates || [])
@@ -247,7 +499,7 @@ function BacktestCandidates({ days }: { days: any[] }) {
           <p className="mt-1 text-xs text-gray-500">{candidates.length} visible symbols. Missing 9:15 data is hidden by default, but remains available for audit.</p>
         </div>
         <div className="grid gap-2 sm:grid-cols-2">
-          <select value={day?.date || ''} onChange={(e) => setSelectedDate(e.target.value)} className="control text-sm">
+          <select value={selectedDate} onChange={(e) => setSelectedDate(e.target.value)} className="control text-sm">
             {days.map((item) => <option key={item.date} value={item.date}>{item.date}</option>)}
           </select>
           <input value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Filter symbols..." className="control text-sm" />
@@ -305,8 +557,270 @@ function BacktestCandidates({ days }: { days: any[] }) {
     </section>
   );
 }
-function BacktestTrades({ rows }: { rows: any[] }) {
-  return <section className="panel overflow-hidden"><div className="border-b border-[#1f2937] p-4"><h3 className="text-sm font-semibold text-gray-100">Simulated Trades</h3><p className="mt-1 text-xs text-gray-500">Times are based on the historical one-minute candle used for simulated entry and exit.</p></div><div className="overflow-x-auto"><table className="w-full min-w-[1150px] text-xs"><thead className="bg-[#111827]"><tr>{['Date', 'Symbol', 'Side', 'Qty', 'Entry Time', 'Entry', 'Exit Time', 'Exit', 'Reason', 'Net'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr></thead><tbody>{!rows.length ? <tr><td colSpan={10} className="table-cell text-gray-500">No simulated trades in this range.</td></tr> : rows.map((trade, index) => <tr key={`${trade.session_date}-${trade.symbol}-${index}`} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}><td className="table-cell num">{trade.session_date}</td><td className="table-cell font-mono text-gray-100">{trade.symbol}</td><td className={`table-cell font-semibold ${trade.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{trade.side}</td><td className="table-cell num">{trade.qty}</td><td className="table-cell num">{formatTime(trade.entry_time)}</td><td className="table-cell num">{number(trade.entry_price)}</td><td className="table-cell num">{formatTime(trade.exit_time)}</td><td className="table-cell num">{number(trade.exit_price)}</td><td className="table-cell">{trade.exit_reason}</td><td className={`table-cell num font-semibold ${tone(trade.net_pnl)}`}>{money(trade.net_pnl)}</td></tr>)}</tbody></table></div></section>;
+function BacktestTrades({
+  rows,
+  selectedTradeId,
+  onViewChart,
+  selectedDate,
+  isSilver = false,
+  compact = false,
+}: {
+  rows: any[];
+  selectedTradeId: string | null;
+  onViewChart: (trade: any) => void;
+  selectedDate: string | null;
+  isSilver?: boolean;
+  compact?: boolean;
+}) {
+  const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
+  const [selectedDiagnosticTrade, setSelectedDiagnosticTrade] = useState<any | null>(null);
+  const headers = isSilver
+    ? ['Side', 'Qty', 'Entry Time', 'Entry', 'Exit Time', 'Exit', 'Initial SL', 'Final SL', 'Target', 'Trailing SL', 'Chart', 'Why loss?', 'Reason', 'Net']
+    : ['Date', 'Symbol', 'Side', 'Qty', 'Entry Time', 'Entry', 'Exit Time', 'Exit', 'Initial SL', 'Final SL', 'Target', 'Trailing SL', 'Chart', 'Why loss?', 'Reason', 'Net'];
+
+  return <>
+    <section className="panel overflow-hidden">
+      <div className="border-b border-[#1f2937] p-4">
+        <h3 className="text-sm font-semibold text-gray-100">Simulated Trades</h3>
+        <p className="mt-1 text-xs text-gray-500">
+          {selectedDate
+            ? `Showing only trades for ${selectedDate}. Times are based on the historical one-minute candle used for simulated entry and exit.`
+            : 'Times are based on the historical one-minute candle used for simulated entry and exit.'}
+        </p>
+      </div>
+      <div className={compact ? 'max-h-[920px] overflow-auto' : 'overflow-x-auto'}>
+        <table className={`w-full ${isSilver ? 'min-w-[1480px]' : 'min-w-[1880px]'} text-xs`}>
+          <thead className="bg-[#111827]">
+            <tr>{headers.map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr>
+          </thead>
+          <tbody>
+            {!rows.length ? <tr><td colSpan={headers.length} className="table-cell text-gray-500">No simulated trades in this range.</td></tr> : rows.map((trade, index) => <tr key={trade.trade_id || `${trade.session_date}-${trade.symbol}-${index}`} className={`${index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'} ${trade.trade_id === selectedTradeId ? 'outline outline-1 outline-[#3b82f6]/60' : ''}`}>
+              {!isSilver && <><td className="table-cell num">{trade.session_date}</td><td className="table-cell font-mono text-gray-100">{trade.symbol}</td></>}
+              <td className={`table-cell font-semibold ${trade.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{trade.side}</td>
+              <td className="table-cell num">{trade.qty}</td>
+              <td className="table-cell num">{formatBacktestTime(trade.entry_time, trade.exit_time)}</td>
+              <td className="table-cell num">{number(trade.entry_price)}</td>
+              <td className="table-cell num">{formatBacktestTime(trade.exit_time, trade.entry_time)}</td>
+              <td className="table-cell num">{number(trade.exit_price)}</td>
+              <td className="table-cell num">{optionalNumber(trade.initial_sl_price)}</td>
+              <td className="table-cell num">{optionalNumber(trade.sl_price)}</td>
+              <td className="table-cell num">{optionalNumber(trade.target_price)}</td>
+              <td className="table-cell">
+                <div className="flex min-w-[170px] items-center gap-2">
+                  <span className={trade.trailing_sl_enabled ? (trade.trailing_sl_active ? 'text-[#22c55e]' : 'text-[#f59e0b]') : 'text-gray-500'}>
+                    {backtestTrailingLabel(trade)}
+                  </span>
+                  {Number(trade.trailing_move_count || 0) > 0 && (
+                    <button
+                      onClick={() => setSelectedTrade(trade)}
+                      className="rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1 text-[11px] font-semibold text-[#93c5fd]"
+                    >
+                      View {trade.trailing_move_count}
+                    </button>
+                  )}
+                </div>
+              </td>
+              <td className="table-cell">
+                <div className="flex min-w-[120px] items-center gap-2">
+                  <button
+                    onClick={() => onViewChart(trade)}
+                    className="rounded border border-[#60a5fa]/40 bg-[#1d4ed8]/10 px-2 py-1 text-[11px] font-semibold text-[#bfdbfe]"
+                  >
+                    View chart
+                  </button>
+                </div>
+              </td>
+              <td className="table-cell">
+                <div className="flex min-w-[220px] items-center gap-2">
+                  <span className={`font-semibold ${diagnosticTone(trade)}`}>{backtestCauseLabel(trade)}</span>
+                  {trade?.diagnostics && (
+                    <button
+                      onClick={() => setSelectedDiagnosticTrade(trade)}
+                      className="rounded border border-[#a78bfa]/40 bg-[#8b5cf6]/10 px-2 py-1 text-[11px] font-semibold text-[#c4b5fd]"
+                    >
+                      Why?
+                    </button>
+                  )}
+                </div>
+              </td>
+              <td className="table-cell">{trade.exit_reason}</td>
+              <td className={`table-cell num font-semibold ${tone(trade.net_pnl)}`}>{money(trade.net_pnl)}</td>
+            </tr>)}
+          </tbody>
+        </table>
+      </div>
+    </section>
+    {selectedTrade && <BacktestTrailModal trade={selectedTrade} onClose={() => setSelectedTrade(null)} />}
+    {selectedDiagnosticTrade && <BacktestDiagnosticModal trade={selectedDiagnosticTrade} onClose={() => setSelectedDiagnosticTrade(null)} />}
+  </>;
+}
+
+function BacktestTrailModal({ trade, onClose }: { trade: any; onClose: () => void }) {
+  const moves = Array.isArray(trade.trailing_moves) ? trade.trailing_moves : [];
+  return (
+    <div className="fixed inset-0 z-50">
+      <button
+        type="button"
+        aria-label="Close trailing SL history"
+        onClick={onClose}
+        className="absolute inset-0 bg-black/35"
+      />
+      <div className="absolute inset-y-3 right-3 flex w-full max-w-[520px] justify-end">
+        <div className="flex h-full w-full flex-col overflow-hidden rounded-xl border border-[#1f2937] bg-[#0b1220] shadow-2xl">
+          <div className="flex items-start justify-between gap-4 border-b border-[#1f2937] px-5 py-4">
+            <div>
+              <h3 className="text-xl font-semibold text-white">Backtest trailing SL history</h3>
+              <p className="mt-1 text-sm text-gray-400">{trade.symbol} · {trade.side} · {trade.session_date}</p>
+              <p className="mt-2 text-xs text-gray-500">This panel stays on the side so you can still inspect the chart and summary behind it.</p>
+            </div>
+            <button onClick={onClose} className="text-2xl leading-none text-gray-400 hover:text-white">×</button>
+          </div>
+          <div className="grid gap-3 border-b border-[#1f2937] px-5 py-4 sm:grid-cols-2">
+            <TrailStat label="Initial SL" value={optionalNumber(trade.initial_sl_price)} />
+            <TrailStat label="Final SL" value={optionalNumber(trade.sl_price)} />
+            <TrailStat label="Trigger" value={`${number(trade.trailing_trigger_points || 0)} pts`} />
+            <TrailStat label="Distance" value={`${number(trade.trailing_distance_points || 0)} pts`} />
+            <TrailStat label="Protected" value={`${number(trade.max_protected_points || 0)} pts`} />
+          </div>
+          <div className="min-h-0 flex-1 overflow-auto px-5 py-4">
+            {!moves.length ? (
+              <p className="text-sm text-gray-500">No per-step trailing moves were recorded for this backtest trade.</p>
+            ) : (
+              <table className="w-full min-w-[540px] text-xs">
+                <thead className="bg-[#111827]">
+                  <tr>{['Time', 'Gain', 'Reference', 'Previous SL', 'New SL', 'Protected'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr>
+                </thead>
+                <tbody>
+                  {moves.map((move: any, index: number) => (
+                    <tr key={`${trade.symbol}-${trade.session_date}-${index}`} className={index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'}>
+                      <td className="table-cell num">{formatTime(move.time)}</td>
+                      <td className="table-cell num">{optionalNumber(move.gain_points)}</td>
+                      <td className="table-cell num">{optionalNumber(move.reference_price)}</td>
+                      <td className="table-cell num">{optionalNumber(move.previous_sl)}</td>
+                      <td className="table-cell num text-[#22c55e]">{optionalNumber(move.new_sl)}</td>
+                      <td className="table-cell num">{optionalNumber(move.protected_points)}</td>
+                    </tr>
+                  ))}
+                </tbody>
+              </table>
+            )}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function TrailStat({ label, value }: { label: string; value: string }) {
+  return <div className="rounded border border-[#1f2937] bg-[#111827] p-3"><div className="label">{label}</div><div className="num mt-2 text-sm text-gray-100">{value}</div></div>;
+}
+
+function BacktestDiagnosticModal({ trade, onClose }: { trade: any; onClose: () => void }) {
+  const diagnostics = trade?.diagnostics || {};
+  const entry = diagnostics.entry_context || {};
+  const exit = diagnostics.exit_context || {};
+  const path = diagnostics.path_metrics || {};
+  const warnings = Array.isArray(diagnostics.warning_messages) ? diagnostics.warning_messages : [];
+  const warningCodes = Array.isArray(diagnostics.warning_codes) ? diagnostics.warning_codes : [];
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4">
+      <div className="max-h-[88vh] w-full max-w-5xl overflow-hidden rounded-xl border border-[#1f2937] bg-[#0b1220] shadow-2xl">
+        <div className="flex items-start justify-between gap-4 border-b border-[#1f2937] px-5 py-4">
+          <div>
+            <h3 className="text-xl font-semibold text-white">Backtest loss diagnostics</h3>
+            <p className="mt-1 text-sm text-gray-400">{trade.symbol} · {trade.side} · {trade.session_date}</p>
+          </div>
+          <button onClick={onClose} className="text-2xl leading-none text-gray-400 hover:text-white">×</button>
+        </div>
+
+        <div className="border-b border-[#1f2937] px-5 py-4">
+          <div className="flex flex-wrap items-center gap-3">
+            <span className={`rounded border px-3 py-1 text-sm font-semibold ${diagnosticChipTone(trade)}`}>
+              {diagnostics.primary_cause_label || 'No diagnosis'}
+            </span>
+            <span className="rounded border border-[#1f2937] bg-[#111827] px-3 py-1 text-xs text-gray-400">
+              code: {diagnostics.primary_cause_code || '--'}
+            </span>
+          </div>
+          <p className="mt-3 text-sm text-gray-300">{diagnostics.summary || 'No diagnostic summary was generated for this trade.'}</p>
+        </div>
+
+        <div className="max-h-[62vh] overflow-auto px-5 py-4">
+          <div className="grid gap-4 xl:grid-cols-3">
+            <section className="rounded border border-[#1f2937] bg-[#111827] p-4">
+              <h4 className="text-sm font-semibold text-gray-100">Setup and entry facts</h4>
+              <div className="mt-3 grid gap-3">
+                <TrailStat label="Setup side" value={String(entry.setup_side || '--')} />
+                <TrailStat label="Setup time" value={formatTimeWithDate(entry.setup_time)} />
+                <TrailStat label="Setup close" value={optionalNumber(entry.setup_close)} />
+                <TrailStat label="Trigger level" value={optionalNumber(entry.trigger_level)} />
+                <TrailStat label="EMA20" value={optionalNumber(entry.ema20)} />
+                <TrailStat label="Entry time" value={formatBacktestDateTime(entry.entry_time, exit.exit_time)} />
+                <TrailStat label="Entry price" value={optionalNumber(entry.entry_price)} />
+                <TrailStat label="Delay from setup" value={entry.delay_from_setup_minutes === null || entry.delay_from_setup_minutes === undefined ? '--' : `${number(entry.delay_from_setup_minutes)} min`} />
+                <TrailStat label="Prev red reference" value={optionalNumber(entry.previous_red_reference_close)} />
+                <TrailStat label="Current red close" value={optionalNumber(entry.current_qualifying_red_close)} />
+              </div>
+            </section>
+
+            <section className="rounded border border-[#1f2937] bg-[#111827] p-4">
+              <h4 className="text-sm font-semibold text-gray-100">Exit facts</h4>
+              <div className="mt-3 grid gap-3">
+                <TrailStat label="Exit reason" value={String(exit.exit_reason || '--')} />
+                <TrailStat label="Exit time" value={formatBacktestDateTime(exit.exit_time, entry.entry_time)} />
+                <TrailStat label="Exit price" value={optionalNumber(exit.exit_price)} />
+                <TrailStat label="Initial SL" value={optionalNumber(exit.initial_sl)} />
+                <TrailStat label="Final SL" value={optionalNumber(exit.final_sl)} />
+                <TrailStat label="Target" value={optionalNumber(exit.target)} />
+                <TrailStat label="Trailing enabled" value={yesNo(exit.trailing_enabled)} />
+                <TrailStat label="Trailing active" value={yesNo(exit.trailing_active)} />
+                <TrailStat label="Trailing moves" value={number(exit.trailing_move_count || 0)} />
+              </div>
+            </section>
+
+            <section className="rounded border border-[#1f2937] bg-[#111827] p-4">
+              <h4 className="text-sm font-semibold text-gray-100">Path metrics</h4>
+              <div className="mt-3 grid gap-3">
+                <TrailStat label="Max favorable" value={`${optionalNumber(path.max_favorable_excursion_points)} pts`} />
+                <TrailStat label="Max adverse" value={`${optionalNumber(path.max_adverse_excursion_points)} pts`} />
+                <TrailStat label="Peak unrealized" value={money(path.peak_unrealized_profit)} />
+                <TrailStat label="Worst drawdown" value={money(path.worst_unrealized_drawdown)} />
+                <TrailStat label="Giveback" value={money(path.profit_giveback_from_peak)} />
+                <TrailStat label="Giveback pts" value={`${optionalNumber(path.profit_giveback_from_peak_points)} pts`} />
+                <TrailStat label="Gross P&L" value={money(trade.gross_pnl)} />
+                <TrailStat label="Charges" value={money(trade.total_charges)} />
+                <TrailStat label="Net P&L" value={money(trade.net_pnl)} />
+              </div>
+            </section>
+          </div>
+
+          <section className="mt-4 rounded border border-[#1f2937] bg-[#111827] p-4">
+            <h4 className="text-sm font-semibold text-gray-100">Market warnings</h4>
+            {!warnings.length ? (
+              <p className="mt-3 text-sm text-gray-500">No extra market-behavior warnings were generated for this replay.</p>
+            ) : (
+              <>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  {warningCodes.map((code: string) => (
+                    <span key={code} className="rounded border border-[#334155] bg-[#0d1117] px-2.5 py-1 text-[11px] font-semibold text-[#fbbf24]">
+                      {code}
+                    </span>
+                  ))}
+                </div>
+                <ul className="mt-3 space-y-2 text-sm text-gray-300">
+                  {warnings.map((warning: string, index: number) => (
+                    <li key={`${warning}-${index}`} className="rounded border border-[#1f2937] bg-[#0d1117] px-3 py-2">
+                      {warning}
+                    </li>
+                  ))}
+                </ul>
+              </>
+            )}
+          </section>
+        </div>
+      </div>
+    </div>
+  );
 }
 
 function Card({ label, value, tone: valueTone }: { label: string; value: any; tone?: number }) { return <div className="rounded border border-[#1f2937] bg-[#111827] p-3"><div className="label">{label}</div><div className={`num mt-2 text-lg font-semibold ${tone(valueTone)}`}>{value}</div></div>; }
@@ -330,16 +844,40 @@ function candidateSortValue(row: any, key: string) { return ['vwap', 'rsi', 'adx
 function money(value: any) { return `Rs ${number(value)}`; }
 function tone(value?: number) { return value && value > 0 ? 'text-[#22c55e]' : value && value < 0 ? 'text-[#ef4444]' : 'text-gray-100'; }
 function formatTime(value: unknown) { if (!value) return '--'; const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }); }
+function formatTimeWithDate(value: unknown) { if (!value) return '--'; const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }); }
+function sameBacktestMinute(first: unknown, second: unknown) {
+  if (!first || !second) return false;
+  const firstDate = new Date(String(first));
+  const secondDate = new Date(String(second));
+  if (Number.isNaN(firstDate.getTime()) || Number.isNaN(secondDate.getTime())) return false;
+  const parts = (date: Date) => date.toLocaleString('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+  return parts(firstDate) === parts(secondDate);
+}
+function formatBacktestTime(value: unknown, otherTime: unknown) {
+  if (!value) return '--';
+  if (!sameBacktestMinute(value, otherTime)) return formatTime(value);
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return `${date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false })} bar`;
+}
+function formatBacktestDateTime(value: unknown, otherTime: unknown) {
+  const formatted = formatTimeWithDate(value);
+  return sameBacktestMinute(value, otherTime) ? `${formatted} · same 1-minute bar` : formatted;
+}
+function yesNo(value: unknown) { return value ? 'Yes' : 'No'; }
+function backtestCauseLabel(trade: any) { return trade?.diagnostics?.primary_cause_label || '--'; }
+function diagnosticTone(trade: any) { return String(trade?.diagnostics?.primary_cause_code || '').includes('target') ? 'text-[#22c55e]' : Number(trade?.net_pnl) < 0 ? 'text-[#ef4444]' : 'text-[#f59e0b]'; }
+function diagnosticChipTone(trade: any) { return String(trade?.diagnostics?.primary_cause_code || '').includes('target') ? 'border-[#22c55e]/40 bg-[#22c55e]/10 text-[#22c55e]' : Number(trade?.net_pnl) < 0 ? 'border-[#ef4444]/40 bg-[#ef4444]/10 text-[#ef4444]' : 'border-[#f59e0b]/40 bg-[#f59e0b]/10 text-[#f59e0b]'; }
 
 function downloadBacktestCsv(result: any) {
-  const headers = ['Record Type', 'Date', 'Symbol', 'Sector', 'Side', 'Open', 'High', 'Low', 'Close', 'Volume', 'Previous Close', 'Gap %', 'Shape Passed', 'Gap Passed', 'Filters Passed', 'Selected For Trade', 'Rejection Reason', 'VWAP', 'RSI', 'ADX', 'Quantity', 'Entry Time IST', 'Entry Price', 'Exit Time IST', 'Exit Price', 'Exit Reason', 'Gross P&L', 'Charges', 'Net P&L', 'Metric', 'Value'];
+  const headers = ['Record Type', 'Date', 'Symbol', 'Sector', 'Side', 'Open', 'High', 'Low', 'Close', 'Volume', 'Previous Close', 'Gap %', 'Shape Passed', 'Gap Passed', 'Filters Passed', 'Selected For Trade', 'Rejection Reason', 'VWAP', 'RSI', 'ADX', 'Quantity', 'Entry Time IST', 'Entry Price', 'Exit Time IST', 'Exit Price', 'Initial SL', 'Final SL', 'Target', 'Trailing Enabled', 'Trailing Active', 'Trailing Trigger Points', 'Trailing Distance Points', 'Trailing Move Count', 'Trailing Moves', 'Exit Reason', 'Primary Cause', 'Diagnostic Summary', 'Warning Codes', 'Gross P&L', 'Charges', 'Net P&L', 'Metric', 'Value'];
   const rows: any[][] = [];
   Object.entries(result.summary || {}).forEach(([metric, value]) => rows.push(['Summary', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', metric, typeof value === 'object' ? JSON.stringify(value) : value]));
   (result.daily_results || []).forEach((day: any) => {
     const summary = day.summary || {};
     rows.push(['Daily Result', day.date, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', summary.gross_pnl, summary.total_charges, summary.net_pnl, 'Trades / wins / losses', `${summary.trade_count || 0} / ${summary.win_count || 0} / ${summary.loss_count || 0}`]);
-    (day.trades || []).forEach((trade: any) => rows.push(['Trade', day.date, trade.symbol, trade.sector || '', trade.side, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', trade.qty, formatTime(trade.entry_time), trade.entry_price, formatTime(trade.exit_time), trade.exit_price, trade.exit_reason, trade.gross_pnl, trade.total_charges, trade.net_pnl, '', '']));
-    (day.candidates || []).forEach((row: any) => rows.push(['Candidate', day.date, row.symbol, row.sector || '', row.side, row.open, row.high, row.low, row.close, row.volume, row.prev_close, row.gap_pct, row.shape_passed, row.gap_passed, row.filters_passed, row.selected_for_trade, row.rejection_reason, row.indicator_results?.vwap?.value, row.indicator_results?.rsi?.value, row.indicator_results?.adx?.value, '', '', '', '', '', '', '', '', '', '', '']));
+    (day.trades || []).forEach((trade: any) => rows.push(['Trade', day.date, trade.symbol, trade.sector || '', trade.side, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', trade.qty, formatTime(trade.entry_time), trade.entry_price, formatTime(trade.exit_time), trade.exit_price, trade.initial_sl_price, trade.sl_price, trade.target_price, trade.trailing_sl_enabled, trade.trailing_sl_active, trade.trailing_trigger_points, trade.trailing_distance_points, trade.trailing_move_count, JSON.stringify(trade.trailing_moves || []), trade.exit_reason, trade.diagnostics?.primary_cause_label || '', trade.diagnostics?.summary || '', JSON.stringify(trade.diagnostics?.warning_codes || []), trade.gross_pnl, trade.total_charges, trade.net_pnl, '', '']));
+    (day.candidates || []).forEach((row: any) => rows.push(['Candidate', day.date, row.symbol, row.sector || '', row.side, row.open, row.high, row.low, row.close, row.volume, row.prev_close, row.gap_pct, row.shape_passed, row.gap_passed, row.filters_passed, row.selected_for_trade, row.rejection_reason, row.indicator_results?.vwap?.value, row.indicator_results?.rsi?.value, row.indicator_results?.adx?.value, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']));
   });
   const csv = [headers, ...rows].map((row) => row.map(csvValue).join(',')).join('\r\n');
   const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
@@ -356,4 +894,10 @@ function csvValue(value: unknown) {
   // Avoid spreadsheet formula execution when a symbol or text begins with a formula prefix.
   const safe = /^[=+\-@]/.test(text) ? `'${text}` : text;
   return `"${safe.replace(/"/g, '""')}"`;
+}
+
+function backtestTrailingLabel(trade: any) {
+  if (!trade.trailing_sl_enabled) return 'OFF';
+  if (!trade.trailing_sl_active) return `armed · ${number(trade.trailing_trigger_points || 0)} pts`;
+  return `active @ ${number(trade.sl_price || 0)}`;
 }

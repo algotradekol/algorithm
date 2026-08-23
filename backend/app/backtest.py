@@ -32,6 +32,12 @@ OPENING_WINDOW_START = "09:15"
 OPENING_WINDOW_END = "09:16"
 ENTRY_TIME = "09:16"
 EXIT_SCAN_START = "09:17"
+SILVER_SELL_PLAN_RED_CHAIN = "red_chain"
+SILVER_SELL_PLAN_LATEST_REFERENCE = "latest_reference"
+SILVER_SELL_PLAN_LABELS = {
+    SILVER_SELL_PLAN_RED_CHAIN: "Red-chain comparison (current)",
+    SILVER_SELL_PLAN_LATEST_REFERENCE: "Latest red reference (legacy)",
+}
 
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
@@ -51,6 +57,13 @@ def _raise_if_cancelled(job_id: str) -> None:
 def _ema_step(previous: float | None, value: float, period: int = EMA_PERIOD) -> float:
     k = 2 / (period + 1)
     return float(value) if previous is None else float(value) * k + previous * (1 - k)
+
+
+def normalize_silver_sell_plan(value: str | None) -> str:
+    plan = str(value or SILVER_SELL_PLAN_RED_CHAIN).strip().lower()
+    if plan not in SILVER_SELL_PLAN_LABELS:
+        raise ValueError("Unknown Silver sell plan. Choose red_chain or latest_reference.")
+    return plan
 
 
 class BacktestHistoryCache:
@@ -83,6 +96,7 @@ def start_backtest(
     start_date: str,
     end_date: str,
     watchlist: list[str],
+    silver_sell_plan: str | None = None,
 ) -> dict:
     if algo_id not in SUPPORTED_ALGOS:
         raise ValueError("Backtesting is currently available for Simple, Filter, and Silver Micro only.")
@@ -97,12 +111,14 @@ def start_backtest(
         raise ValueError(f"Choose a range of {MAX_BACKTEST_DAYS} calendar days or fewer.")
     if not watchlist:
         raise ValueError("The NSE 500 watchlist is not ready yet.")
+    normalized_sell_plan = normalize_silver_sell_plan(silver_sell_plan) if algo_id == "algo3" else None
 
     job_id = uuid.uuid4().hex
     job = {
         "id": job_id,
         "status": "queued",
         "algo_id": algo_id,
+        "silver_sell_plan": normalized_sell_plan,
         "start_date": first_date.isoformat(),
         "end_date": last_date.isoformat(),
         "total_symbols": len(watchlist),
@@ -129,7 +145,11 @@ def start_backtest(
             raise ValueError("A backtest is already running. Wait for it to finish before starting another one.")
         _jobs[job_id] = job
     _persist_job(job)
-    threading.Thread(target=_run_job, args=(job_id, algo_id, first_date, last_date, list(watchlist)), daemon=True).start()
+    threading.Thread(
+        target=_run_job,
+        args=(job_id, algo_id, first_date, last_date, list(watchlist), normalized_sell_plan),
+        daemon=True,
+    ).start()
     return _public_job(job)
 
 
@@ -228,6 +248,7 @@ def _run_job(
     first_date: datetime.date,
     last_date: datetime.date,
     watchlist: list[str],
+    silver_sell_plan: str | None = None,
 ):
     history_cache = BacktestHistoryCache()
     try:
@@ -236,7 +257,10 @@ def _run_job(
         if algo_id == "algo3":
             if not watchlist:
                 raise ValueError("The Silver Micro contract could not be resolved for backtesting.")
-            _run_silver_micro_job(job_id, algo_id, first_date, last_date, watchlist[0], settings, history_cache)
+            _run_silver_micro_job(
+                job_id, algo_id, first_date, last_date, watchlist[0], settings, history_cache,
+                silver_sell_plan or SILVER_SELL_PLAN_RED_CHAIN,
+            )
             return
         _update(
             job_id,
@@ -670,9 +694,11 @@ def _range_result(
             )),
             "trades": day["trades"],
             "candidates": day["candidates"],
+            "chart": day.get("chart"),
         })
-    best_day = max(daily_rows, key=lambda day: float(day["summary"]["net_pnl"]), default=None)
-    worst_day = min(daily_rows, key=lambda day: float(day["summary"]["net_pnl"]), default=None)
+    ranked_daily_rows = [day for day in daily_rows if int(day["summary"].get("trade_count") or 0) > 0] or daily_rows
+    best_day = max(ranked_daily_rows, key=lambda day: float(day["summary"]["net_pnl"]), default=None)
+    worst_day = min(ranked_daily_rows, key=lambda day: float(day["summary"]["net_pnl"]), default=None)
     return {
         "algo_id": algo_id,
         "start_date": first_date.isoformat(),
@@ -853,6 +879,7 @@ def _run_silver_micro_job(
     symbol: str,
     settings: dict,
     history_cache: BacktestHistoryCache,
+    silver_sell_plan: str,
 ) -> None:
     _raise_if_cancelled(job_id)
     lookback_start = first_date - datetime.timedelta(days=WARMUP_LOOKBACK_DAYS)
@@ -872,7 +899,8 @@ def _run_silver_micro_job(
         _increment(job_id, "cached_history_symbols")
     if not history:
         raise ValueError(
-            f"No Silver Micro history was returned for the chosen range after trying 1-minute and 5-minute candles."
+            "No Silver Micro history was returned for the chosen range after trying 1-minute and 5-minute candles. "
+            "The selected contract may have no data for this range, or FYERS returned an empty history response."
         )
 
     trading_days = [
@@ -901,6 +929,7 @@ def _run_silver_micro_job(
         trading_days,
         settings,
         charges_config,
+        silver_sell_plan,
     )
     _raise_if_cancelled(job_id)
     data_coverage = {
@@ -917,40 +946,79 @@ def _run_silver_micro_job(
         daily_results,
         data_coverage,
         mode="historical_mcx_replay",
-        execution_assumption=_silver_micro_execution_assumption(history_resolution, settings),
+        execution_assumption=_silver_micro_execution_assumption(history_resolution, settings, silver_sell_plan),
     )
+    result["silver_sell_plan"] = silver_sell_plan
+    result["silver_sell_plan_label"] = SILVER_SELL_PLAN_LABELS[silver_sell_plan]
     _raise_if_cancelled(job_id)
     _update(job_id, status="complete", phase="complete", message="Silver Micro backtest complete.", result=result)
 
 
-def _silver_micro_execution_assumption(history_resolution: str, settings: dict) -> str:
+def _silver_micro_execution_assumption(
+    history_resolution: str,
+    settings: dict,
+    silver_sell_plan: str = SILVER_SELL_PLAN_RED_CHAIN,
+) -> str:
     n = int(settings.get("silver_breakout_points", 150))
     sl_pts = int(settings.get("sl_points", 100))
     target_pts = int(settings.get("target_points", 300))
+    tsl_enabled = bool(settings.get("trailing_sl_enabled"))
+    tsl_trigger = int(settings.get("tsl_trigger_points", 0) or 0)
+    tsl_distance = int(settings.get("tsl_distance_points", 0) or 0)
+    exit_mode = str(settings.get("exit_mode") or "fixed_target_trailing_sl")
+    trailing_clause = (
+        f" Trailing SL is ON: activates after {tsl_trigger} points profit and trails by "
+        f"{tsl_distance} points."
+        if tsl_enabled and exit_mode in {"trailing_sl_only", "fixed_target_trailing_sl"}
+        else " Trailing SL is OFF for this replay."
+    )
+    sell_plan_text = (
+        "SELL compares each later qualifying red 15m close with the previous red reference; "
+        "green candles do not reset that reference."
+        if silver_sell_plan == SILVER_SELL_PLAN_RED_CHAIN
+        else "SELL replaces the reference on every qualifying red 15m candle, then waits for a later 1-minute break below that latest reference."
+    )
+    sell_entry_text = (
+        "SELL red-chain entries enter at the qualifying red candle's close."
+        if silver_sell_plan == SILVER_SELL_PLAN_RED_CHAIN
+        else "SELL latest-reference entries enter at the 1-minute trigger level."
+    )
     return (
         f"Silver Micro replays 15-minute bars aggregated from 1-minute history "
         f"({history_resolution}). Each closed 15m bar updates EMA20; a green candle "
         f"closing above EMA20 stores its close as the BUY level, a red candle "
-        f"closing below EMA20 stores the SELL level (levels overwrite on each new "
-        f"qualifier). Entry fires when a subsequent 1-minute bar's high (BUY) or "
-        f"low (SELL) crosses (setup_close +/- n={n} points) — the backtest "
-        f"approximates the live tick-cross using 1-minute bar extremes and enters "
-        f"at the trigger level itself. SL={sl_pts} points, target={target_pts} "
+        f"closing below EMA20 stores the SELL red-reference close. BUY entry fires "
+        f"when a subsequent 1-minute bar's high crosses (setup_close + n={n} points). "
+        f"{sell_plan_text} BUY entries use 1-minute "
+        f"bar extremes and enter at the trigger level itself. {sell_entry_text} SL={sl_pts} points, target={target_pts} "
         f"points, both fixed rupee distances from entry. If a 1-minute bar touches "
         f"both SL and target, SL is assumed first (conservative). Reversal on "
         f"contra trigger closes the current position and flips at the same bar."
+        f"{trailing_clause}"
     )
 
 
-def _new_silver_micro_day_result(symbol: str, day: datetime.date, bar_count: int) -> dict:
+def _new_silver_micro_day_result(
+    symbol: str,
+    day: datetime.date,
+    bar_count: int,
+    silver_sell_plan: str = SILVER_SELL_PLAN_RED_CHAIN,
+) -> dict:
+    sell_plan = normalize_silver_sell_plan(silver_sell_plan)
+    sell_plan_text = (
+        "SELL compares a later qualifying red close with the previous red reference; green candles do not reset it."
+        if sell_plan == SILVER_SELL_PLAN_RED_CHAIN
+        else "SELL replaces the reference on each qualifying red candle, then waits for a later 1-minute break below that latest reference."
+    )
     return {
         "algo_id": "algo3",
         "date": day.isoformat(),
         "mode": "historical_mcx_replay",
+        "silver_sell_plan": sell_plan,
+        "silver_sell_plan_label": SILVER_SELL_PLAN_LABELS[sell_plan],
         "execution_assumption": (
             "Silver Micro (15m EMA breakout): green candle above EMA20 sets BUY level, "
-            "red candle below EMA20 sets SELL level. Entry fires when live price crosses "
-            "(setup_close +/- n) in the setup direction."
+            f"red candle below EMA20 stores a SELL red reference. BUY uses setup close + n; {sell_plan_text}"
         ),
         "data_available_symbols": 1 if bar_count else 0,
         "summary": {},
@@ -963,6 +1031,247 @@ def _new_silver_micro_day_result(symbol: str, day: datetime.date, bar_count: int
         ],
         "candidates": [],
         "trades": [],
+        "chart": {
+            "symbol": symbol,
+            "resolution": "15",
+            "candles": [],
+            "setups": [],
+            "trades": [],
+            "viewport_hint": {
+                "mode": "full_day",
+                "start_time": None,
+                "end_time": None,
+                "trade_id": None,
+            },
+        },
+    }
+
+
+def _round_or_none(value, digits: int = 2):
+    try:
+        number = float(value)
+    except (TypeError, ValueError):
+        return None
+    return round(number, digits)
+
+
+def _silver_backtest_trade_id(symbol: str, side: str, entry_time: datetime.datetime) -> str:
+    return f"{symbol}|{side}|{entry_time.isoformat()}"
+
+
+def _iso_to_naive_ist(value) -> datetime.datetime | None:
+    if not value:
+        return None
+    try:
+        parsed = datetime.datetime.fromisoformat(str(value))
+    except ValueError:
+        return None
+    if parsed.tzinfo is not None:
+        parsed = parsed.astimezone(IST).replace(tzinfo=None)
+    return parsed
+
+
+def _minutes_between(start_value, end_value) -> int | None:
+    start_dt = _iso_to_naive_ist(start_value)
+    if not start_dt:
+        return None
+    if isinstance(end_value, datetime.datetime):
+        end_dt = end_value.astimezone(IST).replace(tzinfo=None) if end_value.tzinfo is not None else end_value
+    else:
+        end_dt = _iso_to_naive_ist(end_value)
+    if not end_dt:
+        return None
+    return max(0, int((end_dt - start_dt).total_seconds() // 60))
+
+
+def _silver_warning_message(code: str, context: dict) -> str:
+    delay = context.get("delay_minutes")
+    same_candle_time = context.get("same_candle_sl_priority_time")
+    if code == "never_reached_trailing_trigger":
+        return "Trailing SL never armed before the trade exited."
+    if code == "profit_gave_back_before_exit":
+        return (
+            f"Trade reached a peak unrealized profit of Rs {context.get('peak_unrealized_profit', 0):,.2f} "
+            f"but gave back Rs {context.get('profit_giveback', 0):,.2f} before exit."
+        )
+    if code == "same_candle_sl_priority":
+        return (
+            f"The same 1-minute candle touched both target and stop; the simulator conservatively honored SL first"
+            + (f" at {same_candle_time}." if same_candle_time else ".")
+        )
+    if code == "late_breakout_entry":
+        return f"Entry happened {delay} minutes after the setup candle, so the breakout was late."
+    if code == "whipsaw_after_entry":
+        return "Price moved both strongly in favor and against the trade within the first few minutes after entry."
+    if code == "high_volatility_near_entry":
+        return "The first few 1-minute candles after entry were unusually volatile."
+    if code == "setup_stale_before_entry":
+        return f"The setup sat for {delay} minutes before entry, so it was no longer a fresh breakout."
+    if code == "entry_near_local_extreme":
+        return "Entry happened near a short-term local extreme, which raised immediate reversal risk."
+    if code == "sharp_reversal_after_breakout":
+        return "The breakout initially worked, then sharply reversed before the trade could exit well."
+    if code == "charges_deepened_loss":
+        return "Brokerage and taxes materially worsened the final net loss."
+    return code.replace("_", " ")
+
+
+def _silver_primary_cause_label(code: str) -> str:
+    labels = {
+        "stop_loss_hit": "Stop loss hit",
+        "trailing_stop_hit": "Trailing stop hit",
+        "target_not_reached_eod": "Ended red before close",
+        "reversal_contra_signal": "Reversal on contra signal",
+        "target_hit": "Target hit",
+        "session_close_exit": "Session close exit",
+        "simulated_exit": "Simulated exit",
+    }
+    return labels.get(code, code.replace("_", " ").title())
+
+
+def _build_silver_trade_diagnostics(position: dict, trade: dict, exit_time: datetime.datetime) -> dict:
+    setup_context = dict(position.get("setup_context") or {})
+    side = str(position.get("side") or "")
+    qty = int(position.get("qty") or 0)
+    entry = float(position.get("entry_price") or 0)
+    exit_price = float(trade.get("exit_price") or 0)
+    initial_sl = float(position.get("initial_sl_price") or position.get("sl_price") or 0)
+    final_sl = float(position.get("sl_price") or 0)
+    target = float(position.get("target_price") or 0)
+    trailing_enabled = bool(position.get("trailing_sl_enabled"))
+    trailing_active = bool(position.get("trailing_sl_active"))
+    trailing_moves = list(position.get("trailing_moves") or [])
+    max_favorable_points = float(position.get("max_favorable_points") or 0)
+    max_adverse_points = float(position.get("max_adverse_points") or 0)
+    peak_unrealized_profit = round(max_favorable_points * qty, 2)
+    worst_unrealized_drawdown = round(max_adverse_points * qty, 2)
+    exit_points = round((exit_price - entry) if side == "BUY" else (entry - exit_price), 2)
+    profit_giveback_points = round(max(0.0, max_favorable_points - exit_points), 2)
+    profit_giveback = round(max(0.0, peak_unrealized_profit - float(trade.get("gross_pnl") or 0)), 2)
+    delay_minutes = _minutes_between(setup_context.get("setup_time"), position.get("entry_time"))
+    same_candle_sl_priority = bool(position.get("same_candle_sl_priority"))
+    same_candle_time = position.get("same_candle_sl_priority_time")
+    first_window_high = float(position.get("entry_window_high") or entry)
+    first_window_low = float(position.get("entry_window_low") or entry)
+    first_window_range = max(0.0, first_window_high - first_window_low)
+    first_window_favorable = float(position.get("entry_window_favorable_points") or 0)
+    first_window_adverse = float(position.get("entry_window_adverse_points") or 0)
+    gross_pnl = float(trade.get("gross_pnl") or 0)
+    net_pnl = float(trade.get("net_pnl") or 0)
+    total_charges = float(trade.get("total_charges") or 0)
+    exit_reason = str(trade.get("exit_reason") or "")
+    tsl_trigger_pts = float(position.get("trailing_trigger_points") or 0)
+    sl_points = abs(entry - initial_sl)
+    n_points = float(setup_context.get("n_points") or 0)
+
+    if exit_reason == "SL":
+        primary_cause_code = "trailing_stop_hit" if trailing_active and abs(final_sl - initial_sl) > 1e-9 else "stop_loss_hit"
+    elif exit_reason == "EOD_SQUAREOFF" and net_pnl < 0:
+        primary_cause_code = "target_not_reached_eod"
+    elif exit_reason == "REVERSAL_CONTRA_SIGNAL":
+        primary_cause_code = "reversal_contra_signal"
+    elif exit_reason == "TARGET":
+        primary_cause_code = "target_hit"
+    elif exit_reason == "EOD_SQUAREOFF":
+        primary_cause_code = "session_close_exit"
+    else:
+        primary_cause_code = "simulated_exit"
+
+    warning_codes: list[str] = []
+
+    if trailing_enabled and tsl_trigger_pts > 0 and max_favorable_points + 1e-9 < tsl_trigger_pts:
+        warning_codes.append("never_reached_trailing_trigger")
+    meaningful_profit_threshold = max(100.0, tsl_trigger_pts or 0.0, n_points * 0.5 if n_points > 0 else 0.0)
+    if max_favorable_points >= meaningful_profit_threshold and profit_giveback_points >= max(100.0, meaningful_profit_threshold * 0.5):
+        warning_codes.append("profit_gave_back_before_exit")
+    if same_candle_sl_priority and exit_reason == "SL":
+        warning_codes.append("same_candle_sl_priority")
+    if delay_minutes is not None and delay_minutes > 15:
+        warning_codes.append("late_breakout_entry")
+    if first_window_favorable >= max(100.0, sl_points * 0.5) and first_window_adverse >= max(100.0, sl_points * 0.5):
+        warning_codes.append("whipsaw_after_entry")
+    if first_window_range >= max(250.0, sl_points * 1.2):
+        warning_codes.append("high_volatility_near_entry")
+    if delay_minutes is not None and delay_minutes > 15:
+        warning_codes.append("setup_stale_before_entry")
+    if side == "BUY":
+        near_extreme = (first_window_high - entry) <= max(40.0, n_points * 0.15) and (entry - first_window_low) >= max(120.0, sl_points * 0.75)
+    else:
+        near_extreme = (entry - first_window_low) <= max(40.0, n_points * 0.15) and (first_window_high - entry) >= max(120.0, sl_points * 0.75)
+    if near_extreme:
+        warning_codes.append("entry_near_local_extreme")
+    if max_favorable_points >= max(150.0, n_points * 0.75 if n_points > 0 else 150.0) and profit_giveback_points >= max(150.0, sl_points):
+        warning_codes.append("sharp_reversal_after_breakout")
+    if gross_pnl < 0 and total_charges >= max(50.0, abs(gross_pnl) * 0.15):
+        warning_codes.append("charges_deepened_loss")
+
+    deduped_codes: list[str] = []
+    for code in warning_codes:
+        if code not in deduped_codes:
+            deduped_codes.append(code)
+
+    warning_context = {
+        "delay_minutes": delay_minutes,
+        "peak_unrealized_profit": peak_unrealized_profit,
+        "profit_giveback": profit_giveback,
+        "same_candle_sl_priority_time": same_candle_time,
+    }
+    warning_messages = [_silver_warning_message(code, warning_context) for code in deduped_codes]
+
+    trailing_phrase = (
+        f"Trailing activated {len(trailing_moves)} time(s)"
+        if trailing_active
+        else "Trailing never armed"
+    ) if trailing_enabled else "Trailing was off"
+    delay_phrase = (
+        f"entry triggered {delay_minutes} minutes after setup"
+        if delay_minutes is not None
+        else "entry timing could not be measured"
+    )
+    summary = (
+        f"{side} setup was valid, {delay_phrase}, {trailing_phrase}, and the trade exited via "
+        f"{_silver_primary_cause_label(primary_cause_code).lower()} at {round(exit_price, 2):,.2f}. "
+        f"Max favorable excursion was {round(max_favorable_points, 2):,.2f} points and max adverse excursion was "
+        f"{round(max_adverse_points, 2):,.2f} points."
+    )
+
+    return {
+        "primary_cause_code": primary_cause_code,
+        "primary_cause_label": _silver_primary_cause_label(primary_cause_code),
+        "summary": summary,
+        "entry_context": {
+            "setup_side": setup_context.get("side") or side,
+            "setup_time": setup_context.get("setup_time"),
+            "setup_close": _round_or_none(setup_context.get("setup_close")),
+            "trigger_level": _round_or_none(setup_context.get("trigger_level")),
+            "ema20": _round_or_none(setup_context.get("ema20")),
+            "entry_time": position["entry_time"].isoformat(),
+            "entry_price": round(entry, 2),
+            "delay_from_setup_minutes": delay_minutes,
+            "previous_red_reference_close": _round_or_none(setup_context.get("previous_red_reference_close")),
+            "current_qualifying_red_close": _round_or_none(setup_context.get("current_qualifying_red_close")),
+        },
+        "exit_context": {
+            "exit_reason": exit_reason,
+            "exit_time": exit_time.isoformat(),
+            "exit_price": round(exit_price, 2),
+            "initial_sl": round(initial_sl, 2),
+            "final_sl": round(final_sl, 2),
+            "target": round(target, 2),
+            "trailing_enabled": trailing_enabled,
+            "trailing_active": trailing_active,
+            "trailing_move_count": len(trailing_moves),
+        },
+        "path_metrics": {
+            "max_favorable_excursion_points": round(max_favorable_points, 2),
+            "max_adverse_excursion_points": round(max_adverse_points, 2),
+            "peak_unrealized_profit": peak_unrealized_profit,
+            "worst_unrealized_drawdown": worst_unrealized_drawdown,
+            "profit_giveback_from_peak": profit_giveback,
+            "profit_giveback_from_peak_points": profit_giveback_points,
+        },
+        "warning_codes": deduped_codes,
+        "warning_messages": warning_messages,
     }
 
 
@@ -978,10 +1287,34 @@ def _load_silver_micro_history(
     current = start_date
     while current <= end_date:
         if current.weekday() < 5:
-            day_history = get_intraday_candles_for_range(symbol, current, current, resolution="1")
+            try:
+                day_history = get_intraday_candles_for_range(
+                    symbol,
+                    current,
+                    current,
+                    resolution="1",
+                    raise_on_error=True,
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"Silver Micro history request failed for {current.isoformat()} at 1-minute: {exc}. "
+                    "The FYERS session may be expired, rate-limited, or not logged in; re-authenticate FYERS and retry."
+                ) from exc
             resolution = "1"
             if not day_history:
-                day_history = get_intraday_candles_for_range(symbol, current, current, resolution="5")
+                try:
+                    day_history = get_intraday_candles_for_range(
+                        symbol,
+                        current,
+                        current,
+                        resolution="5",
+                        raise_on_error=True,
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"Silver Micro history request failed for {current.isoformat()} at 5-minute fallback: {exc}. "
+                        "The FYERS session may be expired, rate-limited, or not logged in; re-authenticate FYERS and retry."
+                    ) from exc
                 resolution = "5"
             if day_history:
                 if resolution == "1":
@@ -1007,6 +1340,7 @@ def _simulate_silver_micro_range(
     trading_days: list[datetime.date],
     settings: dict,
     charges_config: dict,
+    silver_sell_plan: str = SILVER_SELL_PLAN_RED_CHAIN,
 ) -> list[dict]:
     """15m EMA breakout replay (2026-08-19 rewrite).
 
@@ -1018,12 +1352,14 @@ def _simulate_silver_micro_range(
     (conservative). SL/target/TSL are in POINTS from entry, matching the
     live strategy exactly.
     """
+    silver_sell_plan = normalize_silver_sell_plan(silver_sell_plan)
     n = float(settings.get("silver_breakout_points", 150))
     sl_pts = float(settings.get("sl_points", 100))
     target_pts = float(settings.get("target_points", 300))
     tsl_trigger_pts = float(settings.get("tsl_trigger_points", 0))
     tsl_distance_pts = float(settings.get("tsl_distance_points", 0))
-    tsl_enabled = bool(settings.get("trailing_sl_enabled")) or settings.get("exit_mode") in {"trailing_sl_only", "fixed_target_trailing_sl"}
+    exit_mode = str(settings.get("exit_mode") or "fixed_target_trailing_sl")
+    tsl_enabled = bool(settings.get("trailing_sl_enabled")) and exit_mode in {"trailing_sl_only", "fixed_target_trailing_sl"}
 
     # Pre-count 1m bars per day so the UI can show how much data existed.
     minute_bars_by_day: dict[datetime.date, int] = defaultdict(int)
@@ -1046,7 +1382,7 @@ def _simulate_silver_micro_range(
             minute_bars_by_day[ts.date()] += 1
 
     daily_results = {
-        day: _new_silver_micro_day_result(symbol, day, minute_bars_by_day.get(day, 0))
+        day: _new_silver_micro_day_result(symbol, day, minute_bars_by_day.get(day, 0), silver_sell_plan)
         for day in trading_days
     }
 
@@ -1054,6 +1390,8 @@ def _simulate_silver_micro_range(
     ema20: float | None = None
     buy_setup_close: float | None = None
     sell_setup_close: float | None = None
+    buy_setup_context: dict | None = None
+    sell_setup_context: dict | None = None
     minute_buffer: list[dict] = []
     current_bucket: datetime.datetime | None = None
     prev_ltp: float | None = None
@@ -1066,7 +1404,7 @@ def _simulate_silver_micro_range(
     def finalize_15m_bar(allow_signals: bool):
         """Aggregate the minute_buffer into one 15m bar, update EMA20
         and the BUY/SELL setup levels."""
-        nonlocal minute_buffer, ema20, buy_setup_close, sell_setup_close, bars_finalized
+        nonlocal minute_buffer, ema20, buy_setup_close, sell_setup_close, buy_setup_context, sell_setup_context, bars_finalized
         if not minute_buffer or current_bucket is None:
             return
         bar = {
@@ -1085,12 +1423,50 @@ def _simulate_silver_micro_range(
         # A qualifier can also be recorded in-scope so the UI candidates
         # table shows what triggered.
         setup_event: dict | None = None
+        previous_sell_reference_close = sell_setup_close
         if is_green and ema20 is not None and bar["close"] > ema20:
             buy_setup_close = bar["close"]
+            buy_setup_context = {
+                "side": "BUY",
+                "setup_time": bar["time"].isoformat(),
+                "setup_close": round(bar["close"], 2),
+                "trigger_level": round(bar["close"] + n, 2),
+                "ema20": _round_or_none(ema20),
+                "n_points": n,
+                "previous_red_reference_close": None,
+                "current_qualifying_red_close": None,
+            }
             setup_event = {"side": "BUY", "close": bar["close"], "bar": bar}
         elif is_red and ema20 is not None and bar["close"] < ema20:
-            sell_setup_close = bar["close"]
-            setup_event = {"side": "SELL", "close": bar["close"], "bar": bar}
+            sell_setup_context = {
+                "side": "SELL",
+                "setup_time": bar["time"].isoformat(),
+                "setup_close": round(bar["close"], 2),
+                "trigger_level": round(bar["close"] - n, 2),
+                "ema20": _round_or_none(ema20),
+                "n_points": n,
+                "previous_red_reference_close": _round_or_none(previous_sell_reference_close),
+                "current_qualifying_red_close": round(bar["close"], 2),
+            }
+            setup_event = {
+                "side": "SELL",
+                "close": bar["close"],
+                "bar": bar,
+                "previous_red_reference_close": previous_sell_reference_close,
+                "current_qualifying_red_close": bar["close"],
+            }
+        if allow_signals and first_date <= bar["time"].date() <= last_date:
+            chart_day = daily_results.get(bar["time"].date())
+            if chart_day:
+                chart_day["chart"]["candles"].append({
+                    "time": bar["time"].isoformat(),
+                    "open": round(bar["open"], 2),
+                    "high": round(bar["high"], 2),
+                    "low": round(bar["low"], 2),
+                    "close": round(bar["close"], 2),
+                    "volume": round(float(bar["volume"]), 2),
+                    "ema20": _round_or_none(ema20),
+                })
         if setup_event and allow_signals and first_date <= bar["time"].date() <= last_date:
             day_result = daily_results.get(bar["time"].date())
             if day_result:
@@ -1107,6 +1483,8 @@ def _simulate_silver_micro_range(
                     "trigger_level": round(setup_event["close"] + n, 2) if setup_event["side"] == "BUY" else round(setup_event["close"] - n, 2),
                     "ema20": round(ema20, 2) if ema20 is not None else None,
                     "n_points": n,
+                    "previous_red_reference_close": _round_or_none(setup_event.get("previous_red_reference_close")),
+                    "current_qualifying_red_close": _round_or_none(setup_event.get("current_qualifying_red_close")),
                     "signal_stage": "setup",
                     "selected_for_trade": False,
                     "rejection_reason": None,
@@ -1120,7 +1498,38 @@ def _simulate_silver_micro_range(
                     "total_charges": None,
                 }
                 day_result["candidates"].append(candidate)
+                day_result["chart"]["setups"].append({
+                    "side": setup_event["side"],
+                    "time": bar["time"].isoformat(),
+                    "setup_close": round(setup_event["close"], 2),
+                    "trigger_level": round(setup_event["close"] + n, 2) if setup_event["side"] == "BUY" else round(setup_event["close"] - n, 2),
+                    "ema20": _round_or_none(ema20),
+                    "previous_red_reference_close": _round_or_none(setup_event.get("previous_red_reference_close")),
+                    "current_qualifying_red_close": _round_or_none(setup_event.get("current_qualifying_red_close")),
+                })
                 day_result["condition_breakdown"][2]["passed"] += 1
+        if (
+            silver_sell_plan == SILVER_SELL_PLAN_RED_CHAIN
+            and allow_signals
+            and first_date <= bar["time"].date() <= last_date
+            and bars_finalized >= EMA_PERIOD
+            and setup_event
+            and setup_event["side"] == "SELL"
+            and sell_setup_close is not None
+        ):
+            sell_level = sell_setup_close - n
+            if float(bar["close"]) <= float(sell_level):
+                current_position = position
+                if current_position and current_position["side"] == "SELL":
+                    pass
+                else:
+                    if current_position and current_position["side"] != "SELL":
+                        close_position(float(bar["close"]), bar["time"], "REVERSAL_CONTRA_SIGNAL", bar["time"].date())
+                    open_position("SELL", float(bar["close"]), bar["time"], bar["time"].date())
+        if is_green and ema20 is not None and bar["close"] > ema20:
+            buy_setup_close = bar["close"]
+        elif is_red and ema20 is not None and bar["close"] < ema20:
+            sell_setup_close = bar["close"]
 
     def close_position(exit_price: float, exit_time: datetime.datetime, exit_reason: str, day: datetime.date):
         nonlocal position, position_candidate
@@ -1128,6 +1537,22 @@ def _simulate_silver_micro_range(
             return
         trade = _close_silver_micro_position(position, exit_price, exit_time, exit_reason, settings, charges_config)
         daily_results[day]["trades"].append(trade)
+        daily_results[day]["chart"]["trades"].append({
+            "trade_id": trade["trade_id"],
+            "side": trade["side"],
+            "entry_time": trade["entry_time"],
+            "entry_price": trade["entry_price"],
+            "exit_time": trade["exit_time"],
+            "exit_price": trade["exit_price"],
+            "initial_sl_price": trade["initial_sl_price"],
+            "final_sl_price": trade["sl_price"],
+            "target_price": trade["target_price"],
+            "trailing_sl_enabled": trade["trailing_sl_enabled"],
+            "trailing_sl_active": trade["trailing_sl_active"],
+            "trailing_moves": list(trade.get("trailing_moves") or []),
+            "exit_reason": trade["exit_reason"],
+            "net_pnl": trade["net_pnl"],
+        })
         if position_candidate:
             position_candidate["exit_time"] = trade["exit_time"]
             position_candidate["exit_price"] = trade["exit_price"]
@@ -1158,12 +1583,19 @@ def _simulate_silver_micro_range(
             "symbol": symbol,
             "side": side,
             "qty": qty,
+            "trade_id": _silver_backtest_trade_id(symbol, side, entry_time),
             "entry_price": float(entry_price),
             "entry_time": entry_time,
+            "initial_sl_price": float(sl_price),
             "sl_price": sl_price,
             "target_price": target_price,
             "highest": float(entry_price),
             "lowest": float(entry_price),
+            "trailing_sl_enabled": bool(tsl_enabled),
+            "trailing_sl_active": False,
+            "trailing_trigger_points": float(tsl_trigger_pts),
+            "trailing_distance_points": float(tsl_distance_pts),
+            "trailing_moves": [],
         }
         # Latest matching-side setup in this day's candidates is the source
         # candidate we mark as selected_for_trade.
@@ -1181,6 +1613,32 @@ def _simulate_silver_micro_range(
             source_candidate["entry_price"] = round(float(entry_price), 2)
             source_candidate["sl_price"] = round(float(sl_price), 2)
             source_candidate["target_price"] = round(float(target_price), 2)
+        active_setup_context = buy_setup_context if side == "BUY" else sell_setup_context
+        setup_source = source_candidate or active_setup_context or {}
+        setup_context = {
+            "side": setup_source.get("side") or side,
+            "setup_time": setup_source.get("setup_time"),
+            "setup_close": setup_source.get("setup_close"),
+            "trigger_level": setup_source.get("trigger_level"),
+            "ema20": setup_source.get("ema20"),
+            "n_points": setup_source.get("n_points"),
+            "previous_red_reference_close": setup_source.get("previous_red_reference_close"),
+            "current_qualifying_red_close": setup_source.get("current_qualifying_red_close"),
+        }
+        position["setup_context"] = setup_context
+        position["max_favorable_points"] = 0.0
+        position["max_adverse_points"] = 0.0
+        position["peak_price"] = float(entry_price)
+        position["peak_time"] = entry_time.isoformat()
+        position["trough_price"] = float(entry_price)
+        position["trough_time"] = entry_time.isoformat()
+        position["same_candle_sl_priority"] = False
+        position["same_candle_sl_priority_time"] = None
+        position["entry_window_end"] = entry_time + datetime.timedelta(minutes=5)
+        position["entry_window_high"] = float(entry_price)
+        position["entry_window_low"] = float(entry_price)
+        position["entry_window_favorable_points"] = 0.0
+        position["entry_window_adverse_points"] = 0.0
         position_candidate = source_candidate
 
     def maybe_apply_trailing(entry: float, side: str):
@@ -1192,15 +1650,37 @@ def _simulate_silver_micro_range(
         if side == "BUY":
             gain = float(position["highest"]) - entry
             if gain >= tsl_trigger_pts:
+                position["trailing_sl_active"] = True
                 new_sl = float(position["highest"]) - tsl_distance_pts
                 if new_sl > float(position["sl_price"]):
+                    previous_sl = float(position["sl_price"])
                     position["sl_price"] = new_sl
+                    position.setdefault("trailing_moves", []).append({
+                        "time": position.get("_last_trail_time"),
+                        "side": side,
+                        "gain_points": round(gain, 2),
+                        "reference_price": round(float(position["highest"]), 2),
+                        "previous_sl": round(previous_sl, 2),
+                        "new_sl": round(new_sl, 2),
+                        "protected_points": round(new_sl - entry, 2),
+                    })
         else:
             gain = entry - float(position["lowest"])
             if gain >= tsl_trigger_pts:
+                position["trailing_sl_active"] = True
                 new_sl = float(position["lowest"]) + tsl_distance_pts
                 if new_sl < float(position["sl_price"]):
+                    previous_sl = float(position["sl_price"])
                     position["sl_price"] = new_sl
+                    position.setdefault("trailing_moves", []).append({
+                        "time": position.get("_last_trail_time"),
+                        "side": side,
+                        "gain_points": round(gain, 2),
+                        "reference_price": round(float(position["lowest"]), 2),
+                        "previous_sl": round(previous_sl, 2),
+                        "new_sl": round(new_sl, 2),
+                        "protected_points": round(entry - new_sl, 2),
+                    })
 
     for candle in normalized_history:
         _raise_if_cancelled(job_id)
@@ -1252,24 +1732,62 @@ def _simulate_silver_micro_range(
                         close_position(buy_level, ts, "REVERSAL_CONTRA_SIGNAL", day)
                     open_position("BUY", buy_level, ts, day)
 
-            # SELL cross: prev_ltp > level AND this minute's low <= level.
-            if position is None or position.get("side") != "SELL":
-                if sell_level is not None and prev_ltp is not None and prev_ltp > sell_level >= candle["low"]:
-                    if position and position["side"] != "SELL":
-                        close_position(sell_level, ts, "REVERSAL_CONTRA_SIGNAL", day)
-                    open_position("SELL", sell_level, ts, day)
+            # Legacy comparison plan: every qualifying red candle replaces the
+            # reference, then a later 1-minute low crossing reference - n enters
+            # at the trigger level. The red-chain plan enters from the finalized
+            # qualifying red close above instead.
+            if (
+                silver_sell_plan == SILVER_SELL_PLAN_LATEST_REFERENCE
+                and (position is None or position.get("side") != "SELL")
+                and sell_level is not None
+                and prev_ltp is not None
+                and prev_ltp > sell_level >= candle["low"]
+            ):
+                if position and position["side"] != "SELL":
+                    close_position(sell_level, ts, "REVERSAL_CONTRA_SIGNAL", day)
+                open_position("SELL", sell_level, ts, day)
 
             # Exit management for whatever's currently open.
             if position:
-                position["highest"] = max(float(position["highest"]), candle["high"])
-                position["lowest"] = min(float(position["lowest"]), candle["low"])
+                previous_highest = float(position["highest"])
+                previous_lowest = float(position["lowest"])
+                position["highest"] = max(previous_highest, candle["high"])
+                position["lowest"] = min(previous_lowest, candle["low"])
+                if float(position["highest"]) > previous_highest:
+                    position["peak_price"] = float(position["highest"])
+                    position["peak_time"] = ts.isoformat()
+                if float(position["lowest"]) < previous_lowest:
+                    position["trough_price"] = float(position["lowest"])
+                    position["trough_time"] = ts.isoformat()
+                position["_last_trail_time"] = ts.isoformat()
                 side = position["side"]
                 sl = float(position["sl_price"])
                 target = float(position["target_price"])
                 entry = float(position["entry_price"])
+                if side == "BUY":
+                    favorable_points = max(0.0, float(position["highest"]) - entry)
+                    adverse_points = max(0.0, entry - float(position["lowest"]))
+                else:
+                    favorable_points = max(0.0, entry - float(position["lowest"]))
+                    adverse_points = max(0.0, float(position["highest"]) - entry)
+                position["max_favorable_points"] = max(float(position.get("max_favorable_points") or 0.0), favorable_points)
+                position["max_adverse_points"] = max(float(position.get("max_adverse_points") or 0.0), adverse_points)
+                entry_window_end = position.get("entry_window_end")
+                if isinstance(entry_window_end, datetime.datetime) and ts <= entry_window_end:
+                    position["entry_window_high"] = max(float(position.get("entry_window_high") or entry), candle["high"])
+                    position["entry_window_low"] = min(float(position.get("entry_window_low") or entry), candle["low"])
+                    if side == "BUY":
+                        position["entry_window_favorable_points"] = max(float(position.get("entry_window_favorable_points") or 0.0), max(0.0, candle["high"] - entry))
+                        position["entry_window_adverse_points"] = max(float(position.get("entry_window_adverse_points") or 0.0), max(0.0, entry - candle["low"]))
+                    else:
+                        position["entry_window_favorable_points"] = max(float(position.get("entry_window_favorable_points") or 0.0), max(0.0, entry - candle["low"]))
+                        position["entry_window_adverse_points"] = max(float(position.get("entry_window_adverse_points") or 0.0), max(0.0, candle["high"] - entry))
                 stop_hit = candle["low"] <= sl if side == "BUY" else candle["high"] >= sl
                 target_hit = candle["high"] >= target if side == "BUY" else candle["low"] <= target
-                use_target = settings.get("exit_mode") != "trailing_sl_only"
+                use_target = exit_mode != "trailing_sl_only"
+                if stop_hit and target_hit and use_target and not position.get("same_candle_sl_priority"):
+                    position["same_candle_sl_priority"] = True
+                    position["same_candle_sl_priority_time"] = ts.isoformat()
                 if stop_hit:
                     close_position(sl, ts, "SL", day)
                 elif target_hit and use_target:
@@ -1300,6 +1818,29 @@ def _simulate_silver_micro_range(
         day_result["condition_breakdown"][2]["total"] = day_result["condition_breakdown"][1]["passed"]
         day_result["condition_breakdown"][3]["total"] = day_result["condition_breakdown"][2]["passed"]
         day_result["sector_breakdown"] = build_sector_breakdown(day_result["candidates"])
+        chart = day_result.get("chart") or {}
+        chart_candles = list(chart.get("candles") or [])
+        chart_trades = list(chart.get("trades") or [])
+        if chart_candles:
+            viewport = chart.get("viewport_hint") or {}
+            if chart_trades:
+                focus_trade = chart_trades[-1]
+                entry_dt = _iso_to_naive_ist(focus_trade.get("entry_time"))
+                exit_dt = _iso_to_naive_ist(focus_trade.get("exit_time"))
+                viewport.update({
+                    "mode": "trade_window",
+                    "start_time": (entry_dt - datetime.timedelta(minutes=8 * SILVER_MICRO_BUCKET_MINUTES)).isoformat() if entry_dt else chart_candles[0]["time"],
+                    "end_time": (exit_dt + datetime.timedelta(minutes=8 * SILVER_MICRO_BUCKET_MINUTES)).isoformat() if exit_dt else chart_candles[-1]["time"],
+                    "trade_id": focus_trade.get("trade_id"),
+                })
+            else:
+                viewport.update({
+                    "mode": "full_day",
+                    "start_time": chart_candles[0]["time"],
+                    "end_time": chart_candles[-1]["time"],
+                    "trade_id": None,
+                })
+            chart["viewport_hint"] = viewport
 
     return [daily_results[day] for day in trading_days]
 
@@ -1315,13 +1856,23 @@ def _close_silver_micro_position(
     side = position["side"]
     qty = int(position["qty"])
     entry = float(position["entry_price"])
+    initial_sl = float(position.get("initial_sl_price") or position["sl_price"])
     sl = float(position["sl_price"])
     target = float(position["target_price"])
+    trailing_moves = list(position.get("trailing_moves") or [])
+    trailing_active = bool(position.get("trailing_sl_active"))
+    trailing_enabled = bool(position.get("trailing_sl_enabled"))
+    max_protected_points = 0.0
+    if side == "BUY":
+        max_protected_points = max(0.0, sl - entry)
+    else:
+        max_protected_points = max(0.0, entry - sl)
     buy_value = entry * qty if side == "BUY" else exit_price * qty
     sell_value = exit_price * qty if side == "BUY" else entry * qty
     charges = calculate_charges(buy_value, sell_value, charges_config)
     gross_pnl = (exit_price - entry) * qty if side == "BUY" else (entry - exit_price) * qty
-    return {
+    trade = {
+        "trade_id": position.get("trade_id") or _silver_backtest_trade_id(position["symbol"], side, position["entry_time"]),
         "symbol": position["symbol"],
         "side": side,
         "qty": qty,
@@ -1332,8 +1883,18 @@ def _close_silver_micro_position(
         "exit_reason": exit_reason,
         "target_price": round(target, 2),
         "sl_price": round(sl, 2),
+        "initial_sl_price": round(initial_sl, 2),
+        "trailing_sl_enabled": trailing_enabled,
+        "trailing_sl_active": trailing_active,
+        "trailing_trigger_points": round(float(position.get("trailing_trigger_points") or 0), 2),
+        "trailing_distance_points": round(float(position.get("trailing_distance_points") or 0), 2),
+        "trailing_move_count": len(trailing_moves),
+        "trailing_moves": trailing_moves,
+        "max_protected_points": round(max_protected_points, 2),
         "entry_trigger": f"Historical {position['entry_time'].date().isoformat()} Silver Micro 15m breakout replay.",
         **charges,
         "gross_pnl": round(gross_pnl, 2),
         "net_pnl": round(float(charges["net_pnl"]), 2),
     }
+    trade["diagnostics"] = _build_silver_trade_diagnostics(position, trade, exit_time)
+    return trade

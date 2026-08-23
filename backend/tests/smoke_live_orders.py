@@ -2071,22 +2071,21 @@ def test_algo3_buy_trigger_only_on_upward_cross():
           len(strat3.broker.opens) == 0)
 
 
-def test_algo3_sell_trigger_only_on_downward_cross():
-    print("\n37. algo3 SELL trigger fires ONLY on a downward cross of (setup - n)")
+def test_algo3_sell_does_not_fire_from_tick_cross():
+    print("\n37. algo3 SELL no longer fires from tick-cross; it waits for a qualifying red close chain")
     strat = _make_bare_algo3()
     strat._sell_setup_close = 89000.0
-    # sell_level = 88850
     strat._prev_ltp = 88900  # above
-    strat._check_triggers(88800)  # crossed down through 88850
-    check("downward cross fires SELL entry",
-          len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "SELL",
+    strat._check_triggers(88800)
+    check("downward tick-cross does not fire SELL entry anymore",
+          len(strat.broker.opens) == 0,
           f"opens={strat.broker.opens}")
 
     strat2 = _make_bare_algo3()
     strat2._sell_setup_close = 89000.0
     strat2._prev_ltp = 88800  # already below
     strat2._check_triggers(88700)
-    check("moving further down while already below: no double entry",
+    check("moving further down while already below still does not fire SELL",
           len(strat2.broker.opens) == 0)
 
 
@@ -2118,16 +2117,22 @@ def test_algo3_configurable_n_parameter():
 # ── 40-41. Reversal & no-reentry ───────────────────────────────────────
 def test_algo3_reversal_on_contra_signal():
     print("\n40. algo3 contra trigger closes existing position and flips at LTP")
-    strat = _make_bare_algo3()
+    import datetime as _dt
+    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
     strat._buy_setup_close = 92000.0
-    strat._sell_setup_close = 89000.0
     # Fire BUY first.
     strat._prev_ltp = 92100
     strat._check_triggers(92200)
     check("initial BUY open", len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "BUY")
-    # Now fire SELL — should close the BUY and open a SELL.
-    strat._prev_ltp = 88900
-    strat._check_triggers(88800)
+    # Now fire SELL via the alternate red-chain candle-close rule.
+    strat._ema20 = 1000.0
+    strat._sell_setup_close = 900.0
+    strat._sell_setup_bar_at = _dt.datetime(2026, 8, 20, 15, 0)
+    strat._check_candle_close_trigger({
+        "open": 860.0,
+        "close": 700.0,
+        "time": _dt.datetime(2026, 8, 20, 15, 15),
+    })
     check("existing BUY closed with REVERSAL_CONTRA_SIGNAL",
           any(c["reason"] == "REVERSAL_CONTRA_SIGNAL" for c in strat.broker.closes),
           f"closes={strat.broker.closes}")
@@ -2148,6 +2153,33 @@ def test_algo3_no_reentry_same_side():
     strat._check_triggers(92200)  # would cross up again
     check("second same-side cross does NOT re-enter",
           len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
+
+
+def test_algo3_unlimited_reentry_after_exit_same_setup():
+    print("\n41a. algo3 allows unlimited same-reference BUY re-entry after each exit")
+    import datetime as _dt
+    strat = _make_bare_algo3()
+    strat._buy_setup_close = 92000.0
+    strat._buy_setup_bar_at = _dt.datetime(2026, 8, 20, 19, 15)
+
+    def cross_up():
+        strat._prev_ltp = 92000.0
+        strat._check_triggers(92200.0)
+
+    cross_up()
+    check("first BUY opened", len(strat.broker.opens) == 1)
+
+    first_position = strat.broker.open_positions()[0]
+    strat.broker.close_trade(first_position, 92100.0, "SL")
+    cross_up()
+    check("same setup re-enters after first exit", len(strat.broker.opens) == 2,
+          f"opens={strat.broker.opens}")
+
+    second_position = strat.broker.open_positions()[0]
+    strat.broker.close_trade(second_position, 92100.0, "SL")
+    cross_up()
+    check("same setup can re-enter again after second exit", len(strat.broker.opens) == 3,
+          f"opens={strat.broker.opens}")
 
 
 def test_algo3_failed_live_attempt_consumes_setup_once():
@@ -2229,6 +2261,7 @@ def test_algo3_live_broker_guard_blocks_when_symbol_busy():
 # ── 42. Entry payload uses POINTS for SL/target ────────────────────────
 def test_algo3_entry_uses_points_sl_target():
     print("\n42. algo3 entry SL/target are computed as POINTS from entry, not %")
+    import datetime as _dt
     strat = _make_bare_algo3(settings_overrides={"sl_points": 200, "target_points": 500})
     strat._buy_setup_close = 92000.0
     strat._prev_ltp = 92100
@@ -2244,8 +2277,16 @@ def test_algo3_entry_uses_points_sl_target():
     # SELL side inverse
     strat2 = _make_bare_algo3(settings_overrides={"sl_points": 200, "target_points": 500})
     strat2._sell_setup_close = 89000.0
-    strat2._prev_ltp = 88900
-    strat2._check_triggers(88800)
+    strat2._sell_setup_bar_at = _dt.datetime(2026, 8, 20, 19, 15)
+    strat2._ema20 = 90000.0
+    strat2._check_candle_close_trigger({
+        "time": _dt.datetime(2026, 8, 20, 19, 30),
+        "open": 88900.0,
+        "high": 88950.0,
+        "low": 88750.0,
+        "close": 88800.0,
+        "volume": 10,
+    })
     check("one SELL open", len(strat2.broker.opens) == 1)
     pos2 = strat2.broker.opens[0]
     # entry = 88800, sl = 88800 + 200 = 89000, target = 88800 - 500 = 88300
@@ -2297,12 +2338,12 @@ def test_algo3_black_box_end_to_end():
       - 20 warmup bars establish EMA20
       - Bar 21: green closes above EMA -> buy setup stored
       - Ticks after that cross the buy level -> BUY entered
-      - Later bar: red closes below EMA -> sell setup stored
-      - Ticks cross the sell level -> reversal to SELL
+      - Later qualifying red closes 200 below the previous red reference
+        -> reversal to SELL on candle close
     """
-    print("\n45. algo3 BLACK-BOX: candles + ticks produce expected entries + reversal")
+    print("\n45. algo3 BLACK-BOX: buy tick-cross + sell red-chain close produce expected reversal")
     import datetime as _dt
-    strat = _make_bare_algo3()
+    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
 
     def minute_candle(minute_offset, open_, high, low, close, vol=100):
         base = _dt.datetime(2026, 8, 19, 9, 0)
@@ -2339,31 +2380,44 @@ def test_algo3_black_box_end_to_end():
           strat._buy_setup_close is not None and strat._buy_setup_close > 90000,
           f"got={strat._buy_setup_close}")
 
-    # Now feed live ticks that cross (setup + 150).
-    # Note: the "on_tick" pathway uses self.settings["silver_breakout_points"]=150.
-    buy_level = strat._buy_setup_close + 150
+    # Now feed live ticks that cross (setup + 200).
+    buy_level = strat._buy_setup_close + 200
     strat.on_tick("MCX:SILVERMIC26AUGFUT", buy_level - 20, None)
     strat.on_tick("MCX:SILVERMIC26AUGFUT", buy_level + 5, None)
-    check("black-box: BUY fires on upward tick-cross of setup+150",
+    check("black-box: BUY fires on upward tick-cross of setup+200",
           len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "BUY",
           f"opens={strat.broker.opens}")
 
-    # Later 15-min bar: red closing 500 below EMA -> SELL setup
+    # Later 15-min bar: first qualifying red becomes the SELL reference.
     for m in range(1, 15):
         offset = 21 * 15 + m
-        # Use a wide down bar (open above ema, close below)
         strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
-                              minute_candle(offset, 90000, 90100, 89400, 89500), {})
+                              minute_candle(offset, 90000, 90100, 89850, 90000), {})
     strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
-                          minute_candle(22 * 15, 89500, 89500, 89500, 89500), {})
-    check("black-box: red-below-EMA bar captured as sell setup",
+                          minute_candle(22 * 15, 90000, 90000, 90000, 90000), {})
+    check("black-box: first red-below-EMA bar captured as sell reference",
           strat._sell_setup_close is not None and strat._sell_setup_close < strat._ema20,
           f"got sell={strat._sell_setup_close}, ema={strat._ema20}")
 
-    # Ticks that cross (sell setup - 150) downward -> REVERSAL to SELL
-    sell_level = strat._sell_setup_close - 150
-    strat.on_tick("MCX:SILVERMIC26AUGFUT", sell_level + 20, None)
-    strat.on_tick("MCX:SILVERMIC26AUGFUT", sell_level - 5, None)
+    # Green candles in between must not clear that red reference.
+    for m in range(1, 15):
+        offset = 22 * 15 + m
+        strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                              minute_candle(offset, 90100, 91100, 90050, 91000), {})
+    strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                          minute_candle(23 * 15, 91000, 91000, 91000, 91000), {})
+    check("black-box: intervening green bar did not clear sell reference",
+          strat._sell_setup_close == 90000,
+          f"sell_ref={strat._sell_setup_close}")
+
+    # Next qualifying red closes 200 below the previous red reference:
+    # 90000 -> 89800, so reversal to SELL should happen on candle close.
+    for m in range(1, 15):
+        offset = 23 * 15 + m
+        strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                              minute_candle(offset, 89950, 90000, 89750, 89800), {})
+    strat.on_candle_close("MCX:SILVERMIC26AUGFUT",
+                          minute_candle(24 * 15, 89800, 89800, 89800, 89800), {})
     check("black-box: existing BUY closed as REVERSAL",
           any(c["reason"] == "REVERSAL_CONTRA_SIGNAL" for c in strat.broker.closes),
           f"closes={strat.broker.closes}")
@@ -2716,15 +2770,15 @@ def test_algo3_gap_through_fires_immediately():
     check("gap-through BUY does NOT re-fire on same setup",
           len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
 
-    # SELL side gap-down
+    # SELL side no longer gap-fires; it waits for a fully closed
+    # qualifying red candle to compare against the previous red reference.
     strat2 = _make_bare_algo3()
     strat2._sell_setup_close = 231000.0
     strat2._sell_setup_bar_at = _dt.datetime(2026, 8, 19, 23, 45)
     strat2._prev_ltp = None
-    # sell_level = 231000 - 150 = 230850; opening at 228000 is well past.
     strat2.on_tick("MCX:SILVERMIC26AUGFUT", 228000, None)
-    check("gap-through SELL fires on first tick already past level",
-          len(strat2.broker.opens) == 1 and strat2.broker.opens[0]["side"] == "SELL",
+    check("gap-through SELL does not fire on first tick anymore",
+          len(strat2.broker.opens) == 0,
           f"opens={strat2.broker.opens}")
 
 
@@ -2768,6 +2822,680 @@ def test_algo3_candle_close_trigger_fires():
     check("candle-close BUY fires when bar closes past buy_level",
           len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "BUY",
           f"opens={strat.broker.opens}")
+
+
+def test_algo3_backtest_sell_red_chain_survives_green_candles():
+    print("\n50a. algo3 backtest SELL uses previous red reference across green candles")
+    import datetime as _dt
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    symbol = "MCX:TEST-EQ"
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+
+    def push(offset, o, h, l, c, v=100):
+        history.append({
+            "time": base + _dt.timedelta(minutes=offset),
+            "open": o, "high": h, "low": l, "close": c, "volume": v,
+        })
+
+    for b in range(20):
+        for m in range(15):
+            push(b * 15 + m, 90000, 90000, 90000, 90000)
+
+    # First qualifying red reference close = 89900.
+    for m in range(14):
+        push(20 * 15 + m, 90020, 90030, 89880, 89900)
+    push(20 * 15 + 14, 90000, 90010, 89870, 89900)
+
+    # Intervening green-above-EMA bar must not clear the red reference.
+    for m in range(15):
+        push(21 * 15 + m, 90020, 90160, 90010, 90150)
+
+    # Next qualifying red closes exactly 200 below the previous red reference:
+    # 89900 - 200 = 89700 -> SELL must trigger at this red close.
+    for m in range(15):
+        push(22 * 15 + m, 89850, 89870, 89690, 89700)
+
+    # One more minute forces the 11:30 bar to finalize.
+    push(23 * 15, 89700, 89700, 89700, 89700)
+
+    settings = {
+        "silver_breakout_points": 200,
+        "sl_points": 100,
+        "target_points": 300,
+        "trailing_sl_enabled": False,
+        "tsl_trigger_points": 0,
+        "tsl_distance_points": 0,
+        "exit_mode": "fixed_target_sl",
+        "silver_lots": 1,
+    }
+    charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0, "exchange_pct": 0,
+               "sebi_pct": 0, "gst_pct": 0, "stamp_duty_pct": 0}
+    first_date = _dt.date(2026, 8, 19)
+
+    with _lock:
+        _jobs["sell-chain-test"] = {"cancel_requested": False}
+    try:
+        results = bt._simulate_silver_micro_range(
+            job_id="sell-chain-test",
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=first_date,
+            symbol=symbol,
+            history=history,
+            trading_days=[first_date],
+            settings=settings,
+            charges_config=charges,
+        )
+    finally:
+        with _lock:
+            _jobs.pop("sell-chain-test", None)
+
+    trades = results[0]["trades"]
+    check("backtest produced one SELL trade from the red-chain close", len(trades) == 1, f"trades={trades}")
+    if trades:
+        trade = trades[0]
+        check("trade side is SELL", trade.get("side") == "SELL", f"trade={trade}")
+        check("SELL entry is the qualifying red close itself", abs(float(trade.get("entry_price") or 0) - 89700.0) < 1e-9, f"trade={trade}")
+
+
+def test_algo3_backtest_trailing_metadata():
+    print("\n50b. algo3 backtest records trailing SL metadata and moves")
+    import datetime as _dt
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    symbol = "MCX:TEST-EQ"
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+
+    def push(offset, o, h, l, c, v=100):
+        history.append({
+            "time": base + _dt.timedelta(minutes=offset),
+            "open": o, "high": h, "low": l, "close": c, "volume": v,
+        })
+
+    for b in range(20):
+        for m in range(15):
+            push(b * 15 + m, 90000, 90000, 90000, 90000)
+
+    for m in range(14):
+        push(20 * 15 + m, 90000, 90200, 89950, 90100)
+    push(20 * 15 + 14, 90100, 90500, 90050, 90500)
+
+    push(21 * 15 + 0, 90620, 90680, 90620, 90670)
+    push(21 * 15 + 1, 90670, 90920, 90660, 90890)
+    push(21 * 15 + 2, 90890, 90910, 90740, 90760)
+    for m in range(3, 15):
+        push(21 * 15 + m, 90760, 90790, 90720, 90750)
+    push(22 * 15, 90750, 90750, 90750, 90750)
+
+    settings = {
+        "silver_breakout_points": 150,
+        "sl_points": 100,
+        "target_points": 1000,
+        "trailing_sl_enabled": True,
+        "tsl_trigger_points": 200,
+        "tsl_distance_points": 100,
+        "exit_mode": "fixed_target_trailing_sl",
+        "silver_lots": 1,
+    }
+    charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0, "exchange_pct": 0,
+               "sebi_pct": 0, "gst_pct": 0, "stamp_duty_pct": 0}
+    first_date = _dt.date(2026, 8, 19)
+
+    with _lock:
+        _jobs["trail-meta-test"] = {"cancel_requested": False}
+    try:
+        results = bt._simulate_silver_micro_range(
+            job_id="trail-meta-test",
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=first_date,
+            symbol=symbol,
+            history=history,
+            trading_days=[first_date],
+            settings=settings,
+            charges_config=charges,
+        )
+    finally:
+        with _lock:
+            _jobs.pop("trail-meta-test", None)
+
+    trades = results[0]["trades"]
+    check("backtest trailing metadata produced a trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        trade = trades[0]
+        check("trade marked trailing enabled", trade.get("trailing_sl_enabled") is True, f"trade={trade}")
+        check("trade marked trailing active", trade.get("trailing_sl_active") is True, f"trade={trade}")
+        check("trade saved at least one trail move", int(trade.get("trailing_move_count") or 0) >= 1, f"trade={trade}")
+        check("final SL moved above initial SL for BUY", float(trade.get("sl_price") or 0) > float(trade.get("initial_sl_price") or 0), f"trade={trade}")
+
+
+def test_algo3_backtest_respects_trailing_toggle():
+    print("\n50c. algo3 backtest respects trailing toggle the same way live does")
+    import datetime as _dt
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    symbol = "MCX:TEST-EQ"
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+
+    def push(offset, o, h, l, c, v=100):
+        history.append({
+            "time": base + _dt.timedelta(minutes=offset),
+            "open": o, "high": h, "low": l, "close": c, "volume": v,
+        })
+
+    for b in range(20):
+        for m in range(15):
+            push(b * 15 + m, 90000, 90000, 90000, 90000)
+
+    for m in range(14):
+        push(20 * 15 + m, 90000, 90200, 89950, 90100)
+    push(20 * 15 + 14, 90100, 90500, 90050, 90500)
+
+    push(21 * 15 + 0, 90620, 90680, 90620, 90670)
+    push(21 * 15 + 1, 90670, 90920, 90660, 90890)
+    push(21 * 15 + 2, 90890, 90910, 90740, 90760)
+    for m in range(3, 15):
+        push(21 * 15 + m, 90760, 90790, 90720, 90750)
+    push(22 * 15, 90750, 90750, 90750, 90750)
+
+    settings = {
+        "silver_breakout_points": 150,
+        "sl_points": 100,
+        "target_points": 1000,
+        "trailing_sl_enabled": False,
+        "tsl_trigger_points": 200,
+        "tsl_distance_points": 100,
+        "exit_mode": "fixed_target_trailing_sl",
+        "silver_lots": 1,
+    }
+    charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0, "exchange_pct": 0,
+               "sebi_pct": 0, "gst_pct": 0, "stamp_duty_pct": 0}
+    first_date = _dt.date(2026, 8, 19)
+
+    with _lock:
+        _jobs["trail-toggle-test"] = {"cancel_requested": False}
+    try:
+        results = bt._simulate_silver_micro_range(
+            job_id="trail-toggle-test",
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=first_date,
+            symbol=symbol,
+            history=history,
+            trading_days=[first_date],
+            settings=settings,
+            charges_config=charges,
+        )
+    finally:
+        with _lock:
+            _jobs.pop("trail-toggle-test", None)
+
+    trades = results[0]["trades"]
+    check("backtest with trailing toggle off still produced a trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        trade = trades[0]
+        check("trailing toggle off leaves trailing disabled", trade.get("trailing_sl_enabled") is False, f"trade={trade}")
+        check("trailing toggle off leaves no trail moves", int(trade.get("trailing_move_count") or 0) == 0, f"trade={trade}")
+        check("trailing toggle off keeps final SL at initial SL", abs(float(trade.get("sl_price") or 0) - float(trade.get("initial_sl_price") or 0)) < 1e-9, f"trade={trade}")
+
+
+def _algo3_backtest_push(history, base, offset, o, h, l, c, v=100):
+    import datetime as _dt
+    history.append({
+        "time": base + _dt.timedelta(minutes=offset),
+        "open": o,
+        "high": h,
+        "low": l,
+        "close": c,
+        "volume": v,
+    })
+
+
+def _algo3_backtest_seed_flat(history, base, bars=20, price=90000):
+    for b in range(bars):
+        for m in range(15):
+            _algo3_backtest_push(history, base, b * 15 + m, price, price, price, price)
+
+
+def _run_algo3_backtest_case(job_id: str, history: list[dict], settings: dict, first_date, charges=None):
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    charges = charges or {
+        "brokerage_flat": 0,
+        "brokerage_pct": 0,
+        "stt_pct": 0,
+        "exchange_pct": 0,
+        "sebi_pct": 0,
+        "gst_pct": 0,
+        "stamp_duty_pct": 0,
+    }
+
+    with _lock:
+        _jobs[job_id] = {"cancel_requested": False}
+    try:
+        results = bt._simulate_silver_micro_range(
+            job_id=job_id,
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=first_date,
+            symbol="MCX:TEST-EQ",
+            history=history,
+            trading_days=[first_date],
+            settings=settings,
+            charges_config=charges,
+        )
+    finally:
+        with _lock:
+            _jobs.pop(job_id, None)
+    return results[0]
+
+
+def test_algo3_backtest_plain_sl_diagnostics():
+    print("\n50d. algo3 backtest diagnostics classify plain SL before trailing trigger")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    _algo3_backtest_push(history, base, 21 * 15 + 1, 90670, 90720, 90620, 90710)
+    _algo3_backtest_push(history, base, 21 * 15 + 2, 90710, 90730, 90520, 90540)
+
+    result = _run_algo3_backtest_case(
+        "diag-plain-sl",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 100,
+            "target_points": 1000,
+            "trailing_sl_enabled": True,
+            "tsl_trigger_points": 200,
+            "tsl_distance_points": 100,
+            "exit_mode": "fixed_target_trailing_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+    )
+
+    trades = result["trades"]
+    check("plain SL scenario produced one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        diagnostics = trades[0].get("diagnostics") or {}
+        check("primary cause is stop_loss_hit", diagnostics.get("primary_cause_code") == "stop_loss_hit", f"diagnostics={diagnostics}")
+        check("warning includes never_reached_trailing_trigger", "never_reached_trailing_trigger" in (diagnostics.get("warning_codes") or []), f"diagnostics={diagnostics}")
+
+
+def test_algo3_backtest_trailing_stop_diagnostics():
+    print("\n50e. algo3 backtest diagnostics classify trailing stop exits")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    _algo3_backtest_push(history, base, 21 * 15 + 1, 90670, 90920, 90660, 90890)
+    _algo3_backtest_push(history, base, 21 * 15 + 2, 90890, 90910, 90740, 90760)
+    for m in range(3, 15):
+        _algo3_backtest_push(history, base, 21 * 15 + m, 90760, 90790, 90720, 90750)
+    _algo3_backtest_push(history, base, 22 * 15, 90750, 90750, 90750, 90750)
+
+    result = _run_algo3_backtest_case(
+        "diag-trailing-stop",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 100,
+            "target_points": 1000,
+            "trailing_sl_enabled": True,
+            "tsl_trigger_points": 200,
+            "tsl_distance_points": 100,
+            "exit_mode": "fixed_target_trailing_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+    )
+
+    trades = result["trades"]
+    check("trailing stop scenario produced one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        diagnostics = trades[0].get("diagnostics") or {}
+        check("primary cause is trailing_stop_hit", diagnostics.get("primary_cause_code") == "trailing_stop_hit", f"diagnostics={diagnostics}")
+        check("trailing stop keeps move count", int(trades[0].get("trailing_move_count") or 0) >= 1, f"trade={trades[0]}")
+
+
+def test_algo3_backtest_eod_loss_diagnostics():
+    print("\n50f. algo3 backtest diagnostics classify EOD red exits")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    for m in range(1, 15):
+        _algo3_backtest_push(history, base, 21 * 15 + m, 90660, 90720, 90590, 90620)
+    _algo3_backtest_push(history, base, 22 * 15, 90620, 90640, 90580, 90600)
+
+    result = _run_algo3_backtest_case(
+        "diag-eod-loss",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 500,
+            "target_points": 1500,
+            "trailing_sl_enabled": False,
+            "tsl_trigger_points": 0,
+            "tsl_distance_points": 0,
+            "exit_mode": "fixed_target_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+    )
+
+    trades = result["trades"]
+    check("EOD loss scenario produced one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        diagnostics = trades[0].get("diagnostics") or {}
+        check("primary cause is target_not_reached_eod", diagnostics.get("primary_cause_code") == "target_not_reached_eod", f"diagnostics={diagnostics}")
+        check("exit reason stays EOD_SQUAREOFF", trades[0].get("exit_reason") == "EOD_SQUAREOFF", f"trade={trades[0]}")
+
+
+def test_algo3_backtest_reversal_diagnostics():
+    print("\n50g. algo3 backtest diagnostics classify reversal exits")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    for m in range(1, 14):
+        _algo3_backtest_push(history, base, 21 * 15 + m, 90450, 90480, 89890, 89920)
+    _algo3_backtest_push(history, base, 21 * 15 + 14, 89920, 89940, 89780, 89800)
+    for m in range(15):
+        _algo3_backtest_push(history, base, 22 * 15 + m, 90020, 90160, 90010, 90150)
+    for m in range(15):
+        _algo3_backtest_push(history, base, 23 * 15 + m, 89720, 89740, 89590, 89600)
+    _algo3_backtest_push(history, base, 24 * 15, 89600, 89600, 89600, 89600)
+
+    result = _run_algo3_backtest_case(
+        "diag-reversal",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 1500,
+            "target_points": 5000,
+            "trailing_sl_enabled": False,
+            "tsl_trigger_points": 0,
+            "tsl_distance_points": 0,
+            "exit_mode": "fixed_target_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+    )
+
+    buy_trade = next((trade for trade in result["trades"] if trade.get("side") == "BUY"), None)
+    check("reversal scenario produced a BUY trade", buy_trade is not None, f"trades={result['trades']}")
+    if buy_trade:
+        diagnostics = buy_trade.get("diagnostics") or {}
+        check("BUY trade exited on contra reversal", buy_trade.get("exit_reason") == "REVERSAL_CONTRA_SIGNAL", f"trade={buy_trade}")
+        check("primary cause is reversal_contra_signal", diagnostics.get("primary_cause_code") == "reversal_contra_signal", f"diagnostics={diagnostics}")
+
+
+def test_algo3_backtest_same_candle_stop_priority_diagnostics():
+    print("\n50h. algo3 backtest diagnostics flag same-candle stop-first behavior")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    _algo3_backtest_push(history, base, 21 * 15 + 1, 90670, 90760, 90540, 90600)
+
+    result = _run_algo3_backtest_case(
+        "diag-same-candle",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 100,
+            "target_points": 100,
+            "trailing_sl_enabled": False,
+            "tsl_trigger_points": 0,
+            "tsl_distance_points": 0,
+            "exit_mode": "fixed_target_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+    )
+
+    trades = result["trades"]
+    check("same-candle scenario produced one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        diagnostics = trades[0].get("diagnostics") or {}
+        check("same-candle scenario still exits via SL", trades[0].get("exit_reason") == "SL", f"trade={trades[0]}")
+        check("warning includes same_candle_sl_priority", "same_candle_sl_priority" in (diagnostics.get("warning_codes") or []), f"diagnostics={diagnostics}")
+
+
+def test_algo3_backtest_charges_deepen_loss_warning():
+    print("\n50i. algo3 backtest diagnostics flag when charges materially worsen a loss")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    for m in range(1, 15):
+        _algo3_backtest_push(history, base, 21 * 15 + m, 90660, 90690, 90600, 90620)
+    _algo3_backtest_push(history, base, 22 * 15, 90620, 90620, 90610, 90620)
+
+    result = _run_algo3_backtest_case(
+        "diag-charges",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 500,
+            "target_points": 1500,
+            "trailing_sl_enabled": False,
+            "tsl_trigger_points": 0,
+            "tsl_distance_points": 0,
+            "exit_mode": "fixed_target_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+        charges={
+            "brokerage_flat": 150,
+            "brokerage_pct": 100,
+            "stt_pct": 0,
+            "exchange_pct": 0,
+            "sebi_pct": 0,
+            "gst_pct": 0,
+            "stamp_duty_pct": 0,
+        },
+    )
+
+    trades = result["trades"]
+    check("charges scenario produced one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        diagnostics = trades[0].get("diagnostics") or {}
+        check("warning includes charges_deepened_loss", "charges_deepened_loss" in (diagnostics.get("warning_codes") or []), f"diagnostics={diagnostics}")
+        check("net loss is worse than gross loss", abs(float(trades[0].get("net_pnl") or 0)) > abs(float(trades[0].get("gross_pnl") or 0)), f"trade={trades[0]}")
+
+
+def test_algo3_backtest_sell_chain_diagnostics_context():
+    print("\n50j. algo3 backtest diagnostics keep SELL red-chain reference context and never claim broker errors")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90020, 90030, 89880, 89900)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90000, 90010, 89870, 89900)
+    for m in range(15):
+        _algo3_backtest_push(history, base, 21 * 15 + m, 90020, 90160, 90010, 90150)
+    for m in range(15):
+        _algo3_backtest_push(history, base, 22 * 15 + m, 89850, 89870, 89690, 89700)
+    _algo3_backtest_push(history, base, 23 * 15, 89700, 89700, 89700, 89700)
+
+    result = _run_algo3_backtest_case(
+        "diag-sell-context",
+        history,
+        {
+            "silver_breakout_points": 200,
+            "sl_points": 100,
+            "target_points": 300,
+            "trailing_sl_enabled": False,
+            "tsl_trigger_points": 0,
+            "tsl_distance_points": 0,
+            "exit_mode": "fixed_target_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 19),
+    )
+
+    trades = result["trades"]
+    check("sell-context scenario produced one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        diagnostics = trades[0].get("diagnostics") or {}
+        entry = diagnostics.get("entry_context") or {}
+        check("SELL diagnostics store previous red reference close", abs(float(entry.get("previous_red_reference_close") or 0) - 89900.0) < 1e-9, f"entry={entry}")
+        check("SELL diagnostics store current qualifying red close", abs(float(entry.get("current_qualifying_red_close") or 0) - 89700.0) < 1e-9, f"entry={entry}")
+        check("diagnostics object has required keys", all(key in diagnostics for key in ("primary_cause_code", "primary_cause_label", "summary", "entry_context", "exit_context", "path_metrics", "warning_codes", "warning_messages")), f"diagnostics={diagnostics}")
+        check("backtest never claims broker_error", "broker" not in str(diagnostics.get("primary_cause_code") or "").lower() and not any("broker" in str(code).lower() for code in (diagnostics.get("warning_codes") or [])), f"diagnostics={diagnostics}")
+
+
+def test_algo3_backtest_chart_payload():
+    print("\n50k. algo3 backtest chart payload exposes candles, setups, overlays, and viewport hints")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 21, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    _algo3_backtest_push(history, base, 21 * 15 + 1, 90670, 90920, 90660, 90890)
+    _algo3_backtest_push(history, base, 21 * 15 + 2, 90890, 90910, 90740, 90760)
+    for m in range(3, 15):
+        _algo3_backtest_push(history, base, 21 * 15 + m, 90760, 90790, 90720, 90750)
+    _algo3_backtest_push(history, base, 22 * 15, 90750, 90750, 90750, 90750)
+
+    result = _run_algo3_backtest_case(
+        "diag-chart-payload",
+        history,
+        {
+            "silver_breakout_points": 150,
+            "sl_points": 100,
+            "target_points": 1000,
+            "trailing_sl_enabled": True,
+            "tsl_trigger_points": 200,
+            "tsl_distance_points": 100,
+            "exit_mode": "fixed_target_trailing_sl",
+            "silver_lots": 1,
+        },
+        _dt.date(2026, 8, 21),
+    )
+
+    chart = result.get("chart") or {}
+    candles = chart.get("candles") or []
+    setups = chart.get("setups") or []
+    overlays = chart.get("trades") or []
+    trades = result.get("trades") or []
+
+    check("chart payload includes 15m candles", len(candles) >= 2, f"chart={chart}")
+    check("chart payload includes EMA20 per candle", candles and candles[-1].get("ema20") is not None, f"candles={candles}")
+    check("chart payload includes setup events", any(setup.get("side") == "BUY" for setup in setups), f"setups={setups}")
+    check("chart payload includes trade overlays", len(overlays) == len(trades) == 1, f"overlays={overlays} trades={trades}")
+    if overlays and trades:
+        check("overlay trade_id matches trade row", overlays[0].get("trade_id") == trades[0].get("trade_id"), f"overlay={overlays[0]} trade={trades[0]}")
+        check("viewport defaults to trade focus when trades exist", chart.get("viewport_hint", {}).get("mode") == "trade_window", f"viewport={chart.get('viewport_hint')}")
+
+
+def test_algo3_backtest_best_worst_day_ignore_empty_days():
+    print("\n50l. algo3 range summary ranks best/worst from traded days, not empty replay days")
+    import datetime as _dt
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    _algo3_backtest_seed_flat(history, base)
+
+    for m in range(14):
+        _algo3_backtest_push(history, base, 20 * 15 + m, 90000, 90200, 89950, 90100)
+    _algo3_backtest_push(history, base, 20 * 15 + 14, 90100, 90500, 90050, 90500)
+    _algo3_backtest_push(history, base, 21 * 15 + 0, 90620, 90680, 90620, 90670)
+    _algo3_backtest_push(history, base, 21 * 15 + 1, 90670, 90720, 90620, 90710)
+    _algo3_backtest_push(history, base, 21 * 15 + 2, 90710, 90550, 90540, 90540)
+    _algo3_backtest_push(history, base, 22 * 15, 90540, 90540, 90540, 90540)
+
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    settings = {
+        "silver_breakout_points": 150,
+        "sl_points": 100,
+        "target_points": 1000,
+        "trailing_sl_enabled": False,
+        "tsl_trigger_points": 0,
+        "tsl_distance_points": 0,
+        "exit_mode": "fixed_target_sl",
+        "silver_lots": 1,
+    }
+    charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0, "exchange_pct": 0, "sebi_pct": 0, "gst_pct": 0, "stamp_duty_pct": 0}
+    first_date = _dt.date(2026, 8, 19)
+    last_date = _dt.date(2026, 8, 20)
+
+    with _lock:
+        _jobs["best-worst-days"] = {"cancel_requested": False}
+    try:
+        day_results = bt._simulate_silver_micro_range(
+            job_id="best-worst-days",
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=last_date,
+            symbol="MCX:TEST-EQ",
+            history=history,
+            trading_days=[first_date, last_date],
+            settings=settings,
+            charges_config=charges,
+        )
+        result = bt._range_result(
+            "algo3",
+            first_date,
+            last_date,
+            day_results,
+            {"available": 1, "requested": 1},
+        )
+    finally:
+        with _lock:
+            _jobs.pop("best-worst-days", None)
+
+    check("range result has a traded best day", result.get("best_day", {}).get("date") == "2026-08-19", f"best_day={result.get('best_day')}")
+    check("range result has a traded worst day", result.get("worst_day", {}).get("date") == "2026-08-19", f"worst_day={result.get('worst_day')}")
+    check("empty replay day stays in daily_results", len(result.get("daily_results") or []) == 2, f"daily_results={result.get('daily_results')}")
 
 
 def test_broker_positions_entry_time_from_tradebook():
@@ -3023,6 +3751,367 @@ def test_strategy_specific_session_windows():
     check("algo3 inactive after 23:30", engine_mod._strategy_session_active(algo3, "23:30") is False)
 
 
+def _make_feed_strategy(symbols, *, start="09:15", end="15:30"):
+    class _Strategy:
+        def __init__(self):
+            self.watchlist = list(symbols)
+            self.refresh_calls = 0
+
+        def market_session_start(self):
+            return start
+
+        def market_session_end(self):
+            return end
+
+        def refresh_market_data(self, force: bool = False):
+            self.refresh_calls += 1
+
+    return _Strategy()
+
+
+def test_live_feed_plans_split_silver_and_general():
+    print("\n58b. live feed plans split dedicated Silver feed from general watchlist")
+    import app.engine as eng
+
+    old_strategies = dict(eng.STRATEGIES)
+    try:
+        eng.STRATEGIES = {
+            "algo1": _make_feed_strategy(["NSE:RELIANCE-EQ", "NSE:TCS-EQ"]),
+            "algo3": _make_feed_strategy(
+                ["MCX:SILVERMIC26AUGFUT"],
+                start="09:00",
+                end="23:30",
+            ),
+        }
+        plans = eng._build_live_feed_plans("09:10")
+        general = next((plan for plan in plans if plan["name"] == "general"), None)
+        silver = next((plan for plan in plans if plan["name"] == "silver"), None)
+
+        check("general plan exists during shared warmup", general is not None, f"plans={plans}")
+        check("silver plan exists during shared warmup", silver is not None, f"plans={plans}")
+        check("silver feed uses lite mode", bool(silver and silver.get("litemode")) is True, f"silver={silver}")
+        check("general feed excludes dedicated Silver symbol",
+              general is not None and general.get("symbols") == ["NSE:RELIANCE-EQ", "NSE:TCS-EQ"],
+              f"general={general}")
+        check("silver feed keeps only Silver symbol",
+              silver is not None and silver.get("symbols") == ["MCX:SILVERMIC26AUGFUT"],
+              f"silver={silver}")
+    finally:
+        eng.STRATEGIES = old_strategies
+
+
+def test_live_feed_plans_go_silver_only_after_nse_close():
+    print("\n58c. live feed plans drop general NSE feed during MCX-only hours")
+    import app.engine as eng
+
+    old_strategies = dict(eng.STRATEGIES)
+    try:
+        eng.STRATEGIES = {
+            "algo1": _make_feed_strategy(["NSE:RELIANCE-EQ", "NSE:TCS-EQ"]),
+            "algo3": _make_feed_strategy(
+                ["MCX:SILVERMIC26AUGFUT"],
+                start="09:00",
+                end="23:30",
+            ),
+        }
+        plans = eng._build_live_feed_plans("20:00")
+        check("only one plan remains after NSE close", len(plans) == 1, f"plans={plans}")
+        check("remaining feed is dedicated Silver lite feed",
+              plans == [{
+                  "name": "silver",
+                  "symbols": ["MCX:SILVERMIC26AUGFUT"],
+                  "litemode": True,
+                  "description": "Dedicated Silver execution feed",
+              }],
+              f"plans={plans}")
+    finally:
+        eng.STRATEGIES = old_strategies
+
+
+def test_start_live_feed_if_ready_starts_named_feeds():
+    print("\n58d. start_live_feed_if_ready launches named FYERS feeds with correct lite mode")
+    from unittest.mock import patch
+    import app.engine as eng
+
+    class SyncThread:
+        def __init__(self, target=None, args=(), daemon=None):
+            self._target = target
+            self._args = args
+
+        def start(self):
+            self._target(*self._args)
+
+    class FakeSocket:
+        def __init__(self, name):
+            self.name = name
+            self.closed = False
+
+        def close_connection(self):
+            self.closed = True
+
+    calls = []
+    fake_sockets = {}
+    strategies = {
+        "algo1": _make_feed_strategy(["NSE:RELIANCE-EQ", "NSE:TCS-EQ"]),
+        "algo3": _make_feed_strategy(["MCX:SILVERMIC26AUGFUT"], start="09:00", end="23:30"),
+    }
+
+    def fake_connect(symbols, on_tick, on_status_callback=None, *, feed_name="general", litemode=False):
+        calls.append({
+            "feed_name": feed_name,
+            "symbols": list(symbols),
+            "litemode": litemode,
+        })
+        socket = FakeSocket(feed_name)
+        fake_sockets[feed_name] = socket
+        return socket
+
+    old_strategies = dict(eng.STRATEGIES)
+    old_watchlist = list(eng.WATCHLIST)
+    old_live_symbols = list(eng.LIVE_FEED_SYMBOLS)
+    old_status = dict(eng._engine_status)
+    old_started = eng._live_feed_started
+    old_plans = dict(eng._live_feed_plans)
+    old_sockets = dict(eng._live_feed_sockets)
+    try:
+        eng.STRATEGIES = strategies
+        eng.WATCHLIST = ["NSE:RELIANCE-EQ", "NSE:TCS-EQ", "MCX:SILVERMIC26AUGFUT"]
+        eng.LIVE_FEED_SYMBOLS = list(eng.WATCHLIST)
+        eng._live_feed_started = False
+        eng._live_feed_plans = {}
+        eng._live_feed_sockets = {}
+        eng._engine_status.update({
+            "fyers_feed_statuses": {},
+            "fyers_ws_connected": False,
+            "fyers_ws_error": None,
+            "live_feed_started": False,
+        })
+
+        with patch.object(eng, "get_stored_access_token", return_value="TOKEN"), \
+             patch.object(eng, "_build_live_feed_plans", return_value=[
+                 {
+                     "name": "general",
+                     "symbols": ["NSE:RELIANCE-EQ", "NSE:TCS-EQ"],
+                     "litemode": False,
+                     "description": "General market-data feed",
+                 },
+                 {
+                     "name": "silver",
+                     "symbols": ["MCX:SILVERMIC26AUGFUT"],
+                     "litemode": True,
+                     "description": "Dedicated Silver execution feed",
+                 },
+             ]), \
+             patch.object(eng, "connect_live_feed", side_effect=fake_connect), \
+             patch.object(eng.threading, "Thread", SyncThread):
+            started = eng.start_live_feed_if_ready()
+
+        check("multi-feed start request succeeds", started is True, f"started={started}")
+        check("two named feed connections are opened", [call["feed_name"] for call in calls] == ["general", "silver"],
+              f"calls={calls}")
+        check("general feed stays full mode",
+              calls[0]["litemode"] is False and calls[0]["symbols"] == ["NSE:RELIANCE-EQ", "NSE:TCS-EQ"],
+              f"call={calls[0] if calls else None}")
+        check("silver feed uses lite mode",
+              calls[1]["litemode"] is True and calls[1]["symbols"] == ["MCX:SILVERMIC26AUGFUT"],
+              f"call={calls[1] if len(calls) > 1 else None}")
+        check("engine stores both named sockets",
+              sorted(eng._live_feed_sockets.keys()) == ["general", "silver"],
+              f"sockets={sorted(eng._live_feed_sockets.keys())}")
+        check("engine exposes pending per-feed statuses immediately",
+              sorted((eng._engine_status.get("fyers_feed_statuses") or {}).keys()) == ["general", "silver"],
+              f"statuses={eng._engine_status.get('fyers_feed_statuses')}")
+    finally:
+        eng.STRATEGIES = old_strategies
+        eng.WATCHLIST = old_watchlist
+        eng.LIVE_FEED_SYMBOLS = old_live_symbols
+        eng._engine_status.clear()
+        eng._engine_status.update(old_status)
+        eng._live_feed_started = old_started
+        eng._live_feed_plans = old_plans
+        eng._live_feed_sockets = old_sockets
+
+
+def test_start_live_feed_if_ready_reconfigures_when_plan_changes():
+    print("\n58e. start_live_feed_if_ready reshapes feeds when the desired plan changes")
+    from unittest.mock import patch
+    import app.engine as eng
+
+    class SyncThread:
+        def __init__(self, target=None, args=(), daemon=None):
+            self._target = target
+            self._args = args
+
+        def start(self):
+            self._target(*self._args)
+
+    class FakeSocket:
+        def __init__(self, name):
+            self.name = name
+            self.closed = False
+
+        def close_connection(self):
+            self.closed = True
+
+    first_general = FakeSocket("general")
+    first_silver = FakeSocket("silver")
+    second_silver = FakeSocket("silver-restarted")
+    issued = []
+    returned = [first_general, first_silver, second_silver]
+
+    def fake_connect(symbols, on_tick, on_status_callback=None, *, feed_name="general", litemode=False):
+        issued.append((feed_name, list(symbols), litemode))
+        return returned[len(issued) - 1]
+
+    old_watchlist = list(eng.WATCHLIST)
+    old_live_symbols = list(eng.LIVE_FEED_SYMBOLS)
+    old_status = dict(eng._engine_status)
+    old_started = eng._live_feed_started
+    old_plans = dict(eng._live_feed_plans)
+    old_sockets = dict(eng._live_feed_sockets)
+    try:
+        eng.WATCHLIST = ["NSE:RELIANCE-EQ", "MCX:SILVERMIC26AUGFUT"]
+        eng.LIVE_FEED_SYMBOLS = list(eng.WATCHLIST)
+        eng._live_feed_started = False
+        eng._live_feed_plans = {}
+        eng._live_feed_sockets = {}
+        eng._engine_status.update({"fyers_feed_statuses": {}, "live_feed_started": False})
+
+        with patch.object(eng, "get_stored_access_token", return_value="TOKEN"), \
+             patch.object(eng, "connect_live_feed", side_effect=fake_connect), \
+             patch.object(eng.threading, "Thread", SyncThread), \
+             patch.object(eng, "_build_live_feed_plans", side_effect=[
+                 [
+                     {"name": "general", "symbols": ["NSE:RELIANCE-EQ"], "litemode": False},
+                     {"name": "silver", "symbols": ["MCX:SILVERMIC26AUGFUT"], "litemode": True},
+                 ],
+                 [
+                     {"name": "silver", "symbols": ["MCX:SILVERMIC26AUGFUT"], "litemode": True},
+                 ],
+             ]):
+            eng.start_live_feed_if_ready()
+            eng.start_live_feed_if_ready()
+
+        check("general socket is closed when plan shrinks to silver-only", first_general.closed is True)
+        check("previous silver socket is closed before reconfigure", first_silver.closed is True)
+        check("latest active socket is the replacement silver feed",
+              list(eng._live_feed_sockets.keys()) == ["silver"] and eng._live_feed_sockets["silver"] is second_silver,
+              f"sockets={eng._live_feed_sockets}")
+        check("reconfigure performed a second silver connect",
+              issued == [
+                  ("general", ["NSE:RELIANCE-EQ"], False),
+                  ("silver", ["MCX:SILVERMIC26AUGFUT"], True),
+                  ("silver", ["MCX:SILVERMIC26AUGFUT"], True),
+              ],
+              f"issued={issued}")
+    finally:
+        eng.WATCHLIST = old_watchlist
+        eng.LIVE_FEED_SYMBOLS = old_live_symbols
+        eng._engine_status.clear()
+        eng._engine_status.update(old_status)
+        eng._live_feed_started = old_started
+        eng._live_feed_plans = old_plans
+        eng._live_feed_sockets = old_sockets
+
+
+def test_live_feed_status_aggregates_named_feeds():
+    print("\n58f. named feed statuses aggregate conservatively until every active feed is connected")
+    import app.engine as eng
+
+    old_status = dict(eng._engine_status)
+    old_plans = dict(eng._live_feed_plans)
+    old_started = eng._live_feed_started
+    try:
+        eng._live_feed_started = True
+        eng._live_feed_plans = {
+            "general": {"name": "general", "symbols": ["NSE:RELIANCE-EQ"], "litemode": False},
+            "silver": {"name": "silver", "symbols": ["MCX:SILVERMIC26AUGFUT"], "litemode": True},
+        }
+        eng._engine_status.update({
+            "fyers_feed_statuses": {},
+            "fyers_ws_connected": False,
+            "fyers_ws_error": None,
+            "fyers_session_state": "token_present_settling",
+            "live_feed_started": True,
+            "fyers_ws_subscribed_symbols": 0,
+            "fyers_ws_first_tick_at": None,
+        })
+
+        eng._on_live_feed_status({
+            "connected": True,
+            "subscribed_symbols": 1,
+            "first_tick_received": True,
+        }, feed_name="silver")
+        check("one connected feed is not enough to mark whole bundle connected",
+              eng._engine_status.get("fyers_ws_connected") is False,
+              f"status={eng._engine_status.get('fyers_feed_statuses')}")
+
+        eng._on_live_feed_status({
+            "connected": True,
+            "subscribed_symbols": 1,
+            "first_tick_received": True,
+        }, feed_name="general")
+        check("bundle becomes connected after both feeds connect",
+              eng._engine_status.get("fyers_ws_connected") is True)
+        check("subscribed symbol count is summed across feeds",
+              eng._engine_status.get("fyers_ws_subscribed_symbols") == 2,
+              f"got={eng._engine_status.get('fyers_ws_subscribed_symbols')}")
+        check("per-feed state keeps lite mode metadata",
+              (eng._engine_status.get("fyers_feed_statuses") or {}).get("silver", {}).get("litemode") is True,
+              f"statuses={eng._engine_status.get('fyers_feed_statuses')}")
+    finally:
+        eng._engine_status.clear()
+        eng._engine_status.update(old_status)
+        eng._live_feed_plans = old_plans
+        eng._live_feed_started = old_started
+
+
+def test_stop_live_feed_closes_all_named_sockets():
+    print("\n58g. stop_live_feed closes every named socket and clears per-feed status")
+    import app.engine as eng
+
+    class FakeSocket:
+        def __init__(self):
+            self.closed = False
+
+        def close_connection(self):
+            self.closed = True
+
+    general = FakeSocket()
+    silver = FakeSocket()
+
+    old_status = dict(eng._engine_status)
+    old_started = eng._live_feed_started
+    old_plans = dict(eng._live_feed_plans)
+    old_sockets = dict(eng._live_feed_sockets)
+    try:
+        eng._live_feed_started = True
+        eng._live_feed_plans = {
+            "general": {"name": "general", "symbols": ["NSE:RELIANCE-EQ"]},
+            "silver": {"name": "silver", "symbols": ["MCX:SILVERMIC26AUGFUT"]},
+        }
+        eng._live_feed_sockets = {"general": general, "silver": silver}
+        eng._engine_status.update({
+            "fyers_feed_statuses": {"general": {"connected": True}, "silver": {"connected": True}},
+            "fyers_ws_connected": True,
+            "live_feed_started": True,
+        })
+
+        stopped = eng.stop_live_feed(reason="smoke_test")
+
+        check("stop_live_feed returns success", stopped is True, f"stopped={stopped}")
+        check("every named socket is closed", general.closed is True and silver.closed is True)
+        check("active sockets are cleared", eng._live_feed_sockets == {}, f"sockets={eng._live_feed_sockets}")
+        check("per-feed statuses are cleared", eng._engine_status.get("fyers_feed_statuses") == {},
+              f"statuses={eng._engine_status.get('fyers_feed_statuses')}")
+    finally:
+        eng._engine_status.clear()
+        eng._engine_status.update(old_status)
+        eng._live_feed_started = old_started
+        eng._live_feed_plans = old_plans
+        eng._live_feed_sockets = old_sockets
+
+
 def main():
     print("=" * 66)
     print("  LIVE ORDER PIPELINE — OFFLINE SMOKE TEST (no Fyers, no DB)")
@@ -3084,11 +4173,12 @@ def main():
     test_algo3_setup_persistence_emits_history_event()
     test_algo3_setup_persistence_rejects_wrong_candle_color()
     test_algo3_buy_trigger_only_on_upward_cross()
-    test_algo3_sell_trigger_only_on_downward_cross()
+    test_algo3_sell_does_not_fire_from_tick_cross()
     test_algo3_no_trigger_before_first_prev_ltp()
     test_algo3_configurable_n_parameter()
     test_algo3_reversal_on_contra_signal()
     test_algo3_no_reentry_same_side()
+    test_algo3_unlimited_reentry_after_exit_same_setup()
     test_algo3_failed_live_attempt_consumes_setup_once()
     test_algo3_new_setup_rearms_after_failed_attempt()
     test_algo3_live_broker_guard_blocks_when_symbol_busy()
@@ -3107,6 +4197,9 @@ def main():
     test_algo3_gap_through_fires_immediately()
     test_algo3_previous_day_buy_setup_gap_open_fires_immediately()
     test_algo3_candle_close_trigger_fires()
+    test_algo3_backtest_sell_red_chain_survives_green_candles()
+    test_algo3_backtest_trailing_metadata()
+    test_algo3_backtest_respects_trailing_toggle()
     test_algo3_lot_based_qty()
     test_broker_positions_entry_time_from_tradebook()
     test_algo3_warmup_end_date_is_today()
@@ -3115,6 +4208,12 @@ def main():
     test_algo3_warmup_transient_zero_result_preserves_state()
     test_strategy_specific_square_off_times()
     test_strategy_specific_session_windows()
+    test_live_feed_plans_split_silver_and_general()
+    test_live_feed_plans_go_silver_only_after_nse_close()
+    test_start_live_feed_if_ready_starts_named_feeds()
+    test_start_live_feed_if_ready_reconfigures_when_plan_changes()
+    test_live_feed_status_aggregates_named_feeds()
+    test_stop_live_feed_closes_all_named_sockets()
     print("\n" + "=" * 66)
     if _failures:
         print(f"  RESULT: {_failures} check(s) FAILED")
