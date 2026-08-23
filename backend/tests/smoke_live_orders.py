@@ -2748,6 +2748,83 @@ def test_algo3_backtest_parity_with_live():
         _jobs.pop("parity-test", None)
 
 
+def test_algo3_backtest_gap_through_previous_day_setup():
+    """A carried BUY setup must fire when the next session opens above it."""
+    print("\n53a. algo3 backtest gap-through — previous-day BUY setup fires at next open")
+    import datetime as _dt
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    history: list[dict] = []
+    setup_day = _dt.date(2026, 8, 18)
+    first_date = _dt.date(2026, 8, 19)
+    base = _dt.datetime.combine(setup_day, _dt.time(9, 0))
+
+    def push(ts, o, h, l, c):
+        history.append({"time": ts, "open": o, "high": h, "low": l, "close": c, "volume": 100})
+
+    # Warm EMA20 on flat 15m bars.
+    for b in range(20):
+        for m in range(15):
+            push(base + _dt.timedelta(minutes=b * 15 + m), 90000, 90000, 90000, 90000)
+
+    # Finalized 14:00 green bar creates a BUY setup at 90500, trigger 90650.
+    for m in range(15):
+        price = 90000 if m < 14 else 90500
+        push(base + _dt.timedelta(minutes=20 * 15 + m), 90000, 90500, 89950, price)
+
+    # The source history has a gap-through move after the setup, but the
+    # selected replay day starts later, so no minute cross is observable.
+    # Make the gap source bar red but still above EMA, so it does not replace
+    # the carried green BUY setup before the next session.
+    push(base + _dt.timedelta(minutes=21 * 15), 91000, 91000, 90700, 90700)
+    next_open = _dt.datetime.combine(first_date, _dt.time(9, 0))
+    push(next_open, 90700, 90800, 90680, 90750)
+    push(next_open + _dt.timedelta(minutes=15), 90750, 90750, 90750, 90750)
+
+    settings = {
+        "silver_breakout_points": 150,
+        "sl_points": 100,
+        "target_points": 300,
+        "silver_lots": 1,
+        "trailing_sl_enabled": False,
+        "tsl_trigger_points": 0,
+        "tsl_distance_points": 0,
+        "exit_mode": "fixed_target_sl",
+    }
+    charges = {
+        "brokerage_flat": 0,
+        "brokerage_pct": 0,
+        "stt_pct": 0,
+        "exchange_pct": 0,
+        "sebi_pct": 0,
+        "gst_pct": 0,
+        "stamp_duty_pct": 0,
+    }
+    with _lock:
+        _jobs["backtest-gap-through"] = {"cancel_requested": False}
+    try:
+        results = bt._simulate_silver_micro_range(
+            job_id="backtest-gap-through",
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=first_date,
+            symbol="MCX:TEST-EQ",
+            history=history,
+            trading_days=[first_date],
+            settings=settings,
+            charges_config=charges,
+        )
+    finally:
+        with _lock:
+            _jobs.pop("backtest-gap-through", None)
+
+    trades = results[0]["trades"]
+    check("previous-day gap-through produced one BUY trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        check("gap-through entry starts at next session open", trades[0]["entry_time"].startswith("2026-08-19T09:00"), f"trade={trades[0]}")
+
+
 def test_algo3_gap_through_fires_immediately():
     """Client's 2026-08-20 ask: if today's market opens ALREADY past the
     stored setup ± n, fire the entry on the first live tick instead of
@@ -4194,6 +4271,7 @@ def main():
     test_paper_broker_storage_key_isolates_deployments()
     test_charges_config_row_id_isolates_deployments()
     test_algo3_backtest_parity_with_live()
+    test_algo3_backtest_gap_through_previous_day_setup()
     test_algo3_gap_through_fires_immediately()
     test_algo3_previous_day_buy_setup_gap_open_fires_immediately()
     test_algo3_candle_close_trigger_fires()
