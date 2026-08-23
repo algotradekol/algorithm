@@ -518,8 +518,49 @@ def get_recent_intraday_candles(symbol: str, resolution: str = "1", days: int = 
     return normalized[-limit:]
 
 
-def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_date: datetime.date, resolution: str = "1") -> list[dict]:
-    """Fetch normalized intraday candles for an explicit historical range."""
+def _history_response_error(
+    response,
+    *,
+    symbol: str,
+    start_date: datetime.date,
+    end_date: datetime.date,
+    resolution: str,
+) -> str | None:
+    """Return a compact FYERS history error without leaking a raw HTML body."""
+    if not isinstance(response, dict):
+        return (
+            f"FYERS returned an invalid history response for {symbol} "
+            f"({resolution}m, {start_date.isoformat()} to {end_date.isoformat()})"
+        )
+    if str(response.get("s") or "").lower() != "error":
+        return None
+    code = response.get("code")
+    message = response.get("message") or response.get("errmsg") or response.get("error") or "unknown FYERS error"
+    message = " ".join(str(message).split())
+    if len(message) > 240:
+        message = f"{message[:237]}..."
+    code_text = f" (code {code})" if code is not None else ""
+    return (
+        f"FYERS history failed for {symbol} at {resolution}m "
+        f"({start_date.isoformat()} to {end_date.isoformat()}){code_text}: {message}"
+    )
+
+
+def get_intraday_candles_for_range(
+    symbol: str,
+    start_date: datetime.date,
+    end_date: datetime.date,
+    resolution: str = "1",
+    *,
+    raise_on_error: bool = False,
+) -> list[dict]:
+    """Fetch normalized intraday candles for an explicit historical range.
+
+    Live warmup callers historically treat an empty response as a missing day,
+    so that remains the default. Backtest callers can opt into raising a
+    compact error instead of confusing an expired token or API throttle with
+    a day that simply has no candles.
+    """
     fyers = get_fyers_model(use_proxy=False)
     response = fyers.history({
         "symbol": symbol,
@@ -529,6 +570,17 @@ def get_intraday_candles_for_range(symbol: str, start_date: datetime.date, end_d
         "range_to": end_date.isoformat(),
         "cont_flag": "1",
     })
+    error = _history_response_error(
+        response,
+        symbol=symbol,
+        start_date=start_date,
+        end_date=end_date,
+        resolution=resolution,
+    )
+    if error:
+        if raise_on_error:
+            raise RuntimeError(error)
+        return []
     candles = response.get("candles", [])
     return [
         {

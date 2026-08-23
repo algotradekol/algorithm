@@ -899,7 +899,8 @@ def _run_silver_micro_job(
         _increment(job_id, "cached_history_symbols")
     if not history:
         raise ValueError(
-            f"No Silver Micro history was returned for the chosen range after trying 1-minute and 5-minute candles."
+            "No Silver Micro history was returned for the chosen range after trying 1-minute and 5-minute candles. "
+            "The selected contract may have no data for this range, or FYERS returned an empty history response."
         )
 
     trading_days = [
@@ -1286,10 +1287,34 @@ def _load_silver_micro_history(
     current = start_date
     while current <= end_date:
         if current.weekday() < 5:
-            day_history = get_intraday_candles_for_range(symbol, current, current, resolution="1")
+            try:
+                day_history = get_intraday_candles_for_range(
+                    symbol,
+                    current,
+                    current,
+                    resolution="1",
+                    raise_on_error=True,
+                )
+            except Exception as exc:
+                raise ValueError(
+                    f"Silver Micro history request failed for {current.isoformat()} at 1-minute: {exc}. "
+                    "The FYERS session may be expired, rate-limited, or not logged in; re-authenticate FYERS and retry."
+                ) from exc
             resolution = "1"
             if not day_history:
-                day_history = get_intraday_candles_for_range(symbol, current, current, resolution="5")
+                try:
+                    day_history = get_intraday_candles_for_range(
+                        symbol,
+                        current,
+                        current,
+                        resolution="5",
+                        raise_on_error=True,
+                    )
+                except Exception as exc:
+                    raise ValueError(
+                        f"Silver Micro history request failed for {current.isoformat()} at 5-minute fallback: {exc}. "
+                        "The FYERS session may be expired, rate-limited, or not logged in; re-authenticate FYERS and retry."
+                    ) from exc
                 resolution = "5"
             if day_history:
                 if resolution == "1":
