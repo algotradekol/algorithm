@@ -771,9 +771,12 @@ function BacktestDiagnosticModal({ trade, onClose }: { trade: any; onClose: () =
                 <TrailStat label="EMA20" value={optionalNumber(entry.ema20)} />
                 <TrailStat label="Entry time" value={formatBacktestDateTime(entry.entry_time, exit.exit_time)} />
                 <TrailStat label="Entry price" value={optionalNumber(entry.entry_price)} />
+                <TrailStat label="Entry mode" value={String(entry.entry_mode_label || formatEntryMode(entry.entry_mode))} />
                 <TrailStat label="Delay from setup" value={entry.delay_from_setup_minutes === null || entry.delay_from_setup_minutes === undefined ? '--' : `${number(entry.delay_from_setup_minutes)} min`} />
-                <TrailStat label="Prev red reference" value={optionalNumber(entry.previous_red_reference_close)} />
-                <TrailStat label="Current red close" value={optionalNumber(entry.current_qualifying_red_close)} />
+                <TrailStat label="Active red reference" value={optionalNumber(entry.active_reference_close ?? entry.current_qualifying_red_close)} />
+                <TrailStat label="Trigger used" value={optionalNumber(entry.trigger_level_used ?? entry.trigger_level)} />
+                <TrailStat label="Prior red reference" value={optionalNumber(entry.prior_reference_close ?? entry.previous_red_reference_close)} />
+                {entry.reentry_exit_reason && <TrailStat label="Re-entered after" value={String(entry.reentry_exit_reason)} />}
               </div>
             </section>
 
@@ -879,6 +882,12 @@ function formatBacktestDateTime(value: unknown, otherTime: unknown) {
   return sameBacktestMinute(value, otherTime) ? `${formatted} · same 1-minute bar` : formatted;
 }
 function yesNo(value: unknown) { return value ? 'Yes' : 'No'; }
+function formatEntryMode(value: unknown) {
+  if (value === 'SAME_REFERENCE_REENTRY') return 'Same-reference re-entry after exit';
+  if (value === 'LEGACY_CONFIRMATION') return 'Legacy confirmation entry';
+  if (value === 'THRESHOLD_TRIGGER') return 'Initial threshold trigger';
+  return value ? String(value).replaceAll('_', ' ').toLowerCase().replace(/(^|\s)\S/g, (letter) => letter.toUpperCase()) : '--';
+}
 function backtestCauseLabel(trade: any) { return trade?.diagnostics?.primary_cause_label || '--'; }
 function diagnosticTone(trade: any) { return String(trade?.diagnostics?.primary_cause_code || '').includes('target') ? 'text-[#22c55e]' : Number(trade?.net_pnl) < 0 ? 'text-[#ef4444]' : 'text-[#f59e0b]'; }
 function diagnosticChipTone(trade: any) { return String(trade?.diagnostics?.primary_cause_code || '').includes('target') ? 'border-[#22c55e]/40 bg-[#22c55e]/10 text-[#22c55e]' : Number(trade?.net_pnl) < 0 ? 'border-[#ef4444]/40 bg-[#ef4444]/10 text-[#ef4444]' : 'border-[#f59e0b]/40 bg-[#f59e0b]/10 text-[#f59e0b]'; }
