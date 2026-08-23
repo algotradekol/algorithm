@@ -330,7 +330,7 @@ export default function SilverBacktestChart({
       <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
         <div>
           <h3 className="text-sm font-semibold text-gray-100">Silver Replay Chart</h3>
-          <p className="mt-1 text-xs text-gray-500">Zoom with mouse wheel, drag to pan, and inspect the replayed 15-minute candles with EMA20, setups, entries, exits, and trailing moves. Same-candle entries are spread into visible lanes.</p>
+          <p className="mt-1 text-xs text-gray-500">Executed replay trades only: arrows, exits, trailing paths, and P&amp;L come from trades the simulator actually opened and closed. Setup markers are optional signal context, not extra trades.</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <DateSelector days={days} selectedDate={selectedDate} onSelectedDateChange={onSelectedDateChange} />

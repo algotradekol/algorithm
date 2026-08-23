@@ -1601,6 +1601,7 @@ def _make_bare_algo3(settings_overrides=None):
     strat._last_fired_sell_bar_at = None
     strat._last_attempted_buy_bar_at = None
     strat._last_attempted_sell_bar_at = None
+    strat._sell_reentry_after_exit = None
     import threading as _threading
     strat._entry_attempt_in_flight = False
     strat._entry_guard_lock = _threading.Lock()
@@ -2225,6 +2226,33 @@ def test_algo3_unlimited_reentry_after_exit_same_setup():
     cross_up()
     check("same setup can re-enter again after second exit", len(strat.broker.opens) == 3,
           f"opens={strat.broker.opens}")
+
+
+def test_algo3_sell_target_reenters_when_reference_still_crossed():
+    print("\n41a. algo3 SELL target exit hands off to a new SELL while the same threshold remains crossed")
+    import datetime as _dt
+    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
+    strat._ema20 = 1000.0
+    strat._sell_setup_close = 900.0
+    strat._sell_setup_bar_at = _dt.datetime(2026, 8, 20, 15, 0)
+    strat._current_bucket = _dt.datetime(2026, 8, 20, 15, 15)
+    strat._minute_buffer = [{"open": 1000.0}]
+
+    strat._prev_ltp = 750.0
+    strat._check_triggers(690.0)  # level is 700; first SELL enters
+    check("first SELL opened", len(strat.broker.opens) == 1)
+
+    # Target is 390. The next tick is still below the carried 700 threshold,
+    # so the strategy must not wait for a meaningless re-cross above 700.
+    strat._last_tick_ltp = 390.0
+    strat.check_exits()
+    check("first SELL closed at TARGET", len(strat.broker.closes) == 1 and strat.broker.closes[0]["reason"] == "TARGET",
+          f"closes={strat.broker.closes}")
+
+    strat._prev_ltp = 690.0
+    strat._check_triggers(680.0)
+    check("SELL re-opened while the same reference threshold stayed crossed",
+          len(strat.broker.opens) == 2, f"opens={strat.broker.opens}")
 
 
 def test_algo3_failed_live_attempt_consumes_setup_once():
@@ -4508,6 +4536,7 @@ def main():
     test_algo3_reversal_on_contra_signal()
     test_algo3_no_reentry_same_side()
     test_algo3_unlimited_reentry_after_exit_same_setup()
+    test_algo3_sell_target_reenters_when_reference_still_crossed()
     test_algo3_failed_live_attempt_consumes_setup_once()
     test_algo3_new_setup_rearms_after_failed_attempt()
     test_algo3_live_broker_guard_blocks_when_symbol_busy()
