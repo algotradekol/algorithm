@@ -393,14 +393,17 @@ export default function SilverBacktestChart({
                   && absoluteIndex >= selectedTradeOverlay.entryIndex
                   && absoluteIndex <= selectedTradeOverlay.exitIndex,
                 );
-                const entryTrade = overlays.trades
-                  ? visibleTradeOverlays.find((trade: any) => trade.entryIndex === absoluteIndex)
+                const candleTrade = overlays.trades
+                  ? visibleTradeOverlays.find((trade: any) => trade.entryIndex === absoluteIndex || trade.exitIndex === absoluteIndex)
+                    || visibleTradeOverlays.find((trade: any) => absoluteIndex >= trade.entryIndex && absoluteIndex <= trade.exitIndex)
                   : null;
+                const selectedEntryCandle = Boolean(selectedTradeOverlay && absoluteIndex === selectedTradeOverlay.entryIndex);
+                const selectedExitCandle = Boolean(selectedTradeOverlay && absoluteIndex === selectedTradeOverlay.exitIndex);
                 return (
                   <g
                     key={`${candle.time}-${index}`}
-                    onClick={() => entryTrade && onSelectedTradeIdChange(entryTrade.trade_id)}
-                    style={entryTrade ? { cursor: 'pointer' } : undefined}
+                    onClick={() => candleTrade && onSelectedTradeIdChange(candleTrade.trade_id)}
+                    style={candleTrade ? { cursor: 'pointer' } : undefined}
                   >
                     <title>{`${candle.time}\nO ${formatNumber(candle.open)} H ${formatNumber(candle.high)} L ${formatNumber(candle.low)} C ${formatNumber(candle.close)}\nEMA20 ${formatNumber(candle.ema20)}\nVol ${candle.volume.toLocaleString('en-IN')}`}</title>
                     <line x1={x} x2={x} y1={highY} y2={lowY} stroke={color} strokeWidth="1.2" />
@@ -414,7 +417,8 @@ export default function SilverBacktestChart({
                         height={Math.max(12, Math.min(priceHeight - 8, lowY + 7) - Math.max(4, highY - 7))}
                         fill="none"
                         stroke="#facc15"
-                        strokeWidth="1.4"
+                        strokeWidth={selectedEntryCandle || selectedExitCandle ? 2.5 : 1.1}
+                        opacity={selectedEntryCandle || selectedExitCandle ? 1 : 0.45}
                         rx="2"
                       />
                     )}
@@ -600,8 +604,9 @@ export default function SilverBacktestChart({
                 <ChartMetric label="Trade ID" value={String(selectedTrade.trade_id)} mono className="md:col-span-2" valueClassName="text-[12px] leading-5 break-all" />
                 <ChartMetric label="Side" value={selectedTrade.side} tone={selectedTrade.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
                 <ChartMetric label="Net P&L" value={money(Number(selectedTrade.net_pnl || 0))} tone={Number(selectedTrade.net_pnl || 0) >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
-                <ChartMetric label="Entry" value={`${formatDateTimeShort(selectedTrade.entry_time)} @ ${formatNumber(Number(selectedTrade.entry_price))}`} className="md:col-span-2" valueClassName="leading-5 whitespace-normal" />
-                <ChartMetric label="Exit" value={`${formatDateTimeShort(selectedTrade.exit_time)} @ ${formatNumber(Number(selectedTrade.exit_price))}`} className="md:col-span-2" valueClassName="leading-5 whitespace-normal" />
+                <ChartMetric label="Entry" value={`${formatBacktestDateTime(selectedTrade.entry_time, selectedTrade.exit_time)} @ ${formatNumber(Number(selectedTrade.entry_price))}`} className="md:col-span-2" valueClassName="leading-5 whitespace-normal" />
+                <ChartMetric label="Exit" value={`${formatBacktestDateTime(selectedTrade.exit_time, selectedTrade.entry_time)} @ ${formatNumber(Number(selectedTrade.exit_price))}`} className="md:col-span-2" valueClassName="leading-5 whitespace-normal" />
+                <ChartMetric label="Timing" value={sameBacktestMinute(selectedTrade.entry_time, selectedTrade.exit_time) ? 'Same 1-minute bar; exact second unavailable' : 'Different 1-minute bars'} className="md:col-span-2" valueClassName="leading-5 whitespace-normal text-[#fbbf24]" />
                 <ChartMetric label="Final SL" value={formatNumber(Number(selectedTrade.final_sl_price))} />
                 <ChartMetric label="Target" value={formatNumber(Number(selectedTrade.target_price))} />
               </div>
@@ -878,6 +883,20 @@ function formatDateTimeShort(value: string | null | undefined) {
     second: '2-digit',
     hour12: false,
   });
+}
+
+function sameBacktestMinute(first: string | null | undefined, second: string | null | undefined) {
+  if (!first || !second) return false;
+  const firstDate = parseMaybeDate(first);
+  const secondDate = parseMaybeDate(second);
+  if (!firstDate || !secondDate) return false;
+  const parts = (date: Date) => date.toLocaleString('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+  return parts(firstDate) === parts(secondDate);
+}
+
+function formatBacktestDateTime(value: string | null | undefined, otherTime: string | null | undefined) {
+  const formatted = formatDateTimeShort(value);
+  return sameBacktestMinute(value, otherTime) ? `${formatted} · same 1-minute bar` : formatted;
 }
 
 function formatAxisTime(value: string | null | undefined) {

@@ -355,6 +355,7 @@ function BacktestResult({ result }: { result: any }) {
           selectedTradeId={selectedTradeId}
           onViewChart={focusTrade}
           selectedDate={result.algo_id === 'algo3' ? selectedChartDate : null}
+          isSilver={result.algo_id === 'algo3'}
           compact
         />
       </section>
@@ -364,6 +365,7 @@ function BacktestResult({ result }: { result: any }) {
         selectedTradeId={selectedTradeId}
         onViewChart={focusTrade}
         selectedDate={result.algo_id === 'algo3' ? selectedChartDate : null}
+        isSilver={result.algo_id === 'algo3'}
       />
     )}
     <DailyResults rows={daily} />
@@ -560,16 +562,21 @@ function BacktestTrades({
   selectedTradeId,
   onViewChart,
   selectedDate,
+  isSilver = false,
   compact = false,
 }: {
   rows: any[];
   selectedTradeId: string | null;
   onViewChart: (trade: any) => void;
   selectedDate: string | null;
+  isSilver?: boolean;
   compact?: boolean;
 }) {
   const [selectedTrade, setSelectedTrade] = useState<any | null>(null);
   const [selectedDiagnosticTrade, setSelectedDiagnosticTrade] = useState<any | null>(null);
+  const headers = isSilver
+    ? ['Side', 'Qty', 'Entry Time', 'Entry', 'Exit Time', 'Exit', 'Initial SL', 'Final SL', 'Target', 'Trailing SL', 'Chart', 'Why loss?', 'Reason', 'Net']
+    : ['Date', 'Symbol', 'Side', 'Qty', 'Entry Time', 'Entry', 'Exit Time', 'Exit', 'Initial SL', 'Final SL', 'Target', 'Trailing SL', 'Chart', 'Why loss?', 'Reason', 'Net'];
 
   return <>
     <section className="panel overflow-hidden">
@@ -582,19 +589,18 @@ function BacktestTrades({
         </p>
       </div>
       <div className={compact ? 'max-h-[920px] overflow-auto' : 'overflow-x-auto'}>
-        <table className="w-full min-w-[1880px] text-xs">
+        <table className={`w-full ${isSilver ? 'min-w-[1480px]' : 'min-w-[1880px]'} text-xs`}>
           <thead className="bg-[#111827]">
-            <tr>{['Date', 'Symbol', 'Side', 'Qty', 'Entry Time', 'Entry', 'Exit Time', 'Exit', 'Initial SL', 'Final SL', 'Target', 'Trailing SL', 'Chart', 'Why loss?', 'Reason', 'Net'].map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr>
+            <tr>{headers.map((name) => <th key={name} className="table-cell label">{name}</th>)}</tr>
           </thead>
           <tbody>
-            {!rows.length ? <tr><td colSpan={16} className="table-cell text-gray-500">No simulated trades in this range.</td></tr> : rows.map((trade, index) => <tr key={trade.trade_id || `${trade.session_date}-${trade.symbol}-${index}`} className={`${index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'} ${trade.trade_id === selectedTradeId ? 'outline outline-1 outline-[#3b82f6]/60' : ''}`}>
-              <td className="table-cell num">{trade.session_date}</td>
-              <td className="table-cell font-mono text-gray-100">{trade.symbol}</td>
+            {!rows.length ? <tr><td colSpan={headers.length} className="table-cell text-gray-500">No simulated trades in this range.</td></tr> : rows.map((trade, index) => <tr key={trade.trade_id || `${trade.session_date}-${trade.symbol}-${index}`} className={`${index % 2 ? 'bg-[#0d1117]' : 'bg-[#111827]'} ${trade.trade_id === selectedTradeId ? 'outline outline-1 outline-[#3b82f6]/60' : ''}`}>
+              {!isSilver && <><td className="table-cell num">{trade.session_date}</td><td className="table-cell font-mono text-gray-100">{trade.symbol}</td></>}
               <td className={`table-cell font-semibold ${trade.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{trade.side}</td>
               <td className="table-cell num">{trade.qty}</td>
-              <td className="table-cell num">{formatTime(trade.entry_time)}</td>
+              <td className="table-cell num">{formatBacktestTime(trade.entry_time, trade.exit_time)}</td>
               <td className="table-cell num">{number(trade.entry_price)}</td>
-              <td className="table-cell num">{formatTime(trade.exit_time)}</td>
+              <td className="table-cell num">{formatBacktestTime(trade.exit_time, trade.entry_time)}</td>
               <td className="table-cell num">{number(trade.exit_price)}</td>
               <td className="table-cell num">{optionalNumber(trade.initial_sl_price)}</td>
               <td className="table-cell num">{optionalNumber(trade.sl_price)}</td>
@@ -749,7 +755,7 @@ function BacktestDiagnosticModal({ trade, onClose }: { trade: any; onClose: () =
                 <TrailStat label="Setup close" value={optionalNumber(entry.setup_close)} />
                 <TrailStat label="Trigger level" value={optionalNumber(entry.trigger_level)} />
                 <TrailStat label="EMA20" value={optionalNumber(entry.ema20)} />
-                <TrailStat label="Entry time" value={formatTimeWithDate(entry.entry_time)} />
+                <TrailStat label="Entry time" value={formatBacktestDateTime(entry.entry_time, exit.exit_time)} />
                 <TrailStat label="Entry price" value={optionalNumber(entry.entry_price)} />
                 <TrailStat label="Delay from setup" value={entry.delay_from_setup_minutes === null || entry.delay_from_setup_minutes === undefined ? '--' : `${number(entry.delay_from_setup_minutes)} min`} />
                 <TrailStat label="Prev red reference" value={optionalNumber(entry.previous_red_reference_close)} />
@@ -761,7 +767,7 @@ function BacktestDiagnosticModal({ trade, onClose }: { trade: any; onClose: () =
               <h4 className="text-sm font-semibold text-gray-100">Exit facts</h4>
               <div className="mt-3 grid gap-3">
                 <TrailStat label="Exit reason" value={String(exit.exit_reason || '--')} />
-                <TrailStat label="Exit time" value={formatTimeWithDate(exit.exit_time)} />
+                <TrailStat label="Exit time" value={formatBacktestDateTime(exit.exit_time, entry.entry_time)} />
                 <TrailStat label="Exit price" value={optionalNumber(exit.exit_price)} />
                 <TrailStat label="Initial SL" value={optionalNumber(exit.initial_sl)} />
                 <TrailStat label="Final SL" value={optionalNumber(exit.final_sl)} />
@@ -839,6 +845,25 @@ function money(value: any) { return `Rs ${number(value)}`; }
 function tone(value?: number) { return value && value > 0 ? 'text-[#22c55e]' : value && value < 0 ? 'text-[#ef4444]' : 'text-gray-100'; }
 function formatTime(value: unknown) { if (!value) return '--'; const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }); }
 function formatTimeWithDate(value: unknown) { if (!value) return '--'; const date = new Date(String(value)); return Number.isNaN(date.getTime()) ? String(value) : date.toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', year: 'numeric', month: 'short', day: '2-digit', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }); }
+function sameBacktestMinute(first: unknown, second: unknown) {
+  if (!first || !second) return false;
+  const firstDate = new Date(String(first));
+  const secondDate = new Date(String(second));
+  if (Number.isNaN(firstDate.getTime()) || Number.isNaN(secondDate.getTime())) return false;
+  const parts = (date: Date) => date.toLocaleString('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false });
+  return parts(firstDate) === parts(secondDate);
+}
+function formatBacktestTime(value: unknown, otherTime: unknown) {
+  if (!value) return '--';
+  if (!sameBacktestMinute(value, otherTime)) return formatTime(value);
+  const date = new Date(String(value));
+  if (Number.isNaN(date.getTime())) return String(value);
+  return `${date.toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit', hour12: false })} bar`;
+}
+function formatBacktestDateTime(value: unknown, otherTime: unknown) {
+  const formatted = formatTimeWithDate(value);
+  return sameBacktestMinute(value, otherTime) ? `${formatted} · same 1-minute bar` : formatted;
+}
 function yesNo(value: unknown) { return value ? 'Yes' : 'No'; }
 function backtestCauseLabel(trade: any) { return trade?.diagnostics?.primary_cause_label || '--'; }
 function diagnosticTone(trade: any) { return String(trade?.diagnostics?.primary_cause_code || '').includes('target') ? 'text-[#22c55e]' : Number(trade?.net_pnl) < 0 ? 'text-[#ef4444]' : 'text-[#f59e0b]'; }
