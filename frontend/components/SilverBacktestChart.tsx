@@ -105,6 +105,14 @@ export default function SilverBacktestChart({
     setCrosshair(null);
   }, [selectedDate, normalized.length]);
 
+  // Keep the candle highlight aligned with the selected trade. Without this,
+  // selecting a marker or table row can leave the previous clicked candle
+  // outlined while the trade dots move to their actual candle.
+  useEffect(() => {
+    if (!selectedTrade || !normalized.length) return;
+    setSelectedCandleIndex(indexForTime(normalized, selectedTrade.entry_time));
+  }, [selectedTradeId, selectedTrade?.entry_time, normalized.length]);
+
   useEffect(() => {
     const chartElement = chartRef.current;
     if (!chartElement) return;
@@ -546,7 +554,10 @@ export default function SilverBacktestChart({
                   <g
                     key={`entry-group-${groupKey}`}
                     opacity={opacity}
-                    onClick={() => onSelectedTradeIdChange(latestTrade.trade_id)}
+                    onClick={() => {
+                      setSelectedCandleIndex(latestTrade.entryIndex);
+                      onSelectedTradeIdChange(latestTrade.trade_id);
+                    }}
                     style={{ cursor: 'pointer' }}
                   >
                     <title>{`${tradeCount} executed ${trade.side || ''} trade${tradeCount === 1 ? '' : 's'} in this 15-minute candle. Click to inspect ${trade.trade_id}.`}</title>
@@ -993,7 +1004,12 @@ function money(value: number) {
 
 function parseMaybeDate(value: string | null | undefined) {
   if (!value) return null;
-  const date = new Date(value);
+  const raw = String(value).trim();
+  const normalized = raw.includes('T') ? raw : raw.replace(' ', 'T');
+  // Backtest timestamps are naive IST values. Make that explicit so the
+  // browser's local timezone cannot move a marker into the adjacent candle.
+  const hasTimezone = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(normalized);
+  const date = new Date(hasTimezone ? normalized : `${normalized}+05:30`);
   return Number.isNaN(date.getTime()) ? null : date;
 }
 
