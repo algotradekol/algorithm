@@ -456,14 +456,19 @@ def get_previous_close(symbol: str) -> float | None:
 def get_price_history(symbol: str, resolution: str = "15", days: int = 5) -> dict:
     """Recent historical candles normalized for the frontend history tab."""
     fyers = get_fyers_model(use_proxy=False)
-    today = datetime.date.today()
-    start_date = today - datetime.timedelta(days=max(days, 1))
+    end_date = datetime.date.today()
+    # FYERS rejects a history range ending on a Sunday/Saturday for some
+    # contracts. History is still available on weekends; anchor the request
+    # to the last market day instead of asking for a non-trading date.
+    while end_date.weekday() >= 5:
+        end_date -= datetime.timedelta(days=1)
+    start_date = end_date - datetime.timedelta(days=max(days, 1))
     data = {
         "symbol": symbol,
         "resolution": resolution,
         "date_format": "1",
         "range_from": start_date.isoformat(),
-        "range_to": today.isoformat(),
+        "range_to": end_date.isoformat(),
         "cont_flag": "1",
     }
     response = fyers.history(data)
