@@ -19,12 +19,12 @@ Rules per spec:
 
   SELL setup:   a red candle (close < open) closes below EMA20.
                 Its close is stored as the SELL reference close.
-                On the NEXT qualifying red candle, compare that new red
-                close against the PREVIOUS stored red reference close.
-                If the new red closes at least n points lower, SELL
-                triggers at the new candle's close. Whether it triggers
-                or not, that new red close becomes the next stored sell
-                reference. Green candles in between do not clear the
+                On the NEXT qualifying red candle, compare its forming
+                price against the PREVIOUS stored red reference close.
+                If price crosses reference - n while that candle is
+                forming, SELL triggers immediately at the crossing price.
+                When the candle closes, its close becomes the next stored
+                sell reference. Green candles in between do not clear the
                 stored red reference.
 
   Reversal:     if a contra trigger fires while a position is open,
@@ -926,6 +926,45 @@ class Algo3SilverMicro(Strategy):
         if n <= 0:
             return
 
+        # Current red-chain behavior: keep the previous confirmed red close
+        # as the anchor, then enter as soon as the next forming red 15m candle
+        # crosses anchor - n. This must run from ticks, not from the candle's
+        # eventual close, otherwise a fast move can give away the entry.
+        sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
+        current_bucket_open = (
+            float(self._minute_buffer[0]["open"])
+            if self._minute_buffer and self._current_bucket is not None
+            else None
+        )
+        current_sell_candle = (
+            sell_level is not None
+            and self._ema20 is not None
+            and self._sell_setup_bar_at is not None
+            and self._current_bucket is not None
+            and self._current_bucket > self._sell_setup_bar_at
+            and current_bucket_open is not None
+            and ltp < current_bucket_open
+            and ltp < self._ema20
+        )
+        if (
+            current_sell_candle
+            and ltp <= sell_level
+            and (self._prev_ltp is None or self._prev_ltp > sell_level)
+            and not self._failed_attempt_blocks_setup("SELL", self._sell_setup_bar_at)
+        ):
+            print(
+                f"[algo3] TRIGGER SELL (red-chain tick-cross): previous red reference "
+                f"{self._sell_setup_close:.2f} - n={n:.0f} = level {sell_level:.2f}; "
+                f"forming red candle LTP={ltp:.2f}"
+            )
+            if self._fire_entry(
+                "SELL",
+                ltp,
+                sell_level,
+                setup_bar_at_override=self._sell_setup_bar_at,
+            ):
+                self._mark_fired("SELL", setup_bar_at=self._sell_setup_bar_at)
+
         buy_level = (
             self._buy_setup_close + n
             if self._silver_buy_plan() != SILVER_BUY_PLAN_LEGACY_CONFIRMATION
@@ -989,7 +1028,9 @@ class Algo3SilverMicro(Strategy):
         )
         sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
         buy_setup_identity = bar_at if buy_qualifies else self._buy_setup_bar_at
-        sell_setup_identity = bar_at if sell_qualifies else None
+        # A red-chain entry is anchored to the PREVIOUS red setup. The
+        # current qualifying bar is the candle that crossed that anchor.
+        sell_setup_identity = self._sell_setup_bar_at if sell_qualifies else None
 
         if (
             buy_level is not None
@@ -1004,16 +1045,18 @@ class Algo3SilverMicro(Strategy):
         if (
             sell_level is not None
             and sell_qualifies
-            and close <= sell_level
+            and float(bar.get("low") or close) <= sell_level
             and sell_setup_identity is not None
             and not self._failed_attempt_blocks_setup("SELL", sell_setup_identity)
+            and not self._already_fired_this_setup("SELL", sell_setup_identity)
         ):
             print(
-                f"[algo3] TRIGGER SELL (red-chain close): qualifying red close {close:.2f} "
+                f"[algo3] TRIGGER SELL (red-chain candle fallback): qualifying red low "
+                f"{float(bar.get('low') or close):.2f} "
                 f"<= previous red reference {self._sell_setup_close:.2f} - n={n:.0f} "
                 f"(level {sell_level:.2f})"
             )
-            if self._fire_entry("SELL", close, sell_level, setup_bar_at_override=sell_setup_identity):
+            if self._fire_entry("SELL", sell_level, sell_level, setup_bar_at_override=sell_setup_identity):
                 self._mark_fired("SELL", setup_bar_at=sell_setup_identity)
 
     def _fire_entry(
@@ -1120,7 +1163,7 @@ class Algo3SilverMicro(Strategy):
         return (
             f"15m silver sell red-chain on {self.symbol}: previous red reference close "
             f"{_fmt(setup_close)} - n={n} = trigger {_fmt(trigger_level)}, "
-            f"current qualifying red candle closed at {entry_price:.2f}. "
+            f"forming qualifying red candle crossed the level at {entry_price:.2f}. "
             f"EMA20 {_fmt(self._ema20)}."
         )
 

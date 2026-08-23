@@ -2055,6 +2055,40 @@ def test_algo3_sell_reference_shifts_when_gap_is_under_n():
           strat._sell_setup_close == 850.0, f"sell={strat._sell_setup_close}")
 
 
+def test_algo3_live_red_chain_enters_on_forming_candle_cross():
+    print("\n35f. algo3 live red-chain SELL enters at the forming candle trigger")
+    import datetime as _dt
+
+    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
+    strat._ema20 = 248000.0
+    strat._sell_setup_close = 247850.0
+    strat._sell_setup_bar_at = _dt.datetime(2026, 8, 21, 19, 15)
+    strat._current_bucket = _dt.datetime(2026, 8, 21, 20, 0)
+    strat._minute_buffer = [{
+        "time": _dt.datetime(2026, 8, 21, 20, 0),
+        "open": 248280.0,
+        "high": 248348.0,
+        "low": 247700.0,
+        "close": 247700.0,
+        "volume": 100,
+    }]
+    strat._prev_ltp = 247700.0
+
+    # Previous red reference 247,850 - 200 = 247,650. The forming red
+    # candle reaches that level; the entry must not wait for its final close.
+    strat._check_triggers(247650.0)
+    check("live red-chain SELL opens on the intrabar threshold cross",
+          len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "SELL",
+          f"opens={strat.broker.opens}")
+    if strat.broker.opens:
+        check("live red-chain entry uses the crossing price",
+              strat.broker.opens[0]["entry_price"] == 247650.0,
+              f"position={strat.broker.opens[0]}")
+        check("live red-chain trigger is the previous reference minus n",
+              strat.broker.opens[0]["trigger"] == 247650.0,
+              f"position={strat.broker.opens[0]}")
+
+
 # ── 36-38. Trigger detection ───────────────────────────────────────────
 def test_algo3_buy_trigger_only_on_upward_cross():
     print("\n36. algo3 BUY trigger fires ONLY on an upward cross of (setup + n)")
@@ -2083,12 +2117,12 @@ def test_algo3_buy_trigger_only_on_upward_cross():
 
 
 def test_algo3_sell_does_not_fire_from_tick_cross():
-    print("\n37. algo3 SELL no longer fires from tick-cross; it waits for a qualifying red close chain")
+    print("\n37. algo3 SELL needs a forming qualifying red candle before a tick-cross can fire")
     strat = _make_bare_algo3()
     strat._sell_setup_close = 89000.0
     strat._prev_ltp = 88900  # above
     strat._check_triggers(88800)
-    check("downward tick-cross does not fire SELL entry anymore",
+    check("downward tick-cross without a forming red candle does not fire SELL",
           len(strat.broker.opens) == 0,
           f"opens={strat.broker.opens}")
 
@@ -2096,7 +2130,7 @@ def test_algo3_sell_does_not_fire_from_tick_cross():
     strat2._sell_setup_close = 89000.0
     strat2._prev_ltp = 88800  # already below
     strat2._check_triggers(88700)
-    check("moving further down while already below still does not fire SELL",
+    check("moving further down without a forming red candle still does not fire SELL",
           len(strat2.broker.opens) == 0)
 
 
@@ -2300,11 +2334,12 @@ def test_algo3_entry_uses_points_sl_target():
     })
     check("one SELL open", len(strat2.broker.opens) == 1)
     pos2 = strat2.broker.opens[0]
-    # entry = 88800, sl = 88800 + 200 = 89000, target = 88800 - 500 = 88300
+    # n=150, so entry = 88850 at the trigger, sl = 88850 + 200 = 89050,
+    # target = 88850 - 500 = 88350.
     check("SELL sl_price = entry + 200 pts",
-          abs(pos2["sl_price"] - 89000.0) < 1e-9, f"got={pos2['sl_price']}")
+          abs(pos2["sl_price"] - 89050.0) < 1e-9, f"got={pos2['sl_price']}")
     check("SELL target_price = entry - 500 pts",
-          abs(pos2["target_price"] - 88300.0) < 1e-9, f"got={pos2['target_price']}")
+          abs(pos2["target_price"] - 88350.0) < 1e-9, f"got={pos2['target_price']}")
 
 
 # ── 43. Points -> percent conversion for TSL ───────────────────────────
@@ -3065,10 +3100,11 @@ def test_algo3_backtest_sell_red_chain_survives_green_candles():
     for m in range(15):
         push(21 * 15 + m, 90020, 90160, 90010, 90150)
 
-    # Next qualifying red closes exactly 200 below the previous red reference:
-    # 89900 - 200 = 89700 -> SELL must trigger at this red close.
+    # Next qualifying red candle crosses 200 below the previous red reference
+    # but closes even lower: 89900 - 200 = 89700. SELL must enter at 89700,
+    # not at the later 89650 candle close.
     for m in range(15):
-        push(22 * 15 + m, 89850, 89870, 89690, 89700)
+        push(22 * 15 + m, 89850, 89870, 89690, 89650)
 
     # One more minute forces the 11:30 bar to finalize.
     push(23 * 15, 89700, 89700, 89700, 89700)
@@ -3106,11 +3142,13 @@ def test_algo3_backtest_sell_red_chain_survives_green_candles():
             _jobs.pop("sell-chain-test", None)
 
     trades = results[0]["trades"]
-    check("backtest produced one SELL trade from the red-chain close", len(trades) == 1, f"trades={trades}")
+    check("backtest produced one SELL trade from the red-chain crossing", len(trades) == 1, f"trades={trades}")
     if trades:
         trade = trades[0]
         check("trade side is SELL", trade.get("side") == "SELL", f"trade={trade}")
-        check("SELL entry is the qualifying red close itself", abs(float(trade.get("entry_price") or 0) - 89700.0) < 1e-9, f"trade={trade}")
+        check("SELL entry is the previous reference minus n, not the candle close",
+              abs(float(trade.get("entry_price") or 0) - 89700.0) < 1e-9,
+              f"trade={trade}")
 
 
 def test_algo3_backtest_trailing_metadata():

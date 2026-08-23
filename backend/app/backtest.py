@@ -1009,7 +1009,7 @@ def _silver_micro_execution_assumption(
         else "SELL replaces the reference on every qualifying red 15m candle, then waits for a later 1-minute break below that latest reference."
     )
     sell_entry_text = (
-        "SELL red-chain entries enter at the qualifying red candle's close."
+        "SELL red-chain entries enter at the trigger level when the next qualifying red candle's intrabar low crosses it."
         if silver_sell_plan == SILVER_SELL_PLAN_RED_CHAIN
         else "SELL latest-reference entries enter at the 1-minute trigger level."
     )
@@ -1041,7 +1041,7 @@ def _new_silver_micro_day_result(
         else "BUY uses the legacy 5m EMA/volume setup with same-direction confirmation."
     )
     sell_plan_text = (
-        "SELL compares a later qualifying red close with the previous red reference; green candles do not reset it."
+        "SELL compares the forming price of a later qualifying red candle with the previous red reference and enters at the intrabar trigger; green candles do not reset it."
         if sell_plan == SILVER_SELL_PLAN_RED_CHAIN
         else "SELL replaces the reference on each qualifying red candle, then waits for a later 1-minute break below that latest reference."
     )
@@ -1602,15 +1602,19 @@ def _simulate_silver_micro_range(
             and sell_setup_close is not None
         ):
             sell_level = sell_setup_close - n
-            if float(bar["close"]) <= float(sell_level):
+            if (
+                float(bar["low"]) <= float(sell_level)
+                and sell_setup_bar_at is not None
+                and last_fired_sell_setup_at != sell_setup_bar_at
+            ):
                 current_position = position
                 if current_position and current_position["side"] == "SELL":
                     pass
                 else:
                     if current_position and current_position["side"] != "SELL":
-                        close_position(float(bar["close"]), bar["time"], "REVERSAL_CONTRA_SIGNAL", bar["time"].date())
-                    open_position("SELL", float(bar["close"]), bar["time"], bar["time"].date())
-                    last_fired_sell_setup_at = bar["time"]
+                        close_position(float(sell_level), bar["time"], "REVERSAL_CONTRA_SIGNAL", bar["time"].date())
+                    open_position("SELL", float(sell_level), bar["time"], bar["time"].date())
+                    last_fired_sell_setup_at = sell_setup_bar_at
         if (
             silver_buy_plan == SILVER_BUY_PLAN_LIVE_BREAKOUT
             and is_green
@@ -1826,7 +1830,12 @@ def _simulate_silver_micro_range(
             "entry_trigger": (
                 f"Historical {entry_time.date().isoformat()} Silver Micro legacy 5m EMA/volume confirmation replay."
                 if silver_buy_plan == SILVER_BUY_PLAN_LEGACY_CONFIRMATION and side == "BUY"
-                else f"Historical {entry_time.date().isoformat()} Silver Micro 15m breakout replay."
+                else (
+                    f"Historical {entry_time.date().isoformat()} Silver Micro "
+                    f"15m red-chain trigger replay."
+                    if side == "SELL" and silver_sell_plan == SILVER_SELL_PLAN_RED_CHAIN
+                    else f"Historical {entry_time.date().isoformat()} Silver Micro 15m breakout replay."
+                )
             ),
         }
         # Latest matching-side setup in this day's candidates is the source
@@ -1896,6 +1905,47 @@ def _simulate_silver_micro_range(
                         "new_sl": round(new_sl, 2),
                         "protected_points": round(new_sl - entry, 2),
                     })
+
+    def check_red_chain_intrabar(candle: dict, day: datetime.date, in_scope: bool):
+        """Enter current red-chain SELLs from the 1-minute crossing.
+
+        The stored reference belongs to the previous finalized red 15m bar.
+        The current 15m bar must already be red and below the carried EMA20;
+        its first 1m low crossing is the simulator's best available entry
+        point and is deliberately not replaced by the eventual 15m close.
+        """
+        nonlocal last_fired_sell_setup_at
+        if not in_scope or silver_sell_plan != SILVER_SELL_PLAN_RED_CHAIN:
+            return
+        if bars_finalized < EMA_PERIOD or sell_setup_close is None:
+            return
+        if sell_setup_bar_at is None or current_bucket is None or current_bucket <= sell_setup_bar_at:
+            return
+        if ema20 is None or not minute_buffer:
+            return
+        if position is not None and position.get("side") == "SELL":
+            return
+
+        sell_level = float(sell_setup_close) - n
+        current_bucket_open = float(minute_buffer[0]["open"])
+        current_price = float(candle["close"])
+        current_candle_is_red = current_price < current_bucket_open and current_price < float(ema20)
+        crossed = (
+            float(candle["low"]) <= sell_level
+            and (
+                (prev_ltp is not None and float(prev_ltp) > sell_level)
+                or float(candle["open"]) <= sell_level
+                or prev_ltp is None
+            )
+        )
+        if not current_candle_is_red or not crossed:
+            return
+
+        if position is not None and position.get("side") != "SELL":
+            close_position(sell_level, candle["time"], "REVERSAL_CONTRA_SIGNAL", day)
+        if position is None:
+            open_position("SELL", sell_level, candle["time"], day)
+            last_fired_sell_setup_at = sell_setup_bar_at
         else:
             gain = entry - float(position["lowest"])
             if gain >= tsl_trigger_pts:
@@ -2021,10 +2071,12 @@ def _simulate_silver_micro_range(
                     open_position("BUY", buy_level, ts, day)
                     last_fired_buy_setup_at = buy_setup_bar_at
 
+            check_red_chain_intrabar(candle, day, in_scope)
+
             # Legacy comparison plan: every qualifying red candle replaces the
             # reference, then a later 1-minute low crossing reference - n enters
-            # at the trigger level. The red-chain plan enters from the finalized
-            # qualifying red close above instead.
+            # at the trigger level. The current red-chain plan above keeps the
+            # previous reference and enters on the forming candle's crossing.
             if (
                 silver_sell_plan == SILVER_SELL_PLAN_LATEST_REFERENCE
                 and bars_finalized >= EMA_PERIOD
