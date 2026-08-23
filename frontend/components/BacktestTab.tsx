@@ -10,7 +10,7 @@ const defaultStart = new Date(`${today}T00:00:00`);
 defaultStart.setDate(defaultStart.getDate() - 6);
 const weekAgo = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(defaultStart);
 const BACKTEST_STORAGE_KEY = 'backtest-tab-state-v1';
-const BACKTEST_UI_STORAGE_KEY = 'backtest-tab-ui-v1';
+const BACKTEST_UI_STORAGE_KEY = 'backtest-tab-ui-v2';
 const SILVER_BUY_PLANS = {
   live_breakout: {
     label: '15m breakout (current)',

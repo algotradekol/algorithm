@@ -434,9 +434,17 @@ export default function SilverBacktestChart({
                   && absoluteIndex >= selectedTradeOverlay.entryIndex
                   && absoluteIndex <= selectedTradeOverlay.exitIndex,
                 );
-                const candleTrade = visibleTradeOverlays.find((trade: any) => trade.entryIndex === absoluteIndex || trade.exitIndex === absoluteIndex)
-                  || visibleTradeOverlays.find((trade: any) => absoluteIndex >= trade.entryIndex && absoluteIndex <= trade.exitIndex)
-                  || null;
+                const candleTrade = visibleTradeOverlays
+                  .filter((trade: any) => (
+                    trade.entryIndex === absoluteIndex
+                    || trade.exitIndex === absoluteIndex
+                    || (absoluteIndex >= trade.entryIndex && absoluteIndex <= trade.exitIndex)
+                  ))
+                  .reduce((latest: any, candidate: any) => (
+                    !latest || String(candidate.exit_time || '') > String(latest.exit_time || '')
+                      ? candidate
+                      : latest
+                  ), null);
                 const selectedCandle = selectedCandleIndex === absoluteIndex;
                 const selectedEntryCandle = Boolean(selectedTradeOverlay && absoluteIndex === selectedTradeOverlay.entryIndex);
                 const selectedExitCandle = Boolean(selectedTradeOverlay && absoluteIndex === selectedTradeOverlay.exitIndex);
@@ -531,6 +539,9 @@ export default function SilverBacktestChart({
                   : `${entryX - 7},${tipY + 12} ${entryX + 7},${tipY + 12} ${entryX},${tipY}`;
                 const exitPointerColor = CHART_COLORS.exit;
                 const tradeCount = group.length;
+                const badgeY = isBuy
+                  ? Math.min(priceHeight - 24, tipY + 14)
+                  : Math.min(priceHeight - 24, tipY + 34);
                 return (
                   <g
                     key={`entry-group-${groupKey}`}
@@ -543,8 +554,8 @@ export default function SilverBacktestChart({
                     <polygon points={arrowHeadPoints} fill={color} stroke="#e5e7eb" strokeWidth="0.8" />
                     {tradeCount > 1 && (
                       <g pointerEvents="none">
-                        <rect x={entryX + 10} y={tipY - 12} width={36} height={20} rx={4} fill="#111827" stroke={color} strokeWidth="1.2" />
-                        <text x={entryX + 28} y={tipY + 2} textAnchor="middle" fill="#f8fafc" fontSize="12" fontWeight="800" fontFamily="ui-monospace">×{tradeCount}</text>
+                        <rect x={entryX + 10} y={badgeY} width={36} height={20} rx={4} fill="#111827" stroke={color} strokeWidth="1.2" />
+                        <text x={entryX + 28} y={badgeY + 14} textAnchor="middle" fill="#f8fafc" fontSize="12" fontWeight="800" fontFamily="ui-monospace">×{tradeCount}</text>
                       </g>
                     )}
                     {isSelected && (
