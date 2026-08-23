@@ -96,6 +96,10 @@ STRATEGY_DEFAULT_OVERRIDES = {
         #   activates. tsl_distance_points: how far behind the current
         #   high/low the TSL sits once active.
         "silver_breakout_points": 150,
+        # Live Silver BUY defaults to the previously tested 5m
+        # EMA/volume-confirmation model. The backtest can still select the
+        # alternate 15m breakout plan explicitly.
+        "silver_buy_plan": "legacy_confirmation",
         "sl_points": 100,
         "target_points": 300,
         "trailing_sl_enabled": False,
@@ -145,6 +149,7 @@ TEXT_FIELDS = {
     "exit_mode",
     "test_candle_time",
     "order_type",
+    "silver_buy_plan",
 }
 
 # Rupee amounts are stored to paise precision. Percentages and multipliers are
@@ -254,6 +259,7 @@ _NEW_COLUMNS_TOLERATE_MISSING = {
     "tsl_trigger_points",
     "tsl_distance_points",
     "silver_lots",
+    "silver_buy_plan",
 }
 
 

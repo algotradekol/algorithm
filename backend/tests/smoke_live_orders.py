@@ -1566,6 +1566,9 @@ def _make_bare_algo3(settings_overrides=None):
     strat.settings = {
         "capital_per_trade": 100000,
         "silver_breakout_points": 150,
+        # Existing white-box tests exercise the 15m alternate explicitly;
+        # production settings default to legacy_confirmation.
+        "silver_buy_plan": "live_breakout",
         "sl_points": 100,
         "target_points": 300,
         "trailing_sl_enabled": False,
@@ -1581,6 +1584,14 @@ def _make_bare_algo3(settings_overrides=None):
     strat._last_ingested_minute_at = None
     strat._bars = deque(maxlen=500)
     strat._ema20 = None
+    strat._legacy_buy_5m_buffer = []
+    strat._legacy_buy_5m_bucket = None
+    strat._legacy_buy_price_ema20 = None
+    strat._legacy_buy_volume_ema20 = None
+    strat._legacy_buy_bars_finalized = 0
+    strat._legacy_buy_pending_setup = None
+    strat._legacy_buy_pending_entry = None
+    strat._legacy_buy_entry_context = None
     strat._buy_setup_close = None
     strat._sell_setup_close = None
     strat._buy_setup_bar_at = None
@@ -2746,6 +2757,130 @@ def test_algo3_backtest_parity_with_live():
     # Cleanup
     with _lock:
         _jobs.pop("parity-test", None)
+
+
+def test_algo3_backtest_legacy_buy_confirmation_plan():
+    print("\n53b. algo3 legacy BUY plan — 5m EMA/volume confirmation enters next 5m open")
+    import datetime as _dt
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    first_date = _dt.date(2026, 8, 19)
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    history: list[dict] = []
+
+    def push(offset, o, h, l, c, v=100):
+        history.append({
+            "time": base + _dt.timedelta(minutes=offset),
+            "open": o, "high": h, "low": l, "close": c, "volume": v,
+        })
+
+    # Warm the legacy 5m price and volume EMAs with 20 flat bars.
+    for bucket in range(20):
+        for minute in range(5):
+            push(bucket * 5 + minute, 90000, 90000, 90000, 90000, 100)
+    # Qualifying BUY setup: green, above price EMA20 and above volume EMA20.
+    for minute in range(5):
+        push(100 + minute, 90000 if minute == 0 else 90200, 90500, 89950, 90500, 250)
+    # Same-direction confirmation within 15 minutes.
+    for minute in range(5):
+        push(105 + minute, 90500, 90600, 90480, 90600, 250)
+    # The next 5m candle opens at the simulated entry price.
+    push(110, 90650, 90700, 90650, 90680, 250)
+    for minute in range(111, 115):
+        push(minute, 90680, 90700, 90670, 90690, 250)
+    # Force the final partial 5m and 15m buckets to flush.
+    push(115, 90690, 90690, 90690, 90690, 250)
+
+    settings = {
+        "silver_breakout_points": 150,
+        "sl_points": 100,
+        "target_points": 300,
+        "silver_lots": 1,
+        "trailing_sl_enabled": False,
+        "tsl_trigger_points": 0,
+        "tsl_distance_points": 0,
+        "exit_mode": "fixed_target_sl",
+    }
+    charges = {key: 0 for key in (
+        "brokerage_flat", "brokerage_pct", "stt_pct", "exchange_pct",
+        "sebi_pct", "gst_pct", "stamp_duty_pct",
+    )}
+    with _lock:
+        _jobs["legacy-buy-plan"] = {"cancel_requested": False}
+    try:
+        results = bt._simulate_silver_micro_range(
+            job_id="legacy-buy-plan",
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=first_date,
+            symbol="MCX:TEST-EQ",
+            history=history,
+            trading_days=[first_date],
+            settings=settings,
+            charges_config=charges,
+            silver_buy_plan=bt.SILVER_BUY_PLAN_LEGACY_CONFIRMATION,
+            silver_sell_plan=bt.SILVER_SELL_PLAN_LATEST_REFERENCE,
+        )
+    finally:
+        with _lock:
+            _jobs.pop("legacy-buy-plan", None)
+
+    trades = results[0]["trades"]
+    check("legacy BUY plan creates one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        check("legacy BUY enters at next 5m open", trades[0]["entry_time"].startswith("2026-08-19T10:50"), f"trade={trades[0]}")
+        check("legacy BUY uses confirmation setup context", trades[0]["diagnostics"]["entry_context"]["setup_time"].startswith("2026-08-19T10:40"), f"diagnostics={trades[0].get('diagnostics')}")
+    check("legacy BUY plan is recorded in daily result", results[0]["silver_buy_plan"] == bt.SILVER_BUY_PLAN_LEGACY_CONFIRMATION, f"day={results[0]}")
+
+
+def test_algo3_live_defaults_to_legacy_buy_and_keeps_red_chain_sell():
+    """The real engine must use the tested 5m BUY model by default.
+
+    This deliberately feeds the legacy BUY state machine directly so the
+    test does not depend on REST verification or a live Fyers session.
+    """
+    print("\n53c. algo3 live default — legacy BUY confirmation at next 5m open")
+    import datetime as _dt
+
+    from app.strategies.algo3_silver_micro import (
+        Algo3SilverMicro,
+        SILVER_BUY_PLAN_LEGACY_CONFIRMATION,
+    )
+
+    strat = _make_bare_algo3(settings_overrides={"silver_buy_plan": SILVER_BUY_PLAN_LEGACY_CONFIRMATION})
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+
+    def push(offset: int, o: float, c: float, volume: float):
+        ts = base + _dt.timedelta(minutes=offset)
+        candle = {"time": ts, "open": o, "high": max(o, c), "low": min(o, c), "close": c, "volume": volume}
+        strat._ingest_legacy_buy_minute(candle, allow_signals=True)
+
+    # Twenty completed flat 5m bars warm both legacy EMAs.
+    for bucket in range(20):
+        for minute in range(5):
+            push(bucket * 5 + minute, 90000, 90000, 100)
+    # Setup at 10:40, confirmation at 10:45, entry at the 10:50 open.
+    for minute in range(100, 105):
+        push(minute, 90000 if minute == 100 else 90200, 90500, 250)
+    for minute in range(105, 110):
+        push(minute, 90500, 90600, 250)
+    push(110, 90650, 90680, 250)
+
+    check("live default plan resolves to legacy confirmation",
+          strat._silver_buy_plan() == SILVER_BUY_PLAN_LEGACY_CONFIRMATION)
+    check("legacy live BUY opens exactly once", len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
+    if strat.broker.opens:
+        position = strat.broker.opens[0]
+        check("legacy live BUY uses next 5m open",
+              position["entry_price"] == 90650,
+              f"position={position}")
+        check("legacy live BUY records 5m signal",
+              position["signal_snapshot"].get("timeframe") == "5m",
+              f"snapshot={position['signal_snapshot']}")
+    check("live strategy still exposes current SELL red-chain setup state",
+          hasattr(strat, "_sell_setup_close"),
+          "sell setup state missing")
 
 
 def test_algo3_backtest_gap_through_previous_day_setup():
@@ -4271,6 +4406,8 @@ def main():
     test_paper_broker_storage_key_isolates_deployments()
     test_charges_config_row_id_isolates_deployments()
     test_algo3_backtest_parity_with_live()
+    test_algo3_backtest_legacy_buy_confirmation_plan()
+    test_algo3_live_defaults_to_legacy_buy_and_keeps_red_chain_sell()
     test_algo3_backtest_gap_through_previous_day_setup()
     test_algo3_gap_through_fires_immediately()
     test_algo3_previous_day_buy_setup_gap_open_fires_immediately()

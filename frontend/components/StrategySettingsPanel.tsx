@@ -187,7 +187,7 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
         />
           {algoId === 'algo3' && (
             <div className="mt-5 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
-            Silver Micro runs on the front-month MCX SILVERMIC contract using 15-minute candles. Setup levels come from green/red candles crossing EMA20; entry fires when live price crosses setup close +/- n points (default 150), including gap-opens past the level and candle-closes that clear the level even when live ticks were sparse. Position size is in LOTS (1 lot = 1 kg). SL, target, and trailing SL are all in POINTS from entry. Default order type is MARKET.
+            {isLive ? 'Live Silver uses the legacy 5-minute BUY EMA/volume confirmation model and the current 15-minute SELL red-chain model. BUY confirmation enters at the next 5-minute open; SELL uses the latest qualifying red reference comparison.' : 'Silver Micro backtests can compare the legacy 5-minute BUY confirmation model with the current 15-minute BUY breakout model, while selecting the SELL plan separately.'} Position size is in LOTS (1 lot = 1 kg). SL, target, and trailing SL are all in POINTS from entry. Default order type is MARKET.
             </div>
           )}
         {(algoId === 'algo1' || algoId === 'algo4') && <TestSchedule settings={settings} setSettings={setSettings} />}
