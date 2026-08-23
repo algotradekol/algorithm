@@ -2,6 +2,23 @@
 
 import { useEffect, useMemo, useRef, useState } from 'react';
 
+const CHART_COLORS = {
+  ema: '#3b82f6',
+  buy: '#22c55e',
+  sell: '#ef4444',
+  buyTrigger: '#14b8a6',
+  sellTrigger: '#d946ef',
+  selectedTrade: '#22d3ee',
+  selectedCandle: '#f8fafc',
+  tradePath: '#f0abfc',
+  exit: '#facc15',
+  initialSl: '#fb923c',
+  effectiveSl: '#ec4899',
+  target: '#8b5cf6',
+  trailing: '#a3e635',
+  crosshair: '#94a3b8',
+};
+
 type OverlayState = {
   ema: boolean;
   setups: boolean;
@@ -177,6 +194,13 @@ export default function SilverBacktestChart({
         }
       : null
   );
+  const entryStackGroups = new Map<number, any[]>();
+  visibleTradeOverlays.forEach((trade: any) => {
+    const anchorIndex = Math.max(start, trade.entryIndex);
+    const group = entryStackGroups.get(anchorIndex) || [];
+    group.push(trade);
+    entryStackGroups.set(anchorIndex, group);
+  });
   const timeTicks = buildTimeTicks(visible, start, candleWidth, expanded ? 8 : 6);
   const chartHeight = expanded ? 680 : 600;
   const fixedPlotViewportWidth = Math.max(0, (containerWidth || width) - priceScaleWidth);
@@ -305,7 +329,7 @@ export default function SilverBacktestChart({
       <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
         <div>
           <h3 className="text-sm font-semibold text-gray-100">Silver Replay Chart</h3>
-          <p className="mt-1 text-xs text-gray-500">Zoom with mouse wheel, drag to pan, and inspect the replayed 15-minute candles with EMA20, setups, entries, exits, and trailing moves.</p>
+          <p className="mt-1 text-xs text-gray-500">Zoom with mouse wheel, drag to pan, and inspect the replayed 15-minute candles with EMA20, setups, entries, exits, and trailing moves. Same-candle entries are spread into visible lanes.</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
           <DateSelector days={days} selectedDate={selectedDate} onSelectedDateChange={onSelectedDateChange} />
@@ -384,7 +408,7 @@ export default function SilverBacktestChart({
                     return `${index === 0 ? 'M' : 'L'} ${pointX} ${pointY}`;
                   }).join(' ')}
                   fill="none"
-                  stroke="#3b82f6"
+                  stroke={CHART_COLORS.ema}
                   strokeWidth="2"
                 />
               )}
@@ -396,7 +420,7 @@ export default function SilverBacktestChart({
                 const highY = y(candle.high);
                 const lowY = y(candle.low);
                 const bullish = candle.close >= candle.open;
-                const color = bullish ? '#22c55e' : '#ef4444';
+                const color = bullish ? CHART_COLORS.buy : CHART_COLORS.sell;
                 const bodyTop = Math.min(openY, closeY);
                 const bodyHeight = Math.max(1, Math.abs(closeY - openY));
                 const bodyWidth = Math.max(2, candleWidth * 0.58);
@@ -437,7 +461,7 @@ export default function SilverBacktestChart({
                         width={bodyWidth + 12}
                         height={Math.max(12, Math.min(priceHeight - 8, lowY + 7) - Math.max(4, highY - 7))}
                         fill="none"
-                        stroke="#facc15"
+                         stroke={CHART_COLORS.selectedTrade}
                         strokeWidth={selectedEntryCandle || selectedExitCandle ? 2.5 : 1.1}
                         opacity={selectedEntryCandle || selectedExitCandle ? 1 : 0.45}
                         rx="2"
@@ -450,7 +474,7 @@ export default function SilverBacktestChart({
                         width={bodyWidth + 18}
                         height={Math.max(16, Math.min(priceHeight - 4, lowY + 10) - Math.max(2, highY - 10))}
                         fill="none"
-                        stroke="#facc15"
+                         stroke={CHART_COLORS.selectedCandle}
                         strokeWidth="2.5"
                         rx="3"
                         pointerEvents="none"
@@ -463,7 +487,7 @@ export default function SilverBacktestChart({
               {overlays.setups && visibleSetupOverlays.map((setup: any, index: number) => {
                 const localIndex = setup.index - start;
                 const pointX = localIndex * candleWidth + candleWidth / 2;
-                const setupColor = setup.side === 'BUY' ? '#22c55e' : '#ef4444';
+                const setupColor = setup.side === 'BUY' ? CHART_COLORS.buyTrigger : CHART_COLORS.sellTrigger;
                 return (
                   <g key={`${setup.side}-${setup.time}-${index}`}>
                     <line x1={pointX} x2={plotWidth} y1={y(Number(setup.setup_close))} y2={y(Number(setup.setup_close))} stroke={setupColor} strokeWidth="1.4" opacity="0.45" />
@@ -474,15 +498,20 @@ export default function SilverBacktestChart({
               })}
 
               {overlays.trades && visibleTradeOverlays.map((trade: any) => {
-                const entryIndex = Math.max(start, trade.entryIndex) - start;
-                const exitIndex = Math.max(start, trade.exitIndex) - start;
-                const entryX = entryIndex * candleWidth + candleWidth / 2;
-                const exitX = exitIndex * candleWidth + candleWidth / 2;
+                 const entryAnchorIndex = Math.max(start, trade.entryIndex);
+                 const entryIndex = entryAnchorIndex - start;
+                 const exitIndex = Math.max(start, trade.exitIndex) - start;
+                 const entryStack = entryStackGroups.get(entryAnchorIndex) || [trade];
+                 const entryStackIndex = Math.max(0, entryStack.findIndex((item: any) => item.trade_id === trade.trade_id));
+                 const entryStackCenter = (entryStack.length - 1) / 2;
+                 const entryStackStep = Math.max(8, Math.min(18, candleWidth * 0.32));
+                 const entryX = entryIndex * candleWidth + candleWidth / 2 + (entryStackIndex - entryStackCenter) * entryStackStep;
+                 const exitX = exitIndex * candleWidth + candleWidth / 2;
                 const entryCandle = normalized[Math.max(0, Math.min(normalized.length - 1, trade.entryIndex))];
                 const entryY = y(Number(trade.entry_price));
                 const exitY = y(Number(trade.exit_price));
                 const isBuy = trade.side === 'BUY';
-                const color = isBuy ? '#38bdf8' : '#fb7185';
+                 const color = isBuy ? CHART_COLORS.buy : CHART_COLORS.sell;
                 const opacity = trade.selected ? 1 : 0.55;
                 const candleBoundaryY = isBuy ? y(Number(entryCandle?.high ?? trade.entry_price)) : y(Number(entryCandle?.low ?? trade.entry_price));
                 const arrowGap = trade.selected ? 20 : 16;
@@ -495,7 +524,7 @@ export default function SilverBacktestChart({
                 const arrowHeadPoints = isBuy
                   ? `${entryX - 7},${tipY - 12} ${entryX + 7},${tipY - 12} ${entryX},${tipY}`
                   : `${entryX - 7},${tipY + 12} ${entryX + 7},${tipY + 12} ${entryX},${tipY}`;
-                const exitPointerColor = '#f59e0b';
+                 const exitPointerColor = CHART_COLORS.exit;
                 const exitTipY = exitY;
                 const exitShaftStartY = isBuy
                   ? Math.min(priceHeight - 10, exitTipY + 48)
@@ -515,7 +544,7 @@ export default function SilverBacktestChart({
                     <polygon points={arrowHeadPoints} fill={color} stroke="#e5e7eb" strokeWidth="0.8" />
                     {trade.selected && (
                       <g>
-                        <line x1={entryX} x2={exitX} y1={entryY} y2={exitY} stroke={color} strokeWidth="2.4" />
+                         <line x1={entryX} x2={exitX} y1={entryY} y2={exitY} stroke={CHART_COLORS.tradePath} strokeWidth="2.4" />
                         <line x1={exitX} x2={exitX} y1={exitShaftStartY} y2={exitShaftEndY} stroke={exitPointerColor} strokeWidth="2.6" strokeLinecap="round" />
                         <polygon points={exitHeadPoints} fill={exitPointerColor} stroke="#fef3c7" strokeWidth="0.8" />
                         <circle cx={exitX} cy={exitY} r="5.4" fill="#0a0e14" stroke={exitPointerColor} strokeWidth="2.4" />
@@ -527,9 +556,9 @@ export default function SilverBacktestChart({
 
               {overlays.levels && selectedTradeOverlay && (
                 <g pointerEvents="none">
-                  <line x1={Math.max(0, selectedTradeOverlay.entryIndex - start) * candleWidth + candleWidth / 2} x2={plotWidth} y1={y(Number(selectedTradeOverlay.initial_sl_price))} y2={y(Number(selectedTradeOverlay.initial_sl_price))} stroke="#f59e0b" strokeWidth="1.5" strokeDasharray="6 4" />
-                  <line x1={Math.max(0, selectedTradeOverlay.entryIndex - start) * candleWidth + candleWidth / 2} x2={plotWidth} y1={y(Number(selectedTradeOverlay.final_sl_price))} y2={y(Number(selectedTradeOverlay.final_sl_price))} stroke="#f97316" strokeWidth="1.8" />
-                  <line x1={Math.max(0, selectedTradeOverlay.entryIndex - start) * candleWidth + candleWidth / 2} x2={plotWidth} y1={y(Number(selectedTradeOverlay.target_price))} y2={y(Number(selectedTradeOverlay.target_price))} stroke="#a78bfa" strokeWidth="1.5" strokeDasharray="4 3" />
+                   <line x1={Math.max(0, selectedTradeOverlay.entryIndex - start) * candleWidth + candleWidth / 2} x2={plotWidth} y1={y(Number(selectedTradeOverlay.initial_sl_price))} y2={y(Number(selectedTradeOverlay.initial_sl_price))} stroke={CHART_COLORS.initialSl} strokeWidth="1.5" strokeDasharray="6 4" />
+                   <line x1={Math.max(0, selectedTradeOverlay.entryIndex - start) * candleWidth + candleWidth / 2} x2={plotWidth} y1={y(Number(selectedTradeOverlay.final_sl_price))} y2={y(Number(selectedTradeOverlay.final_sl_price))} stroke={CHART_COLORS.effectiveSl} strokeWidth="1.8" />
+                   <line x1={Math.max(0, selectedTradeOverlay.entryIndex - start) * candleWidth + candleWidth / 2} x2={plotWidth} y1={y(Number(selectedTradeOverlay.target_price))} y2={y(Number(selectedTradeOverlay.target_price))} stroke={CHART_COLORS.target} strokeWidth="1.5" strokeDasharray="4 3" />
                 </g>
               )}
 
@@ -547,15 +576,15 @@ export default function SilverBacktestChart({
                     Number(selectedTradeOverlay.final_sl_price),
                   )}
                   fill="none"
-                  stroke="#fbbf24"
+                   stroke={CHART_COLORS.trailing}
                   strokeWidth="2"
                 />
               )}
 
               {crosshair && activeCandle && activePrice !== null && (
                 <g pointerEvents="none">
-                  <line x1={activeX} x2={activeX} y1={0} y2={priceHeight + 18} stroke="#9ca3af" strokeDasharray="5 5" strokeWidth="1" opacity="0.75" />
-                  <line x1={0} x2={plotWidth} y1={crosshair.y} y2={crosshair.y} stroke="#9ca3af" strokeDasharray="5 5" strokeWidth="1" opacity="0.75" />
+                  <line x1={activeX} x2={activeX} y1={0} y2={priceHeight + 18} stroke={CHART_COLORS.crosshair} strokeDasharray="5 5" strokeWidth="1" opacity="0.75" />
+                  <line x1={0} x2={plotWidth} y1={crosshair.y} y2={crosshair.y} stroke={CHART_COLORS.crosshair} strokeDasharray="5 5" strokeWidth="1" opacity="0.75" />
                 </g>
               )}
 
@@ -693,17 +722,17 @@ function ChartSymbolLibrary() {
         <div className="text-[11px] text-gray-500">15-minute candles · IST · selected trade is highlighted</div>
       </div>
       <div className="mt-3 grid gap-x-4 gap-y-2 sm:grid-cols-2 xl:grid-cols-4">
-        <LegendItem swatch="buy" label="BUY entry" detail="Blue down arrow" />
+        <LegendItem swatch="buy" label="BUY entry" detail="Green down arrow" />
         <LegendItem swatch="sell" label="SELL entry" detail="Red up arrow" />
         <LegendItem swatch="exit" label="Selected exit" detail="Gold exit pointer" />
-        <LegendItem swatch="path" label="Trade path" detail="Entry-to-exit line" />
-        <LegendItem swatch="setup-buy" label="BUY setup" detail="Green setup dot" />
-        <LegendItem swatch="setup-sell" label="SELL setup" detail="Red setup dot" />
-        <LegendItem swatch="trigger" label="Trigger" detail="Dashed side-colored line" />
+        <LegendItem swatch="path" label="Trade path" detail="Pink entry-to-exit line" />
+        <LegendItem swatch="setup-buy" label="BUY setup" detail="Teal setup dot" />
+        <LegendItem swatch="setup-sell" label="SELL setup" detail="Magenta setup dot" />
+        <LegendItem swatch="trigger" label="Trigger" detail="Teal/magenta dashed line" />
         <LegendItem swatch="sl-initial" label="Initial SL" detail="Orange dashed line" />
-        <LegendItem swatch="sl-final" label="Effective SL" detail="Orange solid line" />
-        <LegendItem swatch="target" label="Target" detail="Purple dashed line" />
-        <LegendItem swatch="trailing" label="Trailing path" detail="Gold stepped line" />
+        <LegendItem swatch="sl-final" label="Effective SL" detail="Pink solid line" />
+        <LegendItem swatch="target" label="Target" detail="Violet dashed line" />
+        <LegendItem swatch="trailing" label="Trailing path" detail="Lime stepped line" />
         <LegendItem swatch="crosshair" label="Crosshair" detail="Gray guide lines" />
       </div>
     </div>
@@ -726,7 +755,11 @@ function LegendSwatch({ type }: { type: string }) {
   if (type === 'buy' || type === 'sell') {
     const buy = type === 'buy';
     return (
-      <span className={`relative inline-flex h-8 w-7 shrink-0 items-center justify-center ${buy ? 'text-[#38bdf8]' : 'text-[#fb7185]'}`} aria-hidden="true">
+      <span
+        className="relative inline-flex h-8 w-7 shrink-0 items-center justify-center"
+        style={{ color: buy ? CHART_COLORS.buy : CHART_COLORS.sell }}
+        aria-hidden="true"
+      >
         <span className="absolute h-5 w-0.5 rounded bg-current" />
         <span className={`absolute ${buy ? 'top-5' : 'bottom-5'} h-0 w-0 border-x-[5px] border-x-transparent ${buy ? 'border-t-[7px] border-t-current' : 'border-b-[7px] border-b-current'}`} />
       </span>
@@ -735,7 +768,7 @@ function LegendSwatch({ type }: { type: string }) {
 
   if (type === 'exit') {
     return (
-      <span className="relative inline-flex h-8 w-7 shrink-0 items-center justify-center text-[#f59e0b]" aria-hidden="true">
+      <span className="relative inline-flex h-8 w-7 shrink-0 items-center justify-center" style={{ color: CHART_COLORS.exit }} aria-hidden="true">
         <span className="absolute h-5 w-0.5 rounded bg-current" />
         <span className="absolute top-5 h-0 w-0 border-x-[5px] border-t-[7px] border-x-transparent border-t-current" />
         <span className="absolute h-2.5 w-2.5 rounded-full border-2 border-current bg-[#0a0e14]" />
@@ -744,15 +777,15 @@ function LegendSwatch({ type }: { type: string }) {
   }
 
   const styles: Record<string, string> = {
-    path: 'h-0 w-7 border-t-2 border-[#38bdf8]',
-    'setup-buy': 'h-3 w-3 rounded-full bg-[#22c55e]',
-    'setup-sell': 'h-3 w-3 rounded-full bg-[#ef4444]',
-    trigger: 'h-0 w-7 border-t border-dashed border-[#22c55e]',
-    'sl-initial': 'h-0 w-7 border-t-2 border-dashed border-[#f59e0b]',
-    'sl-final': 'h-0 w-7 border-t-2 border-[#f97316]',
-    target: 'h-0 w-7 border-t-2 border-dashed border-[#a78bfa]',
-    trailing: 'h-0 w-7 border-t-2 border-[#fbbf24]',
-    crosshair: 'h-0 w-7 border-t border-dashed border-[#9ca3af]',
+    path: 'h-0 w-7 border-t-2 border-[#f0abfc]',
+    'setup-buy': 'h-3 w-3 rounded-full bg-[#14b8a6]',
+    'setup-sell': 'h-3 w-3 rounded-full bg-[#d946ef]',
+    trigger: 'h-0 w-7 border-t border-dashed border-[#14b8a6]',
+    'sl-initial': 'h-0 w-7 border-t-2 border-dashed border-[#fb923c]',
+    'sl-final': 'h-0 w-7 border-t-2 border-[#ec4899]',
+    target: 'h-0 w-7 border-t-2 border-dashed border-[#8b5cf6]',
+    trailing: 'h-0 w-7 border-t-2 border-[#a3e635]',
+    crosshair: 'h-0 w-7 border-t border-dashed border-[#94a3b8]',
   };
   return <span className={`inline-flex w-7 shrink-0 items-center justify-center ${styles[type] || 'h-3 w-3 rounded-full bg-[#64748b]'}`} aria-hidden="true" />;
 }
