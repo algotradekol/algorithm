@@ -195,12 +195,13 @@ export default function SilverBacktestChart({
         }
       : null
   );
-  const entryStackGroups = new Map<number, any[]>();
+  const entryMarkerGroups = new Map<string, any[]>();
   visibleTradeOverlays.forEach((trade: any) => {
     const anchorIndex = Math.max(start, trade.entryIndex);
-    const group = entryStackGroups.get(anchorIndex) || [];
+    const groupKey = `${trade.side || 'UNKNOWN'}:${anchorIndex}`;
+    const group = entryMarkerGroups.get(groupKey) || [];
     group.push(trade);
-    entryStackGroups.set(anchorIndex, group);
+    entryMarkerGroups.set(groupKey, group);
   });
   const timeTicks = buildTimeTicks(visible, start, candleWidth, expanded ? 8 : 6);
   const chartHeight = expanded ? 680 : 600;
@@ -498,25 +499,23 @@ export default function SilverBacktestChart({
                 );
               })}
 
-              {overlays.trades && visibleTradeOverlays.map((trade: any) => {
-                 const entryAnchorIndex = Math.max(start, trade.entryIndex);
-                 const entryIndex = entryAnchorIndex - start;
-                 const exitIndex = Math.max(start, trade.exitIndex) - start;
-                 const entryStack = entryStackGroups.get(entryAnchorIndex) || [trade];
-                 const entryStackIndex = Math.max(0, entryStack.findIndex((item: any) => item.trade_id === trade.trade_id));
-                 const entryStackCenter = (entryStack.length - 1) / 2;
-                 const entryStackStep = Math.max(8, Math.min(18, candleWidth * 0.32));
-                 const entryX = entryIndex * candleWidth + candleWidth / 2 + (entryStackIndex - entryStackCenter) * entryStackStep;
-                 const exitX = exitIndex * candleWidth + candleWidth / 2;
+              {overlays.trades && Array.from(entryMarkerGroups.entries()).map(([groupKey, group]) => {
+                const trade = group.find((item: any) => item.selected) || group[0];
+                const entryAnchorIndex = Math.max(start, trade.entryIndex);
+                const entryIndex = entryAnchorIndex - start;
+                const exitIndex = Math.max(start, trade.exitIndex) - start;
+                const entryX = entryIndex * candleWidth + candleWidth / 2;
+                const exitX = exitIndex * candleWidth + candleWidth / 2;
                 const entryCandle = normalized[Math.max(0, Math.min(normalized.length - 1, trade.entryIndex))];
                 const entryY = y(Number(trade.entry_price));
                 const exitY = y(Number(trade.exit_price));
                 const isBuy = trade.side === 'BUY';
-                 const color = isBuy ? CHART_COLORS.buy : CHART_COLORS.sell;
-                const opacity = trade.selected ? 1 : 0.55;
+                const isSelected = Boolean(trade.selected);
+                const color = isBuy ? CHART_COLORS.buy : CHART_COLORS.sell;
+                const opacity = isSelected ? 1 : 0.75;
                 const candleBoundaryY = isBuy ? y(Number(entryCandle?.high ?? trade.entry_price)) : y(Number(entryCandle?.low ?? trade.entry_price));
-                const arrowGap = trade.selected ? 20 : 16;
-                const arrowReach = trade.selected ? 52 : 44;
+                const arrowGap = isSelected ? 20 : 16;
+                const arrowReach = isSelected ? 52 : 44;
                 const tipY = isBuy
                   ? Math.max(18, candleBoundaryY - arrowGap)
                   : Math.min(priceHeight - 12, candleBoundaryY + arrowGap);
@@ -525,32 +524,40 @@ export default function SilverBacktestChart({
                 const arrowHeadPoints = isBuy
                   ? `${entryX - 7},${tipY - 12} ${entryX + 7},${tipY - 12} ${entryX},${tipY}`
                   : `${entryX - 7},${tipY + 12} ${entryX + 7},${tipY + 12} ${entryX},${tipY}`;
-                 const exitPointerColor = CHART_COLORS.exit;
-                 return (
+                const exitPointerColor = CHART_COLORS.exit;
+                const tradeCount = group.length;
+                return (
                   <g
-                    key={trade.trade_id}
+                    key={`entry-group-${groupKey}`}
                     opacity={opacity}
                     onClick={() => onSelectedTradeIdChange(trade.trade_id)}
                     style={{ cursor: 'pointer' }}
                   >
-                    <line x1={entryX} x2={entryX} y1={shaftStartY} y2={shaftEndY} stroke={color} strokeWidth={trade.selected ? 3 : 2.4} strokeLinecap="round" />
+                    <title>{`${tradeCount} executed ${trade.side || ''} trade${tradeCount === 1 ? '' : 's'} in this 15-minute candle. Click to inspect ${trade.trade_id}.`}</title>
+                    <line x1={entryX} x2={entryX} y1={shaftStartY} y2={shaftEndY} stroke={color} strokeWidth={isSelected ? 3 : 2.4} strokeLinecap="round" />
                     <polygon points={arrowHeadPoints} fill={color} stroke="#e5e7eb" strokeWidth="0.8" />
-                    {trade.selected && (
+                    {tradeCount > 1 && (
+                      <g pointerEvents="none">
+                        <rect x={entryX + 10} y={tipY - 12} width={36} height={20} rx={4} fill="#111827" stroke={color} strokeWidth="1.2" />
+                        <text x={entryX + 28} y={tipY + 2} textAnchor="middle" fill="#f8fafc" fontSize="12" fontWeight="800" fontFamily="ui-monospace">×{tradeCount}</text>
+                      </g>
+                    )}
+                    {isSelected && (
                       <g>
-                         <line x1={entryX} x2={exitX} y1={entryY} y2={exitY} stroke={CHART_COLORS.tradePath} strokeWidth="2.4" />
-                         <circle cx={exitX} cy={exitY} r="5.4" fill="#0a0e14" stroke={exitPointerColor} strokeWidth="2.4" />
-                       </g>
-                     )}
-                     <circle
-                       cx={entryX}
-                       cy={entryY}
-                       r={trade.selected ? 5.4 : 4}
-                       fill="#0a0e14"
-                       stroke={CHART_COLORS.entryPrice}
-                       strokeWidth={trade.selected ? 2.6 : 2}
-                     />
-                   </g>
-                 );
+                        <line x1={entryX} x2={exitX} y1={entryY} y2={exitY} stroke={CHART_COLORS.tradePath} strokeWidth="2.4" />
+                        <circle cx={exitX} cy={exitY} r="5.4" fill="#0a0e14" stroke={exitPointerColor} strokeWidth="2.4" />
+                      </g>
+                    )}
+                    <circle
+                      cx={entryX}
+                      cy={entryY}
+                      r={isSelected ? 5.4 : 4.5}
+                      fill="#0a0e14"
+                      stroke={CHART_COLORS.entryPrice}
+                      strokeWidth={isSelected ? 2.6 : 2}
+                    />
+                  </g>
+                );
               })}
 
               {overlays.levels && selectedTradeOverlay && (
@@ -723,7 +730,7 @@ function ChartSymbolLibrary() {
       <div className="mt-3 grid gap-x-4 gap-y-2 sm:grid-cols-2 xl:grid-cols-4">
         <LegendItem swatch="buy" label="BUY entry" detail="Green down arrow" />
         <LegendItem swatch="sell" label="SELL entry" detail="Red up arrow" />
-        <LegendItem swatch="entry-price" label="Entry price" detail="Cyan dot at execution price" />
+        <LegendItem swatch="entry-price" label="Entry price" detail="Cyan dot; ×N groups same-candle trades" />
         <LegendItem swatch="exit" label="Selected exit" detail="Gold exit dot" />
         <LegendItem swatch="path" label="Trade path" detail="Pink entry-to-exit line" />
         <LegendItem swatch="setup-buy" label="BUY setup" detail="Teal setup dot" />
