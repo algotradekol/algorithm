@@ -3224,6 +3224,85 @@ def test_algo3_backtest_trailing_metadata():
         check("final SL moved above initial SL for BUY", float(trade.get("sl_price") or 0) > float(trade.get("initial_sl_price") or 0), f"trade={trade}")
 
 
+def test_algo3_backtest_sell_trailing_exits_on_reversal():
+    print("\n50c. algo3 backtest SELL trailing follows the low and exits on an upward reversal")
+    import datetime as _dt
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    symbol = "MCX:TEST-EQ"
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+
+    def push(offset, o, h, l, c, v=100):
+        history.append({
+            "time": base + _dt.timedelta(minutes=offset),
+            "open": o, "high": h, "low": l, "close": c, "volume": v,
+        })
+
+    for b in range(20):
+        for m in range(15):
+            push(b * 15 + m, 90000, 90000, 90000, 90000)
+
+    # Carry a confirmed red reference at 89,900. The next red chain enters
+    # at 89,700, then price falls far enough to arm a 150-point trail.
+    for m in range(15):
+        push(20 * 15 + m, 90020, 90030, 89880, 89900)
+    for m in range(15):
+        push(21 * 15 + m, 90020, 90160, 90010, 90150)
+    push(22 * 15, 89850, 89780, 89690, 89650)
+
+    # Favorable low = 89,480, so the SELL trail becomes 89,630. The green
+    # reversal trades through that level and must exit at the tightened stop,
+    # not the original 89,800 SL.
+    push(22 * 15 + 1, 89650, 89650, 89480, 89500)
+    push(22 * 15 + 2, 89500, 89900, 89490, 89900)
+    push(23 * 15, 89600, 89600, 89600, 89600)
+
+    settings = {
+        "silver_breakout_points": 200,
+        "sl_points": 100,
+        "target_points": 1000,
+        "trailing_sl_enabled": True,
+        "tsl_trigger_points": 200,
+        "tsl_distance_points": 150,
+        "exit_mode": "fixed_target_trailing_sl",
+        "silver_lots": 1,
+    }
+    charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0,
+               "exchange_pct": 0, "sebi_pct": 0, "gst_pct": 0,
+               "stamp_duty_pct": 0}
+    first_date = _dt.date(2026, 8, 19)
+
+    with _lock:
+        _jobs["sell-trailing-test"] = {"cancel_requested": False}
+    try:
+        results = bt._simulate_silver_micro_range(
+            job_id="sell-trailing-test",
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=first_date,
+            symbol=symbol,
+            history=history,
+            trading_days=[first_date],
+            settings=settings,
+            charges_config=charges,
+        )
+    finally:
+        with _lock:
+            _jobs.pop("sell-trailing-test", None)
+
+    trades = results[0]["trades"]
+    check("backtest SELL trailing produced one trade", len(trades) == 1, f"trades={trades}")
+    if trades:
+        trade = trades[0]
+        check("SELL trailing trade exits by SL", trade.get("exit_reason") == "SL", f"trade={trade}")
+        check("SELL trailing activated", trade.get("trailing_sl_active") is True, f"trade={trade}")
+        check("SELL trailing saved a move", int(trade.get("trailing_move_count") or 0) >= 1, f"trade={trade}")
+        check("SELL final SL follows the favorable low", abs(float(trade.get("sl_price") or 0) - 89630.0) < 1e-9, f"trade={trade}")
+        check("SELL exits at the tightened trailing SL", abs(float(trade.get("exit_price") or 0) - 89630.0) < 1e-9, f"trade={trade}")
+
+
 def test_algo3_backtest_respects_trailing_toggle():
     print("\n50c. algo3 backtest respects trailing toggle the same way live does")
     import datetime as _dt
@@ -4452,6 +4531,7 @@ def main():
     test_algo3_candle_close_trigger_fires()
     test_algo3_backtest_sell_red_chain_survives_green_candles()
     test_algo3_backtest_trailing_metadata()
+    test_algo3_backtest_sell_trailing_exits_on_reversal()
     test_algo3_backtest_respects_trailing_toggle()
     test_algo3_lot_based_qty()
     test_broker_positions_entry_time_from_tradebook()

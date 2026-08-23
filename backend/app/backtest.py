@@ -1905,6 +1905,23 @@ def _simulate_silver_micro_range(
                         "new_sl": round(new_sl, 2),
                         "protected_points": round(new_sl - entry, 2),
                     })
+        else:
+            gain = entry - float(position["lowest"])
+            if gain >= tsl_trigger_pts:
+                position["trailing_sl_active"] = True
+                new_sl = float(position["lowest"]) + tsl_distance_pts
+                if new_sl < float(position["sl_price"]):
+                    previous_sl = float(position["sl_price"])
+                    position["sl_price"] = new_sl
+                    position.setdefault("trailing_moves", []).append({
+                        "time": position.get("_last_trail_time"),
+                        "side": side,
+                        "gain_points": round(gain, 2),
+                        "reference_price": round(float(position["lowest"]), 2),
+                        "previous_sl": round(previous_sl, 2),
+                        "new_sl": round(new_sl, 2),
+                        "protected_points": round(entry - new_sl, 2),
+                    })
 
     def check_red_chain_intrabar(candle: dict, day: datetime.date, in_scope: bool):
         """Enter current red-chain SELLs from the 1-minute crossing.
@@ -2130,6 +2147,11 @@ def _simulate_silver_micro_range(
                     else:
                         position["entry_window_favorable_points"] = max(float(position.get("entry_window_favorable_points") or 0.0), max(0.0, entry - candle["low"]))
                         position["entry_window_adverse_points"] = max(float(position.get("entry_window_adverse_points") or 0.0), max(0.0, candle["high"] - entry))
+                # Mirror the live broker: update the trailing stop from this
+                # bar's favorable extreme before checking whether its
+                # reversal hits the newly tightened stop.
+                maybe_apply_trailing(entry, side)
+                sl = float(position["sl_price"])
                 stop_hit = candle["low"] <= sl if side == "BUY" else candle["high"] >= sl
                 target_hit = candle["high"] >= target if side == "BUY" else candle["low"] <= target
                 use_target = exit_mode != "trailing_sl_only"
@@ -2140,8 +2162,6 @@ def _simulate_silver_micro_range(
                     close_position(sl, ts, "SL", day)
                 elif target_hit and use_target:
                     close_position(target, ts, "TARGET", day)
-                else:
-                    maybe_apply_trailing(entry, side)
 
         prev_ltp = candle["close"]
         last_bar_processed = candle
