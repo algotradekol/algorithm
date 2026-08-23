@@ -2155,6 +2155,33 @@ def test_algo3_no_reentry_same_side():
           len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
 
 
+def test_algo3_unlimited_reentry_after_exit_same_setup():
+    print("\n41a. algo3 allows unlimited same-reference BUY re-entry after each exit")
+    import datetime as _dt
+    strat = _make_bare_algo3()
+    strat._buy_setup_close = 92000.0
+    strat._buy_setup_bar_at = _dt.datetime(2026, 8, 20, 19, 15)
+
+    def cross_up():
+        strat._prev_ltp = 92000.0
+        strat._check_triggers(92200.0)
+
+    cross_up()
+    check("first BUY opened", len(strat.broker.opens) == 1)
+
+    first_position = strat.broker.open_positions()[0]
+    strat.broker.close_trade(first_position, 92100.0, "SL")
+    cross_up()
+    check("same setup re-enters after first exit", len(strat.broker.opens) == 2,
+          f"opens={strat.broker.opens}")
+
+    second_position = strat.broker.open_positions()[0]
+    strat.broker.close_trade(second_position, 92100.0, "SL")
+    cross_up()
+    check("same setup can re-enter again after second exit", len(strat.broker.opens) == 3,
+          f"opens={strat.broker.opens}")
+
+
 def test_algo3_failed_live_attempt_consumes_setup_once():
     print("\n41b. algo3 failed live attempt consumes the current setup and does not retry on later ticks")
     strat = _make_bare_algo3()
@@ -2234,6 +2261,7 @@ def test_algo3_live_broker_guard_blocks_when_symbol_busy():
 # ── 42. Entry payload uses POINTS for SL/target ────────────────────────
 def test_algo3_entry_uses_points_sl_target():
     print("\n42. algo3 entry SL/target are computed as POINTS from entry, not %")
+    import datetime as _dt
     strat = _make_bare_algo3(settings_overrides={"sl_points": 200, "target_points": 500})
     strat._buy_setup_close = 92000.0
     strat._prev_ltp = 92100
@@ -2249,8 +2277,16 @@ def test_algo3_entry_uses_points_sl_target():
     # SELL side inverse
     strat2 = _make_bare_algo3(settings_overrides={"sl_points": 200, "target_points": 500})
     strat2._sell_setup_close = 89000.0
-    strat2._prev_ltp = 88900
-    strat2._check_triggers(88800)
+    strat2._sell_setup_bar_at = _dt.datetime(2026, 8, 20, 19, 15)
+    strat2._ema20 = 90000.0
+    strat2._check_candle_close_trigger({
+        "time": _dt.datetime(2026, 8, 20, 19, 30),
+        "open": 88900.0,
+        "high": 88950.0,
+        "low": 88750.0,
+        "close": 88800.0,
+        "volume": 10,
+    })
     check("one SELL open", len(strat2.broker.opens) == 1)
     pos2 = strat2.broker.opens[0]
     # entry = 88800, sl = 88800 + 200 = 89000, target = 88800 - 500 = 88300
@@ -4142,6 +4178,7 @@ def main():
     test_algo3_configurable_n_parameter()
     test_algo3_reversal_on_contra_signal()
     test_algo3_no_reentry_same_side()
+    test_algo3_unlimited_reentry_after_exit_same_setup()
     test_algo3_failed_live_attempt_consumes_setup_once()
     test_algo3_new_setup_rearms_after_failed_attempt()
     test_algo3_live_broker_guard_blocks_when_symbol_busy()
