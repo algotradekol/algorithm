@@ -11,6 +11,7 @@ const CHART_COLORS = {
   selectedTrade: '#22d3ee',
   selectedCandle: '#f8fafc',
   tradePath: '#f0abfc',
+  entryPrice: '#22d3ee',
   exit: '#facc15',
   initialSl: '#fb923c',
   effectiveSl: '#ec4899',
@@ -525,15 +526,7 @@ export default function SilverBacktestChart({
                   ? `${entryX - 7},${tipY - 12} ${entryX + 7},${tipY - 12} ${entryX},${tipY}`
                   : `${entryX - 7},${tipY + 12} ${entryX + 7},${tipY + 12} ${entryX},${tipY}`;
                  const exitPointerColor = CHART_COLORS.exit;
-                const exitTipY = exitY;
-                const exitShaftStartY = isBuy
-                  ? Math.min(priceHeight - 10, exitTipY + 48)
-                  : Math.max(10, exitTipY - 48);
-                const exitShaftEndY = isBuy ? exitTipY + 12 : exitTipY - 12;
-                const exitHeadPoints = isBuy
-                  ? `${exitX - 6},${exitTipY + 12} ${exitX + 6},${exitTipY + 12} ${exitX},${exitTipY}`
-                  : `${exitX - 6},${exitTipY - 12} ${exitX + 6},${exitTipY - 12} ${exitX},${exitTipY}`;
-                return (
+                 return (
                   <g
                     key={trade.trade_id}
                     opacity={opacity}
@@ -545,13 +538,19 @@ export default function SilverBacktestChart({
                     {trade.selected && (
                       <g>
                          <line x1={entryX} x2={exitX} y1={entryY} y2={exitY} stroke={CHART_COLORS.tradePath} strokeWidth="2.4" />
-                        <line x1={exitX} x2={exitX} y1={exitShaftStartY} y2={exitShaftEndY} stroke={exitPointerColor} strokeWidth="2.6" strokeLinecap="round" />
-                        <polygon points={exitHeadPoints} fill={exitPointerColor} stroke="#fef3c7" strokeWidth="0.8" />
-                        <circle cx={exitX} cy={exitY} r="5.4" fill="#0a0e14" stroke={exitPointerColor} strokeWidth="2.4" />
-                      </g>
-                    )}
-                  </g>
-                );
+                         <circle cx={exitX} cy={exitY} r="5.4" fill="#0a0e14" stroke={exitPointerColor} strokeWidth="2.4" />
+                       </g>
+                     )}
+                     <circle
+                       cx={entryX}
+                       cy={entryY}
+                       r={trade.selected ? 5.4 : 4}
+                       fill="#0a0e14"
+                       stroke={CHART_COLORS.entryPrice}
+                       strokeWidth={trade.selected ? 2.6 : 2}
+                     />
+                   </g>
+                 );
               })}
 
               {overlays.levels && selectedTradeOverlay && (
@@ -724,7 +723,8 @@ function ChartSymbolLibrary() {
       <div className="mt-3 grid gap-x-4 gap-y-2 sm:grid-cols-2 xl:grid-cols-4">
         <LegendItem swatch="buy" label="BUY entry" detail="Green down arrow" />
         <LegendItem swatch="sell" label="SELL entry" detail="Red up arrow" />
-        <LegendItem swatch="exit" label="Selected exit" detail="Gold exit pointer" />
+        <LegendItem swatch="entry-price" label="Entry price" detail="Cyan dot at execution price" />
+        <LegendItem swatch="exit" label="Selected exit" detail="Gold exit dot" />
         <LegendItem swatch="path" label="Trade path" detail="Pink entry-to-exit line" />
         <LegendItem swatch="setup-buy" label="BUY setup" detail="Teal setup dot" />
         <LegendItem swatch="setup-sell" label="SELL setup" detail="Magenta setup dot" />
@@ -769,11 +769,13 @@ function LegendSwatch({ type }: { type: string }) {
   if (type === 'exit') {
     return (
       <span className="relative inline-flex h-8 w-7 shrink-0 items-center justify-center" style={{ color: CHART_COLORS.exit }} aria-hidden="true">
-        <span className="absolute h-5 w-0.5 rounded bg-current" />
-        <span className="absolute top-5 h-0 w-0 border-x-[5px] border-t-[7px] border-x-transparent border-t-current" />
-        <span className="absolute h-2.5 w-2.5 rounded-full border-2 border-current bg-[#0a0e14]" />
+        <span className="absolute h-3 w-3 rounded-full border-2 border-current bg-[#0a0e14]" />
       </span>
     );
+  }
+
+  if (type === 'entry-price') {
+    return <span className="inline-flex h-8 w-7 shrink-0 items-center justify-center" aria-hidden="true"><span className="h-3 w-3 rounded-full border-2 border-[#22d3ee] bg-[#0a0e14]" /></span>;
   }
 
   const styles: Record<string, string> = {
