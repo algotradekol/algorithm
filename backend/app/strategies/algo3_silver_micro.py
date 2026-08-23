@@ -2,20 +2,20 @@
 algo3_silver_micro.py — Silver Micro (MCX:SILVERMIC*) strategy.
 
 Rewritten 2026-08-19 to match the client's spec doc (Silver Mic_Volume.docx).
-The previous 5-minute EMA+volume version has been retired.
+The live default BUY path remains the original 5-minute EMA+volume
+confirmation model for parity with the client's previously tested trades.
 
 Rules per spec:
   Instrument:   MCX Silver Micro (SILVERMIC)
   Timeframe:    15 minute candles
   Indicator:    20 EMA on close (no volume filter)
 
-  BUY setup:    a green candle (close > open) closes above EMA20.
-                Its close is stored as the BUY setup level. Each new
-                qualifying candle OVERWRITES the stored level so it
-                always reflects the most recent qualifier.
-  BUY trigger:  live LTP crosses (setup_close + n) in an UPWARD
-                direction. Default n = 150 points; configurable via
-                settings["silver_breakout_points"].
+  BUY setup (default):  a green 5-minute candle closes above price EMA20
+                and volume EMA20. A same-direction 5-minute confirmation
+                must close above the setup close within 15 minutes, then the
+                entry is taken at the next 5-minute candle open.
+  BUY alternate:  the 15-minute setup/offset breakout remains available in
+                the backtest, but is not the live default.
 
   SELL setup:   a red candle (close < open) closes below EMA20.
                 Its close is stored as the SELL reference close.
@@ -63,6 +63,9 @@ from ..timezone import IST
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
 BUCKET_MINUTES = 15
+LEGACY_BUY_BUCKET_MINUTES = 5
+LEGACY_BUY_CONFIRMATION_MINUTES = 15
+SILVER_BUY_PLAN_LEGACY_CONFIRMATION = "legacy_confirmation"
 SILVER_MICRO_ROOT = "SILVERMIC"
 # MCX Silver Micro contract size: 1 lot = 1 kg = 1 unit on Fyers.
 # Qty is therefore lots * 1. Kept as a constant so it's easy to adjust
@@ -120,6 +123,11 @@ def _bucket_start(ts: datetime.datetime, minutes: int = BUCKET_MINUTES) -> datet
     return ts.replace(minute=minute, second=0, microsecond=0)
 
 
+def _legacy_buy_bucket_start(ts: datetime.datetime) -> datetime.datetime:
+    """Round a minute timestamp down to the legacy BUY 5-minute bucket."""
+    return _bucket_start(ts, LEGACY_BUY_BUCKET_MINUTES)
+
+
 def _latest_closed_minute_cutoff(now: datetime.datetime | None = None) -> datetime.datetime:
     """Return the earliest minute timestamp that is still forming.
 
@@ -156,7 +164,7 @@ def _fmt(value: float | None) -> str:
 
 class Algo3SilverMicro(Strategy):
     algo_id = "algo3"
-    display_name = "Silver Micro - 15m EMA breakout"
+    display_name = "Silver Micro - legacy BUY / red-chain SELL"
     _MCX_SESSION_START = "09:00"
     _MCX_SESSION_END = "23:30"
     _MCX_SQUARE_OFF_TIME = "23:25"
@@ -182,6 +190,19 @@ class Algo3SilverMicro(Strategy):
         self._last_ingested_minute_at: datetime.datetime | None = None
         self._bars: deque[dict] = deque(maxlen=500)
         self._ema20: float | None = None
+
+        # Live BUY defaults to the legacy model that was previously tested
+        # successfully. SELL continues to use the current 15m red-chain
+        # state below. Keeping the two state machines separate prevents a
+        # 5m BUY confirmation from changing SELL reference behavior.
+        self._legacy_buy_5m_buffer: list[dict] = []
+        self._legacy_buy_5m_bucket: datetime.datetime | None = None
+        self._legacy_buy_price_ema20: float | None = None
+        self._legacy_buy_volume_ema20: float | None = None
+        self._legacy_buy_bars_finalized = 0
+        self._legacy_buy_pending_setup: dict | None = None
+        self._legacy_buy_pending_entry: dict | None = None
+        self._legacy_buy_entry_context: dict | None = None
 
         # Stored setup levels — most recent qualifying candle's close.
         # Persist across candles until overwritten by a fresh qualifier.
@@ -218,6 +239,11 @@ class Algo3SilverMicro(Strategy):
     def reload_settings(self):
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
+        if self._silver_buy_plan() != SILVER_BUY_PLAN_LEGACY_CONFIRMATION:
+            # The live engine currently supports only the safe, previously
+            # tested legacy BUY path. Do not leave stale pending 5m state if
+            # an old settings row contains an obsolete plan value.
+            self._reset_legacy_buy_state()
 
     def market_session_start(self) -> str:
         return self._MCX_SESSION_START
@@ -272,6 +298,7 @@ class Algo3SilverMicro(Strategy):
         self._last_ingested_minute_at = None
         self._bars.clear()
         self._ema20 = None
+        self._reset_legacy_buy_state()
         self._buy_setup_close = None
         self._sell_setup_close = None
         self._buy_setup_bar_at = None
@@ -282,6 +309,20 @@ class Algo3SilverMicro(Strategy):
         self._last_attempted_sell_bar_at = None
         self._entry_attempt_in_flight = False
         self._entry_cooldown_until_monotonic = 0.0
+
+    def _reset_legacy_buy_state(self):
+        self._legacy_buy_5m_buffer = []
+        self._legacy_buy_5m_bucket = None
+        self._legacy_buy_price_ema20 = None
+        self._legacy_buy_volume_ema20 = None
+        self._legacy_buy_bars_finalized = 0
+        self._legacy_buy_pending_setup = None
+        self._legacy_buy_pending_entry = None
+        self._legacy_buy_entry_context = None
+
+    def _silver_buy_plan(self) -> str:
+        """Return the live BUY model, defaulting safely to legacy parity."""
+        return str(self.settings.get("silver_buy_plan") or SILVER_BUY_PLAN_LEGACY_CONFIRMATION)
 
     def _load_history_background(self):
         try:
@@ -311,6 +352,7 @@ class Algo3SilverMicro(Strategy):
                 for candle in history:
                     self._ingest_minute_candle(candle, allow_signals=False)
                 self._finalize_bar(allow_signals=False)
+                self._finalize_legacy_buy_bar(allow_signals=False)
                 self._last_warmup_at = time.monotonic()
             else:
                 # Only stamp 0 if we've never had a successful warmup yet.
@@ -412,6 +454,11 @@ class Algo3SilverMicro(Strategy):
         self._last_ingested_minute_at = candle_time
         bucket = _bucket_start(candle_time)
 
+        # Keep the legacy BUY model on its own 5-minute aggregation. This is
+        # fed from the exact same 1-minute source as the 15-minute SELL path,
+        # so the two sides cannot drift because of different data requests.
+        self._ingest_legacy_buy_minute(minute_candle, allow_signals=allow_signals)
+
         if self._current_bucket is None:
             self._current_bucket = bucket
             self._minute_buffer = [minute_candle]
@@ -425,6 +472,113 @@ class Algo3SilverMicro(Strategy):
             return
 
         self._minute_buffer.append(minute_candle)
+
+    def _ingest_legacy_buy_minute(self, candle: dict, allow_signals: bool):
+        if self._silver_buy_plan() != SILVER_BUY_PLAN_LEGACY_CONFIRMATION:
+            return
+        bucket = _legacy_buy_bucket_start(candle["time"])
+        if self._legacy_buy_5m_bucket is None:
+            self._legacy_buy_5m_bucket = bucket
+            self._legacy_buy_5m_buffer = [candle]
+            return
+        if bucket != self._legacy_buy_5m_bucket:
+            self._finalize_legacy_buy_bar(allow_signals=allow_signals)
+            self._legacy_buy_5m_bucket = bucket
+            self._legacy_buy_5m_buffer = [candle]
+            # A confirmed setup enters at the OPEN of this new 5m bucket,
+            # not at a later close or an arbitrary websocket tick.
+            if allow_signals:
+                self._execute_legacy_buy_entry(candle)
+            return
+        self._legacy_buy_5m_buffer.append(candle)
+
+    def _finalize_legacy_buy_bar(self, allow_signals: bool, require_closed: bool = True):
+        if not self._legacy_buy_5m_buffer or self._legacy_buy_5m_bucket is None:
+            return
+        if require_closed and not _is_bucket_closed(self._legacy_buy_5m_bucket):
+            return
+        bar = {
+            "time": self._legacy_buy_5m_bucket,
+            "open": self._legacy_buy_5m_buffer[0]["open"],
+            "high": max(c["high"] for c in self._legacy_buy_5m_buffer),
+            "low": min(c["low"] for c in self._legacy_buy_5m_buffer),
+            "close": self._legacy_buy_5m_buffer[-1]["close"],
+            "volume": sum(c["volume"] for c in self._legacy_buy_5m_buffer),
+            "minute_count": len(self._legacy_buy_5m_buffer),
+        }
+        self._legacy_buy_5m_buffer = []
+        self._legacy_buy_price_ema20 = _ema_step(self._legacy_buy_price_ema20, bar["close"])
+        self._legacy_buy_volume_ema20 = _ema_step(self._legacy_buy_volume_ema20, bar["volume"])
+        self._legacy_buy_bars_finalized += 1
+        if allow_signals:
+            self._evaluate_legacy_buy_bar(bar)
+
+    def _evaluate_legacy_buy_bar(self, bar: dict):
+        if self._legacy_buy_bars_finalized < EMA_PERIOD:
+            return
+
+        pending = self._legacy_buy_pending_setup
+        if pending:
+            deadline = pending["setup_bucket"] + datetime.timedelta(minutes=LEGACY_BUY_CONFIRMATION_MINUTES)
+            if bar["time"] > deadline:
+                self._legacy_buy_pending_setup = None
+            elif (
+                bar["time"] > pending["setup_bucket"]
+                and bar["close"] > bar["open"]
+                and bar["close"] > pending["setup_close"]
+            ):
+                self._legacy_buy_pending_entry = {
+                    "entry_bucket": bar["time"] + datetime.timedelta(minutes=LEGACY_BUY_BUCKET_MINUTES),
+                    "setup": pending["setup"],
+                    "confirmation": bar,
+                }
+                self._legacy_buy_pending_setup = None
+
+        if (
+            bar["close"] > bar["open"]
+            and self._legacy_buy_price_ema20 is not None
+            and self._legacy_buy_volume_ema20 is not None
+            and bar["close"] > self._legacy_buy_price_ema20
+            and bar["volume"] > self._legacy_buy_volume_ema20
+        ):
+            self._legacy_buy_pending_setup = {
+                "setup_bucket": bar["time"],
+                "setup_close": bar["close"],
+                "setup": bar,
+            }
+            if self._last_bar_at:
+                print(
+                    f"[algo3] legacy BUY setup {bar['time'].isoformat()} "
+                    f"close={bar['close']:.2f} price_ema20={_fmt(self._legacy_buy_price_ema20)} "
+                    f"volume={bar['volume']:.0f} volume_ema20={_fmt(self._legacy_buy_volume_ema20)}"
+                )
+
+    def _execute_legacy_buy_entry(self, candle: dict):
+        pending = self._legacy_buy_pending_entry
+        if not pending or candle["time"] < pending["entry_bucket"]:
+            return
+        if self._open_position() and self._open_position().get("side") == "BUY":
+            self._legacy_buy_pending_entry = None
+            return
+        setup = pending["setup"]
+        self._legacy_buy_entry_context = {
+            "setup_close": float(setup["close"]),
+            "setup_time": setup["time"],
+            "confirmation_close": float(pending["confirmation"]["close"]),
+            "confirmation_time": pending["confirmation"]["time"],
+        }
+        try:
+            entered = self._fire_entry(
+                "BUY",
+                float(candle["open"]),
+                float(setup["close"]),
+                setup_bar_at_override=setup["time"],
+            )
+            if entered:
+                self._mark_fired("BUY", setup["time"])
+        finally:
+            self._legacy_buy_entry_context = None
+            self._legacy_buy_pending_entry = None
 
     def _finalize_bar(self, allow_signals: bool, require_closed: bool = True):
         if not self._minute_buffer or self._current_bucket is None:
@@ -539,6 +693,7 @@ class Algo3SilverMicro(Strategy):
             allow_signals = self.scan_enabled()
         bars_before = len(self._bars)
         self._finalize_bar(allow_signals=allow_signals, require_closed=True)
+        self._finalize_legacy_buy_bar(allow_signals=allow_signals, require_closed=True)
         return len(self._bars) > bars_before
 
     def _update_setups(self, bar: dict, log: bool = False):
@@ -554,7 +709,11 @@ class Algo3SilverMicro(Strategy):
         is_green = bar["close"] > bar["open"]
         is_red = bar["close"] < bar["open"]
         close = bar["close"]
-        if is_green and close > self._ema20:
+        if (
+            self._silver_buy_plan() != SILVER_BUY_PLAN_LEGACY_CONFIRMATION
+            and is_green
+            and close > self._ema20
+        ):
             old = self._buy_setup_close
             self._buy_setup_close = close
             self._buy_setup_bar_at = bar["time"]
@@ -767,7 +926,12 @@ class Algo3SilverMicro(Strategy):
         if n <= 0:
             return
 
-        buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
+        buy_level = (
+            self._buy_setup_close + n
+            if self._silver_buy_plan() != SILVER_BUY_PLAN_LEGACY_CONFIRMATION
+            and self._buy_setup_close is not None
+            else None
+        )
         prev = self._prev_ltp
 
         # Gap-through case: first live tick after warmup (or after a
@@ -817,7 +981,12 @@ class Algo3SilverMicro(Strategy):
         buy_qualifies = self._qualifies_as_buy_setup(bar)
         sell_qualifies = self._qualifies_as_sell_setup(bar)
 
-        buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
+        buy_level = (
+            self._buy_setup_close + n
+            if self._silver_buy_plan() != SILVER_BUY_PLAN_LEGACY_CONFIRMATION
+            and self._buy_setup_close is not None
+            else None
+        )
         sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
         buy_setup_identity = bar_at if buy_qualifies else self._buy_setup_bar_at
         sell_setup_identity = bar_at if sell_qualifies else None
@@ -934,6 +1103,14 @@ class Algo3SilverMicro(Strategy):
         n = self.settings.get("silver_breakout_points", 150)
         setup_close = self._buy_setup_close if side == "BUY" else self._sell_setup_close
         if side == "BUY":
+            if self._silver_buy_plan() == SILVER_BUY_PLAN_LEGACY_CONFIRMATION:
+                context = self._legacy_buy_entry_context or {}
+                return (
+                    f"5m silver legacy buy confirmation on {self.symbol}: setup close "
+                    f"{_fmt(context.get('setup_close'))} above price EMA20 and volume EMA20; "
+                    f"confirmation close {_fmt(context.get('confirmation_close'))} within 15m; "
+                    f"entered at the next 5m candle open near {entry_price:.2f}."
+                )
             return (
                 f"15m silver buy breakout on {self.symbol}: setup close "
                 f"{_fmt(setup_close)} + n={n} = trigger {_fmt(trigger_level)}, "
@@ -948,7 +1125,7 @@ class Algo3SilverMicro(Strategy):
         )
 
     def _signal_snapshot(self, side: str, entry_price: float, trigger_level: float) -> dict:
-        return {
+        snapshot = {
             "symbol": self.symbol,
             "timeframe": "15m",
             "side": side,
@@ -956,9 +1133,23 @@ class Algo3SilverMicro(Strategy):
             "trigger_level": trigger_level,
             "n_points": self.settings.get("silver_breakout_points", 150),
             "ema20": self._ema20,
+            "silver_buy_plan": self._silver_buy_plan(),
             "buy_setup_close": self._buy_setup_close,
             "sell_setup_close": self._sell_setup_close,
         }
+        if side == "BUY" and self._silver_buy_plan() == SILVER_BUY_PLAN_LEGACY_CONFIRMATION:
+            context = self._legacy_buy_entry_context or {}
+            snapshot.update({
+                "timeframe": "5m",
+                "buy_plan": SILVER_BUY_PLAN_LEGACY_CONFIRMATION,
+                "buy_setup_close": context.get("setup_close"),
+                "buy_setup_time": context.get("setup_time").isoformat() if context.get("setup_time") else None,
+                "buy_confirmation_close": context.get("confirmation_close"),
+                "buy_confirmation_time": context.get("confirmation_time").isoformat() if context.get("confirmation_time") else None,
+                "buy_price_ema20": self._legacy_buy_price_ema20,
+                "buy_volume_ema20": self._legacy_buy_volume_ema20,
+            })
+        return snapshot
 
     def _open_position(self) -> dict | None:
         for position in self.broker.open_positions():
@@ -993,6 +1184,12 @@ class Algo3SilverMicro(Strategy):
             "minute_buffer_count": len(self._minute_buffer),
             "current_bucket": self._current_bucket.isoformat() if self._current_bucket else None,
             "ema20": self._ema20,
+            "silver_buy_plan": self._silver_buy_plan(),
+            "legacy_buy_5m_bars": self._legacy_buy_bars_finalized,
+            "legacy_buy_price_ema20": self._legacy_buy_price_ema20,
+            "legacy_buy_volume_ema20": self._legacy_buy_volume_ema20,
+            "legacy_buy_pending_setup": bool(self._legacy_buy_pending_setup),
+            "legacy_buy_pending_entry": bool(self._legacy_buy_pending_entry),
             "buy_setup_close": self._buy_setup_close,
             "sell_setup_close": self._sell_setup_close,
             "buy_setup_bar_at": self._buy_setup_bar_at.isoformat() if self._buy_setup_bar_at else None,

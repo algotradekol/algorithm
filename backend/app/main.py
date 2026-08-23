@@ -875,6 +875,7 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
     from .backtest import start_backtest
     from .strategies.algo3_silver_micro import _resolve_silver_symbol
     algo_id = str(payload.get("algo_id") or "")
+    silver_buy_plan = payload.get("silver_buy_plan")
     silver_sell_plan = payload.get("silver_sell_plan")
     # Accept date for existing clients while range-aware clients send both fields.
     start_date = str(payload.get("start_date") or payload.get("date") or "")
@@ -888,6 +889,7 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
                 start_date,
                 end_date,
                 [_resolve_silver_symbol()],
+                silver_buy_plan=silver_buy_plan,
                 silver_sell_plan=silver_sell_plan,
             )
         return start_backtest(algo_id, start_date, end_date, engine.WATCHLIST)
