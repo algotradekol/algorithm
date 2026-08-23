@@ -1453,6 +1453,9 @@ def _simulate_silver_micro_range(
     last_bar_processed: dict | None = None
     position: dict | None = None
     position_candidate: dict | None = None
+    # Set only after a real SELL TARGET/SL exit. The next qualifying minute
+    # may continue the same red-chain move without inventing a fresh signal.
+    sell_reentry_after_exit: dict | None = None
 
     def finalize_15m_bar(allow_signals: bool):
         """Aggregate the minute_buffer into one 15m bar, update EMA20
@@ -1460,6 +1463,7 @@ def _simulate_silver_micro_range(
         nonlocal minute_buffer, ema20, buy_setup_close, sell_setup_close
         nonlocal buy_setup_context, sell_setup_context, buy_setup_bar_at, sell_setup_bar_at
         nonlocal last_fired_buy_setup_at, last_fired_sell_setup_at, bars_finalized
+        nonlocal sell_reentry_after_exit
         if not minute_buffer or current_bucket is None:
             return
         bar = {
@@ -1539,6 +1543,9 @@ def _simulate_silver_micro_range(
                 "previous_red_reference_close": previous_sell_reference_close,
                 "current_qualifying_red_close": bar["close"],
             }
+            # A finalized red bar becomes the new reference. Any handoff
+            # tied to the older reference must not leak into this candle.
+            sell_reentry_after_exit = None
         if allow_signals and first_date <= bar["time"].date() <= last_date:
             chart_day = daily_results.get(bar["time"].date())
             if chart_day:
@@ -1757,10 +1764,18 @@ def _simulate_silver_micro_range(
         }
 
     def close_position(exit_price: float, exit_time: datetime.datetime, exit_reason: str, day: datetime.date):
-        nonlocal position, position_candidate
+        nonlocal position, position_candidate, sell_reentry_after_exit
         if not position:
             return
         trade = _close_silver_micro_position(position, exit_price, exit_time, exit_reason, settings, charges_config)
+        if position.get("side") == "SELL" and exit_reason == "TARGET" and sell_setup_close is not None and sell_setup_bar_at is not None:
+            sell_reentry_after_exit = {
+                "setup_bar_at": sell_setup_bar_at,
+                "trigger_level": float(sell_setup_close) - n,
+                "exit_reason": exit_reason,
+            }
+        elif position.get("side") == "SELL":
+            sell_reentry_after_exit = None
         daily_results[day]["trades"].append(trade)
         daily_results[day]["chart"]["trades"].append({
             "trade_id": trade["trade_id"],
@@ -1931,7 +1946,7 @@ def _simulate_silver_micro_range(
         its first 1m low crossing is the simulator's best available entry
         point and is deliberately not replaced by the eventual 15m close.
         """
-        nonlocal last_fired_sell_setup_at
+        nonlocal last_fired_sell_setup_at, sell_reentry_after_exit
         if not in_scope or silver_sell_plan != SILVER_SELL_PLAN_RED_CHAIN:
             return
         if bars_finalized < EMA_PERIOD or sell_setup_close is None:
@@ -1955,7 +1970,13 @@ def _simulate_silver_micro_range(
                 or prev_ltp is None
             )
         )
-        if not current_candle_is_red or not crossed:
+        same_reference_reentry = bool(
+            sell_reentry_after_exit
+            and sell_reentry_after_exit.get("setup_bar_at") == sell_setup_bar_at
+            and abs(float(sell_reentry_after_exit.get("trigger_level") or 0) - sell_level) < 1e-9
+            and float(candle["low"]) <= sell_level
+        )
+        if not current_candle_is_red or not (crossed or same_reference_reentry):
             return
 
         if position is not None and position.get("side") != "SELL":
@@ -1963,6 +1984,7 @@ def _simulate_silver_micro_range(
         if position is None:
             open_position("SELL", sell_level, candle["time"], day)
             last_fired_sell_setup_at = sell_setup_bar_at
+            sell_reentry_after_exit = None
         else:
             gain = entry - float(position["lowest"])
             if gain >= tsl_trigger_pts:
@@ -2105,12 +2127,20 @@ def _simulate_silver_micro_range(
                     or float(candle["open"]) <= sell_level
                 )
                 and sell_setup_bar_at is not None
-                and last_fired_sell_setup_at != sell_setup_bar_at
+                and (
+                    last_fired_sell_setup_at != sell_setup_bar_at
+                    or (
+                        sell_reentry_after_exit
+                        and sell_reentry_after_exit.get("setup_bar_at") == sell_setup_bar_at
+                        and abs(float(sell_reentry_after_exit.get("trigger_level") or 0) - float(sell_level)) < 1e-9
+                    )
+                )
             ):
                 if position and position["side"] != "SELL":
                     close_position(sell_level, ts, "REVERSAL_CONTRA_SIGNAL", day)
                 open_position("SELL", sell_level, ts, day)
                 last_fired_sell_setup_at = sell_setup_bar_at
+                sell_reentry_after_exit = None
 
             # Exit management for whatever's currently open.
             if position:

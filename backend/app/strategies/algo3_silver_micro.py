@@ -223,6 +223,10 @@ class Algo3SilverMicro(Strategy):
         self._last_fired_sell_bar_at: datetime.datetime | None = None
         self._last_attempted_buy_bar_at: datetime.datetime | None = None
         self._last_attempted_sell_bar_at: datetime.datetime | None = None
+        # A completed SELL may re-enter on the next tick if the carried
+        # reference threshold is still crossed. This is deliberately a
+        # one-position/one-tick handoff, not a signal-arrow retry loop.
+        self._sell_reentry_after_exit: dict | None = None
         self._entry_attempt_in_flight = False
         self._entry_guard_lock = threading.Lock()
         self._entry_cooldown_until_monotonic = 0.0
@@ -307,6 +311,7 @@ class Algo3SilverMicro(Strategy):
         self._last_fired_sell_bar_at = None
         self._last_attempted_buy_bar_at = None
         self._last_attempted_sell_bar_at = None
+        self._sell_reentry_after_exit = None
         self._entry_attempt_in_flight = False
         self._entry_cooldown_until_monotonic = 0.0
 
@@ -427,6 +432,30 @@ class Algo3SilverMicro(Strategy):
                 self.broker.close_trade(position, ltp, "SL")
             elif use_target and ltp <= target:
                 self.broker.close_trade(position, ltp, "TARGET")
+                self._arm_sell_reentry_after_exit("TARGET")
+
+    def _arm_sell_reentry_after_exit(self, exit_reason: str) -> None:
+        """Allow a closed SELL to continue the same red-chain move.
+
+        The next tick still has to be a qualifying red-candle tick and remain
+        beyond the carried reference threshold. Manual, reversal, and EOD
+        exits never arm this handoff.
+        """
+        # A SELL target is below its trigger, so continuation below the same
+        # reference is a valid immediate handoff. A SELL stop is above the
+        # trigger; it must wait for a fresh downward cross instead of looping
+        # while the old condition remains true.
+        if exit_reason != "TARGET":
+            return
+        if self._sell_setup_close is None or self._sell_setup_bar_at is None:
+            self._sell_reentry_after_exit = None
+            return
+        n = float(self.settings.get("silver_breakout_points", 150) or 150)
+        self._sell_reentry_after_exit = {
+            "setup_bar_at": self._sell_setup_bar_at,
+            "trigger_level": float(self._sell_setup_close) - n,
+            "exit_reason": exit_reason,
+        }
 
     def square_off_all(self):
         for position in self.broker.open_positions():
@@ -728,6 +757,9 @@ class Algo3SilverMicro(Strategy):
             old = self._sell_setup_close
             self._sell_setup_close = close
             self._sell_setup_bar_at = bar["time"]
+            # The finalized red candle is now the new comparison reference;
+            # never carry a re-entry permission from the older reference.
+            self._sell_reentry_after_exit = None
             if log:
                 self._persist_setup_event("SELL", bar, source="live")
             if log:
@@ -931,6 +963,14 @@ class Algo3SilverMicro(Strategy):
         # crosses anchor - n. This must run from ticks, not from the candle's
         # eventual close, otherwise a fast move can give away the entry.
         sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
+        sell_reentry = self._sell_reentry_after_exit
+        same_sell_reference = bool(
+            sell_reentry
+            and sell_level is not None
+            and self._sell_setup_bar_at is not None
+            and sell_reentry.get("setup_bar_at") == self._sell_setup_bar_at
+            and abs(float(sell_reentry.get("trigger_level") or 0) - float(sell_level)) < 1e-9
+        )
         current_bucket_open = (
             float(self._minute_buffer[0]["open"])
             if self._minute_buffer and self._current_bucket is not None
@@ -949,7 +989,7 @@ class Algo3SilverMicro(Strategy):
         if (
             current_sell_candle
             and ltp <= sell_level
-            and (self._prev_ltp is None or self._prev_ltp > sell_level)
+            and ((self._prev_ltp is None or self._prev_ltp > sell_level) or same_sell_reference)
             and not self._failed_attempt_blocks_setup("SELL", self._sell_setup_bar_at)
         ):
             print(
@@ -963,6 +1003,7 @@ class Algo3SilverMicro(Strategy):
                 sell_level,
                 setup_bar_at_override=self._sell_setup_bar_at,
             ):
+                self._sell_reentry_after_exit = None
                 self._mark_fired("SELL", setup_bar_at=self._sell_setup_bar_at)
 
         buy_level = (
