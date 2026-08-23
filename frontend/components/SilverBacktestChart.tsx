@@ -500,7 +500,12 @@ export default function SilverBacktestChart({
               })}
 
               {overlays.trades && Array.from(entryMarkerGroups.entries()).map(([groupKey, group]) => {
-                const trade = group.find((item: any) => item.selected) || group[0];
+                const latestTrade = group.reduce((latest: any, candidate: any) => (
+                  !latest || String(candidate.exit_time || '') > String(latest.exit_time || '')
+                    ? candidate
+                    : latest
+                ), group[0]);
+                const trade = group.find((item: any) => item.selected) || latestTrade;
                 const entryAnchorIndex = Math.max(start, trade.entryIndex);
                 const entryIndex = entryAnchorIndex - start;
                 const exitIndex = Math.max(start, trade.exitIndex) - start;
@@ -530,7 +535,7 @@ export default function SilverBacktestChart({
                   <g
                     key={`entry-group-${groupKey}`}
                     opacity={opacity}
-                    onClick={() => onSelectedTradeIdChange(trade.trade_id)}
+                    onClick={() => onSelectedTradeIdChange(latestTrade.trade_id)}
                     style={{ cursor: 'pointer' }}
                   >
                     <title>{`${tradeCount} executed ${trade.side || ''} trade${tradeCount === 1 ? '' : 's'} in this 15-minute candle. Click to inspect ${trade.trade_id}.`}</title>
