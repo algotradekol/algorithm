@@ -688,8 +688,13 @@ export default function SilverBacktestChart({
                 <ChartMetric label="Trade ID" value={String(selectedTrade.trade_id)} mono className="md:col-span-2" valueClassName="text-[12px] leading-5 break-all" />
                 <ChartMetric label="Side" value={selectedTrade.side} tone={selectedTrade.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
                 <ChartMetric label="Net P&L" value={money(Number(selectedTrade.net_pnl || 0))} tone={Number(selectedTrade.net_pnl || 0) >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
+                <ChartMetric label="Entry mode" value={formatEntryMode(selectedTrade.entry_mode, selectedTrade.entry_mode_label)} className="md:col-span-2" valueClassName="leading-5 whitespace-normal text-[#fbbf24]" />
                 <ChartMetric label="Entry" value={`${formatBacktestDateTime(selectedTrade.entry_time, selectedTrade.exit_time)} @ ${formatNumber(Number(selectedTrade.entry_price))}`} className="md:col-span-2" valueClassName="leading-5 whitespace-normal" />
                 <ChartMetric label="Exit" value={`${formatBacktestDateTime(selectedTrade.exit_time, selectedTrade.entry_time)} @ ${formatNumber(Number(selectedTrade.exit_price))}`} className="md:col-span-2" valueClassName="leading-5 whitespace-normal" />
+                {selectedTrade.side === 'SELL' && <>
+                  <ChartMetric label="Active reference" value={formatOptionalNumber(selectedTrade.active_reference_close)} />
+                  <ChartMetric label="Trigger used" value={formatOptionalNumber(selectedTrade.trigger_level_used)} />
+                </>}
                 <ChartMetric label="Timing" value={sameBacktestMinute(selectedTrade.entry_time, selectedTrade.exit_time) ? 'Same 1-minute bar; exact second unavailable' : 'Different 1-minute bars'} className="md:col-span-2" valueClassName="leading-5 whitespace-normal text-[#fbbf24]" />
                 <ChartMetric label="Final SL" value={formatNumber(Number(selectedTrade.final_sl_price))} />
                 <ChartMetric label="Target" value={formatNumber(Number(selectedTrade.target_price))} />
@@ -845,6 +850,18 @@ function ChartMetric({
       <div className={`mt-1 text-sm ${tone} ${mono ? 'font-mono break-all' : 'num whitespace-normal'} ${valueClassName}`}>{value}</div>
     </div>
   );
+}
+
+function formatEntryMode(value: unknown, label?: unknown) {
+  if (label) return String(label);
+  if (value === 'SAME_REFERENCE_REENTRY') return 'Same-reference re-entry after exit';
+  if (value === 'LEGACY_CONFIRMATION') return 'Legacy confirmation entry';
+  if (value === 'THRESHOLD_TRIGGER') return 'Initial threshold trigger';
+  return value ? String(value).replaceAll('_', ' ').toLowerCase().replace(/(^|\s)\S/g, (letter) => letter.toUpperCase()) : '--';
+}
+
+function formatOptionalNumber(value: unknown) {
+  return value === null || value === undefined ? '--' : formatNumber(Number(value));
 }
 
 function indexForTime(candles: any[], timeValue: string | null | undefined) {

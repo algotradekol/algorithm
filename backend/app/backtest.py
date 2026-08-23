@@ -1203,6 +1203,17 @@ def _build_silver_trade_diagnostics(position: dict, trade: dict, exit_time: date
     tsl_trigger_pts = float(position.get("trailing_trigger_points") or 0)
     sl_points = abs(entry - initial_sl)
     n_points = float(setup_context.get("n_points") or 0)
+    entry_mode = str(position.get("entry_mode") or "THRESHOLD_TRIGGER")
+    entry_mode_labels = {
+        "THRESHOLD_TRIGGER": "Initial threshold trigger",
+        "SAME_REFERENCE_REENTRY": "Same-reference re-entry after exit",
+        "LEGACY_CONFIRMATION": "Legacy confirmation entry",
+    }
+    entry_mode_label = entry_mode_labels.get(entry_mode, entry_mode.replace("_", " ").title())
+    active_reference_close = _round_or_none(position.get("active_reference_close"))
+    prior_reference_close = _round_or_none(position.get("prior_reference_close"))
+    trigger_level_used = _round_or_none(position.get("trigger_level_used"))
+    reentry_exit_reason = position.get("reentry_exit_reason")
 
     if exit_reason == "SL":
         primary_cause_code = "trailing_stop_hit" if trailing_active and abs(final_sl - initial_sl) > 1e-9 else "stop_loss_hit"
@@ -1268,8 +1279,11 @@ def _build_silver_trade_diagnostics(position: dict, trade: dict, exit_time: date
         if delay_minutes is not None
         else "entry timing could not be measured"
     )
+    entry_phrase = entry_mode_label.lower()
+    if active_reference_close is not None and trigger_level_used is not None:
+        entry_phrase = f"{entry_phrase} using reference {active_reference_close:,.2f} and trigger {trigger_level_used:,.2f}"
     summary = (
-        f"{side} setup was valid, {delay_phrase}, {trailing_phrase}, and the trade exited via "
+        f"{side} setup was valid, {entry_phrase}, {delay_phrase}, {trailing_phrase}, and the trade exited via "
         f"{_silver_primary_cause_label(primary_cause_code).lower()} at {round(exit_price, 2):,.2f}. "
         f"Max favorable excursion was {round(max_favorable_points, 2):,.2f} points and max adverse excursion was "
         f"{round(max_adverse_points, 2):,.2f} points."
@@ -1287,7 +1301,13 @@ def _build_silver_trade_diagnostics(position: dict, trade: dict, exit_time: date
             "ema20": _round_or_none(setup_context.get("ema20")),
             "entry_time": position["entry_time"].isoformat(),
             "entry_price": round(entry, 2),
+            "entry_mode": entry_mode,
+            "entry_mode_label": entry_mode_label,
             "delay_from_setup_minutes": delay_minutes,
+            "active_reference_close": active_reference_close,
+            "prior_reference_close": prior_reference_close,
+            "trigger_level_used": trigger_level_used,
+            "reentry_exit_reason": reentry_exit_reason,
             "previous_red_reference_close": _round_or_none(setup_context.get("previous_red_reference_close")),
             "current_qualifying_red_close": _round_or_none(setup_context.get("current_qualifying_red_close")),
         },
@@ -1497,7 +1517,17 @@ def _simulate_silver_micro_range(
                 if position is not None and position.get("side") != "BUY":
                     close_position(float(bar["close"]), bar["time"], "REVERSAL_CONTRA_SIGNAL", bar["time"].date())
                 if position is None:
-                    open_position("BUY", float(bar["close"]), bar["time"], bar["time"].date())
+                    open_position(
+                        "BUY",
+                        float(bar["close"]),
+                        bar["time"],
+                        bar["time"].date(),
+                        entry_metadata={
+                            "entry_mode": "THRESHOLD_TRIGGER",
+                            "active_reference_close": buy_setup_close,
+                            "trigger_level_used": buy_level,
+                        },
+                    )
                     last_fired_buy_setup_at = buy_setup_bar_at
 
         is_green = bar["close"] > bar["open"]
@@ -1620,7 +1650,18 @@ def _simulate_silver_micro_range(
                 else:
                     if current_position and current_position["side"] != "SELL":
                         close_position(float(sell_level), bar["time"], "REVERSAL_CONTRA_SIGNAL", bar["time"].date())
-                    open_position("SELL", float(sell_level), bar["time"], bar["time"].date())
+                    open_position(
+                        "SELL",
+                        float(sell_level),
+                        bar["time"],
+                        bar["time"].date(),
+                        entry_metadata={
+                            "entry_mode": "THRESHOLD_TRIGGER",
+                            "active_reference_close": sell_setup_close,
+                            "prior_reference_close": (sell_setup_context or {}).get("previous_red_reference_close"),
+                            "trigger_level_used": sell_level,
+                        },
+                    )
                     last_fired_sell_setup_at = sell_setup_bar_at
         if (
             silver_buy_plan == SILVER_BUY_PLAN_LIVE_BREAKOUT
@@ -1782,6 +1823,12 @@ def _simulate_silver_micro_range(
             "side": trade["side"],
             "entry_time": trade["entry_time"],
             "entry_price": trade["entry_price"],
+            "entry_mode": trade.get("entry_mode"),
+            "entry_mode_label": (trade.get("diagnostics") or {}).get("entry_context", {}).get("entry_mode_label"),
+            "active_reference_close": (trade.get("diagnostics") or {}).get("entry_context", {}).get("active_reference_close"),
+            "prior_reference_close": (trade.get("diagnostics") or {}).get("entry_context", {}).get("prior_reference_close"),
+            "trigger_level_used": (trade.get("diagnostics") or {}).get("entry_context", {}).get("trigger_level_used"),
+            "reentry_exit_reason": (trade.get("diagnostics") or {}).get("entry_context", {}).get("reentry_exit_reason"),
             "exit_time": trade["exit_time"],
             "exit_price": trade["exit_price"],
             "initial_sl_price": trade["initial_sl_price"],
@@ -1811,6 +1858,7 @@ def _simulate_silver_micro_range(
         entry_time: datetime.datetime,
         day: datetime.date,
         provided_candidate: dict | None = None,
+        entry_metadata: dict | None = None,
     ):
         nonlocal position, position_candidate
         # Silver Micro is sized in LOTS (1 lot = 1 kg = 1 unit). Mirrors
@@ -1825,6 +1873,7 @@ def _simulate_silver_micro_range(
         else:
             sl_price = float(entry_price) + sl_pts
             target_price = float(entry_price) - target_pts
+        entry_metadata = dict(entry_metadata or {})
         position = {
             "symbol": symbol,
             "side": side,
@@ -1842,6 +1891,15 @@ def _simulate_silver_micro_range(
             "trailing_trigger_points": float(tsl_trigger_pts),
             "trailing_distance_points": float(tsl_distance_pts),
             "trailing_moves": [],
+            "entry_mode": entry_metadata.get("entry_mode") or (
+                "LEGACY_CONFIRMATION"
+                if silver_buy_plan == SILVER_BUY_PLAN_LEGACY_CONFIRMATION and side == "BUY"
+                else "THRESHOLD_TRIGGER"
+            ),
+            "active_reference_close": entry_metadata.get("active_reference_close"),
+            "prior_reference_close": entry_metadata.get("prior_reference_close"),
+            "trigger_level_used": entry_metadata.get("trigger_level_used"),
+            "reentry_exit_reason": entry_metadata.get("reentry_exit_reason"),
             "entry_trigger": (
                 f"Historical {entry_time.date().isoformat()} Silver Micro legacy 5m EMA/volume confirmation replay."
                 if silver_buy_plan == SILVER_BUY_PLAN_LEGACY_CONFIRMATION and side == "BUY"
@@ -1984,7 +2042,14 @@ def _simulate_silver_micro_range(
             close_position(sell_level, candle["time"], "REVERSAL_CONTRA_SIGNAL", day)
         if position is None:
             entry_price = current_price if same_reference_reentry else sell_level
-            open_position("SELL", entry_price, candle["time"], day)
+            reentry_metadata = {
+                "entry_mode": "SAME_REFERENCE_REENTRY" if same_reference_reentry else "THRESHOLD_TRIGGER",
+                "active_reference_close": sell_setup_close,
+                "prior_reference_close": (sell_setup_context or {}).get("previous_red_reference_close"),
+                "trigger_level_used": sell_level,
+                "reentry_exit_reason": (sell_reentry_after_exit or {}).get("exit_reason") if same_reference_reentry else None,
+            }
+            open_position("SELL", entry_price, candle["time"], day, entry_metadata=reentry_metadata)
             last_fired_sell_setup_at = sell_setup_bar_at
             sell_reentry_after_exit = None
         else:
@@ -2079,6 +2144,11 @@ def _simulate_silver_micro_range(
                         ts,
                         day,
                         legacy_buy_pending_entry["candidate"],
+                        {
+                            "entry_mode": "LEGACY_CONFIRMATION",
+                            "active_reference_close": legacy_buy_pending_entry["candidate"].get("setup_close"),
+                            "trigger_level_used": legacy_buy_pending_entry["candidate"].get("trigger_level"),
+                        },
                     )
                 legacy_buy_pending_entry = None
 
@@ -2109,7 +2179,17 @@ def _simulate_silver_micro_range(
                 if buy_crossed:
                     if position and position["side"] != "BUY":
                         close_position(buy_level, ts, "REVERSAL_CONTRA_SIGNAL", day)
-                    open_position("BUY", buy_level, ts, day)
+                    open_position(
+                        "BUY",
+                        buy_level,
+                        ts,
+                        day,
+                        entry_metadata={
+                            "entry_mode": "THRESHOLD_TRIGGER",
+                            "active_reference_close": buy_setup_close,
+                            "trigger_level_used": buy_level,
+                        },
+                    )
                     last_fired_buy_setup_at = buy_setup_bar_at
 
             check_red_chain_intrabar(candle, day, in_scope)
@@ -2161,7 +2241,19 @@ def _simulate_silver_micro_range(
                     and prev_ltp is not None
                     and float(candle["close"]) < float(prev_ltp)
                 )
-                open_position("SELL", float(candle["close"]) if same_reference_reentry else sell_level, ts, day)
+                open_position(
+                    "SELL",
+                    float(candle["close"]) if same_reference_reentry else sell_level,
+                    ts,
+                    day,
+                    entry_metadata={
+                        "entry_mode": "SAME_REFERENCE_REENTRY" if same_reference_reentry else "THRESHOLD_TRIGGER",
+                        "active_reference_close": sell_setup_close,
+                        "prior_reference_close": (sell_setup_context or {}).get("previous_red_reference_close"),
+                        "trigger_level_used": sell_level,
+                        "reentry_exit_reason": (sell_reentry_after_exit or {}).get("exit_reason") if same_reference_reentry else None,
+                    },
+                )
                 last_fired_sell_setup_at = sell_setup_bar_at
                 sell_reentry_after_exit = None
 
@@ -2302,6 +2394,11 @@ def _close_silver_micro_position(
         "qty": qty,
         "entry_price": round(entry, 2),
         "entry_time": position["entry_time"].isoformat(),
+        "entry_mode": position.get("entry_mode") or "THRESHOLD_TRIGGER",
+        "active_reference_close": _round_or_none(position.get("active_reference_close")),
+        "prior_reference_close": _round_or_none(position.get("prior_reference_close")),
+        "trigger_level_used": _round_or_none(position.get("trigger_level_used")),
+        "reentry_exit_reason": position.get("reentry_exit_reason"),
         "exit_price": round(float(exit_price), 2),
         "exit_time": exit_time.isoformat(),
         "exit_reason": exit_reason,

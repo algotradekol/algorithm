@@ -3768,8 +3768,9 @@ def test_algo3_backtest_sell_chain_diagnostics_context():
     if trades:
         diagnostics = trades[0].get("diagnostics") or {}
         entry = diagnostics.get("entry_context") or {}
-        check("SELL diagnostics store previous red reference close", abs(float(entry.get("previous_red_reference_close") or 0) - 89900.0) < 1e-9, f"entry={entry}")
-        check("SELL diagnostics store current qualifying red close", abs(float(entry.get("current_qualifying_red_close") or 0) - 89700.0) < 1e-9, f"entry={entry}")
+        check("SELL diagnostics store active reference close", abs(float(entry.get("active_reference_close") or 0) - 89900.0) < 1e-9, f"entry={entry}")
+        check("SELL diagnostics store trigger level used", abs(float(entry.get("trigger_level_used") or 0) - 89700.0) < 1e-9, f"entry={entry}")
+        check("SELL threshold entry is identified explicitly", entry.get("entry_mode") == "THRESHOLD_TRIGGER", f"entry={entry}")
         check("diagnostics object has required keys", all(key in diagnostics for key in ("primary_cause_code", "primary_cause_label", "summary", "entry_context", "exit_context", "path_metrics", "warning_codes", "warning_messages")), f"diagnostics={diagnostics}")
         check("backtest never claims broker_error", "broker" not in str(diagnostics.get("primary_cause_code") or "").lower() and not any("broker" in str(code).lower() for code in (diagnostics.get("warning_codes") or [])), f"diagnostics={diagnostics}")
 
