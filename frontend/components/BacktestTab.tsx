@@ -163,7 +163,7 @@ export default function BacktestTab() {
         <p className="mt-1 max-w-3xl text-sm text-gray-500">{introCopy.body}</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
           <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option><option value="algo3">Silver Micro (MCX:SILVERMIC26AUGFUT)</option></select></label>
-          {algoId === 'algo3' && <label><span className="label">Silver sell plan</span><select value={silverSellPlan} onChange={(e) => setSilverSellPlan(e.target.value)} className="control mt-1"><option value="red_chain">{SILVER_SELL_PLANS.red_chain.label}</option><option value="latest_reference">{SILVER_SELL_PLANS.latest_reference.label}</option></select><span className="mt-1 block text-[11px] leading-4 text-gray-500">{SILVER_SELL_PLANS[silverSellPlan as keyof typeof SILVER_SELL_PLANS].description}</span></label>}
+          {algoId === 'algo3' && <label><span className="label">Silver logic</span><select value={silverSellPlan} onChange={(e) => setSilverSellPlan(e.target.value)} className="control mt-1"><option value="red_chain">{SILVER_SELL_PLANS.red_chain.label}</option><option value="latest_reference">{SILVER_SELL_PLANS.latest_reference.label}</option></select><span className="mt-1 block text-[11px] leading-4 text-gray-500">{SILVER_SELL_PLANS[silverSellPlan as keyof typeof SILVER_SELL_PLANS].description}</span></label>}
           <label><span className="label">Start date</span><input value={startDate} onChange={(e) => setStartDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <label><span className="label">End date</span><input value={endDate} onChange={(e) => setEndDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <div className="flex items-end">
@@ -275,7 +275,7 @@ function BacktestResult({ result }: { result: any }) {
   useEffect(() => {
     const selectedDay = silverChartDays.find((day: any) => day.date === selectedChartDate) || null;
     const trades = Array.isArray(selectedDay?.chart?.trades) ? selectedDay.chart.trades : [];
-    setSelectedTradeId((current) => trades.some((trade: any) => trade.trade_id === current) ? current : (trades[trades.length - 1]?.trade_id || null));
+    setSelectedTradeId((current) => trades.some((trade: any) => trade.trade_id === current) ? current : null);
   }, [selectedChartDate, silverChartDays]);
 
   useEffect(() => {
@@ -353,7 +353,7 @@ function BacktestResult({ result }: { result: any }) {
         <BacktestTrades
           rows={visibleTrades}
           selectedTradeId={selectedTradeId}
-          onFocusTrade={focusTrade}
+          onViewChart={focusTrade}
           selectedDate={result.algo_id === 'algo3' ? selectedChartDate : null}
           compact
         />
@@ -362,7 +362,7 @@ function BacktestResult({ result }: { result: any }) {
       <BacktestTrades
         rows={visibleTrades}
         selectedTradeId={selectedTradeId}
-        onFocusTrade={focusTrade}
+        onViewChart={focusTrade}
         selectedDate={result.algo_id === 'algo3' ? selectedChartDate : null}
       />
     )}
@@ -558,13 +558,13 @@ function BacktestCandidates({ days }: { days: any[] }) {
 function BacktestTrades({
   rows,
   selectedTradeId,
-  onFocusTrade,
+  onViewChart,
   selectedDate,
   compact = false,
 }: {
   rows: any[];
   selectedTradeId: string | null;
-  onFocusTrade: (trade: any) => void;
+  onViewChart: (trade: any) => void;
   selectedDate: string | null;
   compact?: boolean;
 }) {
@@ -615,15 +615,9 @@ function BacktestTrades({
                 </div>
               </td>
               <td className="table-cell">
-                <div className="flex min-w-[140px] items-center gap-2">
+                <div className="flex min-w-[120px] items-center gap-2">
                   <button
-                    onClick={() => onFocusTrade(trade)}
-                    className="rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1 text-[11px] font-semibold text-[#93c5fd]"
-                  >
-                    Focus
-                  </button>
-                  <button
-                    onClick={() => onFocusTrade(trade)}
+                    onClick={() => onViewChart(trade)}
                     className="rounded border border-[#60a5fa]/40 bg-[#1d4ed8]/10 px-2 py-1 text-[11px] font-semibold text-[#bfdbfe]"
                   >
                     View chart

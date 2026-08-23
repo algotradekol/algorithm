@@ -117,7 +117,7 @@ export default function SilverBacktestChart({
     );
   }
 
-  const priceScaleWidth = expanded ? 148 : 136;
+  const priceScaleWidth = expanded ? 124 : 114;
   const minCandleSpacing = expanded ? 30 : 26;
   const viewportWidth = containerWidth || (expanded ? 1200 : 900);
   const width = fullDayFit && clampedVisible >= maxVisible
@@ -315,6 +315,8 @@ export default function SilverBacktestChart({
             </div>
           </div>
 
+          <ChartSymbolLibrary />
+
           <div className="mb-3 flex flex-wrap items-center gap-1.5">
             <button onClick={() => zoomAtRatio(0.5, false)} disabled={clampedVisible >= maxVisible} aria-label="Zoom out" title="Zoom out" className="inline-flex h-8 w-8 items-center justify-center rounded border border-[#334155] bg-[#1f2937] text-base font-bold text-gray-100 shadow-sm disabled:cursor-not-allowed disabled:opacity-40">−</button>
             <button onClick={() => zoomAtRatio(0.5, true)} disabled={clampedVisible <= 10} aria-label="Zoom in" title="Zoom in" className="inline-flex h-8 w-8 items-center justify-center rounded border border-[#334155] bg-[#1f2937] text-base font-bold text-gray-100 shadow-sm disabled:cursor-not-allowed disabled:opacity-40">+</button>
@@ -322,7 +324,6 @@ export default function SilverBacktestChart({
             <button onClick={() => moveTimeline('right')} disabled={maxOffset === 0 || clampedOffset <= 0} aria-label="Move later" title="Move later" className="inline-flex h-8 w-8 items-center justify-center rounded border border-[#334155] bg-[#1f2937] text-lg text-gray-100 shadow-sm disabled:cursor-not-allowed disabled:opacity-40">›</button>
             <button onClick={showFullDay} aria-label="Reset zoom to full day" title="Reset zoom to full day" className="inline-flex h-8 w-8 items-center justify-center rounded border border-[#334155] bg-[#1f2937] text-base text-gray-100 shadow-sm">↻</button>
             <button onClick={() => selectedTrade && fitTradeWindow(selectedTrade, 8)} disabled={!selectedTrade} className="rounded border border-[#1f2937] px-2 py-1 text-xs text-gray-400 disabled:cursor-not-allowed disabled:opacity-50">Fit trade window</button>
-            <button onClick={() => selectedTrade && fitTradeWindow(selectedTrade, 3)} disabled={!selectedTrade} className="rounded border border-[#1f2937] px-2 py-1 text-xs text-gray-400 disabled:cursor-not-allowed disabled:opacity-50">Focus selected trade</button>
           </div>
 
           <div className="relative overflow-hidden border border-[#1f2937] bg-[#0a0e14]" style={{ height: chartHeight }}>
@@ -392,8 +393,15 @@ export default function SilverBacktestChart({
                   && absoluteIndex >= selectedTradeOverlay.entryIndex
                   && absoluteIndex <= selectedTradeOverlay.exitIndex,
                 );
+                const entryTrade = overlays.trades
+                  ? visibleTradeOverlays.find((trade: any) => trade.entryIndex === absoluteIndex)
+                  : null;
                 return (
-                  <g key={`${candle.time}-${index}`}>
+                  <g
+                    key={`${candle.time}-${index}`}
+                    onClick={() => entryTrade && onSelectedTradeIdChange(entryTrade.trade_id)}
+                    style={entryTrade ? { cursor: 'pointer' } : undefined}
+                  >
                     <title>{`${candle.time}\nO ${formatNumber(candle.open)} H ${formatNumber(candle.high)} L ${formatNumber(candle.low)} C ${formatNumber(candle.close)}\nEMA20 ${formatNumber(candle.ema20)}\nVol ${candle.volume.toLocaleString('en-IN')}`}</title>
                     <line x1={x} x2={x} y1={highY} y2={lowY} stroke={color} strokeWidth="1.2" />
                     <rect x={x - bodyWidth / 2} y={bodyTop} width={bodyWidth} height={bodyHeight} fill={color} opacity={bullish ? 0.85 : 0.75} />
@@ -437,7 +445,6 @@ export default function SilverBacktestChart({
                 const exitY = y(Number(trade.exit_price));
                 const isBuy = trade.side === 'BUY';
                 const color = isBuy ? '#38bdf8' : '#fb7185';
-                const exitMarkerFill = '#f8fafc';
                 const opacity = trade.selected ? 1 : 0.55;
                 const candleBoundaryY = isBuy ? y(Number(entryCandle?.high ?? trade.entry_price)) : y(Number(entryCandle?.low ?? trade.entry_price));
                 const arrowGap = trade.selected ? 20 : 16;
@@ -450,6 +457,15 @@ export default function SilverBacktestChart({
                 const arrowHeadPoints = isBuy
                   ? `${entryX - 7},${tipY - 12} ${entryX + 7},${tipY - 12} ${entryX},${tipY}`
                   : `${entryX - 7},${tipY + 12} ${entryX + 7},${tipY + 12} ${entryX},${tipY}`;
+                const exitPointerColor = '#f59e0b';
+                const exitTipY = exitY;
+                const exitShaftStartY = isBuy
+                  ? Math.min(priceHeight - 10, exitTipY + 48)
+                  : Math.max(10, exitTipY - 48);
+                const exitShaftEndY = isBuy ? exitTipY + 12 : exitTipY - 12;
+                const exitHeadPoints = isBuy
+                  ? `${exitX - 6},${exitTipY + 12} ${exitX + 6},${exitTipY + 12} ${exitX},${exitTipY}`
+                  : `${exitX - 6},${exitTipY - 12} ${exitX + 6},${exitTipY - 12} ${exitX},${exitTipY}`;
                 return (
                   <g
                     key={trade.trade_id}
@@ -457,10 +473,16 @@ export default function SilverBacktestChart({
                     onClick={() => onSelectedTradeIdChange(trade.trade_id)}
                     style={{ cursor: 'pointer' }}
                   >
-                    <line x1={entryX} x2={exitX} y1={entryY} y2={exitY} stroke={color} strokeWidth={trade.selected ? 2.4 : 1.5} strokeDasharray={trade.selected ? undefined : '5 4'} />
                     <line x1={entryX} x2={entryX} y1={shaftStartY} y2={shaftEndY} stroke={color} strokeWidth={trade.selected ? 3 : 2.4} strokeLinecap="round" />
                     <polygon points={arrowHeadPoints} fill={color} stroke="#e5e7eb" strokeWidth="0.8" />
-                    <circle cx={exitX} cy={exitY} r={trade.selected ? 5.4 : 4.3} fill={exitMarkerFill} stroke={color} strokeWidth={trade.selected ? 2.4 : 2} opacity="1" />
+                    {trade.selected && (
+                      <g>
+                        <line x1={entryX} x2={exitX} y1={entryY} y2={exitY} stroke={color} strokeWidth="2.4" />
+                        <line x1={exitX} x2={exitX} y1={exitShaftStartY} y2={exitShaftEndY} stroke={exitPointerColor} strokeWidth="2.6" strokeLinecap="round" />
+                        <polygon points={exitHeadPoints} fill={exitPointerColor} stroke="#fef3c7" strokeWidth="0.8" />
+                        <circle cx={exitX} cy={exitY} r="5.4" fill="#0a0e14" stroke={exitPointerColor} strokeWidth="2.4" />
+                      </g>
+                    )}
                   </g>
                 );
               })}
@@ -623,6 +645,78 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
       <input type="checkbox" checked={checked} onChange={onChange} />
     </label>
   );
+}
+
+function ChartSymbolLibrary() {
+  return (
+    <div className="rounded border border-[#1f2937] bg-[#0d1117] p-3" aria-label="Chart symbol library">
+      <div className="flex flex-wrap items-baseline justify-between gap-2">
+        <div className="text-xs font-semibold uppercase tracking-wide text-gray-300">Chart symbol library</div>
+        <div className="text-[11px] text-gray-500">15-minute candles · IST · selected trade is highlighted</div>
+      </div>
+      <div className="mt-3 grid gap-x-4 gap-y-2 sm:grid-cols-2 xl:grid-cols-4">
+        <LegendItem swatch="buy" label="BUY entry" detail="Blue down arrow above candle" />
+        <LegendItem swatch="sell" label="SELL entry" detail="Red up arrow below candle" />
+        <LegendItem swatch="exit" label="Selected exit" detail="Gold up/down pointer on exit candle" />
+        <LegendItem swatch="path" label="Selected trade path" detail="Solid line from entry to exit" />
+        <LegendItem swatch="setup-buy" label="BUY setup" detail="Green dot and solid setup level" />
+        <LegendItem swatch="setup-sell" label="SELL setup" detail="Red dot and solid setup level" />
+        <LegendItem swatch="trigger" label="Trigger level" detail="Side-colored dashed line" />
+        <LegendItem swatch="sl-initial" label="Initial SL" detail="Orange dashed line" />
+        <LegendItem swatch="sl-final" label="Effective SL" detail="Orange solid line" />
+        <LegendItem swatch="target" label="Target" detail="Purple dashed line" />
+        <LegendItem swatch="trailing" label="Trailing path" detail="Gold stepped line" />
+        <LegendItem swatch="crosshair" label="Crosshair" detail="Gray dashed guide lines" />
+      </div>
+    </div>
+  );
+}
+
+function LegendItem({ swatch, label, detail }: { swatch: string; label: string; detail: string }) {
+  return (
+    <div className="flex min-w-0 items-center gap-2">
+      <LegendSwatch type={swatch} />
+      <div className="min-w-0">
+        <div className="text-xs font-semibold text-gray-200">{label}</div>
+        <div className="truncate text-[11px] text-gray-500" title={detail}>{detail}</div>
+      </div>
+    </div>
+  );
+}
+
+function LegendSwatch({ type }: { type: string }) {
+  if (type === 'buy' || type === 'sell') {
+    const buy = type === 'buy';
+    return (
+      <span className={`relative inline-flex h-8 w-7 shrink-0 items-center justify-center ${buy ? 'text-[#38bdf8]' : 'text-[#fb7185]'}`} aria-hidden="true">
+        <span className="absolute h-5 w-0.5 rounded bg-current" />
+        <span className={`absolute ${buy ? 'top-5' : 'bottom-5'} h-0 w-0 border-x-[5px] border-x-transparent ${buy ? 'border-t-[7px] border-t-current' : 'border-b-[7px] border-b-current'}`} />
+      </span>
+    );
+  }
+
+  if (type === 'exit') {
+    return (
+      <span className="relative inline-flex h-8 w-7 shrink-0 items-center justify-center text-[#f59e0b]" aria-hidden="true">
+        <span className="absolute h-5 w-0.5 rounded bg-current" />
+        <span className="absolute top-5 h-0 w-0 border-x-[5px] border-t-[7px] border-x-transparent border-t-current" />
+        <span className="absolute h-2.5 w-2.5 rounded-full border-2 border-current bg-[#0a0e14]" />
+      </span>
+    );
+  }
+
+  const styles: Record<string, string> = {
+    path: 'h-0 w-7 border-t-2 border-[#38bdf8]',
+    'setup-buy': 'h-3 w-3 rounded-full bg-[#22c55e]',
+    'setup-sell': 'h-3 w-3 rounded-full bg-[#ef4444]',
+    trigger: 'h-0 w-7 border-t border-dashed border-[#22c55e]',
+    'sl-initial': 'h-0 w-7 border-t-2 border-dashed border-[#f59e0b]',
+    'sl-final': 'h-0 w-7 border-t-2 border-[#f97316]',
+    target: 'h-0 w-7 border-t-2 border-dashed border-[#a78bfa]',
+    trailing: 'h-0 w-7 border-t-2 border-[#fbbf24]',
+    crosshair: 'h-0 w-7 border-t border-dashed border-[#9ca3af]',
+  };
+  return <span className={`inline-flex w-7 shrink-0 items-center justify-center ${styles[type] || 'h-3 w-3 rounded-full bg-[#64748b]'}`} aria-hidden="true" />;
 }
 
 function Stat({ label, value, tone = 'text-gray-100' }: { label: string; value: string; tone?: string }) {
