@@ -1768,7 +1768,7 @@ def _simulate_silver_micro_range(
         if not position:
             return
         trade = _close_silver_micro_position(position, exit_price, exit_time, exit_reason, settings, charges_config)
-        if position.get("side") == "SELL" and exit_reason == "TARGET" and sell_setup_close is not None and sell_setup_bar_at is not None:
+        if position.get("side") == "SELL" and exit_reason in {"SL", "TARGET"} and sell_setup_close is not None and sell_setup_bar_at is not None:
             sell_reentry_after_exit = {
                 "setup_bar_at": sell_setup_bar_at,
                 "trigger_level": float(sell_setup_close) - n,
@@ -1974,7 +1974,8 @@ def _simulate_silver_micro_range(
             sell_reentry_after_exit
             and sell_reentry_after_exit.get("setup_bar_at") == sell_setup_bar_at
             and abs(float(sell_reentry_after_exit.get("trigger_level") or 0) - sell_level) < 1e-9
-            and float(candle["low"]) <= sell_level
+            and prev_ltp is not None
+            and current_price < float(prev_ltp)
         )
         if not current_candle_is_red or not (crossed or same_reference_reentry):
             return
@@ -1982,7 +1983,8 @@ def _simulate_silver_micro_range(
         if position is not None and position.get("side") != "SELL":
             close_position(sell_level, candle["time"], "REVERSAL_CONTRA_SIGNAL", day)
         if position is None:
-            open_position("SELL", sell_level, candle["time"], day)
+            entry_price = current_price if same_reference_reentry else sell_level
+            open_position("SELL", entry_price, candle["time"], day)
             last_fired_sell_setup_at = sell_setup_bar_at
             sell_reentry_after_exit = None
         else:
@@ -2121,10 +2123,24 @@ def _simulate_silver_micro_range(
                 and bars_finalized >= EMA_PERIOD
                 and (position is None or position.get("side") != "SELL")
                 and sell_level is not None
-                and candle["low"] <= sell_level
                 and (
-                    (prev_ltp is not None and prev_ltp > sell_level)
-                    or float(candle["open"]) <= sell_level
+                    (
+                        candle["low"] <= sell_level
+                        and (
+                            (prev_ltp is not None and prev_ltp > sell_level)
+                            or float(candle["open"]) <= sell_level
+                        )
+                    )
+                    or (
+                        sell_reentry_after_exit
+                        and sell_reentry_after_exit.get("setup_bar_at") == sell_setup_bar_at
+                        and abs(float(sell_reentry_after_exit.get("trigger_level") or 0) - float(sell_level)) < 1e-9
+                        and prev_ltp is not None
+                        and float(candle["close"]) < float(prev_ltp)
+                        and float(candle["close"]) < float(candle["open"])
+                        and ema20 is not None
+                        and float(candle["close"]) < float(ema20)
+                    )
                 )
                 and sell_setup_bar_at is not None
                 and (
@@ -2138,7 +2154,14 @@ def _simulate_silver_micro_range(
             ):
                 if position and position["side"] != "SELL":
                     close_position(sell_level, ts, "REVERSAL_CONTRA_SIGNAL", day)
-                open_position("SELL", sell_level, ts, day)
+                same_reference_reentry = bool(
+                    sell_reentry_after_exit
+                    and sell_reentry_after_exit.get("setup_bar_at") == sell_setup_bar_at
+                    and abs(float(sell_reentry_after_exit.get("trigger_level") or 0) - float(sell_level)) < 1e-9
+                    and prev_ltp is not None
+                    and float(candle["close"]) < float(prev_ltp)
+                )
+                open_position("SELL", float(candle["close"]) if same_reference_reentry else sell_level, ts, day)
                 last_fired_sell_setup_at = sell_setup_bar_at
                 sell_reentry_after_exit = None
 

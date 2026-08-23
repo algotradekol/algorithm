@@ -2255,6 +2255,35 @@ def test_algo3_sell_target_reenters_when_reference_still_crossed():
           len(strat.broker.opens) == 2, f"opens={strat.broker.opens}")
 
 
+def test_algo3_sell_stop_reenters_on_downturn_before_old_trigger():
+    print("\n41a2. algo3 SELL stop exit re-enters on a new downturn without a second threshold wait")
+    import datetime as _dt
+    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
+    strat._ema20 = 1000.0
+    strat._sell_setup_close = 900.0
+    strat._sell_setup_bar_at = _dt.datetime(2026, 8, 20, 15, 0)
+    strat._current_bucket = _dt.datetime(2026, 8, 20, 15, 15)
+    strat._minute_buffer = [{"open": 1000.0}]
+
+    strat._prev_ltp = 750.0
+    strat._check_triggers(690.0)  # old reference - n = 700
+    check("first SELL opened", len(strat.broker.opens) == 1)
+
+    strat._last_tick_ltp = 990.0  # 300-point stop above the 690 entry
+    strat.check_exits()
+    check("first SELL closed at SL", len(strat.broker.closes) == 1 and strat.broker.closes[0]["reason"] == "SL",
+          f"closes={strat.broker.closes}")
+
+    # The next tick turns down at 950, still above the old 700 trigger. The
+    # carried reference must allow the new SELL at the actual current price.
+    strat._prev_ltp = 990.0
+    strat._check_triggers(950.0)
+    check("SELL re-opened on downturn before old trigger",
+          len(strat.broker.opens) == 2, f"opens={strat.broker.opens}")
+    check("re-entry uses the current downturn price",
+          strat.broker.opens[-1]["entry_price"] == 950.0, f"opens={strat.broker.opens}")
+
+
 def test_algo3_failed_live_attempt_consumes_setup_once():
     print("\n41b. algo3 failed live attempt consumes the current setup and does not retry on later ticks")
     strat = _make_bare_algo3()
@@ -4537,6 +4566,7 @@ def main():
     test_algo3_no_reentry_same_side()
     test_algo3_unlimited_reentry_after_exit_same_setup()
     test_algo3_sell_target_reenters_when_reference_still_crossed()
+    test_algo3_sell_stop_reenters_on_downturn_before_old_trigger()
     test_algo3_failed_live_attempt_consumes_setup_once()
     test_algo3_new_setup_rearms_after_failed_attempt()
     test_algo3_live_broker_guard_blocks_when_symbol_busy()
