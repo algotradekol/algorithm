@@ -51,6 +51,7 @@ export default function SilverBacktestChart({
   const [visibleCount, setVisibleCount] = useState(48);
   const [offsetFromEnd, setOffsetFromEnd] = useState(0);
   const [crosshair, setCrosshair] = useState<{ x: number; y: number } | null>(null);
+  const [selectedCandleIndex, setSelectedCandleIndex] = useState<number | null>(null);
   const chartRef = useRef<HTMLDivElement | null>(null);
   const pinchRef = useRef<{ distance: number; ratio: number } | null>(null);
   const dragRef = useRef<{ x: number; offset: number } | null>(null);
@@ -80,6 +81,11 @@ export default function SilverBacktestChart({
     fitInitialViewport();
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [selectedDate, selectedTradeId, normalized.length]);
+
+  useEffect(() => {
+    setSelectedCandleIndex(null);
+    setCrosshair(null);
+  }, [selectedDate, normalized.length]);
 
   useEffect(() => {
     const chartElement = chartRef.current;
@@ -128,15 +134,24 @@ export default function SilverBacktestChart({
   const volumeHeight = expanded ? 96 : 88;
   const totalHeight = priceHeight + volumeHeight + 76;
   const candleWidth = plotWidth / Math.max(visible.length, 1);
-  const high = Math.max(...visible.map((candle: any) => candle.high));
-  const low = Math.min(...visible.map((candle: any) => candle.low));
+  const rawHigh = Math.max(...visible.map((candle: any) => candle.high));
+  const rawLow = Math.min(...visible.map((candle: any) => candle.low));
+  const priceScale = buildNicePriceScale(rawHigh, rawLow, expanded ? 9 : 7);
+  const high = priceScale.high;
+  const low = priceScale.low;
+  const priceTicks = priceScale.ticks;
   const maxVolume = Math.max(...visible.map((candle: any) => candle.volume), 1);
   const priceSpan = high - low || 1;
   const first = visible[0];
   const last = visible[visible.length - 1];
   const change = last.close - first.open;
   const changePct = first.open ? change / first.open * 100 : 0;
-  const activeIndex = crosshair ? Math.min(visible.length - 1, Math.max(0, Math.floor(crosshair.x / candleWidth))) : null;
+  const selectedVisibleIndex = selectedCandleIndex !== null && selectedCandleIndex >= start && selectedCandleIndex < end
+    ? selectedCandleIndex - start
+    : null;
+  const activeIndex = crosshair
+    ? Math.min(visible.length - 1, Math.max(0, Math.floor(crosshair.x / candleWidth)))
+    : selectedVisibleIndex;
   const activeCandle = activeIndex !== null ? visible[activeIndex] : null;
   const statCandle = activeCandle || last;
   const activeX = activeIndex !== null ? activeIndex * candleWidth + candleWidth / 2 : 0;
@@ -306,16 +321,17 @@ export default function SilverBacktestChart({
                 {activeCandle ? `Focused candle: ${formatAxisDateTime(activeCandle.time)} IST` : `Showing candles ${start + 1}-${end} of ${normalized.length}`}
               </div>
             </div>
-            <div className="flex flex-wrap items-center gap-4 text-xs">
-              <Stat label="Open" value={formatNumber(statCandle.open)} />
-              <Stat label="High" value={formatNumber(statCandle.high)} />
-              <Stat label="Low" value={formatNumber(statCandle.low)} />
-              <Stat label="Close" value={formatNumber(statCandle.close)} />
-              <Stat label="Change" value={`${change >= 0 ? '+' : ''}${formatNumber(change)} (${changePct.toFixed(2)}%)`} tone={change >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
-            </div>
           </div>
 
           <ChartSymbolLibrary />
+
+          <div className="mt-3 flex flex-wrap items-center gap-4 border-t border-[#1f2937] pt-3 text-xs">
+            <Stat label="Open" value={formatNumber(statCandle.open)} />
+            <Stat label="High" value={formatNumber(statCandle.high)} />
+            <Stat label="Low" value={formatNumber(statCandle.low)} />
+            <Stat label="Close" value={formatNumber(statCandle.close)} />
+            <Stat label="Change" value={`${change >= 0 ? '+' : ''}${formatNumber(change)} (${changePct.toFixed(2)}%)`} tone={change >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
+          </div>
 
           <div className="mb-3 flex flex-wrap items-center gap-1.5">
             <button onClick={() => zoomAtRatio(0.5, false)} disabled={clampedVisible >= maxVisible} aria-label="Zoom out" title="Zoom out" className="inline-flex h-8 w-8 items-center justify-center rounded border border-[#334155] bg-[#1f2937] text-base font-bold text-gray-100 shadow-sm disabled:cursor-not-allowed disabled:opacity-40">−</button>
@@ -351,11 +367,10 @@ export default function SilverBacktestChart({
               onMouseMove={handleMouseMove}
               onMouseLeave={() => setCrosshair(null)}
             >
-              {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
-                const price = high - priceSpan * ratio;
+              {priceTicks.map((price) => {
                 const lineY = y(price);
                 return (
-                  <g key={ratio}>
+                  <g key={`grid-price-${price}`}>
                     <line x1={0} x2={plotWidth} y1={lineY} y2={lineY} stroke="#1f2937" strokeWidth="1" />
                   </g>
                 );
@@ -393,17 +408,23 @@ export default function SilverBacktestChart({
                   && absoluteIndex >= selectedTradeOverlay.entryIndex
                   && absoluteIndex <= selectedTradeOverlay.exitIndex,
                 );
-                const candleTrade = overlays.trades
-                  ? visibleTradeOverlays.find((trade: any) => trade.entryIndex === absoluteIndex || trade.exitIndex === absoluteIndex)
-                    || visibleTradeOverlays.find((trade: any) => absoluteIndex >= trade.entryIndex && absoluteIndex <= trade.exitIndex)
-                  : null;
+                const candleTrade = visibleTradeOverlays.find((trade: any) => trade.entryIndex === absoluteIndex || trade.exitIndex === absoluteIndex)
+                  || visibleTradeOverlays.find((trade: any) => absoluteIndex >= trade.entryIndex && absoluteIndex <= trade.exitIndex)
+                  || null;
+                const selectedCandle = selectedCandleIndex === absoluteIndex;
                 const selectedEntryCandle = Boolean(selectedTradeOverlay && absoluteIndex === selectedTradeOverlay.entryIndex);
                 const selectedExitCandle = Boolean(selectedTradeOverlay && absoluteIndex === selectedTradeOverlay.exitIndex);
                 return (
                   <g
                     key={`${candle.time}-${index}`}
-                    onClick={() => candleTrade && onSelectedTradeIdChange(candleTrade.trade_id)}
-                    style={candleTrade ? { cursor: 'pointer' } : undefined}
+                    onPointerDown={(event) => event.stopPropagation()}
+                    onClick={(event) => {
+                      event.stopPropagation();
+                      setSelectedCandleIndex(absoluteIndex);
+                      setCrosshair({ x, y: closeY });
+                      if (candleTrade) onSelectedTradeIdChange(candleTrade.trade_id);
+                    }}
+                    style={{ cursor: 'pointer' }}
                   >
                     <title>{`${candle.time}\nO ${formatNumber(candle.open)} H ${formatNumber(candle.high)} L ${formatNumber(candle.low)} C ${formatNumber(candle.close)}\nEMA20 ${formatNumber(candle.ema20)}\nVol ${candle.volume.toLocaleString('en-IN')}`}</title>
                     <line x1={x} x2={x} y1={highY} y2={lowY} stroke={color} strokeWidth="1.2" />
@@ -420,6 +441,19 @@ export default function SilverBacktestChart({
                         strokeWidth={selectedEntryCandle || selectedExitCandle ? 2.5 : 1.1}
                         opacity={selectedEntryCandle || selectedExitCandle ? 1 : 0.45}
                         rx="2"
+                      />
+                    )}
+                    {selectedCandle && (
+                      <rect
+                        x={x - bodyWidth / 2 - 9}
+                        y={Math.max(2, highY - 10)}
+                        width={bodyWidth + 18}
+                        height={Math.max(16, Math.min(priceHeight - 4, lowY + 10) - Math.max(2, highY - 10))}
+                        fill="none"
+                        stroke="#facc15"
+                        strokeWidth="2.5"
+                        rx="3"
+                        pointerEvents="none"
                       />
                     )}
                   </g>
@@ -552,11 +586,10 @@ export default function SilverBacktestChart({
               aria-label="Fixed price scale"
             >
               <svg viewBox={`0 0 ${priceScaleWidth} ${totalHeight}`} width={priceScaleWidth} height={chartHeight} preserveAspectRatio="none">
-                {[0, 0.25, 0.5, 0.75, 1].map((ratio) => {
-                  const price = high - priceSpan * ratio;
+                {priceTicks.map((price) => {
                   const lineY = y(price);
                   return (
-                    <g key={`fixed-price-${ratio}`}>
+                    <g key={`fixed-price-${price}`}>
                       <line x1={0} x2={8} y1={lineY} y2={lineY} stroke="#475569" strokeWidth="1" />
                       <rect x={8} y={lineY - 15} width={priceScaleWidth - 16} height={25} rx={4} fill="#111827" stroke="#334155" />
                       <text x={priceScaleWidth - 12} y={lineY + 2} textAnchor="end" fill="#e2e8f0" fontSize="13.5" fontWeight="600" fontFamily="ui-monospace">{formatNumber(price)}</text>
@@ -660,18 +693,18 @@ function ChartSymbolLibrary() {
         <div className="text-[11px] text-gray-500">15-minute candles · IST · selected trade is highlighted</div>
       </div>
       <div className="mt-3 grid gap-x-4 gap-y-2 sm:grid-cols-2 xl:grid-cols-4">
-        <LegendItem swatch="buy" label="BUY entry" detail="Blue down arrow above candle" />
-        <LegendItem swatch="sell" label="SELL entry" detail="Red up arrow below candle" />
-        <LegendItem swatch="exit" label="Selected exit" detail="Gold up/down pointer on exit candle" />
-        <LegendItem swatch="path" label="Selected trade path" detail="Solid line from entry to exit" />
-        <LegendItem swatch="setup-buy" label="BUY setup" detail="Green dot and solid setup level" />
-        <LegendItem swatch="setup-sell" label="SELL setup" detail="Red dot and solid setup level" />
-        <LegendItem swatch="trigger" label="Trigger level" detail="Side-colored dashed line" />
+        <LegendItem swatch="buy" label="BUY entry" detail="Blue down arrow" />
+        <LegendItem swatch="sell" label="SELL entry" detail="Red up arrow" />
+        <LegendItem swatch="exit" label="Selected exit" detail="Gold exit pointer" />
+        <LegendItem swatch="path" label="Trade path" detail="Entry-to-exit line" />
+        <LegendItem swatch="setup-buy" label="BUY setup" detail="Green setup dot" />
+        <LegendItem swatch="setup-sell" label="SELL setup" detail="Red setup dot" />
+        <LegendItem swatch="trigger" label="Trigger" detail="Dashed side-colored line" />
         <LegendItem swatch="sl-initial" label="Initial SL" detail="Orange dashed line" />
         <LegendItem swatch="sl-final" label="Effective SL" detail="Orange solid line" />
         <LegendItem swatch="target" label="Target" detail="Purple dashed line" />
         <LegendItem swatch="trailing" label="Trailing path" detail="Gold stepped line" />
-        <LegendItem swatch="crosshair" label="Crosshair" detail="Gray dashed guide lines" />
+        <LegendItem swatch="crosshair" label="Crosshair" detail="Gray guide lines" />
       </div>
     </div>
   );
@@ -859,6 +892,24 @@ function fitTimeTicksToViewport(ticks: any[], scrollLeft: number, viewportWidth:
 
 function formatNumber(value: number) {
   return Number(value || 0).toLocaleString('en-IN', { maximumFractionDigits: 2 });
+}
+
+function buildNicePriceScale(rawHigh: number, rawLow: number, desiredTickCount: number) {
+  const range = Math.max(rawHigh - rawLow, 1);
+  const roughStep = range / Math.max(desiredTickCount - 1, 1);
+  const magnitude = 10 ** Math.floor(Math.log10(roughStep));
+  const normalized = roughStep / magnitude;
+  const multiplier = normalized <= 1 ? 1 : normalized <= 2 ? 2 : normalized <= 5 ? 5 : 10;
+  const step = multiplier * magnitude;
+  const high = Math.ceil(rawHigh / step) * step;
+  const low = Math.floor(rawLow / step) * step;
+  const ticks: number[] = [];
+
+  for (let price = low; price <= high + step * 0.001; price += step) {
+    ticks.push(Number(price.toFixed(8)));
+  }
+
+  return { high, low, ticks: ticks.reverse() };
 }
 
 function money(value: number) {
