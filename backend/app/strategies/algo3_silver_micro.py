@@ -326,7 +326,12 @@ class Algo3SilverMicro(Strategy):
         self._legacy_buy_entry_context = None
 
     def _silver_buy_plan(self) -> str:
-        """Return the live BUY model, defaulting safely to legacy parity."""
+        """Return the live BUY model selected by normalized settings.
+
+        Production settings normalize algo3 to the tested legacy model. The
+        alternate value remains injectable for isolated parity tests and
+        backtest comparisons without being selectable from live settings.
+        """
         return str(self.settings.get("silver_buy_plan") or SILVER_BUY_PLAN_LEGACY_CONFIRMATION)
 
     def _load_history_background(self):
@@ -571,6 +576,16 @@ class Algo3SilverMicro(Strategy):
             and bar["close"] > self._legacy_buy_price_ema20
             and bar["volume"] > self._legacy_buy_volume_ema20
         ):
+            # The live engine defaults to this legacy 5m BUY model. Keep its
+            # qualifying setup visible in the same current-session history
+            # used by the dashboard; warmup never reaches this method with
+            # allow_signals=True, so historical rebuilds remain silent.
+            self._persist_setup_event(
+                "BUY",
+                bar,
+                source="live",
+                ema20_override=self._legacy_buy_price_ema20,
+            )
             self._legacy_buy_pending_setup = {
                 "setup_bucket": bar["time"],
                 "setup_close": bar["close"],
@@ -795,25 +810,32 @@ class Algo3SilverMicro(Strategy):
         open_price = float(bar.get("open") or 0)
         return close < open_price and close < self._ema20
 
-    def _persist_setup_event(self, side: str, bar: dict, source: str) -> None:
+    def _persist_setup_event(
+        self,
+        side: str,
+        bar: dict,
+        source: str,
+        ema20_override: float | None = None,
+    ) -> None:
         if not self.symbol:
             return
         close = float(bar.get("close") or 0)
         open_price = float(bar.get("open") or 0)
         is_green = close > open_price
         is_red = close < open_price
-        if self._ema20 is None:
+        ema20 = self._ema20 if ema20_override is None else ema20_override
+        if ema20 is None:
             return
-        if side == "BUY" and not (is_green and close > self._ema20):
+        if side == "BUY" and not (is_green and close > ema20):
             print(
                 f"[algo3] setup history SKIPPED for BUY: non-qualifying candle "
-                f"O={open_price:.2f} C={close:.2f} EMA20={_fmt(self._ema20)}"
+                f"O={open_price:.2f} C={close:.2f} EMA20={_fmt(ema20)}"
             )
             return
-        if side == "SELL" and not (is_red and close < self._ema20):
+        if side == "SELL" and not (is_red and close < ema20):
             print(
                 f"[algo3] setup history SKIPPED for SELL: non-qualifying candle "
-                f"O={open_price:.2f} C={close:.2f} EMA20={_fmt(self._ema20)}"
+                f"O={open_price:.2f} C={close:.2f} EMA20={_fmt(ema20)}"
             )
             return
         record_setup_event(
@@ -821,7 +843,7 @@ class Algo3SilverMicro(Strategy):
             symbol=self.symbol,
             side=side,
             bar=bar,
-            ema20=self._ema20,
+            ema20=ema20,
             breakout_points=float(self.settings.get("silver_breakout_points", 150) or 150),
             source=source,
         )

@@ -190,6 +190,11 @@ def get_settings_storage_key(algo_id: str, mode: str | None = None) -> str:
 def _normalize(settings: dict, algo_id: str) -> dict:
     defaults = default_settings_for(algo_id)
     normalized = {**defaults, **settings}
+    # The live Silver engine is intentionally pinned to the tested legacy BUY
+    # model. The alternate 15m breakout remains available to backtests, but a
+    # stale persisted setting must never silently switch live trading models.
+    if algo_id == "algo3":
+        normalized["silver_buy_plan"] = "legacy_confirmation"
     for key in defaults:
         value = normalized.get(key)
         if key in BOOL_FIELDS:
