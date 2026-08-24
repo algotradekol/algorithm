@@ -689,55 +689,38 @@ def _performance_summary(trades: list[dict]) -> dict:
     }
 
 
-def _audit_silver_backtest_trade(job_id: str, trade: dict) -> None:
-    """Emit the compact, searchable explanation for one simulated trade.
-
-    The full diagnostics object remains in the API result. Logs deliberately
-    keep only the decision facts needed to explain a result without emitting
-    the entire candle/chart payload.
-    """
-    diagnostics = trade.get("diagnostics") or {}
-    entry = diagnostics.get("entry_context") or {}
-    exit_context = diagnostics.get("exit_context") or {}
-    path = diagnostics.get("path_metrics") or {}
-    audit_log(
-        "silver_backtest",
-        "trade_closed",
-        run_id=job_id,
-        trade_id=trade.get("trade_id"),
-        symbol=trade.get("symbol"),
-        side=trade.get("side"),
-        setup_time=entry.get("setup_time"),
-        setup_close=entry.get("setup_close"),
-        active_reference=entry.get("active_reference_close"),
-        prior_reference=entry.get("prior_reference_close"),
-        trigger=entry.get("trigger_level_used") or entry.get("trigger_level"),
-        entry_time=entry.get("entry_time"),
-        entry_price=entry.get("entry_price"),
-        entry_mode=entry.get("entry_mode"),
-        exit_time=exit_context.get("exit_time"),
-        exit_price=exit_context.get("exit_price"),
-        exit_reason=exit_context.get("exit_reason"),
-        initial_sl=exit_context.get("initial_sl"),
-        final_sl=exit_context.get("final_sl"),
-        target=exit_context.get("target"),
-        trailing_active=exit_context.get("trailing_active"),
-        trailing_moves=exit_context.get("trailing_move_count"),
-        mfe_points=path.get("max_favorable_excursion_points"),
-        mae_points=path.get("max_adverse_excursion_points"),
-        giveback_points=path.get("profit_giveback_from_peak_points"),
-        gross_pnl=trade.get("gross_pnl"),
-        charges=trade.get("total_charges"),
-        net_pnl=trade.get("net_pnl"),
-        cause=diagnostics.get("primary_cause_code"),
-        warnings=",".join(diagnostics.get("warning_codes") or []) or None,
-    )
-
-
 def _audit_silver_backtest_summary(job_id: str, result: dict, symbol: str) -> None:
-    """Emit one run-level result that can be read without opening the UI."""
+    """Emit one compact run-level result that can be read from Railway logs.
+
+    Per-trade diagnostics remain in the API result. Printing one line per
+    simulated trade can exhaust Railway's log quota before this summary is
+    emitted, which makes a healthy replay look incomplete.
+    """
     trades = [trade for day in result.get("daily_results") or [] for trade in day.get("trades") or []]
     summary = result.get("summary") or {}
+    side_summaries = {}
+    causes_by_side = {}
+    entry_modes_by_side = {}
+    for side in ("BUY", "SELL"):
+        side_trades = [trade for trade in trades if str(trade.get("side") or "").upper() == side]
+        values = [float(trade.get("net_pnl") or 0) for trade in side_trades]
+        side_summaries[side] = {
+            "trades": len(side_trades),
+            "wins": sum(value > 0 for value in values),
+            "losses": sum(value < 0 for value in values),
+            "net_pnl": round(sum(values), 2),
+            "exit_reasons": dict(Counter(str(trade.get("exit_reason") or "unknown") for trade in side_trades)),
+            "trailing_activated": sum(bool((trade.get("diagnostics") or {}).get("exit_context", {}).get("trailing_active")) for trade in side_trades),
+        }
+        causes_by_side[side] = dict(Counter(
+            (trade.get("diagnostics") or {}).get("primary_cause_code") or "unknown"
+            for trade in side_trades
+        ))
+        entry_modes_by_side[side] = dict(Counter(
+            (trade.get("diagnostics") or {}).get("entry_context", {}).get("entry_mode") or "unknown"
+            for trade in side_trades
+        ))
+
     causes = Counter(
         (trade.get("diagnostics") or {}).get("primary_cause_code") or "unknown"
         for trade in trades
@@ -747,6 +730,18 @@ def _audit_silver_backtest_summary(job_id: str, result: dict, symbol: str) -> No
         for trade in trades
         for code in ((trade.get("diagnostics") or {}).get("warning_codes") or [])
     )
+    review_flags = []
+    if not trades:
+        review_flags.append("no_trades")
+    if summary.get("net_pnl", 0) < 0:
+        review_flags.append("negative_total_net_pnl")
+    if summary.get("loss_count", 0) > summary.get("win_count", 0):
+        review_flags.append("losses_exceed_wins")
+    if not side_summaries["BUY"]["trades"]:
+        review_flags.append("no_buy_trades")
+    if not side_summaries["SELL"]["trades"]:
+        review_flags.append("no_sell_trades")
+    diagnostics_count = sum(bool(trade.get("diagnostics")) for trade in trades)
     best_trade = max(trades, key=lambda trade: float(trade.get("net_pnl") or 0), default=None)
     worst_trade = min(trades, key=lambda trade: float(trade.get("net_pnl") or 0), default=None)
     audit_log(
@@ -767,11 +762,17 @@ def _audit_silver_backtest_summary(job_id: str, result: dict, symbol: str) -> No
         max_drawdown=summary.get("max_drawdown"),
         exits=summary.get("exit_counts"),
         causes=dict(causes),
-        warnings=dict(warnings),
         best_trade_id=best_trade.get("trade_id") if best_trade else None,
         best_trade_net=best_trade.get("net_pnl") if best_trade else None,
         worst_trade_id=worst_trade.get("trade_id") if worst_trade else None,
         worst_trade_net=worst_trade.get("net_pnl") if worst_trade else None,
+        diagnostics_count=diagnostics_count,
+        buy=side_summaries["BUY"],
+        sell=side_summaries["SELL"],
+        causes_by_side=causes_by_side,
+        entry_modes_by_side=entry_modes_by_side,
+        warnings=dict(warnings),
+        review_flags=review_flags,
     )
 
 
@@ -1928,7 +1929,6 @@ def _simulate_silver_micro_range(
             }
         elif position.get("side") == "BUY":
             buy_reentry_after_exit = None
-        _audit_silver_backtest_trade(job_id, trade)
         daily_results[day]["trades"].append(trade)
         daily_results[day]["chart"]["trades"].append({
             "trade_id": trade["trade_id"],

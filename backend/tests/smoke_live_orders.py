@@ -3444,22 +3444,34 @@ def test_algo3_backtest_sell_reentry_requires_carried_trigger():
             settings=settings,
             charges_config=charges,
         )
+        trades = results[0]["trades"]
+        bt._audit_silver_backtest_summary(
+            "sell-reentry-trigger-test",
+            {
+                "start_date": first_date.isoformat(),
+                "end_date": first_date.isoformat(),
+                "summary": bt._performance_summary(trades),
+                "daily_results": results,
+            },
+            symbol,
+        )
     finally:
         with _lock:
             _jobs.pop("sell-reentry-trigger-test", None)
         bt.audit_log = original_audit_log
 
-    trades = results[0]["trades"]
     check("SELL trigger guard keeps the backtest to two entries", len(trades) == 2, f"trades={trades}")
     trade_events = [event for event in audit_events if event[1] == "trade_closed"]
-    check("Silver backtest audit logs each closed trade", len(trade_events) == len(trades), f"events={audit_events}")
-    if trade_events:
-        fields = trade_events[0][2]
-        check("audit log includes cause and P&L facts",
-              fields.get("cause") == "stop_loss_hit"
-              and fields.get("entry_price") == 89700.0
-              and fields.get("exit_price") == 89800.0
-              and fields.get("net_pnl") == -100.0,
+    check("Silver backtest does not emit one log line per trade", not trade_events, f"events={audit_events}")
+    summary_events = [event for event in audit_events if event[1] == "run_summary"]
+    check("Silver backtest emits one compact run summary", len(summary_events) == 1, f"events={audit_events}")
+    if summary_events:
+        fields = summary_events[0][2]
+        check("run summary separates BUY and SELL facts",
+              fields.get("sell", {}).get("trades") == 2
+              and fields.get("sell", {}).get("losses") == 1
+              and fields.get("causes_by_side", {}).get("SELL", {}).get("stop_loss_hit") == 1
+              and fields.get("entry_modes_by_side", {}).get("SELL", {}).get("SAME_REFERENCE_REENTRY") == 1,
               f"fields={fields}")
     if len(trades) == 2:
         entries = [float(trade.get("entry_price") or 0) for trade in trades]
