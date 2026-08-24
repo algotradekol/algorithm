@@ -40,11 +40,11 @@ SILVER_SELL_PLAN_LABELS = {
     SILVER_SELL_PLAN_RED_CHAIN: "Red-chain comparison (current)",
     SILVER_SELL_PLAN_LATEST_REFERENCE: "Latest red reference (legacy)",
 }
-SILVER_BUY_PLAN_LIVE_BREAKOUT = "live_breakout"
+SILVER_BUY_PLAN_REFERENCE_BREAKOUT = "reference_breakout"
+# Kept as an input compatibility alias for old saved jobs/settings.
 SILVER_BUY_PLAN_LEGACY_CONFIRMATION = "legacy_confirmation"
 SILVER_BUY_PLAN_LABELS = {
-    SILVER_BUY_PLAN_LIVE_BREAKOUT: "15m breakout (current)",
-    SILVER_BUY_PLAN_LEGACY_CONFIRMATION: "5m EMA/volume confirmation (legacy)",
+    SILVER_BUY_PLAN_REFERENCE_BREAKOUT: "15m EMA reference breakout",
 }
 
 _jobs: dict[str, dict] = {}
@@ -75,10 +75,10 @@ def normalize_silver_sell_plan(value: str | None) -> str:
 
 
 def normalize_silver_buy_plan(value: str | None) -> str:
-    plan = str(value or SILVER_BUY_PLAN_LIVE_BREAKOUT).strip().lower()
-    if plan not in SILVER_BUY_PLAN_LABELS:
-        raise ValueError("Unknown Silver buy plan. Choose live_breakout or legacy_confirmation.")
-    return plan
+    plan = str(value or SILVER_BUY_PLAN_REFERENCE_BREAKOUT).strip().lower()
+    if plan in {SILVER_BUY_PLAN_REFERENCE_BREAKOUT, "live_breakout", SILVER_BUY_PLAN_LEGACY_CONFIRMATION}:
+        return SILVER_BUY_PLAN_REFERENCE_BREAKOUT
+    raise ValueError("Silver BUY logic is fixed to the 15m reference breakout.")
 
 
 class BacktestHistoryCache:
@@ -278,7 +278,7 @@ def _run_job(
                 raise ValueError("The Silver Micro contract could not be resolved for backtesting.")
             _run_silver_micro_job(
                 job_id, algo_id, first_date, last_date, watchlist[0], settings, history_cache,
-                silver_buy_plan or SILVER_BUY_PLAN_LIVE_BREAKOUT,
+                silver_buy_plan or SILVER_BUY_PLAN_REFERENCE_BREAKOUT,
                 silver_sell_plan or SILVER_SELL_PLAN_RED_CHAIN,
             )
             return
@@ -981,7 +981,7 @@ def _run_silver_micro_job(
 def _silver_micro_execution_assumption(
     history_resolution: str,
     settings: dict,
-    silver_buy_plan: str = SILVER_BUY_PLAN_LIVE_BREAKOUT,
+    silver_buy_plan: str = SILVER_BUY_PLAN_REFERENCE_BREAKOUT,
     silver_sell_plan: str = SILVER_SELL_PLAN_RED_CHAIN,
 ) -> str:
     n = int(settings.get("silver_breakout_points", 150))
@@ -997,11 +997,7 @@ def _silver_micro_execution_assumption(
         if tsl_enabled and exit_mode in {"trailing_sl_only", "fixed_target_trailing_sl"}
         else " Trailing SL is OFF for this replay."
     )
-    buy_plan_text = (
-        "BUY uses a green 15m close above EMA20 as the reference and enters when a later 1-minute high crosses setup close + n, including gap-through/candle-close fallback."
-        if silver_buy_plan == SILVER_BUY_PLAN_LIVE_BREAKOUT
-        else "BUY uses the legacy 5m rule: green close above price EMA20 with volume above volume EMA20, confirmation within 15 minutes, then entry at the next 5m candle open."
-    )
+    buy_plan_text = "BUY stores each finalized green 15m close above EMA20 as the reference and enters when price crosses reference + n; after a BUY target/SL, renewed upward movement can re-enter against the same reference until a newer green 15m close replaces it."
     sell_plan_text = (
         "SELL compares each later qualifying red 15m close with the previous red reference; "
         "green candles do not reset that reference."
@@ -1030,16 +1026,12 @@ def _new_silver_micro_day_result(
     symbol: str,
     day: datetime.date,
     bar_count: int,
-    silver_buy_plan: str = SILVER_BUY_PLAN_LIVE_BREAKOUT,
+    silver_buy_plan: str = SILVER_BUY_PLAN_REFERENCE_BREAKOUT,
     silver_sell_plan: str = SILVER_SELL_PLAN_RED_CHAIN,
 ) -> dict:
     buy_plan = normalize_silver_buy_plan(silver_buy_plan)
     sell_plan = normalize_silver_sell_plan(silver_sell_plan)
-    buy_plan_text = (
-        "BUY uses the 15m EMA breakout reference."
-        if buy_plan == SILVER_BUY_PLAN_LIVE_BREAKOUT
-        else "BUY uses the legacy 5m EMA/volume setup with same-direction confirmation."
-    )
+    buy_plan_text = "BUY uses a finalized green 15m close above EMA20 as the reference and enters at reference + n, with same-reference re-entry after BUY target/SL on renewed upward movement."
     sell_plan_text = (
         "SELL compares the forming price of a later qualifying red candle with the previous red reference and enters at the intrabar trigger; green candles do not reset it."
         if sell_plan == SILVER_SELL_PLAN_RED_CHAIN
@@ -1055,9 +1047,7 @@ def _new_silver_micro_day_result(
         "silver_sell_plan_label": SILVER_SELL_PLAN_LABELS[sell_plan],
         "execution_assumption": (
             f"Silver Micro: {buy_plan_text} "
-            + ("a green 15m candle above EMA20 sets the BUY level; BUY uses setup close + n. "
-               if buy_plan == SILVER_BUY_PLAN_LIVE_BREAKOUT
-               else "a green 5m candle above price EMA20 with volume above volume EMA20 creates the BUY setup; a later green 5m candle confirms it within 15 minutes and entry uses the next 5m open. ")
+            + "Each new finalized green 15m close above EMA20 replaces the BUY reference. "
             + f"A red 15m candle below EMA20 stores a SELL red reference. {sell_plan_text}"
         ),
         "data_available_symbols": 1 if bar_count else 0,
@@ -1065,8 +1055,8 @@ def _new_silver_micro_day_result(
         "sector_breakdown": [],
         "condition_breakdown": [
             {"label": "Scanned universe", "passed": 1 if bar_count else 0, "total": 1},
-            {"label": "5m bars processed" if buy_plan == SILVER_BUY_PLAN_LEGACY_CONFIRMATION else "15m bars processed", "passed": 0, "total": bar_count},
-            {"label": "Setups captured (EMA/volume confirmation and red below EMA20)" if buy_plan == SILVER_BUY_PLAN_LEGACY_CONFIRMATION else "Setups captured (green above / red below EMA20)", "passed": 0, "total": 0},
+            {"label": "15m bars processed", "passed": 0, "total": bar_count},
+            {"label": "Setups captured (green above / red below EMA20)", "passed": 0, "total": 0},
             {"label": "Final: entries executed", "passed": 0, "total": 0},
         ],
         "candidates": [],
@@ -1400,18 +1390,16 @@ def _simulate_silver_micro_range(
     trading_days: list[datetime.date],
     settings: dict,
     charges_config: dict,
-    silver_buy_plan: str = SILVER_BUY_PLAN_LIVE_BREAKOUT,
+    silver_buy_plan: str = SILVER_BUY_PLAN_REFERENCE_BREAKOUT,
     silver_sell_plan: str = SILVER_SELL_PLAN_RED_CHAIN,
 ) -> list[dict]:
-    """15m EMA breakout replay (2026-08-19 rewrite).
+    """Replay the 15m reference BUY and selected 15m SELL plan.
 
-    Iterates the raw 1-minute history. Each time a 15-min bucket closes
-    we update EMA20 and (if it qualifies) the BUY/SELL setup level. On
-    every 1-min bar we check whether its high/low crossed a trigger
-    (setup_close +/- n) — the closest tick-level approximation the
-    backtest can offer from 1m data. Enters at the trigger level itself
-    (conservative). SL/target/TSL are in POINTS from entry, matching the
-    live strategy exactly.
+    The raw 1-minute history is the execution source of truth. Each finalized
+    green 15m close above EMA20 becomes the BUY reference; a later 1m move
+    through reference+n enters immediately. A BUY target/SL preserves that
+    reference and permits re-entry on renewed upward movement until a newer
+    qualifying 15m close replaces it.
     """
     silver_buy_plan = normalize_silver_buy_plan(silver_buy_plan)
     silver_sell_plan = normalize_silver_sell_plan(silver_sell_plan)
@@ -1473,9 +1461,10 @@ def _simulate_silver_micro_range(
     last_bar_processed: dict | None = None
     position: dict | None = None
     position_candidate: dict | None = None
-    # Set only after a real SELL TARGET/SL exit. The next qualifying minute
-    # may continue the same red-chain move without inventing a fresh signal.
+    # Set only after a real protective exit. The next qualifying minute may
+    # continue the same reference move without inventing a fresh signal.
     sell_reentry_after_exit: dict | None = None
+    buy_reentry_after_exit: dict | None = None
 
     def finalize_15m_bar(allow_signals: bool):
         """Aggregate the minute_buffer into one 15m bar, update EMA20
@@ -1483,7 +1472,7 @@ def _simulate_silver_micro_range(
         nonlocal minute_buffer, ema20, buy_setup_close, sell_setup_close
         nonlocal buy_setup_context, sell_setup_context, buy_setup_bar_at, sell_setup_bar_at
         nonlocal last_fired_buy_setup_at, last_fired_sell_setup_at, bars_finalized
-        nonlocal sell_reentry_after_exit
+        nonlocal sell_reentry_after_exit, buy_reentry_after_exit
         if not minute_buffer or current_bucket is None:
             return
         bar = {
@@ -1497,53 +1486,15 @@ def _simulate_silver_micro_range(
         ema20 = _ema_step(ema20, bar["close"])
         bars_finalized += 1
 
-        # Match live's candle-close fallback before this bar can overwrite
-        # the stored setup with a new qualifier. This catches sparse 5m
-        # fallback history and close-through moves that have no observable
-        # 1m tick crossing in the replay.
-        if (
-            silver_buy_plan == SILVER_BUY_PLAN_LIVE_BREAKOUT
-            and allow_signals
-            and first_date <= bar["time"].date() <= last_date
-            and bars_finalized >= EMA_PERIOD
-        ):
-            buy_level = buy_setup_close + n if buy_setup_close is not None else None
-            if (
-                buy_level is not None
-                and float(bar["close"]) >= float(buy_level)
-                and buy_setup_bar_at is not None
-                and last_fired_buy_setup_at != buy_setup_bar_at
-            ):
-                if position is not None and position.get("side") != "BUY":
-                    close_position(float(bar["close"]), bar["time"], "REVERSAL_CONTRA_SIGNAL", bar["time"].date())
-                if position is None:
-                    open_position(
-                        "BUY",
-                        float(bar["close"]),
-                        bar["time"],
-                        bar["time"].date(),
-                        entry_metadata={
-                            "entry_mode": "THRESHOLD_TRIGGER",
-                            "active_reference_close": buy_setup_close,
-                            "trigger_level_used": buy_level,
-                        },
-                    )
-                    last_fired_buy_setup_at = buy_setup_bar_at
-
         is_green = bar["close"] > bar["open"]
         is_red = bar["close"] < bar["open"]
         # Setup update: overwrite on every new qualifier (per spec doc).
         # A qualifier can also be recorded in-scope so the UI candidates
         # table shows what triggered.
         setup_event: dict | None = None
+        previous_buy_reference_close = buy_setup_close
         previous_sell_reference_close = sell_setup_close
-        if (
-            silver_buy_plan == SILVER_BUY_PLAN_LIVE_BREAKOUT
-            and is_green
-            and ema20 is not None
-            and bar["close"] > ema20
-        ):
-            buy_setup_close = bar["close"]
+        if is_green and ema20 is not None and bar["close"] > ema20:
             buy_setup_context = {
                 "side": "BUY",
                 "setup_time": bar["time"].isoformat(),
@@ -1551,11 +1502,15 @@ def _simulate_silver_micro_range(
                 "trigger_level": round(bar["close"] + n, 2),
                 "ema20": _round_or_none(ema20),
                 "n_points": n,
-                "previous_red_reference_close": None,
-                "current_qualifying_red_close": None,
+                "previous_reference_close": _round_or_none(previous_buy_reference_close),
             }
-            setup_event = {"side": "BUY", "close": bar["close"], "bar": bar}
-        elif is_red and ema20 is not None and bar["close"] < ema20:
+            setup_event = {
+                "side": "BUY",
+                "close": bar["close"],
+                "bar": bar,
+                "previous_reference_close": previous_buy_reference_close,
+            }
+        if is_red and ema20 is not None and bar["close"] < ema20:
             sell_setup_context = {
                 "side": "SELL",
                 "setup_time": bar["time"].isoformat(),
@@ -1604,8 +1559,9 @@ def _simulate_silver_micro_range(
                     "trigger_level": round(setup_event["close"] + n, 2) if setup_event["side"] == "BUY" else round(setup_event["close"] - n, 2),
                     "ema20": round(ema20, 2) if ema20 is not None else None,
                     "n_points": n,
-                    "previous_red_reference_close": _round_or_none(setup_event.get("previous_red_reference_close")),
-                    "current_qualifying_red_close": _round_or_none(setup_event.get("current_qualifying_red_close")),
+                     "previous_red_reference_close": _round_or_none(setup_event.get("previous_red_reference_close")),
+                     "current_qualifying_red_close": _round_or_none(setup_event.get("current_qualifying_red_close")),
+                     "previous_reference_close": _round_or_none(setup_event.get("previous_reference_close")),
                     "signal_stage": "setup",
                     "selected_for_trade": False,
                     "rejection_reason": None,
@@ -1627,8 +1583,39 @@ def _simulate_silver_micro_range(
                     "ema20": _round_or_none(ema20),
                     "previous_red_reference_close": _round_or_none(setup_event.get("previous_red_reference_close")),
                     "current_qualifying_red_close": _round_or_none(setup_event.get("current_qualifying_red_close")),
+                    "previous_reference_close": _round_or_none(setup_event.get("previous_reference_close")),
                 })
                 day_result["condition_breakdown"][2]["passed"] += 1
+        # A completed bar can be the first observable evidence of a sparse or
+        # gap-through BUY. Compare it with the prior reference before replacing
+        # that reference with the current green close.
+        if (
+            silver_buy_plan == SILVER_BUY_PLAN_REFERENCE_BREAKOUT
+            and allow_signals
+            and first_date <= bar["time"].date() <= last_date
+            and bars_finalized > EMA_PERIOD
+            and previous_buy_reference_close is not None
+            and is_green
+            and ema20 is not None
+            and bar["close"] >= float(previous_buy_reference_close) + n
+            and (position is None or position.get("side") != "BUY")
+        ):
+            buy_level = float(previous_buy_reference_close) + n
+            if position and position.get("side") != "BUY":
+                close_position(buy_level, bar["time"], "REVERSAL_CONTRA_SIGNAL", bar["time"].date())
+            if position is None:
+                open_position(
+                    "BUY",
+                    float(bar["close"]),
+                    bar["time"],
+                    bar["time"].date(),
+                    entry_metadata={
+                        "entry_mode": "THRESHOLD_TRIGGER_CANDLE_CLOSE",
+                        "active_reference_close": previous_buy_reference_close,
+                        "trigger_level_used": buy_level,
+                    },
+                )
+                last_fired_buy_setup_at = buy_setup_bar_at
         if (
             silver_sell_plan == SILVER_SELL_PLAN_RED_CHAIN
             and allow_signals
@@ -1663,15 +1650,11 @@ def _simulate_silver_micro_range(
                         },
                     )
                     last_fired_sell_setup_at = sell_setup_bar_at
-        if (
-            silver_buy_plan == SILVER_BUY_PLAN_LIVE_BREAKOUT
-            and is_green
-            and ema20 is not None
-            and bar["close"] > ema20
-        ):
+        if is_green and ema20 is not None and bar["close"] > ema20:
             buy_setup_close = bar["close"]
             buy_setup_bar_at = bar["time"]
-        elif is_red and ema20 is not None and bar["close"] < ema20:
+            buy_reentry_after_exit = None
+        if is_red and ema20 is not None and bar["close"] < ema20:
             sell_setup_close = bar["close"]
             sell_setup_bar_at = bar["time"]
 
@@ -1805,7 +1788,7 @@ def _simulate_silver_micro_range(
         }
 
     def close_position(exit_price: float, exit_time: datetime.datetime, exit_reason: str, day: datetime.date):
-        nonlocal position, position_candidate, sell_reentry_after_exit
+        nonlocal position, position_candidate, sell_reentry_after_exit, buy_reentry_after_exit
         if not position:
             return
         trade = _close_silver_micro_position(position, exit_price, exit_time, exit_reason, settings, charges_config)
@@ -1817,6 +1800,14 @@ def _simulate_silver_micro_range(
             }
         elif position.get("side") == "SELL":
             sell_reentry_after_exit = None
+        if position.get("side") == "BUY" and exit_reason in {"SL", "TARGET"} and buy_setup_close is not None and buy_setup_bar_at is not None:
+            buy_reentry_after_exit = {
+                "setup_bar_at": buy_setup_bar_at,
+                "trigger_level": float(buy_setup_close) + n,
+                "exit_reason": exit_reason,
+            }
+        elif position.get("side") == "BUY":
+            buy_reentry_after_exit = None
         daily_results[day]["trades"].append(trade)
         daily_results[day]["chart"]["trades"].append({
             "trade_id": trade["trade_id"],
@@ -1892,22 +1883,20 @@ def _simulate_silver_micro_range(
             "trailing_distance_points": float(tsl_distance_pts),
             "trailing_moves": [],
             "entry_mode": entry_metadata.get("entry_mode") or (
-                "LEGACY_CONFIRMATION"
-                if silver_buy_plan == SILVER_BUY_PLAN_LEGACY_CONFIRMATION and side == "BUY"
-                else "THRESHOLD_TRIGGER"
+                "THRESHOLD_TRIGGER"
             ),
             "active_reference_close": entry_metadata.get("active_reference_close"),
             "prior_reference_close": entry_metadata.get("prior_reference_close"),
             "trigger_level_used": entry_metadata.get("trigger_level_used"),
             "reentry_exit_reason": entry_metadata.get("reentry_exit_reason"),
             "entry_trigger": (
-                f"Historical {entry_time.date().isoformat()} Silver Micro legacy 5m EMA/volume confirmation replay."
-                if silver_buy_plan == SILVER_BUY_PLAN_LEGACY_CONFIRMATION and side == "BUY"
+                f"Historical {entry_time.date().isoformat()} Silver Micro 15m reference BUY breakout replay."
+                if side == "BUY"
                 else (
                     f"Historical {entry_time.date().isoformat()} Silver Micro "
                     f"15m red-chain trigger replay."
                     if side == "SELL" and silver_sell_plan == SILVER_SELL_PLAN_RED_CHAIN
-                    else f"Historical {entry_time.date().isoformat()} Silver Micro 15m breakout replay."
+                    else f"Historical {entry_time.date().isoformat()} Silver Micro trigger replay."
                 )
             ),
         }
@@ -1938,6 +1927,7 @@ def _simulate_silver_micro_range(
             "n_points": setup_source.get("n_points"),
             "previous_red_reference_close": setup_source.get("previous_red_reference_close"),
             "current_qualifying_red_close": setup_source.get("current_qualifying_red_close"),
+            "previous_reference_close": setup_source.get("previous_reference_close"),
         }
         position["setup_context"] = setup_context
         position["max_favorable_points"] = 0.0
@@ -1995,6 +1985,65 @@ def _simulate_silver_micro_range(
                         "new_sl": round(new_sl, 2),
                         "protected_points": round(entry - new_sl, 2),
                     })
+
+    def check_buy_reference_intrabar(candle: dict, day: datetime.date, in_scope: bool):
+        """Enter BUY at the live 1m crossing of the carried 15m reference."""
+        nonlocal last_fired_buy_setup_at, buy_reentry_after_exit
+        if not in_scope or silver_buy_plan != SILVER_BUY_PLAN_REFERENCE_BREAKOUT:
+            return
+        if bars_finalized < EMA_PERIOD or buy_setup_close is None or buy_setup_bar_at is None:
+            return
+        if current_bucket is None or current_bucket <= buy_setup_bar_at or not minute_buffer:
+            return
+        if ema20 is None or (position is not None and position.get("side") == "BUY"):
+            return
+
+        buy_level = float(buy_setup_close) + n
+        current_bucket_open = float(minute_buffer[0]["open"])
+        current_price = float(candle["close"])
+        current_candle_is_green = current_price > current_bucket_open and current_price > float(ema20)
+        crossed = (
+            float(candle["high"]) >= buy_level
+            and (
+                (prev_ltp is not None and float(prev_ltp) < buy_level)
+                or float(candle["open"]) >= buy_level
+                or prev_ltp is None
+            )
+        )
+        same_reference_reentry = bool(
+            buy_reentry_after_exit
+            and buy_reentry_after_exit.get("setup_bar_at") == buy_setup_bar_at
+            and abs(float(buy_reentry_after_exit.get("trigger_level") or 0) - buy_level) < 1e-9
+            and prev_ltp is not None
+            and current_price > float(prev_ltp)
+            and current_price >= buy_level
+        )
+        # The initial entry is driven by the executable price crossing, just
+        # like live ticks. A same-reference re-entry is more conservative:
+        # it must resume upward in a green, above-EMA minute.
+        if not (crossed or same_reference_reentry):
+            return
+        if same_reference_reentry and not current_candle_is_green:
+            return
+
+        if position is not None and position.get("side") != "BUY":
+            close_position(buy_level, candle["time"], "REVERSAL_CONTRA_SIGNAL", day)
+        if position is None:
+            entry_price = current_price if same_reference_reentry else buy_level
+            open_position(
+                "BUY",
+                entry_price,
+                candle["time"],
+                day,
+                entry_metadata={
+                    "entry_mode": "SAME_REFERENCE_REENTRY" if same_reference_reentry else "THRESHOLD_TRIGGER",
+                    "active_reference_close": buy_setup_close,
+                    "trigger_level_used": buy_level,
+                    "reentry_exit_reason": (buy_reentry_after_exit or {}).get("exit_reason") if same_reference_reentry else None,
+                },
+            )
+            last_fired_buy_setup_at = buy_setup_bar_at
+            buy_reentry_after_exit = None
 
     def check_red_chain_intrabar(candle: dict, day: datetime.date, in_scope: bool):
         """Enter current red-chain SELLs from the 1-minute crossing.
@@ -2087,8 +2136,6 @@ def _simulate_silver_micro_range(
             if day != current_day:
                 if position and last_bar_processed:
                     close_position(float(last_bar_processed["close"]), last_bar_processed["time"], "EOD_SQUAREOFF", current_day)
-                legacy_buy_pending_setup = None
-                legacy_buy_pending_entry = None
                 current_day = day
 
         day_result = daily_results.get(day) if in_scope else None
@@ -2109,89 +2156,13 @@ def _simulate_silver_micro_range(
         else:
             minute_buffer.append(candle)
 
-        # Legacy BUY replay uses the original 5m aggregation and confirmation
-        # timing, while the shared 1m loop still supplies exact entry/exit
-        # prices and the same SL/target/trailing engine.
-        if silver_buy_plan == SILVER_BUY_PLAN_LEGACY_CONFIRMATION:
-            legacy_bucket = ts.replace(
-                minute=(ts.minute // SILVER_LEGACY_BUY_BUCKET_MINUTES) * SILVER_LEGACY_BUY_BUCKET_MINUTES,
-                second=0,
-                microsecond=0,
-            )
-            if legacy_buy_5m_bucket is None:
-                legacy_buy_5m_bucket = legacy_bucket
-                legacy_buy_5m_buffer = [candle]
-            elif legacy_bucket != legacy_buy_5m_bucket:
-                finalize_legacy_buy_5m_bar(allow_signals=True)
-                legacy_buy_5m_bucket = legacy_bucket
-                legacy_buy_5m_buffer = [candle]
-                if day_result:
-                    day_result["condition_breakdown"][1]["passed"] += 1
-            else:
-                legacy_buy_5m_buffer.append(candle)
-
-            if (
-                in_scope
-                and legacy_buy_pending_entry
-                and ts >= legacy_buy_pending_entry["entry_bucket"]
-            ):
-                if position and position["side"] != "BUY":
-                    close_position(float(candle["open"]), ts, "REVERSAL_CONTRA_SIGNAL", day)
-                if not position:
-                    open_position(
-                        "BUY",
-                        float(candle["open"]),
-                        ts,
-                        day,
-                        legacy_buy_pending_entry["candidate"],
-                        {
-                            "entry_mode": "LEGACY_CONFIRMATION",
-                            "active_reference_close": legacy_buy_pending_entry["candidate"].get("setup_close"),
-                            "trigger_level_used": legacy_buy_pending_entry["candidate"].get("trigger_level"),
-                        },
-                    )
-                legacy_buy_pending_entry = None
-
         # In-scope logic: trigger detection + exit management.
-        if in_scope and (
-            bars_finalized >= EMA_PERIOD
-            or (silver_buy_plan == SILVER_BUY_PLAN_LEGACY_CONFIRMATION and position is not None)
-        ):
-            # Trigger levels from the latest stored setups.
-            buy_level = buy_setup_close + n if buy_setup_close is not None else None
+        if in_scope and bars_finalized >= EMA_PERIOD:
+            # Both sides consume finalized 15m references and the current
+            # 1m candle supplies the earliest executable crossing.
             sell_level = sell_setup_close - n if sell_setup_close is not None else None
 
-            # BUY trigger: preserve the normal minute cross, but also mirror
-            # live's gap-through behavior when a fresh setup opens beyond its
-            # level. The setup timestamp makes this one-shot until a newer
-            # qualifying 15m candle re-arms it.
-            if silver_buy_plan == SILVER_BUY_PLAN_LIVE_BREAKOUT and (position is None or position.get("side") != "BUY"):
-                buy_crossed = (
-                    buy_level is not None
-                    and candle["high"] >= buy_level
-                    and (
-                        (prev_ltp is not None and prev_ltp < buy_level)
-                        or float(candle["open"]) >= buy_level
-                    )
-                    and buy_setup_bar_at is not None
-                    and last_fired_buy_setup_at != buy_setup_bar_at
-                )
-                if buy_crossed:
-                    if position and position["side"] != "BUY":
-                        close_position(buy_level, ts, "REVERSAL_CONTRA_SIGNAL", day)
-                    open_position(
-                        "BUY",
-                        buy_level,
-                        ts,
-                        day,
-                        entry_metadata={
-                            "entry_mode": "THRESHOLD_TRIGGER",
-                            "active_reference_close": buy_setup_close,
-                            "trigger_level_used": buy_level,
-                        },
-                    )
-                    last_fired_buy_setup_at = buy_setup_bar_at
-
+            check_buy_reference_intrabar(candle, day, in_scope)
             check_red_chain_intrabar(candle, day, in_scope)
 
             # Legacy comparison plan: every qualifying red candle replaces the
@@ -2311,10 +2282,8 @@ def _simulate_silver_micro_range(
         prev_ltp = candle["close"]
         last_bar_processed = candle
 
-    # Final flush — finalize both the selected BUY aggregation and the 15m
-    # SELL/live-parity aggregation before closing any open position.
-    if silver_buy_plan == SILVER_BUY_PLAN_LEGACY_CONFIRMATION:
-        finalize_legacy_buy_5m_bar(allow_signals=True)
+    # Final flush — finalize the 15m aggregation before closing any open
+    # position. The 5m BUY compatibility code is intentionally not called.
     finalize_15m_bar(allow_signals=True)
     if current_day and position and last_bar_processed:
         close_position(float(last_bar_processed["close"]), last_bar_processed["time"], "EOD_SQUAREOFF", current_day)
@@ -2412,7 +2381,7 @@ def _close_silver_micro_position(
         "trailing_move_count": len(trailing_moves),
         "trailing_moves": trailing_moves,
         "max_protected_points": round(max_protected_points, 2),
-        "entry_trigger": position.get("entry_trigger") or f"Historical {position['entry_time'].date().isoformat()} Silver Micro 15m breakout replay.",
+        "entry_trigger": position.get("entry_trigger") or f"Historical {position['entry_time'].date().isoformat()} Silver Micro trigger replay.",
         **charges,
         "gross_pnl": round(gross_pnl, 2),
         "net_pnl": round(float(charges["net_pnl"]), 2),

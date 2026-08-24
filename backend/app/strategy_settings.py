@@ -96,10 +96,8 @@ STRATEGY_DEFAULT_OVERRIDES = {
         #   activates. tsl_distance_points: how far behind the current
         #   high/low the TSL sits once active.
         "silver_breakout_points": 150,
-        # Live Silver BUY defaults to the previously tested 5m
-        # EMA/volume-confirmation model. The backtest can still select the
-        # alternate 15m breakout plan explicitly.
-        "silver_buy_plan": "legacy_confirmation",
+        # Silver BUY uses the finalized 15m green-above-EMA reference.
+        "silver_buy_plan": "reference_breakout",
         "sl_points": 100,
         "target_points": 300,
         "trailing_sl_enabled": False,
@@ -190,11 +188,10 @@ def get_settings_storage_key(algo_id: str, mode: str | None = None) -> str:
 def _normalize(settings: dict, algo_id: str) -> dict:
     defaults = default_settings_for(algo_id)
     normalized = {**defaults, **settings}
-    # The live Silver engine is intentionally pinned to the tested legacy BUY
-    # model. The alternate 15m breakout remains available to backtests, but a
-    # stale persisted setting must never silently switch live trading models.
+    # Silver has one canonical BUY model. Old values are compatibility aliases
+    # and must not reactivate the removed 5m confirmation path.
     if algo_id == "algo3":
-        normalized["silver_buy_plan"] = "legacy_confirmation"
+        normalized["silver_buy_plan"] = "reference_breakout"
     for key in defaults:
         value = normalized.get(key)
         if key in BOOL_FIELDS:
