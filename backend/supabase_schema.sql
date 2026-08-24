@@ -215,6 +215,13 @@ ALTER TABLE strategy_settings
     ADD COLUMN IF NOT EXISTS trailing_sl_trigger_pct numeric default 1.0,
     ADD COLUMN IF NOT EXISTS trailing_sl_distance_pct numeric default 0.5;
 
+-- Silver Micro point-lock trailing model:
+-- activate at X profit, then every Y additional profit locks Z more points.
+ALTER TABLE strategy_settings
+    ADD COLUMN IF NOT EXISTS tsl_activate_points numeric default 100,
+    ADD COLUMN IF NOT EXISTS tsl_profit_step_points numeric default 100,
+    ADD COLUMN IF NOT EXISTS tsl_lock_step_points numeric default 50;
+
 ALTER TABLE strategy_settings
     ADD COLUMN IF NOT EXISTS exit_mode text default 'fixed_target_trailing_sl';
 

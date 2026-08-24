@@ -19,6 +19,7 @@ from .candidate_ranking import build_sector_breakdown
 from .candidate_selection import select_candidates_first_come
 from .supabase_client import run_with_supabase
 from .symbols import get_nse500_sector_map
+from .trailing_stop import calculate_point_trailing, silver_tsl_points
 
 IST = datetime.timezone(datetime.timedelta(hours=5, minutes=30), name="IST")
 SUPPORTED_ALGOS = {"algo1", "algo2", "algo3"}
@@ -988,12 +989,11 @@ def _silver_micro_execution_assumption(
     sl_pts = int(settings.get("sl_points", 100))
     target_pts = int(settings.get("target_points", 300))
     tsl_enabled = bool(settings.get("trailing_sl_enabled"))
-    tsl_trigger = int(settings.get("tsl_trigger_points", 0) or 0)
-    tsl_distance = int(settings.get("tsl_distance_points", 0) or 0)
+    tsl_activate, tsl_profit_step, tsl_lock_step = silver_tsl_points(settings)
     exit_mode = str(settings.get("exit_mode") or "fixed_target_trailing_sl")
     trailing_clause = (
-        f" Trailing SL is ON: activates after {tsl_trigger} points profit and trails by "
-        f"{tsl_distance} points."
+        f" Trailing SL is ON: activates at {tsl_activate:g} points profit, then every "
+        f"{tsl_profit_step:g} additional points locks {tsl_lock_step:g} more points."
         if tsl_enabled and exit_mode in {"trailing_sl_only", "fixed_target_trailing_sl"}
         else " Trailing SL is OFF for this replay."
     )
@@ -1190,7 +1190,11 @@ def _build_silver_trade_diagnostics(position: dict, trade: dict, exit_time: date
     net_pnl = float(trade.get("net_pnl") or 0)
     total_charges = float(trade.get("total_charges") or 0)
     exit_reason = str(trade.get("exit_reason") or "")
-    tsl_trigger_pts = float(position.get("trailing_trigger_points") or 0)
+    tsl_activate_pts = float(
+        position.get("trailing_activate_points")
+        or position.get("trailing_trigger_points")
+        or 0
+    )
     sl_points = abs(entry - initial_sl)
     n_points = float(setup_context.get("n_points") or 0)
     entry_mode = str(position.get("entry_mode") or "THRESHOLD_TRIGGER")
@@ -1220,9 +1224,9 @@ def _build_silver_trade_diagnostics(position: dict, trade: dict, exit_time: date
 
     warning_codes: list[str] = []
 
-    if trailing_enabled and tsl_trigger_pts > 0 and max_favorable_points + 1e-9 < tsl_trigger_pts:
+    if trailing_enabled and tsl_activate_pts > 0 and max_favorable_points + 1e-9 < tsl_activate_pts:
         warning_codes.append("never_reached_trailing_trigger")
-    meaningful_profit_threshold = max(100.0, tsl_trigger_pts or 0.0, n_points * 0.5 if n_points > 0 else 0.0)
+    meaningful_profit_threshold = max(100.0, tsl_activate_pts or 0.0, n_points * 0.5 if n_points > 0 else 0.0)
     if max_favorable_points >= meaningful_profit_threshold and profit_giveback_points >= max(100.0, meaningful_profit_threshold * 0.5):
         warning_codes.append("profit_gave_back_before_exit")
     if same_candle_sl_priority and exit_reason == "SL":
@@ -1406,8 +1410,7 @@ def _simulate_silver_micro_range(
     n = float(settings.get("silver_breakout_points", 150))
     sl_pts = float(settings.get("sl_points", 100))
     target_pts = float(settings.get("target_points", 300))
-    tsl_trigger_pts = float(settings.get("tsl_trigger_points", 0))
-    tsl_distance_pts = float(settings.get("tsl_distance_points", 0))
+    tsl_activate_pts, tsl_profit_step_pts, tsl_lock_step_pts = silver_tsl_points(settings)
     exit_mode = str(settings.get("exit_mode") or "fixed_target_trailing_sl")
     tsl_enabled = bool(settings.get("trailing_sl_enabled")) and exit_mode in {"trailing_sl_only", "fixed_target_trailing_sl"}
 
@@ -1879,8 +1882,12 @@ def _simulate_silver_micro_range(
             "lowest": float(entry_price),
             "trailing_sl_enabled": bool(tsl_enabled),
             "trailing_sl_active": False,
-            "trailing_trigger_points": float(tsl_trigger_pts),
-            "trailing_distance_points": float(tsl_distance_pts),
+            "trailing_activate_points": float(tsl_activate_pts),
+            "trailing_profit_step_points": float(tsl_profit_step_pts),
+            "trailing_lock_step_points": float(tsl_lock_step_pts),
+            # Compatibility aliases retained in the result/diagnostics shape.
+            "trailing_trigger_points": float(tsl_activate_pts),
+            "trailing_distance_points": float(tsl_lock_step_pts),
             "trailing_moves": [],
             "entry_mode": entry_metadata.get("entry_mode") or (
                 "THRESHOLD_TRIGGER"
@@ -1946,45 +1953,36 @@ def _simulate_silver_micro_range(
         position_candidate = source_candidate
 
     def maybe_apply_trailing(entry: float, side: str):
-        """Points-based trailing: activate once favorable move >= trigger,
-        then trail SL distance points behind the extremum."""
+        """Apply the shared X/Y/Z profit-lock staircase."""
         nonlocal position
-        if not position or not tsl_enabled or tsl_trigger_pts <= 0 or tsl_distance_pts <= 0:
+        if not position or not tsl_enabled:
             return
-        if side == "BUY":
-            gain = float(position["highest"]) - entry
-            if gain >= tsl_trigger_pts:
-                position["trailing_sl_active"] = True
-                new_sl = float(position["highest"]) - tsl_distance_pts
-                if new_sl > float(position["sl_price"]):
-                    previous_sl = float(position["sl_price"])
-                    position["sl_price"] = new_sl
-                    position.setdefault("trailing_moves", []).append({
-                        "time": position.get("_last_trail_time"),
-                        "side": side,
-                        "gain_points": round(gain, 2),
-                        "reference_price": round(float(position["highest"]), 2),
-                        "previous_sl": round(previous_sl, 2),
-                        "new_sl": round(new_sl, 2),
-                        "protected_points": round(new_sl - entry, 2),
-                    })
-        else:
-            gain = entry - float(position["lowest"])
-            if gain >= tsl_trigger_pts:
-                position["trailing_sl_active"] = True
-                new_sl = float(position["lowest"]) + tsl_distance_pts
-                if new_sl < float(position["sl_price"]):
-                    previous_sl = float(position["sl_price"])
-                    position["sl_price"] = new_sl
-                    position.setdefault("trailing_moves", []).append({
-                        "time": position.get("_last_trail_time"),
-                        "side": side,
-                        "gain_points": round(gain, 2),
-                        "reference_price": round(float(position["lowest"]), 2),
-                        "previous_sl": round(previous_sl, 2),
-                        "new_sl": round(new_sl, 2),
-                        "protected_points": round(entry - new_sl, 2),
-                    })
+        result = calculate_point_trailing(
+            entry=entry,
+            side=side,
+            current_sl=float(position["sl_price"]),
+            highest=float(position["highest"]),
+            lowest=float(position["lowest"]),
+            activate_points=tsl_activate_pts,
+            profit_step_points=tsl_profit_step_pts,
+            lock_step_points=tsl_lock_step_pts,
+        )
+        position["highest"] = result["highest"]
+        position["lowest"] = result["lowest"]
+        if result["trailing_active"]:
+            position["trailing_sl_active"] = True
+        if result["sl_moved"]:
+            position["sl_price"] = result["sl_price"]
+            position.setdefault("trailing_moves", []).append({
+                "time": position.get("_last_trail_time"),
+                "side": side,
+                "gain_points": round(result["gain_points"], 2),
+                "reference_price": round(float(position["highest"] if side == "BUY" else position["lowest"]), 2),
+                "previous_sl": round(result["previous_sl"], 2),
+                "new_sl": round(result["sl_price"], 2),
+                "protected_points": round(result["protected_points"], 2),
+                "step_index": result["step_index"],
+            })
 
     def check_buy_reference_intrabar(candle: dict, day: datetime.date, in_scope: bool):
         """Enter BUY at the live 1m crossing of the carried 15m reference."""
@@ -2101,23 +2099,6 @@ def _simulate_silver_micro_range(
             open_position("SELL", entry_price, candle["time"], day, entry_metadata=reentry_metadata)
             last_fired_sell_setup_at = sell_setup_bar_at
             sell_reentry_after_exit = None
-        else:
-            gain = entry - float(position["lowest"])
-            if gain >= tsl_trigger_pts:
-                position["trailing_sl_active"] = True
-                new_sl = float(position["lowest"]) + tsl_distance_pts
-                if new_sl < float(position["sl_price"]):
-                    previous_sl = float(position["sl_price"])
-                    position["sl_price"] = new_sl
-                    position.setdefault("trailing_moves", []).append({
-                        "time": position.get("_last_trail_time"),
-                        "side": side,
-                        "gain_points": round(gain, 2),
-                        "reference_price": round(float(position["lowest"]), 2),
-                        "previous_sl": round(previous_sl, 2),
-                        "new_sl": round(new_sl, 2),
-                        "protected_points": round(entry - new_sl, 2),
-                    })
 
     for candle in normalized_history:
         _raise_if_cancelled(job_id)
@@ -2376,6 +2357,9 @@ def _close_silver_micro_position(
         "initial_sl_price": round(initial_sl, 2),
         "trailing_sl_enabled": trailing_enabled,
         "trailing_sl_active": trailing_active,
+        "trailing_activate_points": round(float(position.get("trailing_activate_points") or 0), 2),
+        "trailing_profit_step_points": round(float(position.get("trailing_profit_step_points") or 0), 2),
+        "trailing_lock_step_points": round(float(position.get("trailing_lock_step_points") or 0), 2),
         "trailing_trigger_points": round(float(position.get("trailing_trigger_points") or 0), 2),
         "trailing_distance_points": round(float(position.get("trailing_distance_points") or 0), 2),
         "trailing_move_count": len(trailing_moves),

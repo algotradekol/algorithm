@@ -92,15 +92,20 @@ STRATEGY_DEFAULT_OVERRIDES = {
         #   fires when live LTP crosses (setup_close +/- n) in the setup
         #   direction. Default 150 = doc's example value; user can tune.
         # - sl_points / target_points: fixed rupee distance from entry.
-        # - tsl_trigger_points: how many points in profit before TSL
-        #   activates. tsl_distance_points: how far behind the current
-        #   high/low the TSL sits once active.
+        # - tsl_activate_points: profit required before SL moves to entry.
+        # - tsl_profit_step_points: additional profit interval between locks.
+        # - tsl_lock_step_points: additional profit locked at each interval.
+        # The old trigger/distance names remain as compatibility aliases for
+        # older backtests and saved rows.
         "silver_breakout_points": 150,
         # Silver BUY uses the finalized 15m green-above-EMA reference.
         "silver_buy_plan": "reference_breakout",
         "sl_points": 100,
         "target_points": 300,
         "trailing_sl_enabled": False,
+        "tsl_activate_points": 100,
+        "tsl_profit_step_points": 100,
+        "tsl_lock_step_points": 50,
         "tsl_trigger_points": 100,
         "tsl_distance_points": 50,
         "exit_mode": "fixed_target_trailing_sl",
@@ -122,6 +127,9 @@ INT_FIELDS = {
     "silver_breakout_points",
     "sl_points",
     "target_points",
+    "tsl_activate_points",
+    "tsl_profit_step_points",
+    "tsl_lock_step_points",
     "tsl_trigger_points",
     "tsl_distance_points",
     "silver_lots",
@@ -188,6 +196,16 @@ def get_settings_storage_key(algo_id: str, mode: str | None = None) -> str:
 def _normalize(settings: dict, algo_id: str) -> dict:
     defaults = default_settings_for(algo_id)
     normalized = {**defaults, **settings}
+    if algo_id == "algo3":
+        # Migrate the old two-field Silver model in memory. A mode-specific
+        # row may contain only the legacy columns until the SQL migration is
+        # run, so do not let the new defaults hide the user's saved values.
+        if "tsl_activate_points" not in settings and "tsl_trigger_points" in settings:
+            normalized["tsl_activate_points"] = settings["tsl_trigger_points"]
+        if "tsl_lock_step_points" not in settings and "tsl_distance_points" in settings:
+            normalized["tsl_lock_step_points"] = settings["tsl_distance_points"]
+        if "tsl_profit_step_points" not in settings:
+            normalized["tsl_profit_step_points"] = normalized["tsl_activate_points"]
     # Silver has one canonical BUY model. Old values are compatibility aliases
     # and must not reactivate the removed 5m confirmation path.
     if algo_id == "algo3":
@@ -219,11 +237,13 @@ def _normalize(settings: dict, algo_id: str) -> dict:
 
 def get_settings(algo_id: str, mode: str | None = None) -> dict:
     """Read settings for this algo from Supabase. Fall back to hardcoded defaults if missing."""
-    from .supabase_client import supabase
+    from .supabase_client import run_with_supabase
 
     effective_mode = normalize_trading_mode(mode or get_runtime_trading_mode())
     storage_key = get_settings_storage_key(algo_id, mode=effective_mode)
-    result = supabase.table("strategy_settings").select("*").eq("algo_id", storage_key).execute()
+    result = run_with_supabase(
+        lambda supabase: supabase.table("strategy_settings").select("*").eq("algo_id", storage_key).execute()
+    )
     if result.data:
         return _normalize(result.data[0], algo_id)
     # Backward-compatible fallbacks:
@@ -238,7 +258,9 @@ def get_settings(algo_id: str, mode: str | None = None) -> dict:
     if plain_legacy_key not in legacy_candidates and plain_legacy_key != storage_key:
         legacy_candidates.append(plain_legacy_key)
     for legacy_key in legacy_candidates:
-        legacy_result = supabase.table("strategy_settings").select("*").eq("algo_id", legacy_key).execute()
+        legacy_result = run_with_supabase(
+            lambda supabase, key=legacy_key: supabase.table("strategy_settings").select("*").eq("algo_id", key).execute()
+        )
         if legacy_result.data:
             return _normalize(legacy_result.data[0], algo_id)
     return _normalize({}, algo_id)
@@ -258,6 +280,9 @@ _NEW_COLUMNS_TOLERATE_MISSING = {
     "silver_breakout_points",
     "sl_points",
     "target_points",
+    "tsl_activate_points",
+    "tsl_profit_step_points",
+    "tsl_lock_step_points",
     "tsl_trigger_points",
     "tsl_distance_points",
     "silver_lots",
@@ -269,7 +294,7 @@ def _upsert_settings_with_fallback(algo_id: str, settings: dict, mode: str | Non
     """Try to write every setting; if Supabase rejects an unknown column,
     strip that column from the payload and retry once. Prevents the whole
     save from silently failing when a new field hasn't been migrated yet."""
-    from .supabase_client import supabase
+    from .supabase_client import run_with_supabase
 
     payload = {
         "algo_id": get_settings_storage_key(algo_id, mode=mode),
@@ -277,7 +302,7 @@ def _upsert_settings_with_fallback(algo_id: str, settings: dict, mode: str | Non
         "updated_at": "now()",
     }
     try:
-        supabase.table("strategy_settings").upsert(payload).execute()
+        run_with_supabase(lambda supabase: supabase.table("strategy_settings").upsert(payload).execute())
         return
     except Exception as exc:
         text = str(exc).lower()
@@ -289,7 +314,7 @@ def _upsert_settings_with_fallback(algo_id: str, settings: dict, mode: str | Non
         if not dropped:
             raise
         print(f"[strategy_settings] Supabase rejected column(s) {dropped}; retrying without them. To make these persist, run: ALTER TABLE public.strategy_settings ADD COLUMN IF NOT EXISTS {dropped[0]} ...")
-        supabase.table("strategy_settings").upsert(payload).execute()
+        run_with_supabase(lambda supabase: supabase.table("strategy_settings").upsert(payload).execute())
 
 
 def update_settings(algo_id: str, settings: dict, mode: str | None = None):
