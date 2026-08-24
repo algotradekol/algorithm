@@ -1081,11 +1081,11 @@ function PositionsTable({
         })}
       </div>
       <div className="hidden w-full max-w-full overflow-x-auto overscroll-x-contain rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1320px] table-fixed border-collapse text-xs">
+        <table className="w-full min-w-[1760px] table-auto border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
             {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Trailing SL', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
-              <th key={column} className="table-cell label">{column}</th>
+              <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
         </thead>
@@ -1104,35 +1104,35 @@ function PositionsTable({
               ? (row.side === 'SELL' ? entry - ltp : ltp - entry) * qty
               : null;
             return (
-              <tr key={row.id || index} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
-                <td className="table-cell num text-gray-500">{safePage * PAGE_SIZE + index + 1}</td>
-                <td className="table-cell w-[180px] font-mono text-gray-100">{row.symbol}</td>
-                <td className="table-cell w-[120px]"><PositionSourceBadge row={row} /></td>
+              <tr key={row.id || index} className={`align-top ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
+                <td className="table-cell num whitespace-nowrap text-gray-500">{safePage * PAGE_SIZE + index + 1}</td>
+                <td className="table-cell w-[180px] whitespace-nowrap font-mono text-gray-100">{row.symbol}</td>
+                <td className="table-cell w-[120px] whitespace-nowrap"><PositionSourceBadge row={row} /></td>
                 <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
                   <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} mr-1 text-sm`} />
                   {row.side === 'SELL' ? 'S' : 'B'}
                 </td>
-                <td className="table-cell num text-gray-100">{row.qty}</td>
-                <td className="table-cell num text-gray-400">{formatDateTime(row.entry_time)}</td>
-                <td className="table-cell num text-gray-100">{formatNumber(row.entry_price)}</td>
-                <td className="table-cell num text-gray-100">{Number.isFinite(ltp) ? formatNumber(ltp) : '--'}</td>
-                <td className="table-cell num text-gray-100">{formatNumber(row.high_price ?? row.highest_price)}</td>
-                <td className="table-cell num text-gray-100">{formatNumber(row.low_price ?? row.lowest_price)}</td>
-                <td className="table-cell num text-gray-100">{formatNumber(row.sl_price)}</td>
-                <td className="table-cell num text-gray-100">{formatNumber(row.target_price)}</td>
-                <td className="table-cell w-[170px]"><TrailingBadge row={row} /></td>
-                <td className="table-cell w-[220px] text-gray-400 align-top">
-                  <div className="max-h-24 overflow-y-auto pr-1">
+                <td className="table-cell num whitespace-nowrap text-gray-100">{row.qty}</td>
+                <td className="table-cell num whitespace-nowrap text-gray-400">{formatDateTime(row.entry_time)}</td>
+                <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.entry_price)}</td>
+                <td className="table-cell num whitespace-nowrap text-gray-100">{Number.isFinite(ltp) ? formatNumber(ltp) : '--'}</td>
+                <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.high_price ?? row.highest_price)}</td>
+                <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.low_price ?? row.lowest_price)}</td>
+                <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.sl_price)}</td>
+                <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.target_price)}</td>
+                <td className="table-cell w-[170px] whitespace-nowrap"><TrailingBadge row={row} /></td>
+                <td className="table-cell w-[260px] max-w-[320px] text-gray-400 align-top">
+                  <div className="max-h-24 overflow-y-auto break-words whitespace-normal pr-1 leading-relaxed">
                     <SignalAudit row={row} />
                   </div>
                 </td>
-                <td className="table-cell w-[280px] text-gray-400 align-top">
-                  <div className="max-h-24 overflow-y-auto break-words whitespace-normal pr-1">
+                <td className="table-cell w-[340px] max-w-[420px] text-gray-400 align-top">
+                  <div className="max-h-24 overflow-y-auto break-words whitespace-normal pr-1 leading-relaxed">
                     {formatTrigger(row.entry_trigger)}
                   </div>
                 </td>
-                <td className={`table-cell w-[120px] num font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
-                <td className="table-cell w-[110px]"><ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} tradingMode={tradingMode} /></td>
+                <td className={`table-cell w-[120px] num whitespace-nowrap font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
+                <td className="table-cell w-[110px] whitespace-nowrap"><ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} tradingMode={tradingMode} /></td>
               </tr>
             );
           })}
@@ -1181,11 +1181,11 @@ function TradesTable({ rows }: { rows: any[] }) {
         ))}
       </div>
       <div className="hidden w-full max-w-full overflow-x-auto overscroll-x-contain rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1280px] table-fixed border-collapse text-xs">
+        <table className="w-full min-w-[1580px] table-auto border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
             {["Symbol", "Side", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Trailing SL", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
-              <th key={column} className="table-cell label">{column}</th>
+              <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
         </thead>
@@ -1195,26 +1195,26 @@ function TradesTable({ rows }: { rows: any[] }) {
               <td colSpan={13} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
           ) : visibleRows.map((row, index) => (
-            <tr key={row.id || index} className={index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}>
-              <td className="table-cell w-[180px] font-mono text-gray-100">{row.symbol}</td>
+            <tr key={row.id || index} className={`align-top ${index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}`}>
+              <td className="table-cell w-[180px] whitespace-nowrap font-mono text-gray-100">{row.symbol}</td>
               <td className={`table-cell font-semibold ${row.side === "SELL" ? "text-[#ef4444]" : "text-[#22c55e]"}`}>
                 <i className={`${row.side === "SELL" ? "ri-indeterminate-circle-fill" : "ri-add-circle-fill"} mr-1 text-sm`} />
                 {row.side === "SELL" ? "S" : "B"}
               </td>
-              <td className="table-cell num text-gray-400">{formatDateTime(row.entry_time)}</td>
-              <td className="table-cell num text-gray-100">{formatNumber(row.entry_price)}</td>
-              <td className="table-cell num text-gray-400">{row.exit_time ? formatDateTime(row.exit_time) : "--"}</td>
-              <td className="table-cell num text-gray-100">{formatNumber(row.exit_price)}</td>
+              <td className="table-cell num whitespace-nowrap text-gray-400">{formatDateTime(row.entry_time)}</td>
+              <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.entry_price)}</td>
+              <td className="table-cell num whitespace-nowrap text-gray-400">{row.exit_time ? formatDateTime(row.exit_time) : "--"}</td>
+              <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.exit_price)}</td>
               <td className={`table-cell font-semibold ${reasonColor(row.exit_reason)}`}>
                 {reasonIcon(row.exit_reason)}
                 {formatReason(row.exit_reason)}
               </td>
-              <td className="table-cell w-[170px]"><TrailingBadge row={row} /></td>
-              <td className="table-cell w-[220px] text-gray-400 align-top"><SignalAudit row={row} /></td>
-              <td className="table-cell w-[300px] break-words whitespace-normal text-gray-400 align-top">{formatTrigger(row.entry_trigger)}</td>
-              <td className={`table-cell w-[110px] num ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
-              <td className="table-cell w-[110px] num text-gray-100">{formatMoney(row.total_charges)}</td>
-              <td className={`table-cell w-[120px] num font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>{formatMoney(row.net_pnl)}</td>
+              <td className="table-cell w-[170px] whitespace-nowrap"><TrailingBadge row={row} /></td>
+              <td className="table-cell w-[260px] max-w-[320px] text-gray-400 align-top"><div className="max-h-24 overflow-y-auto break-words whitespace-normal leading-relaxed"><SignalAudit row={row} /></div></td>
+              <td className="table-cell w-[340px] max-w-[420px] break-words whitespace-normal text-gray-400 align-top leading-relaxed">{formatTrigger(row.entry_trigger)}</td>
+              <td className={`table-cell w-[110px] num whitespace-nowrap ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
+              <td className="table-cell w-[110px] num whitespace-nowrap text-gray-100">{formatMoney(row.total_charges)}</td>
+              <td className={`table-cell w-[120px] num whitespace-nowrap font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>{formatMoney(row.net_pnl)}</td>
             </tr>
           ))}
         </tbody>
