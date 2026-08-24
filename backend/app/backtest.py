@@ -2139,6 +2139,11 @@ def _simulate_silver_micro_range(
             and sell_reentry_after_exit.get("setup_bar_at") == sell_setup_bar_at
             and abs(float(sell_reentry_after_exit.get("trigger_level") or 0) - sell_level) < 1e-9
             and prev_ltp is not None
+            # A re-entry keeps the original reference, so falling alone is
+            # not enough. The price must still be at/below reference - n.
+            # Without this guard, the backtest could reopen a SELL above its
+            # trigger and diverge from the live strategy.
+            and current_price <= sell_level
             and current_price < float(prev_ltp)
         )
         if not current_candle_is_red or not (crossed or same_reference_reentry):
@@ -2227,6 +2232,7 @@ def _simulate_silver_micro_range(
                         and sell_reentry_after_exit.get("setup_bar_at") == sell_setup_bar_at
                         and abs(float(sell_reentry_after_exit.get("trigger_level") or 0) - float(sell_level)) < 1e-9
                         and prev_ltp is not None
+                        and float(candle["close"]) <= sell_level
                         and float(candle["close"]) < float(prev_ltp)
                         and float(candle["close"]) < float(candle["open"])
                         and ema20 is not None
@@ -2250,6 +2256,7 @@ def _simulate_silver_micro_range(
                     and sell_reentry_after_exit.get("setup_bar_at") == sell_setup_bar_at
                     and abs(float(sell_reentry_after_exit.get("trigger_level") or 0) - float(sell_level)) < 1e-9
                     and prev_ltp is not None
+                    and float(candle["close"]) <= sell_level
                     and float(candle["close"]) < float(prev_ltp)
                 )
                 open_position(

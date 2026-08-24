@@ -2088,7 +2088,7 @@ def test_algo3_live_red_chain_enters_on_forming_candle_cross():
               strat.broker.opens[0]["entry_price"] == 247650.0,
               f"position={strat.broker.opens[0]}")
         check("live red-chain trigger is the previous reference minus n",
-              strat.broker.opens[0]["trigger"] == 247650.0,
+              strat.broker.opens[0]["signal_snapshot"]["trigger_level"] == 247650.0,
               f"position={strat.broker.opens[0]}")
 
 
@@ -3380,6 +3380,77 @@ def test_algo3_backtest_sell_red_chain_survives_green_candles():
         check("SELL entry is the previous reference minus n, not the candle close",
               abs(float(trade.get("entry_price") or 0) - 89700.0) < 1e-9,
               f"trade={trade}")
+
+
+def test_algo3_backtest_sell_reentry_requires_carried_trigger():
+    print("\n50a2. algo3 backtest SELL re-entry cannot happen above the carried trigger")
+    import datetime as _dt
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    symbol = "MCX:TEST-EQ"
+    history: list[dict] = []
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+
+    def push(offset, o, h, l, c, v=100):
+        history.append({
+            "time": base + _dt.timedelta(minutes=offset),
+            "open": o, "high": h, "low": l, "close": c, "volume": v,
+        })
+
+    # Warm up EMA20, then establish a red reference at 89,900.
+    for b in range(20):
+        for m in range(15):
+            push(b * 15 + m, 90000, 90000, 90000, 90000)
+    for m in range(15):
+        push(20 * 15 + m, 90020, 90030, 89880, 89900)
+
+    # Reference - n = 89,700. Enter at that threshold, stop at 89,800,
+    # ignore a downward move that remains above 89,700, then re-enter when
+    # the same still-forming red candle actually reaches the threshold.
+    push(21 * 15 + 0, 89700, 89700, 89690, 89690)
+    push(21 * 15 + 1, 89690, 89800, 89690, 89800)
+    push(21 * 15 + 2, 89800, 89800, 89750, 89750)
+    push(21 * 15 + 3, 89750, 89750, 89690, 89690)
+    push(22 * 15, 89690, 89690, 89690, 89690)
+
+    settings = {
+        "silver_breakout_points": 200,
+        "sl_points": 100,
+        "target_points": 1000,
+        "trailing_sl_enabled": False,
+        "exit_mode": "fixed_target_sl",
+        "silver_lots": 1,
+    }
+    charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0,
+               "exchange_pct": 0, "sebi_pct": 0, "gst_pct": 0,
+               "stamp_duty_pct": 0}
+    first_date = _dt.date(2026, 8, 19)
+
+    with _lock:
+        _jobs["sell-reentry-trigger-test"] = {"cancel_requested": False}
+    try:
+        results = bt._simulate_silver_micro_range(
+            job_id="sell-reentry-trigger-test",
+            algo_id="algo3",
+            first_date=first_date,
+            last_date=first_date,
+            symbol=symbol,
+            history=history,
+            trading_days=[first_date],
+            settings=settings,
+            charges_config=charges,
+        )
+    finally:
+        with _lock:
+            _jobs.pop("sell-reentry-trigger-test", None)
+
+    trades = results[0]["trades"]
+    check("SELL trigger guard keeps the backtest to two entries", len(trades) == 2, f"trades={trades}")
+    if len(trades) == 2:
+        entries = [float(trade.get("entry_price") or 0) for trade in trades]
+        check("first SELL entered at the carried trigger", entries[0] == 89700.0, f"entries={entries}")
+        check("second SELL re-entered only after reaching the carried trigger", entries[1] == 89690.0, f"entries={entries}")
 
 
 def test_algo3_backtest_trailing_metadata():
@@ -4768,6 +4839,7 @@ def main():
     test_algo3_previous_day_buy_setup_gap_open_fires_immediately()
     test_algo3_candle_close_trigger_fires()
     test_algo3_backtest_sell_red_chain_survives_green_candles()
+    test_algo3_backtest_sell_reentry_requires_carried_trigger()
     test_algo3_backtest_sell_trailing_exits_on_reversal()
     test_algo3_lot_based_qty()
     test_broker_positions_entry_time_from_tradebook()
