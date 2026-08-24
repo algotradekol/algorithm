@@ -3426,6 +3426,9 @@ def test_algo3_backtest_sell_reentry_requires_carried_trigger():
                "exchange_pct": 0, "sebi_pct": 0, "gst_pct": 0,
                "stamp_duty_pct": 0}
     first_date = _dt.date(2026, 8, 19)
+    audit_events = []
+    original_audit_log = bt.audit_log
+    bt.audit_log = lambda component, message, **fields: audit_events.append((component, message, fields))
 
     with _lock:
         _jobs["sell-reentry-trigger-test"] = {"cancel_requested": False}
@@ -3444,9 +3447,20 @@ def test_algo3_backtest_sell_reentry_requires_carried_trigger():
     finally:
         with _lock:
             _jobs.pop("sell-reentry-trigger-test", None)
+        bt.audit_log = original_audit_log
 
     trades = results[0]["trades"]
     check("SELL trigger guard keeps the backtest to two entries", len(trades) == 2, f"trades={trades}")
+    trade_events = [event for event in audit_events if event[1] == "trade_closed"]
+    check("Silver backtest audit logs each closed trade", len(trade_events) == len(trades), f"events={audit_events}")
+    if trade_events:
+        fields = trade_events[0][2]
+        check("audit log includes cause and P&L facts",
+              fields.get("cause") == "stop_loss_hit"
+              and fields.get("entry_price") == 89700.0
+              and fields.get("exit_price") == 89800.0
+              and fields.get("net_pnl") == -100.0,
+              f"fields={fields}")
     if len(trades) == 2:
         entries = [float(trade.get("entry_price") or 0) for trade in trades]
         check("first SELL entered at the carried trigger", entries[0] == 89700.0, f"entries={entries}")

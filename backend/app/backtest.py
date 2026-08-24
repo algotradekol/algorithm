@@ -7,7 +7,7 @@ import shutil
 import tempfile
 import threading
 import uuid
-from collections import defaultdict
+from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from pathlib import Path
 
@@ -17,6 +17,7 @@ from .strategy_settings import get_settings
 from .strategies.algo4_opening_range_indicators import Algo4OpeningRangeIndicators
 from .candidate_ranking import build_sector_breakdown
 from .candidate_selection import select_candidates_first_come
+from .audit_log import audit_log
 from .supabase_client import run_with_supabase
 from .symbols import get_nse500_sector_map
 from .trailing_stop import calculate_point_trailing, silver_tsl_points
@@ -461,6 +462,8 @@ def _run_job(
         _raise_if_cancelled(job_id)
         _update(job_id, status="complete", phase="complete", message="Backtest complete.", result=result)
     except BacktestCancelled:
+        if algo_id == "algo3":
+            audit_log("silver_backtest", "run_cancelled", run_id=job_id)
         _update(
             job_id,
             status="cancelled",
@@ -470,6 +473,8 @@ def _run_job(
             result=None,
         )
     except Exception as exc:
+        if algo_id == "algo3":
+            audit_log("silver_backtest", "run_failed", run_id=job_id, error=str(exc))
         _update(job_id, status="failed", error=str(exc), message="Backtest failed.")
     finally:
         history_cache.cleanup()
@@ -682,6 +687,92 @@ def _performance_summary(trades: list[dict]) -> dict:
         "net_return_on_deployed_pct": round((sum(net_values) / deployed * 100) if deployed else 0, 3),
         "exit_counts": exit_counts,
     }
+
+
+def _audit_silver_backtest_trade(job_id: str, trade: dict) -> None:
+    """Emit the compact, searchable explanation for one simulated trade.
+
+    The full diagnostics object remains in the API result. Logs deliberately
+    keep only the decision facts needed to explain a result without emitting
+    the entire candle/chart payload.
+    """
+    diagnostics = trade.get("diagnostics") or {}
+    entry = diagnostics.get("entry_context") or {}
+    exit_context = diagnostics.get("exit_context") or {}
+    path = diagnostics.get("path_metrics") or {}
+    audit_log(
+        "silver_backtest",
+        "trade_closed",
+        run_id=job_id,
+        trade_id=trade.get("trade_id"),
+        symbol=trade.get("symbol"),
+        side=trade.get("side"),
+        setup_time=entry.get("setup_time"),
+        setup_close=entry.get("setup_close"),
+        active_reference=entry.get("active_reference_close"),
+        prior_reference=entry.get("prior_reference_close"),
+        trigger=entry.get("trigger_level_used") or entry.get("trigger_level"),
+        entry_time=entry.get("entry_time"),
+        entry_price=entry.get("entry_price"),
+        entry_mode=entry.get("entry_mode"),
+        exit_time=exit_context.get("exit_time"),
+        exit_price=exit_context.get("exit_price"),
+        exit_reason=exit_context.get("exit_reason"),
+        initial_sl=exit_context.get("initial_sl"),
+        final_sl=exit_context.get("final_sl"),
+        target=exit_context.get("target"),
+        trailing_active=exit_context.get("trailing_active"),
+        trailing_moves=exit_context.get("trailing_move_count"),
+        mfe_points=path.get("max_favorable_excursion_points"),
+        mae_points=path.get("max_adverse_excursion_points"),
+        giveback_points=path.get("profit_giveback_from_peak_points"),
+        gross_pnl=trade.get("gross_pnl"),
+        charges=trade.get("total_charges"),
+        net_pnl=trade.get("net_pnl"),
+        cause=diagnostics.get("primary_cause_code"),
+        warnings=",".join(diagnostics.get("warning_codes") or []) or None,
+    )
+
+
+def _audit_silver_backtest_summary(job_id: str, result: dict, symbol: str) -> None:
+    """Emit one run-level result that can be read without opening the UI."""
+    trades = [trade for day in result.get("daily_results") or [] for trade in day.get("trades") or []]
+    summary = result.get("summary") or {}
+    causes = Counter(
+        (trade.get("diagnostics") or {}).get("primary_cause_code") or "unknown"
+        for trade in trades
+    )
+    warnings = Counter(
+        code
+        for trade in trades
+        for code in ((trade.get("diagnostics") or {}).get("warning_codes") or [])
+    )
+    best_trade = max(trades, key=lambda trade: float(trade.get("net_pnl") or 0), default=None)
+    worst_trade = min(trades, key=lambda trade: float(trade.get("net_pnl") or 0), default=None)
+    audit_log(
+        "silver_backtest",
+        "run_summary",
+        run_id=job_id,
+        symbol=symbol,
+        start_date=result.get("start_date"),
+        end_date=result.get("end_date"),
+        trades=summary.get("trade_count", len(trades)),
+        wins=summary.get("win_count"),
+        losses=summary.get("loss_count"),
+        win_rate_pct=summary.get("win_rate_pct"),
+        profit_factor=summary.get("profit_factor"),
+        gross_pnl=summary.get("gross_pnl"),
+        charges=summary.get("total_charges"),
+        net_pnl=summary.get("net_pnl"),
+        max_drawdown=summary.get("max_drawdown"),
+        exits=summary.get("exit_counts"),
+        causes=dict(causes),
+        warnings=dict(warnings),
+        best_trade_id=best_trade.get("trade_id") if best_trade else None,
+        best_trade_net=best_trade.get("net_pnl") if best_trade else None,
+        worst_trade_id=worst_trade.get("trade_id") if worst_trade else None,
+        worst_trade_net=worst_trade.get("net_pnl") if worst_trade else None,
+    )
 
 
 def _range_result(
@@ -906,6 +997,22 @@ def _run_silver_micro_job(
     _raise_if_cancelled(job_id)
     lookback_start = first_date - datetime.timedelta(days=WARMUP_LOOKBACK_DAYS)
     charges_config = get_charges_config()
+    audit_log(
+        "silver_backtest",
+        "run_started",
+        run_id=job_id,
+        symbol=symbol,
+        start_date=first_date.isoformat(),
+        end_date=last_date.isoformat(),
+        buy_plan=silver_buy_plan,
+        sell_plan=silver_sell_plan,
+        breakout_points=settings.get("silver_breakout_points"),
+        stop_loss_points=settings.get("sl_points"),
+        target_points=settings.get("target_points"),
+        trailing_enabled=bool(settings.get("trailing_sl_enabled")),
+        exit_mode=settings.get("exit_mode"),
+        lots=settings.get("silver_lots"),
+    )
     _update(
         job_id,
         status="running",
@@ -924,6 +1031,15 @@ def _run_silver_micro_job(
             "No Silver Micro history was returned for the chosen range after trying 1-minute and 5-minute candles. "
             "The selected contract may have no data for this range, or FYERS returned an empty history response."
         )
+    audit_log(
+        "silver_backtest",
+        "history_loaded",
+        run_id=job_id,
+        symbol=symbol,
+        raw_1m_bars=len(history),
+        history_resolution=history_resolution,
+        warmup_start=lookback_start.isoformat(),
+    )
 
     trading_days = [
         first_date + datetime.timedelta(days=offset)
@@ -975,6 +1091,7 @@ def _run_silver_micro_job(
     result["silver_buy_plan_label"] = SILVER_BUY_PLAN_LABELS[silver_buy_plan]
     result["silver_sell_plan"] = silver_sell_plan
     result["silver_sell_plan_label"] = SILVER_SELL_PLAN_LABELS[silver_sell_plan]
+    _audit_silver_backtest_summary(job_id, result, symbol)
     _raise_if_cancelled(job_id)
     _update(job_id, status="complete", phase="complete", message="Silver Micro backtest complete.", result=result)
 
@@ -1811,6 +1928,7 @@ def _simulate_silver_micro_range(
             }
         elif position.get("side") == "BUY":
             buy_reentry_after_exit = None
+        _audit_silver_backtest_trade(job_id, trade)
         daily_results[day]["trades"].append(trade)
         daily_results[day]["chart"]["trades"].append({
             "trade_id": trade["trade_id"],
