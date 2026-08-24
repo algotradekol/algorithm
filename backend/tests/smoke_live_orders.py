@@ -1627,6 +1627,7 @@ def _make_bare_algo3(settings_overrides=None):
                 "symbol": symbol, "side": side, "qty": qty,
                 "entry_price": entry, "sl_price": sl, "target_price": target,
                 "trigger": trigger, "signal_snapshot": snapshot,
+                "entry_time": entry_time,
             }
             self.opens.append(pos)
             self._open_positions.append(pos)
@@ -2256,8 +2257,8 @@ def test_algo3_sell_target_reenters_when_reference_still_crossed():
           len(strat.broker.opens) == 2, f"opens={strat.broker.opens}")
 
 
-def test_algo3_sell_stop_reenters_on_downturn_before_old_trigger():
-    print("\n41a2. algo3 SELL stop exit re-enters on a new downturn without a second threshold wait")
+def test_algo3_sell_stop_does_not_reenter_above_old_trigger():
+    print("\n41a2. algo3 SELL stop exit never re-enters above the red-chain trigger")
     import datetime as _dt
     strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
     strat._ema20 = 1000.0
@@ -2275,14 +2276,36 @@ def test_algo3_sell_stop_reenters_on_downturn_before_old_trigger():
     check("first SELL closed at SL", len(strat.broker.closes) == 1 and strat.broker.closes[0]["reason"] == "SL",
           f"closes={strat.broker.closes}")
 
-    # The next tick turns down at 950, still above the old 700 trigger. The
-    # carried reference must allow the new SELL at the actual current price.
+    # The next tick turns down at 950, but is still above the old 700 trigger.
+    # A downturn alone must not create a short above the configured trigger.
     strat._prev_ltp = 990.0
     strat._check_triggers(950.0)
-    check("SELL re-opened on downturn before old trigger",
+    check("SELL does not re-enter above the old trigger",
+          len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
+
+    # Once the renewed move reaches the actual threshold, the same reference
+    # can re-enter immediately without waiting for another 200-point move.
+    strat._prev_ltp = 710.0
+    strat._check_triggers(690.0)
+    check("SELL re-enters at/below the carried trigger",
           len(strat.broker.opens) == 2, f"opens={strat.broker.opens}")
-    check("re-entry uses the current downturn price",
-          strat.broker.opens[-1]["entry_price"] == 950.0, f"opens={strat.broker.opens}")
+    check("re-entry uses the actual threshold-crossing price",
+          strat.broker.opens[-1]["entry_price"] == 690.0, f"opens={strat.broker.opens}")
+
+
+def test_algo3_entry_uses_exchange_event_time():
+    print("\n41a3. algo3 paper entry audit uses the exchange event timestamp")
+    import datetime as _dt
+    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
+    strat._buy_setup_close = 92000.0
+    strat._buy_setup_bar_at = _dt.datetime(2026, 8, 20, 19, 15)
+    event_time = _dt.datetime(2026, 8, 20, 19, 22, 7)
+    strat._prev_ltp = 92100.0
+    strat._check_triggers(92200.0, event_time=event_time)
+    check("BUY opened with one event timestamp", len(strat.broker.opens) == 1)
+    check("entry_time matches the market event, not receipt now",
+          strat.broker.opens[0].get("entry_time") == event_time.isoformat(),
+          f"entry_time={strat.broker.opens[0].get('entry_time')!r}")
 
 
 def test_algo3_failed_live_attempt_consumes_setup_once():
@@ -2293,7 +2316,7 @@ def test_algo3_failed_live_attempt_consumes_setup_once():
     strat._buy_setup_bar_at = _dt.datetime(2026, 8, 20, 19, 15)
     calls = []
 
-    def fake_enter(side, ltp, trigger_level):
+    def fake_enter(side, ltp, trigger_level, event_time=None):
         calls.append((side, ltp, trigger_level))
         return False
 
@@ -2319,7 +2342,7 @@ def test_algo3_new_setup_rearms_after_failed_attempt():
     strat._buy_setup_bar_at = first_setup
     calls = []
 
-    def fake_enter(side, ltp, trigger_level):
+    def fake_enter(side, ltp, trigger_level, event_time=None):
         calls.append((side, ltp, trigger_level))
         return False
 
@@ -2346,7 +2369,7 @@ def test_algo3_live_broker_guard_blocks_when_symbol_busy():
     strat._buy_setup_bar_at = _dt.datetime(2026, 8, 20, 19, 15)
     calls = []
 
-    def fake_enter(side, ltp, trigger_level):
+    def fake_enter(side, ltp, trigger_level, event_time=None):
         calls.append((side, ltp, trigger_level))
         return True
 
@@ -4719,7 +4742,8 @@ def main():
     test_algo3_no_reentry_same_side()
     test_algo3_unlimited_reentry_after_exit_same_setup()
     test_algo3_sell_target_reenters_when_reference_still_crossed()
-    test_algo3_sell_stop_reenters_on_downturn_before_old_trigger()
+    test_algo3_sell_stop_does_not_reenter_above_old_trigger()
+    test_algo3_entry_uses_exchange_event_time()
     test_algo3_failed_live_attempt_consumes_setup_once()
     test_algo3_new_setup_rearms_after_failed_attempt()
     test_algo3_live_broker_guard_blocks_when_symbol_busy()

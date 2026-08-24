@@ -688,6 +688,32 @@ def _record_tick_diagnostics(symbol: str, ltp) -> None:
             _tick_stats["by_exchange"] = {}
 
 
+def _market_event_time(message: dict, fallback: datetime.datetime) -> datetime.datetime:
+    """Return the exchange tick time when Fyers supplies one.
+
+    The websocket callback can arrive after the exchange event. Strategies
+    should use market event time for paper/audit rows; live fills remain
+    authoritative from the broker execution response.
+    """
+    for key in ("exch_feed_time", "last_traded_time", "timestamp", "ts", "time"):
+        value = message.get(key)
+        if value in (None, ""):
+            continue
+        try:
+            if isinstance(value, (int, float)):
+                number = float(value)
+                if number > 1_000_000_000_000:
+                    number /= 1000.0
+                return datetime.datetime.fromtimestamp(number, tz=IST).replace(tzinfo=None)
+            parsed = datetime.datetime.fromisoformat(str(value).strip().replace("Z", "+00:00"))
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=IST)
+            return parsed.astimezone(IST).replace(tzinfo=None)
+        except (TypeError, ValueError, OverflowError, OSError):
+            continue
+    return fallback.astimezone(IST).replace(tzinfo=None) if fallback.tzinfo else fallback
+
+
 def _on_tick(message: dict):
     symbol = message.get("symbol")
     ltp = message.get("ltp")
@@ -714,6 +740,7 @@ def _on_tick(message: dict):
                 if set_previous_close:
                     set_previous_close(symbol, previous_close_value)
     now = datetime.datetime.now(IST)
+    event_time = _market_event_time(message, now)
     with _engine_lock:
         _engine_status.update({
             "last_tick_at": _utc_now(),
@@ -731,7 +758,7 @@ def _on_tick(message: dict):
         watchlist = getattr(strategy, "watchlist", [])
         if watchlist and symbol not in watchlist:
             continue
-        strategy.on_tick(symbol, ltp, now)
+        strategy.on_tick(symbol, ltp, event_time)
         for position in strategy.broker.open_positions():
             if position["symbol"] == symbol:
                 position["_last_ltp"] = ltp

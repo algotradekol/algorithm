@@ -158,6 +158,15 @@ def _fmt(value: float | None) -> str:
         return "--"
 
 
+def _entry_time_iso(value) -> str:
+    """Serialize a market event time consistently for broker audit rows."""
+    if isinstance(value, datetime.datetime):
+        if value.tzinfo is not None:
+            value = value.astimezone(IST).replace(tzinfo=None)
+        return value.isoformat()
+    return str(value)
+
+
 class Algo3SilverMicro(Strategy):
     algo_id = "algo3"
     display_name = "Silver Micro - reference BUY / red-chain SELL"
@@ -397,7 +406,7 @@ class Algo3SilverMicro(Strategy):
         self._last_tick_ltp = ltp
 
         if self.scan_enabled():
-            self._check_triggers(ltp)
+            self._check_triggers(ltp, event_time=timestamp)
 
         # Track prev_ltp AFTER using it so the first tick after boot
         # doesn't fire a spurious cross.
@@ -448,14 +457,15 @@ class Algo3SilverMicro(Strategy):
     def _arm_sell_reentry_after_exit(self, exit_reason: str) -> None:
         """Allow a closed SELL to continue the same red-chain move.
 
-        The next tick still has to be a qualifying red-candle downturn. It may
-        be above the old trigger after a stop; the carried reference remains
-        valid until the next finalized 15m candle. Manual, reversal, and EOD
-        exits never arm this handoff.
+        The next tick still has to be a qualifying red-candle downturn at or
+        below the carried trigger. The handoff can therefore re-enter
+        immediately when the threshold is already crossed, without waiting
+        for another full n-point move. Manual, reversal, and EOD exits never
+        arm this handoff.
         """
         # Keep the reference alive for either protective exit. After a stop,
-        # the next qualifying downward tick is the new entry; it must not wait
-        # for the old reference - n level to be crossed again.
+        # a qualifying downward tick can re-enter once it is at/below the
+        # carried reference - n level; it cannot re-enter above that level.
         if exit_reason not in {"SL", "TARGET"}:
             return
         if self._sell_setup_close is None or self._sell_setup_bar_at is None:
@@ -994,7 +1004,7 @@ class Algo3SilverMicro(Strategy):
             print(f"[algo3] entry SKIPPED: live broker guard failed for {self.symbol}: {exc}")
             return True
 
-    def _check_triggers(self, ltp: float):
+    def _check_triggers(self, ltp: float, event_time=None):
         n = float(self.settings.get("silver_breakout_points", 150))
         if n <= 0:
             return
@@ -1015,6 +1025,7 @@ class Algo3SilverMicro(Strategy):
         same_reference_downturn = bool(
             same_sell_reference
             and self._prev_ltp is not None
+            and ltp <= sell_level
             and ltp < float(self._prev_ltp)
         )
         current_bucket_open = (
@@ -1053,6 +1064,7 @@ class Algo3SilverMicro(Strategy):
                 ltp,
                 sell_level,
                 setup_bar_at_override=self._sell_setup_bar_at,
+                event_time=event_time,
             ):
                 self._sell_reentry_after_exit = None
                 self._mark_fired("SELL", setup_bar_at=self._sell_setup_bar_at)
@@ -1083,7 +1095,7 @@ class Algo3SilverMicro(Strategy):
             and not self._failed_attempt_blocks_setup("BUY")
         ):
             print(f"[algo3] TRIGGER BUY (gap-through): LTP {ltp:.2f} >= level {buy_level:.2f} (setup {self._buy_setup_close:.2f} + n={n:.0f})")
-            if self._fire_entry("BUY", ltp, buy_level):
+            if self._fire_entry("BUY", ltp, buy_level, event_time=event_time):
                 self._buy_reentry_after_exit = None
                 self._mark_fired("BUY")
                 return
@@ -1098,7 +1110,7 @@ class Algo3SilverMicro(Strategy):
             and not self._failed_attempt_blocks_setup("BUY")
         ):
             print(f"[algo3] TRIGGER BUY (tick-cross): prev {prev:.2f} -> LTP {ltp:.2f} crossed level {buy_level:.2f}")
-            if self._fire_entry("BUY", ltp, buy_level):
+            if self._fire_entry("BUY", ltp, buy_level, event_time=event_time):
                 self._buy_reentry_after_exit = None
                 self._mark_fired("BUY")
                 return
@@ -1160,7 +1172,24 @@ class Algo3SilverMicro(Strategy):
         ltp: float,
         trigger_level: float,
         setup_bar_at_override: datetime.datetime | None = None,
+        event_time=None,
     ) -> bool:
+        # Never submit an entry on the wrong side of its breakout level. This
+        # is especially important for SELL re-entry after an exit: a renewed
+        # downturn must already be at/below reference - n, not merely lower
+        # than the previous tick while still above the trigger.
+        if side == "SELL" and float(ltp) > float(trigger_level):
+            print(
+                f"[algo3] entry SKIPPED for SELL: LTP {float(ltp):.2f} "
+                f"is above trigger {float(trigger_level):.2f}"
+            )
+            return False
+        if side == "BUY" and float(ltp) < float(trigger_level):
+            print(
+                f"[algo3] entry SKIPPED for BUY: LTP {float(ltp):.2f} "
+                f"is below trigger {float(trigger_level):.2f}"
+            )
+            return False
         current = self._open_position()
         if current and current["side"] == side:
             # Log so "trigger fired but no entry" is answerable from logs.
@@ -1187,7 +1216,7 @@ class Algo3SilverMicro(Strategy):
                 print(f"[algo3] REVERSAL: closing existing {current['side']} at {ltp:.2f} before opening {side}")
                 self.broker.close_trade(current, ltp, "REVERSAL_CONTRA_SIGNAL")
 
-            entered = self._enter(side, ltp, trigger_level)
+            entered = self._enter(side, ltp, trigger_level, event_time=event_time)
             if entered:
                 # A successful entry should not inherit the failed-attempt
                 # cooldown when its position exits and the same reference is
@@ -1199,7 +1228,7 @@ class Algo3SilverMicro(Strategy):
             with self._entry_guard_lock:
                 self._entry_attempt_in_flight = False
 
-    def _enter(self, side: str, entry_price: float, trigger_level: float) -> bool:
+    def _enter(self, side: str, entry_price: float, trigger_level: float, event_time=None) -> bool:
         if not self.symbol or not entry_price:
             return False
         # Silver Micro is sized in LOTS, not by dividing capital by price.
@@ -1223,10 +1252,21 @@ class Algo3SilverMicro(Strategy):
         trigger = self._entry_trigger(side, entry_price, trigger_level)
         snapshot = self._signal_snapshot(side, entry_price, trigger_level)
         try:
-            self.broker.open_trade(
+            open_trade_args = (
                 self.symbol, side, qty, float(entry_price),
                 sl_price, target_price, trigger, snapshot,
             )
+            if event_time is None:
+                self.broker.open_trade(*open_trade_args)
+            else:
+                try:
+                    self.broker.open_trade(*open_trade_args, entry_time=_entry_time_iso(event_time))
+                except TypeError as exc:
+                    # Keep lightweight test/dummy brokers compatible while
+                    # production PaperBroker/LiveBroker accept the timestamp.
+                    if "entry_time" not in str(exc):
+                        raise
+                    self.broker.open_trade(*open_trade_args)
             print(
                 f"[algo3] ENTERED {side} {self.symbol} @ {entry_price:.2f} "
                 f"qty={qty} (trigger {_fmt(trigger_level)}, "
@@ -1244,13 +1284,15 @@ class Algo3SilverMicro(Strategy):
             return (
                 f"15m silver buy reference breakout on {self.symbol}: green setup close "
                 f"{_fmt(setup_close)} + n={n} = trigger {_fmt(trigger_level)}, "
-                f"LTP crossed upward through the level at {entry_price:.2f}. "
+                f"LTP crossed upward through trigger {_fmt(trigger_level)}; "
+                f"order submitted at {entry_price:.2f}. "
                 f"EMA20 {_fmt(self._ema20)}."
             )
         return (
             f"15m silver sell red-chain on {self.symbol}: previous red reference close "
             f"{_fmt(setup_close)} - n={n} = trigger {_fmt(trigger_level)}, "
-            f"forming qualifying red candle crossed the level at {entry_price:.2f}. "
+            f"forming qualifying red candle crossed downward through trigger "
+            f"{_fmt(trigger_level)}; order submitted at {entry_price:.2f}. "
             f"EMA20 {_fmt(self._ema20)}."
         )
 

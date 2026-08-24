@@ -82,6 +82,7 @@ class LiveBroker(PaperBroker):
         target_price: float,
         entry_trigger: str | None = None,
         signal_snapshot: dict | None = None,
+        entry_time: str | None = None,
     ):
         qty = self._cap_qty_to_live_funds(symbol, qty, entry_price)
         if qty < 1:
@@ -158,7 +159,10 @@ class LiveBroker(PaperBroker):
             target_price,
             entry_trigger,
             merged_snapshot,
-            entry_time=actual_entry_time,
+            # Fyers tradebook time is authoritative when available. The
+            # strategy event time is a safe fallback for delayed tradebook
+            # hydration and keeps paper/live audit rows aligned.
+            entry_time=actual_entry_time or entry_time,
         )
 
     def close_trade(self, position: dict, exit_price: float, exit_reason: str):
