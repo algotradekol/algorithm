@@ -657,7 +657,9 @@ function SilverFeedPanel({ status }: { status: any }) {
             <div className="flex items-center justify-between gap-3 border-b border-[#1f2937] px-4 py-3">
               <div>
                 <div className="text-sm font-semibold text-gray-100">{historyOpenSide} setup history</div>
-                <div className="text-xs text-gray-500">Saved qualifying 15m candles for Silver Micro</div>
+                <div className="text-xs text-gray-500">
+                  Saved qualifying {historyOpenSide === 'BUY' && status?.silver_buy_plan === 'legacy_confirmation' ? '5m' : '15m'} candles for Silver Micro
+                </div>
               </div>
               <button onClick={() => setHistoryOpenSide(null)} className="text-sm text-gray-500 hover:text-gray-100">X</button>
             </div>

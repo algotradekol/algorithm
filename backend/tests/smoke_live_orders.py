@@ -2927,7 +2927,7 @@ def test_algo3_backtest_legacy_buy_confirmation_plan():
 
 
 def test_algo3_live_defaults_to_legacy_buy_and_keeps_red_chain_sell():
-    """The real engine must use the tested 5m BUY model by default.
+    """The real engine must ignore a stale alternate BUY setting.
 
     This deliberately feeds the legacy BUY state machine directly so the
     test does not depend on REST verification or a live Fyers session.
@@ -2942,6 +2942,12 @@ def test_algo3_live_defaults_to_legacy_buy_and_keeps_red_chain_sell():
 
     strat = _make_bare_algo3(settings_overrides={"silver_buy_plan": SILVER_BUY_PLAN_LEGACY_CONFIRMATION})
     base = _dt.datetime(2026, 8, 19, 9, 0)
+    persisted_setup_events = []
+    strat._persist_setup_event = (
+        lambda side, bar, source, ema20_override=None: persisted_setup_events.append(
+            (side, bar["time"], bar["close"], source, ema20_override)
+        )
+    )
 
     def push(offset: int, o: float, c: float, volume: float):
         ts = base + _dt.timedelta(minutes=offset)
@@ -2961,6 +2967,10 @@ def test_algo3_live_defaults_to_legacy_buy_and_keeps_red_chain_sell():
 
     check("live default plan resolves to legacy confirmation",
           strat._silver_buy_plan() == SILVER_BUY_PLAN_LEGACY_CONFIRMATION)
+    from app.strategy_settings import _normalize
+    check("saved alternate BUY setting is normalized away for live algo3",
+          _normalize({"silver_buy_plan": "live_breakout"}, "algo3")["silver_buy_plan"]
+          == SILVER_BUY_PLAN_LEGACY_CONFIRMATION)
     check("legacy live BUY opens exactly once", len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
     if strat.broker.opens:
         position = strat.broker.opens[0]
@@ -2970,6 +2980,11 @@ def test_algo3_live_defaults_to_legacy_buy_and_keeps_red_chain_sell():
         check("legacy live BUY records 5m signal",
               position["signal_snapshot"].get("timeframe") == "5m",
               f"snapshot={position['signal_snapshot']}")
+    check("legacy live BUY persists its qualifying 5m setup",
+          len(persisted_setup_events) == 2
+          and all(event[0] == "BUY" and event[3] == "live" and event[4] is not None
+                  for event in persisted_setup_events),
+          f"events={persisted_setup_events}")
     check("live strategy still exposes current SELL red-chain setup state",
           hasattr(strat, "_sell_setup_close"),
           "sell setup state missing")
