@@ -35,8 +35,9 @@ const SILVER_RISK_FIELDS: Field[] = [
   ['silver_breakout_points', 'Breakout Offset n (points)', 'Entry fires when live price crosses (setup close +/- n). Default 150.'],
   ['target_points', 'Target (points from entry)', 'Fixed rupee distance in favor before exit.'],
   ['sl_points', 'Stop Loss (points from entry)', 'Fixed rupee distance against before exit.'],
-  ['tsl_trigger_points', 'Trailing SL Trigger (points)', 'Profit in points before trailing activates.'],
-  ['tsl_distance_points', 'Trailing SL Distance (points)', 'How far behind the best favorable price the trailing stop sits once active.'],
+  ['tsl_activate_points', 'TSL Activate At (points)', 'When profit reaches this level, SL moves to the entry price (0 profit).'],
+  ['tsl_profit_step_points', 'When Profit Increases By (points)', 'Each complete increase by this amount advances the protected-profit calculation.'],
+  ['tsl_lock_step_points', 'Increase TSL By (points)', 'At every profit step, lock this many additional points. BUY and SELL are mirrored.'],
 ];
 
 const INDICATOR_FIELDS: Field[] = [
@@ -402,7 +403,7 @@ function TrailingStopToggle({
         <span className="text-sm font-semibold text-gray-100">Trailing Stop Loss</span>
         <span className="mt-1 block text-xs text-gray-500">
           {modeUsesTrailing
-            ? 'Per-algo toggle. Once profit reaches the trigger, SL follows the best favorable price by the configured distance.'
+            ? 'Per-algo toggle. At activation SL moves to breakeven, then locks more profit in fixed point steps as profit increases.'
             : 'Choose an exit mode that includes trailing SL to enable this.'}
         </span>
       </span>
@@ -511,7 +512,7 @@ function FieldGroup({
 }
 
 function NumberField({ fieldKey, label, helper, settings, setSettings }: { fieldKey: string; label: string; helper: string; settings: Record<string, any>; setSettings: (settings: Record<string, any>) => void }) {
-  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume', 'silver_lots', 'silver_breakout_points', 'sl_points', 'target_points', 'tsl_trigger_points', 'tsl_distance_points']);
+  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume', 'silver_lots', 'silver_breakout_points', 'sl_points', 'target_points', 'tsl_activate_points', 'tsl_profit_step_points', 'tsl_lock_step_points', 'tsl_trigger_points', 'tsl_distance_points']);
   const rupeeFields = new Set(['starting_capital', 'capital_per_trade', 'min_total_value', 'ltp_min', 'ltp_max']);
   const signedFields = new Set(['sl_pct', 'target_pct']);
   const step = integerFields.has(fieldKey) ? '1' : rupeeFields.has(fieldKey) ? '0.01' : '0.0001';
@@ -555,7 +556,7 @@ function formatInputMoney(value: unknown) {
 }
 
 function roundForField(key: string, value: number) {
-  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume', 'silver_lots', 'silver_breakout_points', 'sl_points', 'target_points', 'tsl_trigger_points', 'tsl_distance_points']);
+  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume', 'silver_lots', 'silver_breakout_points', 'sl_points', 'target_points', 'tsl_activate_points', 'tsl_profit_step_points', 'tsl_lock_step_points', 'tsl_trigger_points', 'tsl_distance_points']);
   const rupeeFields = new Set(['starting_capital', 'capital_per_trade', 'min_total_value', 'ltp_min', 'ltp_max']);
   if (integerFields.has(key)) return Math.round(value);
   if (rupeeFields.has(key)) return roundMoney(value);

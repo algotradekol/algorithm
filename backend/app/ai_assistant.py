@@ -5,7 +5,7 @@ import requests
 
 from .config import ENTRY_CHECK_TIME, GEMINI_API_KEY, GEMINI_MODEL, MARKET_OPEN_TIME, SQUARE_OFF_TIME
 from .timezone import IST
-from .supabase_client import supabase
+from .supabase_client import run_with_supabase
 
 
 SYSTEM_PROMPT = """You are the in-app AI copilot for an algo paper trading dashboard.
@@ -34,31 +34,37 @@ class AIProviderError(RuntimeError):
 
 
 def list_sessions(user_id: str) -> list[dict]:
-    result = supabase.table("ai_chat_sessions").select("*").eq("user_id", user_id).order("updated_at", desc=True).limit(30).execute()
+    result = run_with_supabase(
+        lambda supabase: supabase.table("ai_chat_sessions").select("*").eq("user_id", user_id).order("updated_at", desc=True).limit(30).execute()
+    )
     return result.data or []
 
 
 def create_session(user_id: str, title: str = "New chat") -> dict:
-    result = supabase.table("ai_chat_sessions").insert({
+    result = run_with_supabase(lambda supabase: supabase.table("ai_chat_sessions").insert({
         "id": str(uuid4()),
         "user_id": user_id,
         "title": title[:80] or "New chat",
         "updated_at": _now(),
-    }).execute()
+    }).execute())
     return result.data[0]
 
 
 def get_messages(session_id: str) -> list[dict]:
-    result = supabase.table("ai_chat_messages").select("*").eq("session_id", session_id).order("created_at").execute()
+    result = run_with_supabase(
+        lambda supabase: supabase.table("ai_chat_messages").select("*").eq("session_id", session_id).order("created_at").execute()
+    )
     return result.data or []
 
 
 def delete_session(user_id: str, session_id: str) -> dict:
-    result = supabase.table("ai_chat_sessions").select("id").eq("id", session_id).eq("user_id", user_id).execute()
+    result = run_with_supabase(
+        lambda supabase: supabase.table("ai_chat_sessions").select("id").eq("id", session_id).eq("user_id", user_id).execute()
+    )
     if not result.data:
         return {"deleted": False}
-    supabase.table("ai_chat_messages").delete().eq("session_id", session_id).execute()
-    supabase.table("ai_chat_sessions").delete().eq("id", session_id).eq("user_id", user_id).execute()
+    run_with_supabase(lambda supabase: supabase.table("ai_chat_messages").delete().eq("session_id", session_id).execute())
+    run_with_supabase(lambda supabase: supabase.table("ai_chat_sessions").delete().eq("id", session_id).eq("user_id", user_id).execute())
     return {"deleted": True}
 
 
@@ -70,22 +76,22 @@ def send_message(user_id: str, session_id: str | None, message: str, page_contex
     app_context = build_app_context(page_context or {})
     recent_messages = get_messages(session["id"])[-30:]
 
-    supabase.table("ai_chat_messages").insert({
+    run_with_supabase(lambda supabase: supabase.table("ai_chat_messages").insert({
         "session_id": session["id"],
         "role": "user",
         "content": message,
         "context": page_context or {},
-    }).execute()
+    }).execute())
 
     answer = call_gemini(message, recent_messages, app_context)
 
-    supabase.table("ai_chat_messages").insert({
+    run_with_supabase(lambda supabase: supabase.table("ai_chat_messages").insert({
         "session_id": session["id"],
         "role": "assistant",
         "content": answer,
         "context": app_context,
-    }).execute()
-    supabase.table("ai_chat_sessions").update({"updated_at": _now(), "title": session.get("title") or message[:80]}).eq("id", session["id"]).execute()
+    }).execute())
+    run_with_supabase(lambda supabase: supabase.table("ai_chat_sessions").update({"updated_at": _now(), "title": session.get("title") or message[:80]}).eq("id", session["id"]).execute())
 
     return {"session": session, "answer": answer, "messages": get_messages(session["id"])}
 
@@ -165,7 +171,9 @@ USER MESSAGE:
 
 def _ensure_session(user_id: str, session_id: str | None, message: str) -> dict:
     if session_id:
-        result = supabase.table("ai_chat_sessions").select("*").eq("id", session_id).eq("user_id", user_id).execute()
+        result = run_with_supabase(
+            lambda supabase: supabase.table("ai_chat_sessions").select("*").eq("id", session_id).eq("user_id", user_id).execute()
+        )
         if result.data:
             return result.data[0]
     return create_session(user_id, message[:80] or "New chat")

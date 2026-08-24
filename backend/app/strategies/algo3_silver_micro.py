@@ -36,11 +36,8 @@ Rules per spec:
                 yesterday's qualifier.
 
   Exits:        fixed SL and target in POINTS from entry, plus optional
-                points-based trailing SL (activate at N points profit,
-                trail N points behind the extremum since activation).
-                The paper broker's trailing engine speaks percentages,
-                so we pass an on-the-fly settings dict with the point
-                values converted at the position's entry price.
+                point-lock trailing SL (activate at X, then every Y points
+                of additional profit locks Z more points).
 """
 from __future__ import annotations
 
@@ -345,7 +342,15 @@ class Algo3SilverMicro(Strategy):
             end_date = datetime.date.today()
             start_date = end_date - datetime.timedelta(days=WARMUP_LOOKBACK_DAYS)
             print(f"[algo3] warmup START: symbol={self.symbol} range={start_date} to {end_date}")
-            history = get_intraday_candles_for_range(self.symbol, start_date, end_date)
+            # Keep the exact FYERS error instead of collapsing an expired or
+            # throttled session into the misleading "0 candles" state.  A
+            # successful OAuth callback forces this warmup again.
+            history = get_intraday_candles_for_range(
+                self.symbol,
+                start_date,
+                end_date,
+                raise_on_error=True,
+            )
             # Preserve the last successful warmup count instead of blindly
             # overwriting with 0 on a transient API failure — the diagnostic
             # panel becomes useless if a later 0-result warmup wipes the
@@ -1279,14 +1284,16 @@ class Algo3SilverMicro(Strategy):
 
     # ── points → percent conversion for the shared trailing engine ───
     def _trailing_settings_for(self, position: dict) -> dict:
-        entry = float(position.get("entry_price") or 0) or 1.0
-        trigger_pts = float(self.settings.get("tsl_trigger_points", 0))
-        distance_pts = float(self.settings.get("tsl_distance_points", 0))
         merged = dict(self.settings)
-        if trigger_pts > 0:
-            merged["trailing_sl_trigger_pct"] = (trigger_pts / entry) * 100.0
-        if distance_pts > 0:
-            merged["trailing_sl_distance_pct"] = (distance_pts / entry) * 100.0
+        # PaperBroker and LiveBroker share the same point-lock arithmetic for
+        # Silver. Keep the values in points; converting to percentages loses
+        # the breakeven/step-lock semantics and creates live/backtest drift.
+        if "tsl_activate_points" not in merged:
+            merged["tsl_activate_points"] = merged.get("tsl_trigger_points", 0)
+        if "tsl_profit_step_points" not in merged:
+            merged["tsl_profit_step_points"] = merged.get("tsl_activate_points", 0)
+        if "tsl_lock_step_points" not in merged:
+            merged["tsl_lock_step_points"] = merged.get("tsl_distance_points", 0)
         return merged
 
     # ── diagnostics ──────────────────────────────────────────────────

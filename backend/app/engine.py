@@ -1343,6 +1343,35 @@ def _close_live_feed_sockets(socket_map: dict[str, object], reason: str) -> None
                 print(f"[engine] {feed_name} Fyers websocket close failed ({reason}): {exc}")
 
 
+def refresh_strategy_market_data(*, force: bool = False, reason: str = "manual") -> int:
+    """Retry strategy history warmups without requiring a market-hours WS.
+
+    OAuth can complete while MCX is closed, so waiting for the next feed
+    start leaves Silver stuck at ``history error`` until the next session.
+    Each strategy owns its warmup and runs it in the background; this helper
+    only requests one bounded refresh per strategy.
+    """
+    refreshed = 0
+    for strategy in STRATEGIES.values():
+        refresh_market_data = getattr(strategy, "refresh_market_data", None)
+        if not callable(refresh_market_data):
+            continue
+        try:
+            try:
+                refresh_market_data(force=force)
+            except TypeError:
+                refresh_market_data()
+            refreshed += 1
+        except Exception as exc:
+            print(
+                f"[engine] strategy history refresh failed ({reason}) "
+                f"algo={getattr(strategy, 'algo_id', '?')}: {exc}"
+            )
+    if refreshed:
+        print(f"[engine] strategy history refresh requested ({reason}) count={refreshed}")
+    return refreshed
+
+
 def start_live_feed_if_ready(force: bool = False) -> bool:
     global _live_feed_started, _feed_watchdog_last_restart_at, _live_feed_plans
 
@@ -1472,10 +1501,7 @@ def start_live_feed_if_ready(force: bool = False) -> bool:
             for plan in plans_snapshot
         )
     )
-    for strategy in STRATEGIES.values():
-        refresh_market_data = getattr(strategy, "refresh_market_data", None)
-        if refresh_market_data:
-            refresh_market_data()
+    refresh_strategy_market_data(reason="live_feed_start")
     return True
 
 
@@ -1683,6 +1709,10 @@ def try_refresh_access_token(reason: str = "manual_or_startup") -> bool:
                 "fyers_recovery_last_event": f"token_refresh_ok:{reason}",
             })
         print(f"[engine] Fyers access token refreshed via refresh token ({reason})")
+        # History must not depend on the WS or market-hours gate.  In
+        # particular, a successful refresh just before MCX opens should make
+        # Silver history/setups ready before the first live tick arrives.
+        refresh_strategy_market_data(force=True, reason=f"token_refresh:{reason}")
         # A brand new token invalidates whatever 429 backoff we were sitting in
         # (Fyers rate-limits by session, not by token), so let this bypass.
         restart_live_feed(reason=f"token_refresh_{reason}", ignore_backoff=True)

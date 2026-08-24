@@ -44,7 +44,7 @@ except Exception as _exc:  # pragma: no cover
 
 from .config import ALLOWED_ORIGINS, APP_PIN, FRONTEND_URL, SUPABASE_JWT_SECRET
 from .auth import require_auth
-from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, last_ltp, restart_live_feed, start_engine, stop_live_feed, STRATEGIES, _clear_token_expired
+from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, last_ltp, refresh_strategy_market_data, restart_live_feed, start_engine, stop_live_feed, STRATEGIES, _clear_token_expired
 from .charges import get_charges_config, set_charges_config
 from .audit_log import audit_log
 from .fyers_client import get_broker_orders, get_broker_positions, get_connection_status, get_price_history, get_wallet_balance
@@ -61,7 +61,6 @@ from .runtime_mode import (
     set_pending_fyers_login_origin,
     set_pending_fyers_login_mode,
 )
-from .supabase_client import supabase
 from .silver_setup_history import get_setup_history
 from .timezone import IST
 
@@ -503,6 +502,11 @@ def fyers_callback(auth_code: str = None, code: str = None, state: str | None = 
     # Fresh token minted — clear the "known expired" flag so watchdog can
     # resume WS handshake attempts immediately.
     _clear_token_expired(f"fresh OAuth callback ({callback_mode})")
+    # OAuth may complete while MCX is closed, so do not wait for a WS start or
+    # market-hours gate to retry Silver history.  The warmup runs in the
+    # background and is guarded against duplicate requests.
+    if callback_mode == get_runtime_trading_mode():
+        refresh_strategy_market_data(force=True, reason=f"oauth_callback:{callback_mode}")
     # Fresh OAuth-minted token; bypass any live 429 backoff so the new
     # session starts. Delayed 15s via Timer so Fyers releases the old WS
     # session on their side before we handshake again — stacking a fresh

@@ -26,12 +26,13 @@ def get_supabase() -> Client:
     return create_client(SUPABASE_URL, SUPABASE_SERVICE_ROLE_KEY)
 
 
-# Compatibility client for low-frequency flows like OAuth callbacks.
-# Polling paths should continue to use run_with_supabase().
-supabase = get_supabase()
-
-
 def run_with_supabase(operation, *, attempts: int = 3, delay_seconds: float = 0.25):
+    """Run one synchronous Supabase operation with bounded retry and cleanup.
+
+    The client is intentionally short-lived, but it still owns an httpx
+    transport.  Not closing that transport caused repeated dashboard polling
+    to accumulate HTTP/2 connections until Railway reported ``Errno 11``.
+    """
     last_error = None
     for attempt in range(1, attempts + 1):
         client = get_supabase()
@@ -42,4 +43,12 @@ def run_with_supabase(operation, *, attempts: int = 3, delay_seconds: float = 0.
             if attempt == attempts:
                 break
             time.sleep(delay_seconds * attempt)
+        finally:
+            # SyncPostgrestClient exposes the underlying synchronous httpx
+            # client. Close it on every attempt, including successful ones.
+            # This is deliberately defensive for SDK version differences.
+            session = getattr(getattr(client, "postgrest", None), "session", None)
+            close = getattr(session, "close", None)
+            if callable(close):
+                close()
     raise RuntimeError(f"Supabase request failed after {attempts} attempts: {last_error}") from last_error

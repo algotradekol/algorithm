@@ -11,6 +11,7 @@ import datetime
 from .charges import calculate_charges, get_charges_config
 from .storage_namespace import current_and_legacy_values, namespaced_value
 from .supabase_client import run_with_supabase
+from .trailing_stop import calculate_point_trailing, silver_tsl_points
 
 
 class PaperBroker:
@@ -262,8 +263,6 @@ class PaperBroker:
         previous_sl = current_sl
         trigger_pct = float(settings.get("trailing_sl_trigger_pct") or 0)
         distance_pct = float(settings.get("trailing_sl_distance_pct") or 0)
-        if trigger_pct <= 0 or distance_pct <= 0:
-            return position
 
         highest = max(float(position.get("highest_price") or entry), float(ltp))
         lowest = min(float(position.get("lowest_price") or entry), float(ltp))
@@ -271,26 +270,55 @@ class PaperBroker:
         updates = {"highest_price": highest, "lowest_price": lowest}
         sl_moved = False  # true only when the SL numerically shifts
 
-        if side == "BUY":
-            move_pct = (highest - entry) / entry * 100
-            if move_pct >= trigger_pct:
-                active = True
-                new_sl = highest * (1 - distance_pct / 100)
-                if new_sl > current_sl:
-                    previous_sl = current_sl
-                    updates["sl_price"] = new_sl
-                    current_sl = new_sl
-                    sl_moved = True
+        point_model = any(
+            key in settings
+            for key in ("tsl_activate_points", "tsl_profit_step_points", "tsl_lock_step_points")
+        )
+        if point_model:
+            activate_points, profit_step_points, lock_step_points = silver_tsl_points(settings)
+            if activate_points <= 0 or profit_step_points <= 0:
+                return position
+            point_result = calculate_point_trailing(
+                entry=entry,
+                side=side,
+                current_sl=current_sl,
+                highest=highest,
+                lowest=lowest,
+                activate_points=activate_points,
+                profit_step_points=profit_step_points,
+                lock_step_points=lock_step_points,
+            )
+            highest = point_result["highest"]
+            lowest = point_result["lowest"]
+            active = bool(point_result["trailing_active"] or active)
+            sl_moved = bool(point_result["sl_moved"])
+            if sl_moved:
+                previous_sl = float(point_result["previous_sl"])
+                current_sl = float(point_result["sl_price"])
+                updates["sl_price"] = current_sl
         else:
-            move_pct = (entry - lowest) / entry * 100
-            if move_pct >= trigger_pct:
-                active = True
-                new_sl = lowest * (1 + distance_pct / 100)
-                if new_sl < current_sl:
-                    previous_sl = current_sl
-                    updates["sl_price"] = new_sl
-                    current_sl = new_sl
-                    sl_moved = True
+            if trigger_pct <= 0 or distance_pct <= 0:
+                return position
+            if side == "BUY":
+                move_pct = (highest - entry) / entry * 100
+                if move_pct >= trigger_pct:
+                    active = True
+                    new_sl = highest * (1 - distance_pct / 100)
+                    if new_sl > current_sl:
+                        previous_sl = current_sl
+                        updates["sl_price"] = new_sl
+                        current_sl = new_sl
+                        sl_moved = True
+            else:
+                move_pct = (entry - lowest) / entry * 100
+                if move_pct >= trigger_pct:
+                    active = True
+                    new_sl = lowest * (1 + distance_pct / 100)
+                    if new_sl < current_sl:
+                        previous_sl = current_sl
+                        updates["sl_price"] = new_sl
+                        current_sl = new_sl
+                        sl_moved = True
 
         updates["trailing_sl_active"] = active
 
@@ -308,6 +336,12 @@ class PaperBroker:
         if active and not trailing_meta.get("first_activated_at"):
             trailing_meta["first_activated_at"] = now_iso
             trailing_meta["activated"] = True
+            if point_model:
+                activate_points, profit_step_points, lock_step_points = silver_tsl_points(settings)
+                trailing_meta["model"] = "point_lock"
+                trailing_meta["activate_points"] = activate_points
+                trailing_meta["profit_step_points"] = profit_step_points
+                trailing_meta["lock_step_points"] = lock_step_points
             merged_snapshot = current_snapshot  # need to write
 
         if sl_moved:
@@ -327,12 +361,11 @@ class PaperBroker:
             trailing_meta["current_sl"] = float(current_sl)
             trailing_meta["events"] = trailing_events
             merged_snapshot["trailing"] = trailing_meta
-            # Preserve initial_sl_price if it existed; older positions
-            # written before this feature won't have it — stamp it now
-            # using the SL that was in play when trailing first activated.
+            # Preserve the original stop when this is the first point-lock
+            # move to breakeven; do not mistake the new SL for the initial SL.
             if "initial_sl_price" not in merged_snapshot:
                 merged_snapshot["initial_sl_price"] = float(
-                    position.get("sl_price") if not sl_moved else current_sl
+                    position.get("initial_sl_price") or position.get("sl_price") or current_sl
                 )
             updates["signal_snapshot"] = merged_snapshot
 

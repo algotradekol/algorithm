@@ -2400,31 +2400,57 @@ def test_algo3_entry_uses_points_sl_target():
           abs(pos2["target_price"] - 88350.0) < 1e-9, f"got={pos2['target_price']}")
 
 
-# ── 43. Points -> percent conversion for TSL ───────────────────────────
-def test_algo3_trailing_settings_convert_points_to_pct():
-    print("\n43. algo3 _trailing_settings_for converts POINTS to percent based on entry price")
-    strat = _make_bare_algo3(settings_overrides={"tsl_trigger_points": 200, "tsl_distance_points": 100})
+# ── 43. Silver point-lock TSL ──────────────────────────────────────────
+def test_algo3_trailing_settings_use_point_lock_model():
+    print("\n43. algo3 trailing settings use X/Y/Z point-lock model")
+    strat = _make_bare_algo3(settings_overrides={
+        "tsl_activate_points": 500,
+        "tsl_profit_step_points": 500,
+        "tsl_lock_step_points": 100,
+    })
     position = {"entry_price": 100000.0}
-    converted = strat._trailing_settings_for(position)
-    # 200 / 100000 * 100 = 0.2%; 100 / 100000 * 100 = 0.1%
-    check("trigger converted: 200/100000 -> 0.2%",
-          abs(converted["trailing_sl_trigger_pct"] - 0.2) < 1e-9,
-          f"got={converted['trailing_sl_trigger_pct']}")
-    check("distance converted: 100/100000 -> 0.1%",
-          abs(converted["trailing_sl_distance_pct"] - 0.1) < 1e-9,
-          f"got={converted['trailing_sl_distance_pct']}")
-    # Zero points -> no conversion, leave original settings alone
-    strat_zero = _make_bare_algo3(settings_overrides={"tsl_trigger_points": 0, "tsl_distance_points": 0,
-                                                       "trailing_sl_trigger_pct": 5.0, "trailing_sl_distance_pct": 2.0})
-    converted_zero = strat_zero._trailing_settings_for(position)
-    check("zero points -> original pct preserved",
-          converted_zero["trailing_sl_trigger_pct"] == 5.0
-          and converted_zero["trailing_sl_distance_pct"] == 2.0)
+    passed = strat._trailing_settings_for(position)
+    check("activation remains points", passed["tsl_activate_points"] == 500)
+    check("profit step remains points", passed["tsl_profit_step_points"] == 500)
+    check("lock step remains points", passed["tsl_lock_step_points"] == 100)
+    check("Silver no longer converts to percentage trailing",
+          "trailing_sl_trigger_pct" not in passed)
 
 
-# ── 44. Scan disabled → triggers skipped ───────────────────────────────
+def test_silver_point_lock_trailing_buy_and_sell():
+    print("\n44. Silver point-lock TSL BUY/SELL activation, breakeven, and steps")
+    from app.trailing_stop import calculate_point_trailing
+
+    params = {"activate_points": 500, "profit_step_points": 500, "lock_step_points": 100}
+    buy = calculate_point_trailing(entry=1000, side="BUY", current_sl=700,
+                                   highest=1000, lowest=1000, **params)
+    check("BUY below activation stays inactive", not buy["trailing_active"])
+    buy = calculate_point_trailing(entry=1000, side="BUY", current_sl=700,
+                                   highest=1500, lowest=900, **params)
+    check("BUY activation moves SL to entry", buy["trailing_active"] and buy["sl_price"] == 1000,
+          f"result={buy}")
+    buy = calculate_point_trailing(entry=1000, side="BUY", current_sl=1000,
+                                   highest=2000, lowest=1000, **params)
+    check("BUY +1000 locks +100", buy["sl_price"] == 1100 and buy["protected_points"] == 100,
+          f"result={buy}")
+    buy = calculate_point_trailing(entry=1000, side="BUY", current_sl=1100,
+                                   highest=1800, lowest=1000, **params)
+    check("BUY retracement never loosens stop", buy["sl_price"] == 1100 and not buy["sl_moved"],
+          f"result={buy}")
+
+    sell = calculate_point_trailing(entry=1000, side="SELL", current_sl=1300,
+                                    highest=1100, lowest=500, **params)
+    check("SELL activation moves SL to entry", sell["trailing_active"] and sell["sl_price"] == 1000,
+          f"result={sell}")
+    sell = calculate_point_trailing(entry=1000, side="SELL", current_sl=1000,
+                                    highest=1000, lowest=0, **params)
+    check("SELL +1000 locks +100", sell["sl_price"] == 900 and sell["protected_points"] == 100,
+          f"result={sell}")
+
+
+# ── 45. Scan disabled → triggers skipped ───────────────────────────────
 def test_algo3_scan_disabled_skips_triggers():
-    print("\n44. algo3 scan_enabled=False: on_tick does not evaluate triggers")
+    print("\n45. algo3 scan_enabled=False: on_tick does not evaluate triggers")
     strat = _make_bare_algo3(settings_overrides={"scan_enabled": False})
     strat._buy_setup_close = 92000.0
     # Simulate the WS engine calling on_tick.
@@ -3407,7 +3433,7 @@ def test_algo3_backtest_trailing_metadata():
 
 
 def test_algo3_backtest_sell_trailing_exits_on_reversal():
-    print("\n50c. algo3 backtest SELL trailing follows the low and exits on an upward reversal")
+    print("\n50c. algo3 backtest SELL point-lock trailing exits on an upward reversal")
     import datetime as _dt
     from app import backtest as bt
     from app.backtest import _jobs, _lock
@@ -3427,16 +3453,16 @@ def test_algo3_backtest_sell_trailing_exits_on_reversal():
             push(b * 15 + m, 90000, 90000, 90000, 90000)
 
     # Carry a confirmed red reference at 89,900. The next red chain enters
-    # at 89,700, then price falls far enough to arm a 150-point trail.
+    # at 89,700, then price falls far enough to activate the point-lock trail.
     for m in range(15):
         push(20 * 15 + m, 90020, 90030, 89880, 89900)
     for m in range(15):
         push(21 * 15 + m, 90020, 90160, 90010, 90150)
     push(22 * 15, 89850, 89780, 89690, 89650)
 
-    # Favorable low = 89,480, so the SELL trail becomes 89,630. The green
-    # reversal trades through that level and must exit at the tightened stop,
-    # not the original 89,800 SL.
+    # Favorable low = 89,480. With activation at +200 points, the first
+    # point-lock step protects breakeven at 89,700. The green reversal trades
+    # through that level and must exit at the protected stop.
     push(22 * 15 + 1, 89650, 89650, 89480, 89500)
     push(22 * 15 + 2, 89500, 89900, 89490, 89900)
     push(23 * 15, 89600, 89600, 89600, 89600)
@@ -3446,8 +3472,9 @@ def test_algo3_backtest_sell_trailing_exits_on_reversal():
         "sl_points": 100,
         "target_points": 1000,
         "trailing_sl_enabled": True,
-        "tsl_trigger_points": 200,
-        "tsl_distance_points": 150,
+        "tsl_activate_points": 200,
+        "tsl_profit_step_points": 200,
+        "tsl_lock_step_points": 150,
         "exit_mode": "fixed_target_trailing_sl",
         "silver_lots": 1,
     }
@@ -3481,8 +3508,8 @@ def test_algo3_backtest_sell_trailing_exits_on_reversal():
         check("SELL trailing trade exits by SL", trade.get("exit_reason") == "SL", f"trade={trade}")
         check("SELL trailing activated", trade.get("trailing_sl_active") is True, f"trade={trade}")
         check("SELL trailing saved a move", int(trade.get("trailing_move_count") or 0) >= 1, f"trade={trade}")
-        check("SELL final SL follows the favorable low", abs(float(trade.get("sl_price") or 0) - 89630.0) < 1e-9, f"trade={trade}")
-        check("SELL exits at the tightened trailing SL", abs(float(trade.get("exit_price") or 0) - 89630.0) < 1e-9, f"trade={trade}")
+        check("SELL first point-lock step protects breakeven", abs(float(trade.get("sl_price") or 0) - 89700.0) < 1e-9, f"trade={trade}")
+        check("SELL exits at the protected breakeven stop", abs(float(trade.get("exit_price") or 0) - 89700.0) < 1e-9, f"trade={trade}")
 
 
 def test_algo3_backtest_respects_trailing_toggle():
@@ -4086,7 +4113,7 @@ def test_algo3_warmup_end_date_is_today():
     import app.strategies.algo3_silver_micro as algo3_mod
 
     captured_ranges = []
-    def fake_range(symbol, start, end):
+    def fake_range(symbol, start, end, **kwargs):
         captured_ranges.append((start, end))
         return []  # empty is fine; we only care about the range
 
@@ -4697,7 +4724,8 @@ def main():
     test_algo3_new_setup_rearms_after_failed_attempt()
     test_algo3_live_broker_guard_blocks_when_symbol_busy()
     test_algo3_entry_uses_points_sl_target()
-    test_algo3_trailing_settings_convert_points_to_pct()
+    test_algo3_trailing_settings_use_point_lock_model()
+    test_silver_point_lock_trailing_buy_and_sell()
     test_algo3_scan_disabled_skips_triggers()
     test_algo3_black_box_end_to_end()
     test_broker_key_suffix_isolates_tokens()
