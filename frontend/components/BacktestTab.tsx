@@ -9,18 +9,8 @@ const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).for
 const defaultStart = new Date(`${today}T00:00:00`);
 defaultStart.setDate(defaultStart.getDate() - 6);
 const weekAgo = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(defaultStart);
-const BACKTEST_STORAGE_KEY = 'backtest-tab-state-v1';
+const BACKTEST_STORAGE_KEY = 'backtest-tab-state-v2';
 const BACKTEST_UI_STORAGE_KEY = 'backtest-tab-ui-v2';
-const SILVER_BUY_PLANS = {
-  live_breakout: {
-    label: '15m breakout (current)',
-    description: 'Green 15m close above EMA20 becomes the reference; a later 1-minute break above reference + n enters.',
-  },
-  legacy_confirmation: {
-    label: '5m EMA/volume confirmation (legacy)',
-    description: 'Green 5m close above price EMA20 and volume EMA20, confirmed within 15 minutes, enters next 5m open.',
-  },
-};
 const SILVER_SELL_PLANS = {
   red_chain: {
     label: 'Red-chain comparison (current)',
@@ -34,7 +24,6 @@ const SILVER_SELL_PLANS = {
 
 export default function BacktestTab() {
   const [algoId, setAlgoId] = useState('algo1');
-  const [silverBuyPlan, setSilverBuyPlan] = useState('live_breakout');
   const [silverSellPlan, setSilverSellPlan] = useState('red_chain');
   const [startDate, setStartDate] = useState(weekAgo);
   const [endDate, setEndDate] = useState(today);
@@ -52,7 +41,6 @@ export default function BacktestTab() {
       }
       const snapshot = JSON.parse(raw);
       if (snapshot?.algoId) setAlgoId(snapshot.algoId);
-      if (snapshot?.silverBuyPlan === 'live_breakout' || snapshot?.silverBuyPlan === 'legacy_confirmation') setSilverBuyPlan(snapshot.silverBuyPlan);
       if (snapshot?.silverSellPlan === 'red_chain' || snapshot?.silverSellPlan === 'latest_reference') setSilverSellPlan(snapshot.silverSellPlan);
       if (snapshot?.startDate) setStartDate(snapshot.startDate);
       if (snapshot?.endDate) setEndDate(snapshot.endDate);
@@ -70,7 +58,6 @@ export default function BacktestTab() {
     try {
       window.localStorage.setItem(BACKTEST_STORAGE_KEY, JSON.stringify({
         algoId,
-        silverBuyPlan,
         silverSellPlan,
         startDate,
         endDate,
@@ -81,7 +68,7 @@ export default function BacktestTab() {
     } catch {
       // Best-effort persistence only.
     }
-  }, [algoId, silverBuyPlan, silverSellPlan, startDate, endDate, job, error, storageReady]);
+  }, [algoId, silverSellPlan, startDate, endDate, job, error, storageReady]);
 
   async function run() {
     setError('');
@@ -103,7 +90,7 @@ export default function BacktestTab() {
         algo_id: algoId,
         start_date: startDate,
         end_date: endDate,
-        ...(algoId === 'algo3' ? { silver_buy_plan: silverBuyPlan, silver_sell_plan: silverSellPlan } : {}),
+        ...(algoId === 'algo3' ? { silver_sell_plan: silverSellPlan } : {}),
       }));
     } catch (e: any) {
       setError(e?.message || 'Could not start backtest');
@@ -162,7 +149,7 @@ export default function BacktestTab() {
     ? {
         title: 'Historical Silver Micro Backtest',
         body: 'Replays MCX:SILVERMIC26AUGFUT on 15-minute candles with EMA20 breakout logic. Read-only; does not touch the live engine.',
-        note: 'Uses the live tab’s rules: green/red setup candle stores its close as the level; entry fires when price crosses (setup close +/- n) in the setup direction. n defaults to 150 points.',
+        note: 'Uses the 15m reference BUY with the selected SELL logic: each finalized green candle closing above EMA20 becomes the reference, and price buys at reference + n with same-reference re-entry after a BUY target or stop loss on renewed upward movement.',
       }
     : {
         title: 'Historical Backtest',
@@ -176,7 +163,7 @@ export default function BacktestTab() {
         <p className="mt-1 max-w-3xl text-sm text-gray-500">{introCopy.body}</p>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option><option value="algo3">Silver Micro (MCX:SILVERMIC26AUGFUT)</option></select></label>
-          {algoId === 'algo3' && <label><span className="label">Silver BUY logic</span><select value={silverBuyPlan} onChange={(e) => setSilverBuyPlan(e.target.value)} className="control mt-1"><option value="live_breakout">{SILVER_BUY_PLANS.live_breakout.label}</option><option value="legacy_confirmation">{SILVER_BUY_PLANS.legacy_confirmation.label}</option></select><span className="mt-1 block text-[11px] leading-4 text-gray-500">{SILVER_BUY_PLANS[silverBuyPlan as keyof typeof SILVER_BUY_PLANS].description}</span></label>}
+          {algoId === 'algo3' && <div><span className="label">Silver BUY logic</span><div className="control mt-1 flex items-center text-sm text-gray-200">15m EMA reference breakout</div><span className="mt-1 block text-[11px] leading-4 text-gray-500">A finalized green 15m close above EMA20 becomes the reference; BUY fires at reference + n and can re-enter after BUY target/SL while upward movement resumes.</span></div>}
           {algoId === 'algo3' && <label><span className="label">Silver SELL logic</span><select value={silverSellPlan} onChange={(e) => setSilverSellPlan(e.target.value)} className="control mt-1"><option value="red_chain">{SILVER_SELL_PLANS.red_chain.label}</option><option value="latest_reference">{SILVER_SELL_PLANS.latest_reference.label}</option></select><span className="mt-1 block text-[11px] leading-4 text-gray-500">{SILVER_SELL_PLANS[silverSellPlan as keyof typeof SILVER_SELL_PLANS].description}</span></label>}
           <label><span className="label">Start date</span><input value={startDate} onChange={(e) => setStartDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <label><span className="label">End date</span><input value={endDate} onChange={(e) => setEndDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
@@ -314,7 +301,7 @@ function BacktestResult({ result }: { result: any }) {
 
   return <>
     <section className="panel p-4">
-       <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-semibold text-gray-100">{result.start_date} to {result.end_date}</h3><p className="mt-1 max-w-3xl text-xs text-gray-500">{result.execution_assumption}</p>{result.algo_id === 'algo3' && <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[#bfdbfe]"><span className="rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1"><span className="font-semibold">BUY:</span> {result.silver_buy_plan_label || result.silver_buy_plan || '15m breakout (current)'}</span><span className="rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1"><span className="font-semibold">SELL:</span> {result.silver_sell_plan_label || result.silver_sell_plan || 'Red-chain comparison (current)'}</span></div>}</div><div className="flex items-center gap-3"><div className="text-xs text-gray-500">History coverage: <span className="num text-gray-100">{coverage.symbols_with_history} / {coverage.requested_symbols}</span></div><button onClick={() => downloadBacktestCsv(result)} className="inline-flex min-h-10 items-center gap-2 rounded border border-[#22c55e] bg-[#22c55e]/10 px-3 py-2 text-xs font-semibold text-[#22c55e]"><i className="ri-file-download-fill text-sm" />Download CSV</button></div></div>
+       <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-semibold text-gray-100">{result.start_date} to {result.end_date}</h3><p className="mt-1 max-w-3xl text-xs text-gray-500">{result.execution_assumption}</p>{result.algo_id === 'algo3' && <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[#bfdbfe]"><span className="rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1"><span className="font-semibold">BUY:</span> {result.silver_buy_plan_label || result.silver_buy_plan || '15m EMA reference breakout'}</span><span className="rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1"><span className="font-semibold">SELL:</span> {result.silver_sell_plan_label || result.silver_sell_plan || 'Red-chain comparison (current)'}</span></div>}</div><div className="flex items-center gap-3"><div className="text-xs text-gray-500">History coverage: <span className="num text-gray-100">{coverage.symbols_with_history} / {coverage.requested_symbols}</span></div><button onClick={() => downloadBacktestCsv(result)} className="inline-flex min-h-10 items-center gap-2 rounded border border-[#22c55e] bg-[#22c55e]/10 px-3 py-2 text-xs font-semibold text-[#22c55e]"><i className="ri-file-download-fill text-sm" />Download CSV</button></div></div>
       <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <Card label="Trading days" value={summary.trading_days_replayed || 0} />
         <Card label="Trades" value={summary.trade_count || 0} />

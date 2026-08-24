@@ -2,20 +2,18 @@
 algo3_silver_micro.py — Silver Micro (MCX:SILVERMIC*) strategy.
 
 Rewritten 2026-08-19 to match the client's spec doc (Silver Mic_Volume.docx).
-The live default BUY path remains the original 5-minute EMA+volume
-confirmation model for parity with the client's previously tested trades.
+The live BUY path uses the finalized 15-minute reference-breakout model.
 
 Rules per spec:
   Instrument:   MCX Silver Micro (SILVERMIC)
   Timeframe:    15 minute candles
   Indicator:    20 EMA on close (no volume filter)
 
-  BUY setup (default):  a green 5-minute candle closes above price EMA20
-                and volume EMA20. A same-direction 5-minute confirmation
-                must close above the setup close within 15 minutes, then the
-                entry is taken at the next 5-minute candle open.
-  BUY alternate:  the 15-minute setup/offset breakout remains available in
-                the backtest, but is not the live default.
+  BUY setup:    a finalized green 15-minute candle closes above EMA20 and its
+                close becomes the reference. BUY fires when price crosses
+                reference + n. After a BUY SL/TARGET, renewed upward movement
+                may re-enter against the same reference until a newer
+                qualifying 15-minute candle replaces it.
 
   SELL setup:   a red candle (close < open) closes below EMA20.
                 Its close is stored as the SELL reference close.
@@ -66,6 +64,7 @@ BUCKET_MINUTES = 15
 LEGACY_BUY_BUCKET_MINUTES = 5
 LEGACY_BUY_CONFIRMATION_MINUTES = 15
 SILVER_BUY_PLAN_LEGACY_CONFIRMATION = "legacy_confirmation"
+SILVER_BUY_PLAN_REFERENCE_BREAKOUT = "reference_breakout"
 SILVER_MICRO_ROOT = "SILVERMIC"
 # MCX Silver Micro contract size: 1 lot = 1 kg = 1 unit on Fyers.
 # Qty is therefore lots * 1. Kept as a constant so it's easy to adjust
@@ -164,7 +163,7 @@ def _fmt(value: float | None) -> str:
 
 class Algo3SilverMicro(Strategy):
     algo_id = "algo3"
-    display_name = "Silver Micro - legacy BUY / red-chain SELL"
+    display_name = "Silver Micro - reference BUY / red-chain SELL"
     _MCX_SESSION_START = "09:00"
     _MCX_SESSION_END = "23:30"
     _MCX_SQUARE_OFF_TIME = "23:25"
@@ -191,10 +190,8 @@ class Algo3SilverMicro(Strategy):
         self._bars: deque[dict] = deque(maxlen=500)
         self._ema20: float | None = None
 
-        # Live BUY defaults to the legacy model that was previously tested
-        # successfully. SELL continues to use the current 15m red-chain
-        # state below. Keeping the two state machines separate prevents a
-        # 5m BUY confirmation from changing SELL reference behavior.
+        # Keep the old 5m fields only for persisted-state compatibility. They
+        # are no longer fed by the live runtime.
         self._legacy_buy_5m_buffer: list[dict] = []
         self._legacy_buy_5m_bucket: datetime.datetime | None = None
         self._legacy_buy_price_ema20: float | None = None
@@ -227,6 +224,7 @@ class Algo3SilverMicro(Strategy):
         # reference threshold is still crossed. This is deliberately a
         # one-position/one-tick handoff, not a signal-arrow retry loop.
         self._sell_reentry_after_exit: dict | None = None
+        self._buy_reentry_after_exit: dict | None = None
         self._entry_attempt_in_flight = False
         self._entry_guard_lock = threading.Lock()
         self._entry_cooldown_until_monotonic = 0.0
@@ -243,11 +241,8 @@ class Algo3SilverMicro(Strategy):
     def reload_settings(self):
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
-        if self._silver_buy_plan() != SILVER_BUY_PLAN_LEGACY_CONFIRMATION:
-            # The live engine currently supports only the safe, previously
-            # tested legacy BUY path. Do not leave stale pending 5m state if
-            # an old settings row contains an obsolete plan value.
-            self._reset_legacy_buy_state()
+        self._reset_legacy_buy_state()
+        self._buy_reentry_after_exit = None
 
     def market_session_start(self) -> str:
         return self._MCX_SESSION_START
@@ -312,6 +307,7 @@ class Algo3SilverMicro(Strategy):
         self._last_attempted_buy_bar_at = None
         self._last_attempted_sell_bar_at = None
         self._sell_reentry_after_exit = None
+        self._buy_reentry_after_exit = None
         self._entry_attempt_in_flight = False
         self._entry_cooldown_until_monotonic = 0.0
 
@@ -326,13 +322,16 @@ class Algo3SilverMicro(Strategy):
         self._legacy_buy_entry_context = None
 
     def _silver_buy_plan(self) -> str:
-        """Return the live BUY model selected by normalized settings.
+        """Return the single canonical live BUY model.
 
-        Production settings normalize algo3 to the tested legacy model. The
-        alternate value remains injectable for isolated parity tests and
-        backtest comparisons without being selectable from live settings.
+        Older rows used ``legacy_confirmation`` or ``live_breakout``. Treat
+        both as compatibility aliases so a stale setting can never switch the
+        runtime back to the removed 5-minute confirmation path.
         """
-        return str(self.settings.get("silver_buy_plan") or SILVER_BUY_PLAN_LEGACY_CONFIRMATION)
+        raw = str(self.settings.get("silver_buy_plan") or SILVER_BUY_PLAN_REFERENCE_BREAKOUT).strip().lower()
+        if raw in {SILVER_BUY_PLAN_REFERENCE_BREAKOUT, SILVER_BUY_PLAN_LEGACY_CONFIRMATION, "live_breakout"}:
+            return SILVER_BUY_PLAN_REFERENCE_BREAKOUT
+        return SILVER_BUY_PLAN_REFERENCE_BREAKOUT
 
     def _load_history_background(self):
         try:
@@ -362,7 +361,6 @@ class Algo3SilverMicro(Strategy):
                 for candle in history:
                     self._ingest_minute_candle(candle, allow_signals=False)
                 self._finalize_bar(allow_signals=False)
-                self._finalize_legacy_buy_bar(allow_signals=False)
                 self._last_warmup_at = time.monotonic()
             else:
                 # Only stamp 0 if we've never had a successful warmup yet.
@@ -430,8 +428,10 @@ class Algo3SilverMicro(Strategy):
         if side == "BUY":
             if ltp <= sl:
                 self.broker.close_trade(position, ltp, "SL")
+                self._arm_buy_reentry_after_exit("SL")
             elif use_target and ltp >= target:
                 self.broker.close_trade(position, ltp, "TARGET")
+                self._arm_buy_reentry_after_exit("TARGET")
         else:
             if ltp >= sl:
                 self.broker.close_trade(position, ltp, "SL")
@@ -463,6 +463,26 @@ class Algo3SilverMicro(Strategy):
             "exit_reason": exit_reason,
         }
 
+    def _arm_buy_reentry_after_exit(self, exit_reason: str) -> None:
+        """Keep a BUY reference eligible after its protective exit.
+
+        Re-entry is not an unconditional retry: trigger processing still
+        requires the next live price to move upward versus the immediately
+        preceding tick. This prevents repeated orders on a flat/stale tick
+        while allowing a renewed move above the same finalized reference.
+        """
+        if exit_reason not in {"SL", "TARGET"}:
+            return
+        if self._buy_setup_close is None or self._buy_setup_bar_at is None:
+            self._buy_reentry_after_exit = None
+            return
+        n = float(self.settings.get("silver_breakout_points", 150) or 150)
+        self._buy_reentry_after_exit = {
+            "setup_bar_at": self._buy_setup_bar_at,
+            "trigger_level": float(self._buy_setup_close) + n,
+            "exit_reason": exit_reason,
+        }
+
     def square_off_all(self):
         for position in self.broker.open_positions():
             ltp = position.get("_last_ltp", position["entry_price"])
@@ -488,11 +508,6 @@ class Algo3SilverMicro(Strategy):
             return
         self._last_ingested_minute_at = candle_time
         bucket = _bucket_start(candle_time)
-
-        # Keep the legacy BUY model on its own 5-minute aggregation. This is
-        # fed from the exact same 1-minute source as the 15-minute SELL path,
-        # so the two sides cannot drift because of different data requests.
-        self._ingest_legacy_buy_minute(minute_candle, allow_signals=allow_signals)
 
         if self._current_bucket is None:
             self._current_bucket = bucket
@@ -738,7 +753,6 @@ class Algo3SilverMicro(Strategy):
             allow_signals = self.scan_enabled()
         bars_before = len(self._bars)
         self._finalize_bar(allow_signals=allow_signals, require_closed=True)
-        self._finalize_legacy_buy_bar(allow_signals=allow_signals, require_closed=True)
         return len(self._bars) > bars_before
 
     def _update_setups(self, bar: dict, log: bool = False):
@@ -754,14 +768,13 @@ class Algo3SilverMicro(Strategy):
         is_green = bar["close"] > bar["open"]
         is_red = bar["close"] < bar["open"]
         close = bar["close"]
-        if (
-            self._silver_buy_plan() != SILVER_BUY_PLAN_LEGACY_CONFIRMATION
-            and is_green
-            and close > self._ema20
-        ):
+        if is_green and close > self._ema20:
             old = self._buy_setup_close
             self._buy_setup_close = close
             self._buy_setup_bar_at = bar["time"]
+            # A newer finalized green reference supersedes any re-entry
+            # permission attached to the older reference.
+            self._buy_reentry_after_exit = None
             if log:
                 self._persist_setup_event("BUY", bar, source="live")
             if log:
@@ -1039,13 +1052,17 @@ class Algo3SilverMicro(Strategy):
                 self._sell_reentry_after_exit = None
                 self._mark_fired("SELL", setup_bar_at=self._sell_setup_bar_at)
 
-        buy_level = (
-            self._buy_setup_close + n
-            if self._silver_buy_plan() != SILVER_BUY_PLAN_LEGACY_CONFIRMATION
-            and self._buy_setup_close is not None
-            else None
-        )
+        buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
         prev = self._prev_ltp
+        buy_reentry = getattr(self, "_buy_reentry_after_exit", None)
+        same_buy_reference = bool(
+            buy_reentry
+            and buy_level is not None
+            and self._buy_setup_bar_at is not None
+            and buy_reentry.get("setup_bar_at") == self._buy_setup_bar_at
+            and abs(float(buy_reentry.get("trigger_level") or 0) - float(buy_level)) < 1e-9
+        )
+        renewed_buy_move = bool(same_buy_reference and prev is not None and ltp > float(prev))
 
         # Gap-through case: first live tick after warmup (or after a
         # fresh setup) arrives with LTP ALREADY past the trigger. Client's
@@ -1057,10 +1074,12 @@ class Algo3SilverMicro(Strategy):
             buy_level is not None
             and ltp >= buy_level
             and self._buy_setup_bar_at is not None
+            and (not same_buy_reference or renewed_buy_move)
             and not self._failed_attempt_blocks_setup("BUY")
         ):
             print(f"[algo3] TRIGGER BUY (gap-through): LTP {ltp:.2f} >= level {buy_level:.2f} (setup {self._buy_setup_close:.2f} + n={n:.0f})")
             if self._fire_entry("BUY", ltp, buy_level):
+                self._buy_reentry_after_exit = None
                 self._mark_fired("BUY")
                 return
         # Classic live tick-cross for the case where a normal live tick
@@ -1070,11 +1089,12 @@ class Algo3SilverMicro(Strategy):
             return
         if (
             buy_level is not None
-            and prev < buy_level <= ltp
+            and ((prev < buy_level <= ltp) or (same_buy_reference and renewed_buy_move and ltp >= buy_level))
             and not self._failed_attempt_blocks_setup("BUY")
         ):
             print(f"[algo3] TRIGGER BUY (tick-cross): prev {prev:.2f} -> LTP {ltp:.2f} crossed level {buy_level:.2f}")
             if self._fire_entry("BUY", ltp, buy_level):
+                self._buy_reentry_after_exit = None
                 self._mark_fired("BUY")
                 return
     def _check_candle_close_trigger(self, bar: dict):
@@ -1094,12 +1114,7 @@ class Algo3SilverMicro(Strategy):
         buy_qualifies = self._qualifies_as_buy_setup(bar)
         sell_qualifies = self._qualifies_as_sell_setup(bar)
 
-        buy_level = (
-            self._buy_setup_close + n
-            if self._silver_buy_plan() != SILVER_BUY_PLAN_LEGACY_CONFIRMATION
-            and self._buy_setup_close is not None
-            else None
-        )
+        buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
         sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
         buy_setup_identity = bar_at if buy_qualifies else self._buy_setup_bar_at
         # A red-chain entry is anchored to the PREVIOUS red setup. The
@@ -1114,6 +1129,7 @@ class Algo3SilverMicro(Strategy):
         ):
             print(f"[algo3] TRIGGER BUY (candle-close): bar close {close:.2f} >= level {buy_level:.2f} (setup {self._buy_setup_close:.2f} + n={n:.0f})")
             if self._fire_entry("BUY", close, buy_level, setup_bar_at_override=buy_setup_identity):
+                self._buy_reentry_after_exit = None
                 self._mark_fired("BUY", setup_bar_at=buy_setup_identity)
                 return
         if (
@@ -1220,16 +1236,8 @@ class Algo3SilverMicro(Strategy):
         n = self.settings.get("silver_breakout_points", 150)
         setup_close = self._buy_setup_close if side == "BUY" else self._sell_setup_close
         if side == "BUY":
-            if self._silver_buy_plan() == SILVER_BUY_PLAN_LEGACY_CONFIRMATION:
-                context = self._legacy_buy_entry_context or {}
-                return (
-                    f"5m silver legacy buy confirmation on {self.symbol}: setup close "
-                    f"{_fmt(context.get('setup_close'))} above price EMA20 and volume EMA20; "
-                    f"confirmation close {_fmt(context.get('confirmation_close'))} within 15m; "
-                    f"entered at the next 5m candle open near {entry_price:.2f}."
-                )
             return (
-                f"15m silver buy breakout on {self.symbol}: setup close "
+                f"15m silver buy reference breakout on {self.symbol}: green setup close "
                 f"{_fmt(setup_close)} + n={n} = trigger {_fmt(trigger_level)}, "
                 f"LTP crossed upward through the level at {entry_price:.2f}. "
                 f"EMA20 {_fmt(self._ema20)}."
@@ -1254,17 +1262,12 @@ class Algo3SilverMicro(Strategy):
             "buy_setup_close": self._buy_setup_close,
             "sell_setup_close": self._sell_setup_close,
         }
-        if side == "BUY" and self._silver_buy_plan() == SILVER_BUY_PLAN_LEGACY_CONFIRMATION:
-            context = self._legacy_buy_entry_context or {}
+        if side == "BUY":
             snapshot.update({
-                "timeframe": "5m",
-                "buy_plan": SILVER_BUY_PLAN_LEGACY_CONFIRMATION,
-                "buy_setup_close": context.get("setup_close"),
-                "buy_setup_time": context.get("setup_time").isoformat() if context.get("setup_time") else None,
-                "buy_confirmation_close": context.get("confirmation_close"),
-                "buy_confirmation_time": context.get("confirmation_time").isoformat() if context.get("confirmation_time") else None,
-                "buy_price_ema20": self._legacy_buy_price_ema20,
-                "buy_volume_ema20": self._legacy_buy_volume_ema20,
+                "buy_plan": SILVER_BUY_PLAN_REFERENCE_BREAKOUT,
+                "buy_setup_time": self._buy_setup_bar_at.isoformat() if self._buy_setup_bar_at else None,
+                "buy_reference_close": self._buy_setup_close,
+                "buy_price_ema20": self._ema20,
             })
         return snapshot
 

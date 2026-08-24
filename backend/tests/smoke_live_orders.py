@@ -1566,9 +1566,9 @@ def _make_bare_algo3(settings_overrides=None):
     strat.settings = {
         "capital_per_trade": 100000,
         "silver_breakout_points": 150,
-        # Existing white-box tests exercise the 15m alternate explicitly;
-        # production settings default to legacy_confirmation.
-        "silver_buy_plan": "live_breakout",
+        # The canonical production BUY model is a finalized 15m reference
+        # breakout. Older saved values are normalized to this same model.
+        "silver_buy_plan": "reference_breakout",
         "sl_points": 100,
         "target_points": 300,
         "trailing_sl_enabled": False,
@@ -1602,6 +1602,7 @@ def _make_bare_algo3(settings_overrides=None):
     strat._last_attempted_buy_bar_at = None
     strat._last_attempted_sell_bar_at = None
     strat._sell_reentry_after_exit = None
+    strat._buy_reentry_after_exit = None
     import threading as _threading
     strat._entry_attempt_in_flight = False
     strat._entry_guard_lock = _threading.Lock()
@@ -2763,8 +2764,8 @@ def test_algo3_backtest_parity_with_live():
     # Bar 22: contains the tick-cross. First few 1m bars quiet, then one
     # 1m bar whose high crosses (90500 + 150) = 90650 upward.
     for m in range(5):
-        push(21 * 15 + m, 90500, 90520, 90490, 90510)  # sitting below level
-    push(21 * 15 + 5, 90510, 90680, 90500, 90670)     # crosses 90650
+        push(21 * 15 + m, 90580, 90620, 90580, 90600)  # sitting below level, above SL
+    push(21 * 15 + 5, 90600, 90680, 90580, 90670)     # crosses 90650
 
     # Bar 22 continues (needed so backtest finalizes bar 22 too).
     for m in range(6, 15):
@@ -2851,8 +2852,8 @@ def test_algo3_backtest_parity_with_live():
         _jobs.pop("parity-test", None)
 
 
-def test_algo3_backtest_legacy_buy_confirmation_plan():
-    print("\n53b. algo3 legacy BUY plan — 5m EMA/volume confirmation enters next 5m open")
+def test_algo3_backtest_buy_reference_breakout_contract():
+    print("\n53b. algo3 backtest BUY uses finalized 15m reference + n")
     import datetime as _dt
     from app import backtest as bt
     from app.backtest import _jobs, _lock
@@ -2862,132 +2863,241 @@ def test_algo3_backtest_legacy_buy_confirmation_plan():
     history: list[dict] = []
 
     def push(offset, o, h, l, c, v=100):
-        history.append({
-            "time": base + _dt.timedelta(minutes=offset),
-            "open": o, "high": h, "low": l, "close": c, "volume": v,
-        })
+        history.append({"time": base + _dt.timedelta(minutes=offset), "open": o,
+                        "high": h, "low": l, "close": c, "volume": v})
 
-    # Warm the legacy 5m price and volume EMAs with 20 flat bars.
     for bucket in range(20):
-        for minute in range(5):
-            push(bucket * 5 + minute, 90000, 90000, 90000, 90000, 100)
-    # Qualifying BUY setup: green, above price EMA20 and above volume EMA20.
+        for minute in range(15):
+            push(bucket * 15 + minute, 90000, 90000, 90000, 90000)
+    setup_offset = 20 * 15
+    for minute in range(14):
+        push(setup_offset + minute, 90000, 90200, 89950, 90100)
+    push(setup_offset + 14, 90100, 90500, 90050, 90500)
+    trigger_offset = setup_offset + 15
     for minute in range(5):
-        push(100 + minute, 90000 if minute == 0 else 90200, 90500, 89950, 90500, 250)
-    # Same-direction confirmation within 15 minutes.
-    for minute in range(5):
-        push(105 + minute, 90500, 90600, 90480, 90600, 250)
-    # The next 5m candle opens at the simulated entry price.
-    push(110, 90650, 90700, 90650, 90680, 250)
-    for minute in range(111, 115):
-        push(minute, 90680, 90700, 90670, 90690, 250)
-    # Force the final partial 5m and 15m buckets to flush.
-    push(115, 90690, 90690, 90690, 90690, 250)
+        push(trigger_offset + minute, 90500, 90520, 90490, 90510)
+    push(trigger_offset + 5, 90510, 90680, 90600, 90670)
+    for minute in range(6, 15):
+        push(trigger_offset + minute, 90670, 90680, 90600, 90650)
+    push(trigger_offset + 15, 90650, 90650, 90650, 90650)
 
     settings = {
-        "silver_breakout_points": 150,
-        "sl_points": 100,
-        "target_points": 300,
-        "silver_lots": 1,
-        "trailing_sl_enabled": False,
-        "tsl_trigger_points": 0,
-        "tsl_distance_points": 0,
-        "exit_mode": "fixed_target_sl",
+        "silver_breakout_points": 150, "sl_points": 100, "target_points": 300,
+        "silver_lots": 1, "trailing_sl_enabled": False, "tsl_trigger_points": 0,
+        "tsl_distance_points": 0, "exit_mode": "fixed_target_sl",
     }
     charges = {key: 0 for key in (
         "brokerage_flat", "brokerage_pct", "stt_pct", "exchange_pct",
         "sebi_pct", "gst_pct", "stamp_duty_pct",
     )}
     with _lock:
-        _jobs["legacy-buy-plan"] = {"cancel_requested": False}
+        _jobs["buy-reference-contract"] = {"cancel_requested": False}
     try:
         results = bt._simulate_silver_micro_range(
-            job_id="legacy-buy-plan",
-            algo_id="algo3",
-            first_date=first_date,
-            last_date=first_date,
-            symbol="MCX:TEST-EQ",
-            history=history,
-            trading_days=[first_date],
-            settings=settings,
-            charges_config=charges,
-            silver_buy_plan=bt.SILVER_BUY_PLAN_LEGACY_CONFIRMATION,
+            job_id="buy-reference-contract", algo_id="algo3", first_date=first_date,
+            last_date=first_date, symbol="MCX:TEST-EQ", history=history,
+            trading_days=[first_date], settings=settings, charges_config=charges,
+            silver_buy_plan=bt.SILVER_BUY_PLAN_REFERENCE_BREAKOUT,
             silver_sell_plan=bt.SILVER_SELL_PLAN_LATEST_REFERENCE,
         )
     finally:
         with _lock:
-            _jobs.pop("legacy-buy-plan", None)
+            _jobs.pop("buy-reference-contract", None)
+
+    day = results[0]
+    trades = day["trades"]
+    check("reference BUY creates one trade", len(trades) == 1, f"trades={trades}")
+    check("result records the canonical 15m BUY plan",
+          day["silver_buy_plan"] == bt.SILVER_BUY_PLAN_REFERENCE_BREAKOUT,
+          f"plan={day['silver_buy_plan']}")
+    check("chart setup is the finalized green 15m bar",
+          any(row["time"].startswith("2026-08-19T14:00") for row in day["chart"]["setups"]),
+          f"setups={day['chart']['setups']}")
+    if trades:
+        trade = trades[0]
+        check("BUY entry occurs at reference + n",
+              trade["entry_price"] == 90650.0,
+              f"trade={trade}")
+        check("BUY diagnostics keep the 15m setup timestamp",
+              trade["diagnostics"]["entry_context"]["setup_time"].startswith("2026-08-19T14:00"),
+              f"diagnostics={trade['diagnostics']}")
+
+
+def test_algo3_backtest_buy_plan_is_15m_reference_only():
+    print("\n53d. algo3 BUY plan normalizes old values to the 15m reference model")
+    from app import backtest as bt
+    from app.strategy_settings import _normalize
+
+    check("missing BUY plan defaults to 15m reference",
+          bt.normalize_silver_buy_plan(None) == bt.SILVER_BUY_PLAN_REFERENCE_BREAKOUT)
+    check("old live_breakout value normalizes to 15m reference",
+          bt.normalize_silver_buy_plan("live_breakout") == bt.SILVER_BUY_PLAN_REFERENCE_BREAKOUT)
+    check("old legacy_confirmation value cannot reactivate 5m logic",
+          bt.normalize_silver_buy_plan("legacy_confirmation") == bt.SILVER_BUY_PLAN_REFERENCE_BREAKOUT)
+    check("backtest exposes only the canonical BUY label",
+          set(bt.SILVER_BUY_PLAN_LABELS) == {bt.SILVER_BUY_PLAN_REFERENCE_BREAKOUT},
+          f"labels={bt.SILVER_BUY_PLAN_LABELS}")
+    check("saved alternate setting normalizes the same way for live algo3",
+          _normalize({"silver_buy_plan": "legacy_confirmation"}, "algo3")["silver_buy_plan"]
+          == bt.SILVER_BUY_PLAN_REFERENCE_BREAKOUT)
+
+
+def test_algo3_backtest_buy_reenters_after_target_in_same_15m_candle():
+    print("\n53e. algo3 backtest BUY re-enters after target while the 15m candle keeps growing")
+    import datetime as _dt
+    from app import backtest as bt
+    from app.backtest import _jobs, _lock
+
+    first_date = _dt.date(2026, 8, 19)
+    base = _dt.datetime(2026, 8, 19, 9, 0)
+    history: list[dict] = []
+
+    def push(offset, o, h, l, c):
+        history.append({"time": base + _dt.timedelta(minutes=offset), "open": o,
+                        "high": h, "low": l, "close": c, "volume": 100})
+
+    for bucket in range(20):
+        for minute in range(15):
+            push(bucket * 15 + minute, 90000, 90000, 90000, 90000)
+    setup_offset = 20 * 15
+    for minute in range(14):
+        push(setup_offset + minute, 90000, 90200, 89950, 90100)
+    push(setup_offset + 14, 90100, 90500, 90050, 90500)
+
+    trigger_offset = setup_offset + 15
+    for minute in range(5):
+        push(trigger_offset + minute, 90500, 90520, 90490, 90510)
+    # The first threshold entry and its 300-point target are both reached in
+    # this still-forming 15m candle.
+    push(trigger_offset + 5, 90510, 91000, 90600, 90960)
+    # The candle keeps moving upward, so the same finalized reference is
+    # immediately eligible for another BUY after the target exit.
+    push(trigger_offset + 6, 90960, 90980, 90950, 90970)
+    for minute in range(7, 15):
+        push(trigger_offset + minute, 90970, 90980, 90960, 90970)
+    push(trigger_offset + 15, 90970, 90970, 90970, 90970)
+
+    settings = {
+        "silver_breakout_points": 150, "sl_points": 100, "target_points": 300,
+        "silver_lots": 1, "trailing_sl_enabled": False, "tsl_trigger_points": 0,
+        "tsl_distance_points": 0, "exit_mode": "fixed_target_sl",
+    }
+    charges = {key: 0 for key in (
+        "brokerage_flat", "brokerage_pct", "stt_pct", "exchange_pct",
+        "sebi_pct", "gst_pct", "stamp_duty_pct",
+    )}
+    with _lock:
+        _jobs["buy-same-candle-reentry"] = {"cancel_requested": False}
+    try:
+        results = bt._simulate_silver_micro_range(
+            job_id="buy-same-candle-reentry", algo_id="algo3",
+            first_date=first_date, last_date=first_date, symbol="MCX:TEST-EQ",
+            history=history, trading_days=[first_date], settings=settings,
+            charges_config=charges,
+            silver_buy_plan=bt.SILVER_BUY_PLAN_REFERENCE_BREAKOUT,
+            silver_sell_plan=bt.SILVER_SELL_PLAN_LATEST_REFERENCE,
+        )
+    finally:
+        with _lock:
+            _jobs.pop("buy-same-candle-reentry", None)
 
     trades = results[0]["trades"]
-    check("legacy BUY plan creates one trade", len(trades) == 1, f"trades={trades}")
-    if trades:
-        check("legacy BUY enters at next 5m open", trades[0]["entry_time"].startswith("2026-08-19T10:50"), f"trade={trades[0]}")
-        check("legacy BUY uses confirmation setup context", trades[0]["diagnostics"]["entry_context"]["setup_time"].startswith("2026-08-19T10:40"), f"diagnostics={trades[0].get('diagnostics')}")
-    check("legacy BUY plan is recorded in daily result", results[0]["silver_buy_plan"] == bt.SILVER_BUY_PLAN_LEGACY_CONFIRMATION, f"day={results[0]}")
+    check("target-in-candle scenario creates two BUY trades",
+          len(trades) == 2, f"trades={trades}")
+    if len(trades) == 2:
+        check("first BUY exits at target before the 15m candle closes",
+              trades[0]["exit_reason"] == "TARGET"
+              and trades[0]["exit_time"].startswith("2026-08-19T14:20"),
+              f"first={trades[0]}")
+        check("second BUY is same-reference re-entry",
+              trades[1]["entry_mode"] == "SAME_REFERENCE_REENTRY"
+              and trades[1]["active_reference_close"] == 90500.0
+              and trades[1]["trigger_level_used"] == 90650.0,
+              f"second={trades[1]}")
 
 
-def test_algo3_live_defaults_to_legacy_buy_and_keeps_red_chain_sell():
-    """The real engine must ignore a stale alternate BUY setting.
-
-    This deliberately feeds the legacy BUY state machine directly so the
-    test does not depend on REST verification or a live Fyers session.
-    """
-    print("\n53c. algo3 live default — legacy BUY confirmation at next 5m open")
+def test_algo3_live_buy_reference_reentry_and_rollover():
+    print("\n53c. algo3 live BUY reference, target/SL re-entry, and reference rollover")
     import datetime as _dt
 
-    from app.strategies.algo3_silver_micro import (
-        Algo3SilverMicro,
-        SILVER_BUY_PLAN_LEGACY_CONFIRMATION,
-    )
+    from app.strategies.algo3_silver_micro import SILVER_BUY_PLAN_REFERENCE_BREAKOUT
 
-    strat = _make_bare_algo3(settings_overrides={"silver_buy_plan": SILVER_BUY_PLAN_LEGACY_CONFIRMATION})
-    base = _dt.datetime(2026, 8, 19, 9, 0)
-    persisted_setup_events = []
-    strat._persist_setup_event = (
-        lambda side, bar, source, ema20_override=None: persisted_setup_events.append(
-            (side, bar["time"], bar["close"], source, ema20_override)
-        )
-    )
+    def setup_strategy():
+        strat = _make_bare_algo3(settings_overrides={
+            "silver_buy_plan": SILVER_BUY_PLAN_REFERENCE_BREAKOUT,
+            "silver_breakout_points": 200,
+            "sl_points": 100,
+            "target_points": 300,
+        })
+        strat._ema20 = 1000.0
+        strat._buy_setup_bar_at = _dt.datetime(2026, 8, 20, 19, 15)
+        strat._update_setups({
+            "time": strat._buy_setup_bar_at, "open": 1000.0,
+            "high": 1110.0, "low": 995.0, "close": 1100.0, "volume": 1,
+        })
+        return strat
 
-    def push(offset: int, o: float, c: float, volume: float):
-        ts = base + _dt.timedelta(minutes=offset)
-        candle = {"time": ts, "open": o, "high": max(o, c), "low": min(o, c), "close": c, "volume": volume}
-        strat._ingest_legacy_buy_minute(candle, allow_signals=True)
+    target_strat = setup_strategy()
+    check("green 15m close above EMA becomes BUY reference",
+          target_strat._buy_setup_close == 1100.0,
+          f"reference={target_strat._buy_setup_close}")
+    target_strat._prev_ltp = 1290.0
+    target_strat._check_triggers(1305.0)
+    check("BUY enters at reference + 200 crossing",
+          len(target_strat.broker.opens) == 1 and target_strat.broker.opens[0]["entry_price"] == 1305.0,
+          f"opens={target_strat.broker.opens}")
+    target_strat._last_tick_ltp = 1605.0
+    target_strat.check_exits()
+    check("BUY target closes and arms same-reference handoff",
+          len(target_strat.broker.closes) == 1
+          and target_strat.broker.closes[0]["reason"] == "TARGET"
+          and target_strat._buy_reentry_after_exit is not None,
+          f"closes={target_strat.broker.closes} handoff={target_strat._buy_reentry_after_exit}")
+    target_strat._prev_ltp = 1300.0
+    target_strat._check_triggers(1310.0)
+    check("BUY re-enters on renewed upward movement above the same reference",
+          len(target_strat.broker.opens) == 2,
+          f"opens={target_strat.broker.opens}")
 
-    # Twenty completed flat 5m bars warm both legacy EMAs.
-    for bucket in range(20):
-        for minute in range(5):
-            push(bucket * 5 + minute, 90000, 90000, 100)
-    # Setup at 10:40, confirmation at 10:45, entry at the 10:50 open.
-    for minute in range(100, 105):
-        push(minute, 90000 if minute == 100 else 90200, 90500, 250)
-    for minute in range(105, 110):
-        push(minute, 90500, 90600, 250)
-    push(110, 90650, 90680, 250)
+    stop_strat = setup_strategy()
+    stop_strat._prev_ltp = 1290.0
+    stop_strat._check_triggers(1305.0)
+    stop_strat._last_tick_ltp = 1205.0
+    stop_strat.check_exits()
+    check("BUY stop closes and arms same-reference handoff",
+          len(stop_strat.broker.closes) == 1
+          and stop_strat.broker.closes[0]["reason"] == "SL"
+          and stop_strat._buy_reentry_after_exit is not None,
+          f"closes={stop_strat.broker.closes} handoff={stop_strat._buy_reentry_after_exit}")
+    stop_strat._prev_ltp = 1295.0
+    stop_strat._check_triggers(1305.0)
+    check("BUY re-enters after SL once price resumes above the same threshold",
+          len(stop_strat.broker.opens) == 2,
+          f"opens={stop_strat.broker.opens}")
 
-    check("live default plan resolves to legacy confirmation",
-          strat._silver_buy_plan() == SILVER_BUY_PLAN_LEGACY_CONFIRMATION)
-    from app.strategy_settings import _normalize
-    check("saved alternate BUY setting is normalized away for live algo3",
-          _normalize({"silver_buy_plan": "live_breakout"}, "algo3")["silver_buy_plan"]
-          == SILVER_BUY_PLAN_LEGACY_CONFIRMATION)
-    check("legacy live BUY opens exactly once", len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
-    if strat.broker.opens:
-        position = strat.broker.opens[0]
-        check("legacy live BUY uses next 5m open",
-              position["entry_price"] == 90650,
-              f"position={position}")
-        check("legacy live BUY records 5m signal",
-              position["signal_snapshot"].get("timeframe") == "5m",
-              f"snapshot={position['signal_snapshot']}")
-    check("legacy live BUY persists its qualifying 5m setup",
-          len(persisted_setup_events) == 2
-          and all(event[0] == "BUY" and event[3] == "live" and event[4] is not None
-                  for event in persisted_setup_events),
-          f"events={persisted_setup_events}")
-    check("live strategy still exposes current SELL red-chain setup state",
-          hasattr(strat, "_sell_setup_close"),
-          "sell setup state missing")
+    rollover_strat = setup_strategy()
+    rollover_strat._buy_reentry_after_exit = {
+        "setup_bar_at": rollover_strat._buy_setup_bar_at,
+        "trigger_level": 1300.0,
+        "exit_reason": "SL",
+    }
+    new_bar_at = _dt.datetime(2026, 8, 20, 19, 30)
+    rollover_strat._update_setups({
+        "time": new_bar_at, "open": 1200.0, "high": 1410.0,
+        "low": 1190.0, "close": 1400.0, "volume": 1,
+    })
+    check("new green 15m close replaces the old BUY reference",
+          rollover_strat._buy_setup_close == 1400.0
+          and rollover_strat._buy_setup_bar_at == new_bar_at,
+          f"reference={rollover_strat._buy_setup_close} time={rollover_strat._buy_setup_bar_at}")
+    check("new reference clears old exit handoff",
+          rollover_strat._buy_reentry_after_exit is None,
+          f"handoff={rollover_strat._buy_reentry_after_exit}")
+    rollover_strat._prev_ltp = 1590.0
+    rollover_strat._check_triggers(1605.0)
+    check("new reference requires its own reference + n threshold",
+          len(rollover_strat.broker.opens) == 1,
+          f"opens={rollover_strat.broker.opens}")
 
 
 def test_algo3_backtest_gap_through_previous_day_setup():
@@ -4598,16 +4708,15 @@ def main():
     test_paper_broker_storage_key_isolates_deployments()
     test_charges_config_row_id_isolates_deployments()
     test_algo3_backtest_parity_with_live()
-    test_algo3_backtest_legacy_buy_confirmation_plan()
-    test_algo3_live_defaults_to_legacy_buy_and_keeps_red_chain_sell()
-    test_algo3_backtest_gap_through_previous_day_setup()
+    test_algo3_backtest_buy_reference_breakout_contract()
+    test_algo3_backtest_buy_plan_is_15m_reference_only()
+    test_algo3_backtest_buy_reenters_after_target_in_same_15m_candle()
+    test_algo3_live_buy_reference_reentry_and_rollover()
     test_algo3_gap_through_fires_immediately()
     test_algo3_previous_day_buy_setup_gap_open_fires_immediately()
     test_algo3_candle_close_trigger_fires()
     test_algo3_backtest_sell_red_chain_survives_green_candles()
-    test_algo3_backtest_trailing_metadata()
     test_algo3_backtest_sell_trailing_exits_on_reversal()
-    test_algo3_backtest_respects_trailing_toggle()
     test_algo3_lot_based_qty()
     test_broker_positions_entry_time_from_tradebook()
     test_algo3_warmup_end_date_is_today()
