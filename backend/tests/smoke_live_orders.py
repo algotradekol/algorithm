@@ -326,6 +326,95 @@ def test_tick_rounding_and_slm_limit():
             check(f"{symbol} BUY-exit SL limit > stop", slm["limitPrice"] > slm["stopPrice"])
 
 
+# ── 7b. MCX per-symbol tick size (2026-08-25 SILVERMIC SL-M rejection) ─
+def test_mcx_tick_size_and_slm_slack():
+    """The 2026-08-25 client incident:
+    - BUY entry filled on MCX:SILVERMIC26AUGFUT at 244941
+    - SL-M sent with stop=244441 and limit=243218.8 (0.5% below stop)
+    - Fyers rejected: 'LimitPrice not a multiple of tick size 1.0000'
+      because MCX Silver ticks in whole rupees, not 0.05
+    - Both retries failed with the same error, so the safety-fallback
+      market SELL closed the position at a loss.
+
+    This test locks in the fix: any MCX symbol must round to Rs 1 tick,
+    and the SL slack must be a fixed points offset (not percent-based).
+    """
+    print("\n7b. MCX tick + SL slack — SILVERMIC SL-M must round to Rs 1 (regression from 2026-08-25)")
+    from app.live_broker import _round_to_tick, _sl_limit_price, _tick_size_for
+
+    # Tick lookup per symbol
+    check("MCX:SILVERMIC26AUGFUT tick = 1.0",
+          _tick_size_for("MCX:SILVERMIC26AUGFUT") == 1.0,
+          f"got {_tick_size_for('MCX:SILVERMIC26AUGFUT')}")
+    check("MCX:GOLDM26AUGFUT tick = 1.0",
+          _tick_size_for("MCX:GOLDM26AUGFUT") == 1.0)
+    check("MCX:CRUDEOIL26AUGFUT tick = 1.0",
+          _tick_size_for("MCX:CRUDEOIL26AUGFUT") == 1.0)
+    check("MCX:NATURALGAS26AUGFUT tick = 0.10",
+          _tick_size_for("MCX:NATURALGAS26AUGFUT") == 0.10)
+    check("NSE:RELIANCE-EQ tick = 0.05 (default)",
+          _tick_size_for("NSE:RELIANCE-EQ") == 0.05)
+    check("Empty symbol -> default 0.05",
+          _tick_size_for("") == 0.05)
+    check("None symbol -> default 0.05",
+          _tick_size_for(None) == 0.05)
+
+    # The exact stop that failed in prod: 244441 (entry 244941 - 500 SL points)
+    mcx_stop = 244441.0
+    mcx_symbol = "MCX:SILVERMIC26AUGFUT"
+
+    # Rounding: 244441 is already a whole number, but check the math path
+    rounded = _round_to_tick(mcx_stop, symbol=mcx_symbol)
+    check(f"MCX stop {mcx_stop} rounds to whole rupee",
+          rounded == float(int(rounded)) and rounded == 244441.0,
+          f"got {rounded}")
+
+    # The SL-limit for a SELL exit on a BUY position — this is what Fyers rejected
+    sell_limit = _sl_limit_price(mcx_stop, "SELL", symbol=mcx_symbol)
+    check("MCX SELL-exit SL limit is a whole rupee (no decimal)",
+          sell_limit == float(int(sell_limit)),
+          f"got {sell_limit}")
+    check("MCX SELL-exit SL limit < stop (limit sits below stop for sell)",
+          sell_limit < mcx_stop,
+          f"limit={sell_limit} stop={mcx_stop}")
+    # With 150-point slack: 244441 - 150 = 244291
+    check("MCX SELL-exit SL limit = stop - 150 (fixed slack)",
+          sell_limit == 244291.0,
+          f"got {sell_limit}, expected 244291")
+
+    # BUY exit (protecting a SELL position) — limit sits ABOVE stop
+    buy_limit = _sl_limit_price(mcx_stop, "BUY", symbol=mcx_symbol)
+    check("MCX BUY-exit SL limit is a whole rupee",
+          buy_limit == float(int(buy_limit)),
+          f"got {buy_limit}")
+    check("MCX BUY-exit SL limit > stop",
+          buy_limit > mcx_stop,
+          f"limit={buy_limit} stop={mcx_stop}")
+    check("MCX BUY-exit SL limit = stop + 150",
+          buy_limit == 244591.0,
+          f"got {buy_limit}, expected 244591")
+
+    # Regression: with the OLD buggy code, the SELL slack was 0.5% =
+    # 244441 * 0.995 = 243218.795 → rounds to 243218.80 on a 0.05 tick
+    # (that has a decimal in the tenths place) → Fyers rejects.
+    # The NEW code must NOT produce a decimal for MCX.
+    check("MCX SL limit has NO decimal component (blocks 2026-08-25 rejection)",
+          sell_limit % 1 == 0 and buy_limit % 1 == 0,
+          f"sell={sell_limit} buy={buy_limit}")
+
+    # NSE side must still use 0.05 tick and 0.5% slack — the fix must not
+    # regress existing NSE behavior.
+    nse_stop = 400.05
+    nse_symbol = "NSE:ABCAPITAL-EQ"
+    nse_sell_limit = _sl_limit_price(nse_stop, "SELL", symbol=nse_symbol)
+    check("NSE SELL SL limit still multiple of 0.05",
+          abs((nse_sell_limit / 0.05) - round(nse_sell_limit / 0.05)) < 1e-6,
+          f"got {nse_sell_limit}")
+    check("NSE SELL SL limit ~0.5% below stop (unchanged behavior)",
+          abs(nse_sell_limit - (nse_stop * 0.995)) < 0.05,
+          f"got {nse_sell_limit}, expected ~{nse_stop * 0.995}")
+
+
 # ── 8. external-close sync (2026-08-10 accidental-reverse bug) ────────
 def test_external_close_sync():
     print("\n8. External-close sync — past-grace position, 2 zero-polls -> closed & cleaned")
@@ -5259,6 +5348,7 @@ def main():
     test_oco_reconcile_marks_trailing_stop()
     test_trailing_sl_syncs_to_fyers()
     test_tick_rounding_and_slm_limit()
+    test_mcx_tick_size_and_slm_slack()
     test_external_close_sync()
     test_external_close_2026_08_11_regression()
     test_external_close_single_flaky_poll()

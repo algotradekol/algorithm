@@ -20,44 +20,116 @@ from .timezone import IST
 from .trailing_stop import SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN, uses_silver_breakeven_stop
 
 
-# NSE equity tick size. Fyers V3 rejects prices that aren't a multiple of the
-# stock's tick with `code -50: LimitPrice not a multiple of tick size 0.0500`.
-# Nearly every NSE equity trades on 0.05 tick, so we round every stop/limit
-# price we send to Fyers to the nearest 0.05. A handful of low-price ETFs use
-# 0.01 — rounding those to 0.05 is coarser than optimal but never invalid.
-_TICK_SIZE = 0.05
+# Default tick size for NSE equity. Fyers V3 rejects prices that aren't a
+# multiple of the instrument's tick with `code -50: LimitPrice not a multiple
+# of tick size ...`. Every price we send to Fyers has to be rounded to the
+# instrument's tick — different exchanges/products use different ticks:
+#
+#   NSE cash equity  → 0.05  (Rs 0.05 minimum price move)
+#   MCX SILVERMIC    → 1.0   (Rs 1 whole-rupee ticks)
+#   MCX GOLDM        → 1.0
+#   MCX CRUDEOIL     → 1.0
+#   MCX NATURALGAS   → 0.10
+#
+# 2026-08-25 incident: SL-M placement for MCX:SILVERMIC26AUGFUT rejected
+# with `LimitPrice not a multiple of tick size 1.0000` because the code
+# was rounding to 0.05 and producing 243218.8 (decimal), then Fyers ate
+# the position with a safety-fallback market flatten. Fix is per-symbol
+# tick resolution below.
+_DEFAULT_TICK_SIZE = 0.05
+_MCX_TICK_SIZE = 1.0
+_MCX_NATURALGAS_TICK_SIZE = 0.10
 
-# When a stop-loss order gets triggered, market may already have gapped past
-# the stop. Fyers V3 requires limitPrice > 0 for SL-M orders (`code -50:
-# limitPrice: Must be greater than or equal to 0.0025`), so we send it as
-# SL-Limit with the limit sitting 0.5% beyond the stop in the fill direction
-# (below the stop for a SELL exit, above the stop for a BUY exit). That gives
-# the order enough slack to fill through normal gap-through moves while still
-# not accepting catastrophic slippage.
+# Backwards-compat alias for external callers that imported _TICK_SIZE.
+_TICK_SIZE = _DEFAULT_TICK_SIZE
+
+# When a stop-loss triggers, price may already be gapping past the stop.
+# Fyers V3 requires limitPrice > 0 even on SL-M, so we send it as SL-Limit
+# with a slack limit that lets the order fill through modest gaps but not
+# catastrophic slippage.
+#
+# NSE: 0.5% works because equity moves are usually well under 0.5% per tick.
+# MCX: 0.5% on a Rs 2.4L Silver contract = Rs 1,200 slack. Way too wide,
+# and the resulting limit ends up a decimal that fails tick-rounding for
+# a Rs 1 tick. Use a fixed points slack per MCX instrument instead.
 _SL_LIMIT_SLIPPAGE_PCT = 0.5
+_SL_LIMIT_SLIPPAGE_POINTS_MCX = 150.0
 
 
-def _round_to_tick(price: float, tick: float = _TICK_SIZE) -> float:
-    """Round `price` to the nearest multiple of `tick`. Never returns 0 for a
-    positive input — Fyers rejects both non-tick multiples and zero prices."""
+def _tick_size_for(symbol: str | None) -> float:
+    """Look up the Fyers tick size for a symbol.
+
+    Rules kept intentionally narrow — we only recognise the products we
+    actually trade. Anything unknown falls back to the NSE-equity default
+    (0.05), which is what the codebase used everywhere before this
+    per-symbol helper existed.
+    """
+    if not symbol:
+        return _DEFAULT_TICK_SIZE
+    text = str(symbol).strip().upper()
+    if text.startswith("MCX:"):
+        # Natural gas is finer than the rest of MCX.
+        if "NATURALGAS" in text:
+            return _MCX_NATURALGAS_TICK_SIZE
+        return _MCX_TICK_SIZE
+    return _DEFAULT_TICK_SIZE
+
+
+def _round_to_tick(price: float, tick: float | None = None, symbol: str | None = None) -> float:
+    """Round `price` to the nearest multiple of the instrument's tick.
+
+    Callers should pass EITHER an explicit `tick` OR a `symbol` (the tick
+    is derived from the symbol via _tick_size_for). When both are omitted
+    the NSE-equity default is used — kept as-is to preserve backwards
+    compatibility with older callers that don't know their symbol yet.
+    Never returns 0 for a positive input — Fyers rejects both non-tick
+    multiples and zero prices.
+    """
     if price is None or price <= 0:
         return 0.0
-    return round(round(float(price) / tick) * tick, 2)
+    resolved_tick = tick if tick is not None else _tick_size_for(symbol)
+    if resolved_tick <= 0:
+        resolved_tick = _DEFAULT_TICK_SIZE
+    # Decimals in the output would defeat the whole point on Rs 1-tick
+    # products, so round to exactly as many decimals as the tick needs
+    # (tick 1.0 -> 0 decimals, tick 0.10 -> 1, tick 0.05 -> 2, tick 0.01 -> 2).
+    if resolved_tick >= 1:
+        decimals = 0
+    else:
+        decimals = max(0, int(_math.ceil(-_math_log10(resolved_tick))))
+    return round(round(float(price) / resolved_tick) * resolved_tick, decimals)
 
 
-def _sl_limit_price(stop_price: float, exit_side: str) -> float:
-    """Compute the LIMIT companion price for an SL-Limit order.
+def _sl_limit_price(stop_price: float, exit_side: str, symbol: str | None = None) -> float:
+    """Compute the LIMIT companion price for an SL-Limit order, symbol-aware.
 
     exit_side is the side of the PROTECTIVE order:
       - 'SELL' exits a long position -> limit sits BELOW stop so a
         downward gap still fills.
       - 'BUY' exits a short position -> limit sits ABOVE stop so an
         upward gap still fills.
+
+    Slack policy:
+      - MCX: fixed 150-point slack, then rounded to the Rs 1 tick.
+      - NSE (or unknown symbol): 0.5% slack, then rounded to 0.05.
     """
     if stop_price is None or stop_price <= 0:
         return 0.0
-    factor = 1.0 - (_SL_LIMIT_SLIPPAGE_PCT / 100.0) if exit_side.upper() == "SELL" else 1.0 + (_SL_LIMIT_SLIPPAGE_PCT / 100.0)
-    return _round_to_tick(float(stop_price) * factor)
+    stop = float(stop_price)
+    is_mcx = symbol and str(symbol).strip().upper().startswith("MCX:")
+    if is_mcx:
+        offset = _SL_LIMIT_SLIPPAGE_POINTS_MCX
+        limit = stop - offset if exit_side.upper() == "SELL" else stop + offset
+    else:
+        factor = 1.0 - (_SL_LIMIT_SLIPPAGE_PCT / 100.0) if exit_side.upper() == "SELL" else 1.0 + (_SL_LIMIT_SLIPPAGE_PCT / 100.0)
+        limit = stop * factor
+    return _round_to_tick(limit, symbol=symbol)
+
+
+# math.log10 imported lazily to avoid touching module import order.
+import math as _math
+def _math_log10(x: float) -> float:
+    return _math.log10(x) if x > 0 else 0.0
 
 
 class LiveBroker(PaperBroker):
@@ -298,9 +370,10 @@ class LiveBroker(PaperBroker):
             return preflight_error
         fyers = get_fyers_model(use_proxy=True)
         # Fyers V3 requires limitPrice > 0 even on SL-M — see _sl_limit_price
-        # docstring for why we send a 0.5%-slack limit rather than 0.
-        rounded_stop = _round_to_tick(stop_price)
-        limit_price = _sl_limit_price(rounded_stop, side)
+        # docstring for why we send a slack limit rather than 0. Both prices
+        # rounded to THIS symbol's tick (Rs 1 for MCX, Rs 0.05 for NSE).
+        rounded_stop = _round_to_tick(stop_price, symbol=symbol)
+        limit_price = _sl_limit_price(rounded_stop, side, symbol=symbol)
         payload = {
             "symbol": symbol,
             "qty": int(qty),
@@ -324,7 +397,7 @@ class LiveBroker(PaperBroker):
         if preflight_error:
             return preflight_error
         fyers = get_fyers_model(use_proxy=True)
-        rounded_limit = _round_to_tick(limit_price)
+        rounded_limit = _round_to_tick(limit_price, symbol=symbol)
         payload = {
             "symbol": symbol,
             "qty": int(qty),
@@ -365,7 +438,7 @@ class LiveBroker(PaperBroker):
         entry_side = str(updated.get("side") or position.get("side") or "").upper()
         exit_side = "SELL" if entry_side == "BUY" else "BUY"
         try:
-            modify_response = self._modify_slm_order(sl_order_id, new_sl, exit_side)
+            modify_response = self._modify_slm_order(sl_order_id, new_sl, exit_side, symbol=position.get("symbol"))
             if self._looks_successful(modify_response):
                 print(
                     f"[live_broker] trailed hard SL {position.get('symbol')} "
@@ -401,7 +474,7 @@ class LiveBroker(PaperBroker):
             return {**position, **rollback}
         return updated
 
-    def _modify_slm_order(self, order_id: str, new_stop_price: float, exit_side: str) -> dict:
+    def _modify_slm_order(self, order_id: str, new_stop_price: float, exit_side: str, symbol: str | None = None) -> dict:
         """Update the stopPrice of an existing SLM order at Fyers so a
         trailing-SL adjustment is enforced server-side, not just in our db.
 
@@ -410,8 +483,9 @@ class LiveBroker(PaperBroker):
         if limitPrice is 0 or not on tick, so we round + slippage-buffer here
         exactly like _place_slm_order does."""
         fyers = get_fyers_model(use_proxy=True)
-        rounded_stop = _round_to_tick(new_stop_price)
-        limit_price = _sl_limit_price(rounded_stop, exit_side)
+        # Per-symbol tick + slack — same rules as fresh SL placement.
+        rounded_stop = _round_to_tick(new_stop_price, symbol=symbol)
+        limit_price = _sl_limit_price(rounded_stop, exit_side, symbol=symbol)
         payload = {
             "id": str(order_id),
             "type": 4,                                # keep SL-M
@@ -747,7 +821,7 @@ class LiveBroker(PaperBroker):
             "type": 1 if is_limit else 2,   # 1=Limit 2=Market 3=SL 4=SLM
             "side": 1 if side.upper() == "BUY" else -1,
             "productType": "INTRADAY",
-            "limitPrice": _round_to_tick(limit_price) if is_limit else 0,
+            "limitPrice": _round_to_tick(limit_price, symbol=symbol) if is_limit else 0,
             "stopPrice": 0,
             "validity": "DAY",
             "disclosedQty": 0,
