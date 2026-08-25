@@ -11,7 +11,12 @@ import datetime
 from .charges import calculate_charges, get_charges_config
 from .storage_namespace import current_and_legacy_values, namespaced_value
 from .supabase_client import run_with_supabase
-from .trailing_stop import calculate_point_trailing, silver_tsl_points
+from .trailing_stop import (
+    SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN,
+    calculate_point_trailing,
+    silver_tsl_points,
+    uses_silver_breakeven_stop,
+)
 
 
 class PaperBroker:
@@ -176,6 +181,14 @@ class PaperBroker:
         # a schema migration.
         merged_snapshot = dict(signal_snapshot or {})
         merged_snapshot.setdefault("initial_sl_price", float(sl_price))
+        if merged_snapshot.get("silver_exit_policy") == SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN:
+            breakeven = dict(merged_snapshot.get("silver_breakeven") or {})
+            breakeven.update({
+                "armed": False,
+                "target_price": float(target_price),
+                "initial_sl_price": float(sl_price),
+            })
+            merged_snapshot["silver_breakeven"] = breakeven
         merged_snapshot.setdefault("trailing", {
             "activated": False,
             "first_activated_at": None,
@@ -257,6 +270,9 @@ class PaperBroker:
         return {**position, **updates}
 
     def apply_trailing_stop(self, position: dict, ltp: float, settings: dict) -> dict:
+        if uses_silver_breakeven_stop(position, settings):
+            return self._apply_silver_breakeven_stop(position, ltp)
+        settings = self._legacy_silver_position_settings(position, settings)
         if not should_use_trailing_stop(settings):
             return position
 
@@ -377,7 +393,89 @@ class PaperBroker:
         )
         return {**position, **updates, "sl_price": current_sl}
 
-    def should_exit_at_target(self, settings: dict) -> bool:
+    def _apply_silver_breakeven_stop(self, position: dict, ltp: float) -> dict:
+        """Arm a one-time breakeven stop after Silver reaches its target.
+
+        This intentionally is not a point-lock trail: after target is touched
+        the stop moves once to the actual entry and remains there.
+        """
+        entry = float(position["entry_price"])
+        target = float(position["target_price"])
+        side = str(position["side"] or "").upper()
+        current_sl = float(position["sl_price"])
+        highest = max(float(position.get("highest_price") or entry), float(ltp))
+        lowest = min(float(position.get("lowest_price") or entry), float(ltp))
+        reached_target = highest >= target if side == "BUY" else lowest <= target
+        snapshot = dict(position.get("signal_snapshot") or {})
+        breakeven = dict(snapshot.get("silver_breakeven") or {})
+        already_armed = bool(breakeven.get("armed") or position.get("trailing_sl_active"))
+        updates = {"highest_price": highest, "lowest_price": lowest}
+
+        if reached_target and not already_armed:
+            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            updates.update({
+                "sl_price": entry,
+                "trailing_sl_active": True,
+            })
+            breakeven.update({
+                "armed": True,
+                "armed_at": now_iso,
+                "armed_ltp": float(ltp),
+                "target_price": target,
+                "initial_sl_price": float(snapshot.get("initial_sl_price") or current_sl),
+                "current_sl": entry,
+                "model": "target_to_breakeven",
+            })
+            snapshot["silver_breakeven"] = breakeven
+            snapshot["trailing"] = {
+                "activated": True,
+                "first_activated_at": now_iso,
+                "last_updated_at": now_iso,
+                "update_count": 1,
+                "last_sl_before_trail": current_sl,
+                "current_sl": entry,
+                "events": [{
+                    "at": now_iso,
+                    "ltp": float(ltp),
+                    "previous_sl": current_sl,
+                    "new_sl": entry,
+                    "delta": entry - current_sl,
+                    "reason": "target_to_breakeven",
+                }],
+            }
+            updates["signal_snapshot"] = snapshot
+
+        if updates:
+            run_with_supabase(
+                lambda supabase: supabase.table(self.positions_table_name()).update(updates).eq("id", position["id"]).execute()
+            )
+        return {**position, **updates, "sl_price": float(updates.get("sl_price", current_sl))}
+
+    def _legacy_silver_position_settings(self, position: dict | None, settings: dict) -> dict:
+        """Keep pre-simplification open Silver positions on their old rules.
+
+        New positions always store ``silver_exit_policy`` in the signal
+        snapshot. Only an older open row without that snapshot uses the
+        temporary compatibility values carried by settings normalization.
+        """
+        snapshot = (position or {}).get("signal_snapshot") or {}
+        if snapshot.get("silver_exit_policy"):
+            return settings
+        legacy_mode = settings.get("_legacy_silver_open_position_exit_mode")
+        if legacy_mode not in {"trailing_sl_only", "fixed_target_trailing_sl"}:
+            return settings
+        return {
+            **settings,
+            "exit_mode": legacy_mode,
+            "trailing_sl_enabled": bool(
+                settings.get("_legacy_silver_open_position_trailing_enabled")
+            ),
+        }
+
+    def should_exit_at_target(self, settings: dict, position: dict | None = None) -> bool:
+        if uses_silver_breakeven_stop(position, settings):
+            return False
+        settings = self._legacy_silver_position_settings(position, settings)
         return should_use_fixed_target(settings)
 
     def today_counts(self) -> dict:

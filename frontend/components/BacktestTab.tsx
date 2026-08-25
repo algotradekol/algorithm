@@ -907,6 +907,11 @@ function csvValue(value: unknown) {
 }
 
 function backtestTrailingLabel(trade: any) {
+  if (trade.silver_exit_policy === 'target_to_breakeven_sl') {
+    return trade.trailing_sl_active
+      ? `breakeven @ ${number(trade.sl_price || trade.entry_price || 0)}`
+      : `arms at ${number(trade.target_price || 0)}`;
+  }
   if (!trade.trailing_sl_enabled) return 'OFF';
   if (!trade.trailing_sl_active) return `armed · ${number(trade.trailing_trigger_points || 0)} pts`;
   return `active @ ${number(trade.sl_price || 0)}`;

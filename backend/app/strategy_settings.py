@@ -92,23 +92,14 @@ STRATEGY_DEFAULT_OVERRIDES = {
         #   fires when live LTP crosses (setup_close +/- n) in the setup
         #   direction. Default 150 = doc's example value; user can tune.
         # - sl_points / target_points: fixed rupee distance from entry.
-        # - tsl_activate_points: profit required before SL moves to entry.
-        # - tsl_profit_step_points: additional profit interval between locks.
-        # - tsl_lock_step_points: additional profit locked at each interval.
-        # The old trigger/distance names remain as compatibility aliases for
-        # older backtests and saved rows.
+        # - target_points / sl_points are the only exit distances. The
+        #   optional breakeven mode moves SL to entry once target is reached.
         "silver_breakout_points": 150,
         # Silver BUY uses the finalized 15m green-above-EMA reference.
         "silver_buy_plan": "reference_breakout",
         "sl_points": 100,
         "target_points": 300,
-        "trailing_sl_enabled": False,
-        "tsl_activate_points": 100,
-        "tsl_profit_step_points": 100,
-        "tsl_lock_step_points": 50,
-        "tsl_trigger_points": 100,
-        "tsl_distance_points": 50,
-        "exit_mode": "fixed_target_trailing_sl",
+        "exit_mode": "fixed_target_sl",
         # Position sizing for MCX Silver Micro is done in LOTS, not by
         # dividing capital by price. 1 lot of SILVERMIC = 1 kg = 1 unit
         # on Fyers. Client trades in lots; default 1.
@@ -172,6 +163,7 @@ EXIT_MODES = {
     "fixed_target_sl",
     "trailing_sl_only",
     "fixed_target_trailing_sl",
+    "target_to_breakeven_sl",
 }
 
 
@@ -197,15 +189,21 @@ def _normalize(settings: dict, algo_id: str) -> dict:
     defaults = default_settings_for(algo_id)
     normalized = {**defaults, **settings}
     if algo_id == "algo3":
-        # Migrate the old two-field Silver model in memory. A mode-specific
-        # row may contain only the legacy columns until the SQL migration is
-        # run, so do not let the new defaults hide the user's saved values.
-        if "tsl_activate_points" not in settings and "tsl_trigger_points" in settings:
-            normalized["tsl_activate_points"] = settings["tsl_trigger_points"]
-        if "tsl_lock_step_points" not in settings and "tsl_distance_points" in settings:
-            normalized["tsl_lock_step_points"] = settings["tsl_distance_points"]
-        if "tsl_profit_step_points" not in settings:
-            normalized["tsl_profit_step_points"] = normalized["tsl_activate_points"]
+        legacy_exit_mode = str(settings.get("exit_mode") or "")
+        # A pre-upgrade open position has no immutable policy snapshot. Keep
+        # its old policy available only to the position runtime; new entries
+        # are always stamped with one of the simplified policies below.
+        if legacy_exit_mode in {"trailing_sl_only", "fixed_target_trailing_sl"}:
+            normalized["_legacy_silver_open_position_exit_mode"] = legacy_exit_mode
+            normalized["_legacy_silver_open_position_trailing_enabled"] = bool(
+                settings.get("trailing_sl_enabled")
+            )
+        # New Silver entries use only fixed target/SL or target-to-breakeven.
+        # Old point-lock modes are intentionally normalized to the safer
+        # fixed policy; legacy open positions retain their snapshot policy.
+        if str(normalized.get("exit_mode") or "") not in {"fixed_target_sl", "target_to_breakeven_sl"}:
+            normalized["exit_mode"] = "fixed_target_sl"
+        normalized["trailing_sl_enabled"] = False
     # Silver has one canonical BUY model. Old values are compatibility aliases
     # and must not reactivate the removed 5m confirmation path.
     if algo_id == "algo3":

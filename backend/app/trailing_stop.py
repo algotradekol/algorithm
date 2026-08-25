@@ -10,6 +10,35 @@ from __future__ import annotations
 import math
 
 
+SILVER_EXIT_MODE_FIXED_TARGET_SL = "fixed_target_sl"
+SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN = "target_to_breakeven_sl"
+
+
+def normalize_silver_exit_mode(value: object) -> str:
+    """Return one of the two supported Silver exit policies.
+
+    Silver used to expose several point-lock trailing variants. Those values
+    deliberately fall back to the safer fixed target/SL policy for new trades.
+    Existing positions keep their entry-time policy in ``signal_snapshot``.
+    """
+    if str(value or "").strip() == SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN:
+        return SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN
+    return SILVER_EXIT_MODE_FIXED_TARGET_SL
+
+
+def silver_position_exit_mode(position: dict | None, settings: dict) -> str:
+    """Read the immutable Silver policy captured when a position was opened."""
+    snapshot = (position or {}).get("signal_snapshot") or {}
+    saved = snapshot.get("silver_exit_policy") if isinstance(snapshot, dict) else None
+    if saved:
+        return normalize_silver_exit_mode(saved)
+    return normalize_silver_exit_mode(settings.get("exit_mode"))
+
+
+def uses_silver_breakeven_stop(position: dict | None, settings: dict) -> bool:
+    return silver_position_exit_mode(position, settings) == SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN
+
+
 def silver_tsl_points(settings: dict) -> tuple[float, float, float]:
     """Return (activation, profit_step, lock_step) in price points.
 

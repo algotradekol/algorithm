@@ -35,9 +35,8 @@ Rules per spec:
                 after boot can already fire an entry based on
                 yesterday's qualifier.
 
-  Exits:        fixed SL and target in POINTS from entry, plus optional
-                point-lock trailing SL (activate at X, then every Y points
-                of additional profit locks Z more points).
+  Exits:        either fixed target + fixed SL, or a target milestone that
+                moves the SL once to breakeven and then lets the trade run.
 """
 from __future__ import annotations
 
@@ -54,6 +53,7 @@ from ..mcx_symbols import get_active_mcx_contract
 from ..silver_setup_history import record_setup_event
 from ..strategy_settings import get_settings
 from ..timezone import IST
+from ..trailing_stop import normalize_silver_exit_mode
 
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
@@ -419,7 +419,11 @@ class Algo3SilverMicro(Strategy):
         side = position["side"]
         sl = float(position["sl_price"])
         target = float(position["target_price"])
-        use_target = self.broker.should_exit_at_target(effective_settings)
+        try:
+            use_target = self.broker.should_exit_at_target(effective_settings, position)
+        except TypeError:
+            # Keep older lightweight smoke-test brokers compatible.
+            use_target = self.broker.should_exit_at_target(effective_settings)
 
         if side == "BUY":
             if ltp <= sl:
@@ -1172,6 +1176,14 @@ class Algo3SilverMicro(Strategy):
 
         trigger = self._entry_trigger(side, entry_price, trigger_level)
         snapshot = self._signal_snapshot(side, entry_price, trigger_level)
+        snapshot["silver_exit_policy"] = normalize_silver_exit_mode(
+            self.settings.get("exit_mode")
+        )
+        snapshot["silver_breakeven"] = {
+            "armed": False,
+            "target_price": target_price,
+            "initial_sl_price": sl_price,
+        }
         try:
             open_trade_args = (
                 self.symbol, side, qty, float(entry_price),

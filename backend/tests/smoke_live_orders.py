@@ -693,6 +693,62 @@ def test_trailing_metadata_tracks_activation_and_bumps():
           f"events={t4.get('events')}")
 
 
+# ── 12b. Silver target-to-breakeven policy ───────────────────────────
+def test_silver_target_to_breakeven_policy():
+    print("\n12b. Silver target-to-breakeven — one stop move, no target exit")
+    import app.paper_broker as pb
+    import app.live_broker as lb
+    import app.strategy_settings as strategy_settings
+
+    pb.run_with_supabase = lambda fn: type("R", (), {"data": []})()
+    broker = object.__new__(pb.PaperBroker)
+    broker.algo_id = "algo3"
+    broker.positions_table_name = lambda: "positions"
+    settings = {"exit_mode": "target_to_breakeven_sl"}
+    position = {
+        "id": "silver-be-1", "symbol": "MCX:SILVERMIC31AUGFUT", "side": "BUY",
+        "entry_price": 100.0, "sl_price": 90.0, "target_price": 110.0,
+        "highest_price": 100.0, "lowest_price": 100.0, "trailing_sl_active": False,
+        "signal_snapshot": {
+            "silver_exit_policy": "target_to_breakeven_sl",
+            "initial_sl_price": 90.0,
+            "silver_breakeven": {"armed": False},
+        },
+    }
+    before = broker.apply_trailing_stop(position, ltp=109.0, settings=settings)
+    check("breakeven is not armed before target", not before["trailing_sl_active"] and before["sl_price"] == 90.0)
+    at_target = broker.apply_trailing_stop(before, ltp=110.0, settings=settings)
+    check("target arms one breakeven stop at entry", at_target["trailing_sl_active"] and at_target["sl_price"] == 100.0)
+    after = broker.apply_trailing_stop(at_target, ltp=125.0, settings=settings)
+    check("breakeven stop does not keep trailing", after["sl_price"] == 100.0 and len(after["signal_snapshot"]["trailing"]["events"]) == 1)
+    check("breakeven target is not a close signal", not broker.should_exit_at_target(settings, after))
+    check("fixed Silver target remains an exit signal", broker.should_exit_at_target({"exit_mode": "fixed_target_sl"}, {"signal_snapshot": {"silver_exit_policy": "fixed_target_sl"}}))
+
+    live = object.__new__(lb.LiveBroker)
+    live._place_slm_order = lambda *args: {"s": "ok", "id": "sl-only"}
+    target_calls = []
+    live._place_limit_order = lambda *args: target_calls.append(args) or {"s": "ok", "id": "target"}
+    protection = live._place_protective_orders("MCX:SILVERMIC31AUGFUT", "BUY", 1, 90.0, 110.0, include_target=False)
+    check("live breakeven creates only the FYERS SL", protection["sl_order_id"] == "sl-only" and protection["target_order_id"] is None and not target_calls)
+
+    normalized = strategy_settings._normalize({"exit_mode": "fixed_target_trailing_sl"}, "algo3")
+    check("legacy Silver mode defaults new entries to fixed", normalized["exit_mode"] == "fixed_target_sl")
+
+    legacy_settings = strategy_settings._normalize({
+        "exit_mode": "fixed_target_trailing_sl",
+        "trailing_sl_enabled": True,
+    }, "algo3")
+    legacy_position_settings = broker._legacy_silver_position_settings(
+        {"signal_snapshot": {}}, legacy_settings
+    )
+    check(
+        "pre-upgrade open Silver position keeps its legacy policy",
+        legacy_position_settings["exit_mode"] == "fixed_target_trailing_sl"
+        and legacy_position_settings["trailing_sl_enabled"] is True,
+        f"settings={legacy_position_settings}",
+    )
+
+
 # ── 13. Daily trade totals preserve every row ──────────────────────────
 def test_daily_trade_totals_do_not_collapse_same_side_rows():
     print("\n13. Daily trade totals — every same-side row is counted")
@@ -3798,8 +3854,8 @@ def test_algo3_backtest_sell_reentry_requires_carried_trigger():
         check("second SELL re-entered only after reaching the carried trigger", entries[1] == 89690.0, f"entries={entries}")
 
 
-def test_algo3_backtest_trailing_metadata():
-    print("\n50b. algo3 backtest records trailing SL metadata and moves")
+def test_algo3_backtest_breakeven_metadata():
+    print("\n50b. algo3 backtest records target-to-breakeven metadata")
     import datetime as _dt
     from app import backtest as bt
     from app.backtest import _jobs, _lock
@@ -3832,11 +3888,8 @@ def test_algo3_backtest_trailing_metadata():
     settings = {
         "silver_breakout_points": 150,
         "sl_points": 100,
-        "target_points": 1000,
-        "trailing_sl_enabled": True,
-        "tsl_trigger_points": 200,
-        "tsl_distance_points": 100,
-        "exit_mode": "fixed_target_trailing_sl",
+        "target_points": 200,
+        "exit_mode": "target_to_breakeven_sl",
         "silver_lots": 1,
     }
     charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0, "exchange_pct": 0,
@@ -3862,17 +3915,17 @@ def test_algo3_backtest_trailing_metadata():
             _jobs.pop("trail-meta-test", None)
 
     trades = results[0]["trades"]
-    check("backtest trailing metadata produced a trade", len(trades) == 1, f"trades={trades}")
+    check("backtest breakeven metadata produced a trade", len(trades) == 1, f"trades={trades}")
     if trades:
         trade = trades[0]
-        check("trade marked trailing enabled", trade.get("trailing_sl_enabled") is True, f"trade={trade}")
-        check("trade marked trailing active", trade.get("trailing_sl_active") is True, f"trade={trade}")
-        check("trade saved at least one trail move", int(trade.get("trailing_move_count") or 0) >= 1, f"trade={trade}")
-        check("final SL moved above initial SL for BUY", float(trade.get("sl_price") or 0) > float(trade.get("initial_sl_price") or 0), f"trade={trade}")
+        check("trade marked breakeven protection enabled", trade.get("trailing_sl_enabled") is True, f"trade={trade}")
+        check("trade armed breakeven protection", trade.get("trailing_sl_active") is True, f"trade={trade}")
+        check("trade saved one breakeven move", int(trade.get("trailing_move_count") or 0) == 1, f"trade={trade}")
+        check("final SL moved to BUY entry", abs(float(trade.get("sl_price") or 0) - float(trade.get("entry_price") or 0)) < 1e-9, f"trade={trade}")
 
 
-def test_algo3_backtest_sell_trailing_exits_on_reversal():
-    print("\n50c. algo3 backtest SELL point-lock trailing exits on an upward reversal")
+def test_algo3_backtest_sell_breakeven_exits_on_reversal():
+    print("\n50c. algo3 backtest SELL breakeven stop exits on an upward reversal")
     import datetime as _dt
     from app import backtest as bt
     from app.backtest import _jobs, _lock
@@ -3899,9 +3952,8 @@ def test_algo3_backtest_sell_trailing_exits_on_reversal():
         push(21 * 15 + m, 90020, 90160, 90010, 90150)
     push(22 * 15, 89850, 89780, 89690, 89650)
 
-    # Favorable low = 89,480. With activation at +200 points, the first
-    # point-lock step protects breakeven at 89,700. The green reversal trades
-    # through that level and must exit at the protected stop.
+    # Favorable low = 89,480. The 200-point target milestone arms the stop at
+    # breakeven (89,700). The green reversal trades through that level.
     push(22 * 15 + 1, 89650, 89650, 89480, 89500)
     push(22 * 15 + 2, 89500, 89900, 89490, 89900)
     push(23 * 15, 89600, 89600, 89600, 89600)
@@ -3909,12 +3961,8 @@ def test_algo3_backtest_sell_trailing_exits_on_reversal():
     settings = {
         "silver_breakout_points": 200,
         "sl_points": 100,
-        "target_points": 1000,
-        "trailing_sl_enabled": True,
-        "tsl_activate_points": 200,
-        "tsl_profit_step_points": 200,
-        "tsl_lock_step_points": 150,
-        "exit_mode": "fixed_target_trailing_sl",
+        "target_points": 200,
+        "exit_mode": "target_to_breakeven_sl",
         "silver_lots": 1,
     }
     charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0,
@@ -3941,18 +3989,18 @@ def test_algo3_backtest_sell_trailing_exits_on_reversal():
             _jobs.pop("sell-trailing-test", None)
 
     trades = results[0]["trades"]
-    check("backtest SELL trailing produced one trade", len(trades) == 1, f"trades={trades}")
+    check("backtest SELL breakeven produced one trade", len(trades) == 1, f"trades={trades}")
     if trades:
         trade = trades[0]
-        check("SELL trailing trade exits by SL", trade.get("exit_reason") == "SL", f"trade={trade}")
-        check("SELL trailing activated", trade.get("trailing_sl_active") is True, f"trade={trade}")
-        check("SELL trailing saved a move", int(trade.get("trailing_move_count") or 0) >= 1, f"trade={trade}")
-        check("SELL first point-lock step protects breakeven", abs(float(trade.get("sl_price") or 0) - 89700.0) < 1e-9, f"trade={trade}")
-        check("SELL exits at the protected breakeven stop", abs(float(trade.get("exit_price") or 0) - 89700.0) < 1e-9, f"trade={trade}")
+        check("SELL breakeven trade exits by TRAILING_SL", trade.get("exit_reason") == "TRAILING_SL", f"trade={trade}")
+        check("SELL breakeven armed", trade.get("trailing_sl_active") is True, f"trade={trade}")
+        check("SELL breakeven saved one move", int(trade.get("trailing_move_count") or 0) == 1, f"trade={trade}")
+        check("SELL breakeven stop protects entry", abs(float(trade.get("sl_price") or 0) - 89700.0) < 1e-9, f"trade={trade}")
+        check("SELL exits at breakeven", abs(float(trade.get("exit_price") or 0) - 89700.0) < 1e-9, f"trade={trade}")
 
 
-def test_algo3_backtest_respects_trailing_toggle():
-    print("\n50c. algo3 backtest respects trailing toggle the same way live does")
+def test_algo3_backtest_fixed_target_mode_keeps_fixed_stop():
+    print("\n50c. algo3 fixed-target mode keeps the initial stop fixed")
     import datetime as _dt
     from app import backtest as bt
     from app.backtest import _jobs, _lock
@@ -3986,10 +4034,7 @@ def test_algo3_backtest_respects_trailing_toggle():
         "silver_breakout_points": 150,
         "sl_points": 100,
         "target_points": 1000,
-        "trailing_sl_enabled": False,
-        "tsl_trigger_points": 200,
-        "tsl_distance_points": 100,
-        "exit_mode": "fixed_target_trailing_sl",
+        "exit_mode": "fixed_target_sl",
         "silver_lots": 1,
     }
     charges = {"brokerage_flat": 0, "brokerage_pct": 0, "stt_pct": 0, "exchange_pct": 0,
@@ -4015,12 +4060,12 @@ def test_algo3_backtest_respects_trailing_toggle():
             _jobs.pop("trail-toggle-test", None)
 
     trades = results[0]["trades"]
-    check("backtest with trailing toggle off still produced a trade", len(trades) == 1, f"trades={trades}")
+    check("fixed-target mode produced a trade", len(trades) == 1, f"trades={trades}")
     if trades:
         trade = trades[0]
-        check("trailing toggle off leaves trailing disabled", trade.get("trailing_sl_enabled") is False, f"trade={trade}")
-        check("trailing toggle off leaves no trail moves", int(trade.get("trailing_move_count") or 0) == 0, f"trade={trade}")
-        check("trailing toggle off keeps final SL at initial SL", abs(float(trade.get("sl_price") or 0) - float(trade.get("initial_sl_price") or 0)) < 1e-9, f"trade={trade}")
+        check("fixed-target mode leaves breakeven disabled", trade.get("trailing_sl_enabled") is False, f"trade={trade}")
+        check("fixed-target mode leaves no breakeven moves", int(trade.get("trailing_move_count") or 0) == 0, f"trade={trade}")
+        check("fixed-target mode keeps final SL at initial SL", abs(float(trade.get("sl_price") or 0) - float(trade.get("initial_sl_price") or 0)) < 1e-9, f"trade={trade}")
 
 
 def _algo3_backtest_push(history, base, offset, o, h, l, c, v=100):
@@ -4096,10 +4141,7 @@ def test_algo3_backtest_plain_sl_diagnostics():
             "silver_breakout_points": 150,
             "sl_points": 100,
             "target_points": 1000,
-            "trailing_sl_enabled": True,
-            "tsl_trigger_points": 200,
-            "tsl_distance_points": 100,
-            "exit_mode": "fixed_target_trailing_sl",
+            "exit_mode": "fixed_target_sl",
             "silver_lots": 1,
         },
         _dt.date(2026, 8, 19),
@@ -4136,11 +4178,8 @@ def test_algo3_backtest_trailing_stop_diagnostics():
         {
             "silver_breakout_points": 150,
             "sl_points": 100,
-            "target_points": 1000,
-            "trailing_sl_enabled": True,
-            "tsl_trigger_points": 200,
-            "tsl_distance_points": 100,
-            "exit_mode": "fixed_target_trailing_sl",
+            "target_points": 200,
+            "exit_mode": "target_to_breakeven_sl",
             "silver_lots": 1,
         },
         _dt.date(2026, 8, 19),
@@ -4389,11 +4428,8 @@ def test_algo3_backtest_chart_payload():
         {
             "silver_breakout_points": 150,
             "sl_points": 100,
-            "target_points": 1000,
-            "trailing_sl_enabled": True,
-            "tsl_trigger_points": 200,
-            "tsl_distance_points": 100,
-            "exit_mode": "fixed_target_trailing_sl",
+            "target_points": 200,
+            "exit_mode": "target_to_breakeven_sl",
             "silver_lots": 1,
         },
         _dt.date(2026, 8, 21),
@@ -5159,6 +5195,7 @@ def main():
     test_protective_retry()
     test_streaming_fcfs_phase2()
     test_trailing_metadata_tracks_activation_and_bumps()
+    test_silver_target_to_breakeven_policy()
     test_daily_trade_totals_do_not_collapse_same_side_rows()
     test_ws_premarket_warmup_gating()
     test_token_expired_guard()
@@ -5241,7 +5278,7 @@ def main():
     test_algo3_candle_close_trigger_fires()
     test_algo3_backtest_sell_red_chain_survives_green_candles()
     test_algo3_backtest_sell_reentry_requires_carried_trigger()
-    test_algo3_backtest_sell_trailing_exits_on_reversal()
+    test_algo3_backtest_sell_breakeven_exits_on_reversal()
     test_algo3_lot_based_qty()
     test_broker_positions_entry_time_from_tradebook()
     test_live_fill_timestamp_integrity()

@@ -15,7 +15,9 @@ from .fyers_client import get_fyers_model, get_wallet_balance
 from .paper_broker import PaperBroker
 from .proxy_health import check_proxy_reachable
 from .runtime_mode import get_fyers_config, get_runtime_trading_mode
+from .supabase_client import run_with_supabase
 from .timezone import IST
+from .trailing_stop import SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN, uses_silver_breakeven_stop
 
 
 # NSE equity tick size. Fyers V3 rejects prices that aren't a multiple of the
@@ -113,21 +115,28 @@ class LiveBroker(PaperBroker):
             sl_price = actual_entry_price * (sl_price / entry_price) if entry_price else sl_price
             target_price = actual_entry_price * (target_price / entry_price) if entry_price else target_price
 
-        # ── HARD SL + TARGET AT FYERS ──────────────────────────────────
+        # ── HARD FYERS PROTECTION ───────────────────────────────────────
         # Place protective orders IMMEDIATELY after entry fill so Fyers
-        # holds the SL/Target server-side. If our app crashes at any
-        # point, Fyers still auto-exits when either level is touched.
+        # holds the stop server-side. Fixed mode also receives a target
+        # order; breakeven mode deliberately does not, because the target is
+        # only the milestone that will amend this stop to entry.
         # Both orders are on the reverse side and MIS/INTRADAY so they're
         # linked to the same intraday position.
         entry_order_id = self._extract_order_id(order_response)
+        breakeven_mode = (
+            (signal_snapshot or {}).get("silver_exit_policy")
+            == SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN
+        )
         protective = self._place_protective_orders(
             symbol=symbol,
             entry_side=side,
             qty=qty,
             sl_price=sl_price,
             target_price=target_price,
+            include_target=not breakeven_mode,
         )
-        if not protective.get("sl_order_id") or not protective.get("target_order_id"):
+        target_required = not breakeven_mode
+        if not protective.get("sl_order_id") or (target_required and not protective.get("target_order_id")):
             # Live positions must not remain naked. If either protective
             # order failed, immediately flatten the fresh entry at Fyers
             # and refuse to persist the position in our database.
@@ -150,6 +159,9 @@ class LiveBroker(PaperBroker):
         merged_snapshot["fyers_target_order_id"] = protective.get("target_order_id")
         merged_snapshot["fyers_sl_error"] = protective.get("sl_error")
         merged_snapshot["fyers_target_error"] = protective.get("target_error")
+        merged_snapshot["fyers_protection_policy"] = (
+            "sl_only_until_breakeven" if breakeven_mode else "sl_and_target"
+        )
 
         super().open_trade(
             symbol,
@@ -206,6 +218,7 @@ class LiveBroker(PaperBroker):
         qty: int,
         sl_price: float,
         target_price: float,
+        include_target: bool = True,
     ) -> dict:
         """Place SL (SLM) + Target (LIMIT) orders on the reverse side of
         the entry. Returns Fyers order IDs (or None + error) for each."""
@@ -225,13 +238,14 @@ class LiveBroker(PaperBroker):
         result["sl_order_id"] = sl_id
         result["sl_error"] = sl_err
 
-        # Take-profit Limit (type=1). Fills at target price if market reaches it.
-        tp_id, tp_err = self._place_with_retry(
-            "Target", symbol,
-            lambda: self._place_limit_order(symbol, exit_side, qty, target_price),
-        )
-        result["target_order_id"] = tp_id
-        result["target_error"] = tp_err
+        if include_target:
+            # Take-profit Limit (type=1). Fills at target price if market reaches it.
+            tp_id, tp_err = self._place_with_retry(
+                "Target", symbol,
+                lambda: self._place_limit_order(symbol, exit_side, qty, target_price),
+            )
+            result["target_order_id"] = tp_id
+            result["target_error"] = tp_err
 
         return result
 
@@ -341,16 +355,34 @@ class LiveBroker(PaperBroker):
                     f"[live_broker] trailed hard SL {position.get('symbol')} "
                     f"order {sl_order_id} -> {new_sl:.2f}"
                 )
-            else:
-                print(
-                    f"[live_broker] trailed SL modify REJECTED for "
-                    f"{position.get('symbol')} order {sl_order_id}: {modify_response}"
-                )
+                return updated
+            error = str(modify_response)
         except Exception as exc:
-            print(
-                f"[live_broker] trailed SL modify failed for "
-                f"{position.get('symbol')}: {exc}"
+            error = str(exc)
+
+        print(
+            f"[live_broker] trailed SL modify failed for "
+            f"{position.get('symbol')} order {sl_order_id}: {error}"
+        )
+        if uses_silver_breakeven_stop(position, settings):
+            # Never claim that the position is protected at breakeven unless
+            # FYERS accepted the amend. Restore the persisted initial stop
+            # and let the next tick retry the one-time arm safely.
+            rollback = {
+                "sl_price": previous_sl,
+                "trailing_sl_active": bool(position.get("trailing_sl_active")),
+                "signal_snapshot": position.get("signal_snapshot") or {},
+            }
+            run_with_supabase(
+                lambda supabase: supabase.table(self.positions_table_name())
+                .update(rollback).eq("id", position["id"]).execute()
             )
+            print(
+                f"[live_broker] LIVE PROTECTION FAILURE: retained original "
+                f"SL {previous_sl:.2f} for {position.get('symbol')} after "
+                "breakeven amend failure"
+            )
+            return {**position, **rollback}
         return updated
 
     def _modify_slm_order(self, order_id: str, new_stop_price: float, exit_side: str) -> dict:

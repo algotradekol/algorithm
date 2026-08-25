@@ -31,11 +31,8 @@ const RISK_FIELDS: Field[] = [
 // field list keeps the UI honest about units.
 const SILVER_RISK_FIELDS: Field[] = [
   ['silver_breakout_points', 'Breakout Offset n (points)', 'Entry fires when live price crosses (setup close +/- n). Default 150.'],
-  ['target_points', 'Target (points from entry)', 'Fixed rupee distance in favor before exit.'],
-  ['sl_points', 'Stop Loss (points from entry)', 'Fixed rupee distance against before exit.'],
-  ['tsl_activate_points', 'TSL Activate At (points)', 'When profit reaches this level, SL moves to the entry price (0 profit).'],
-  ['tsl_profit_step_points', 'When Profit Increases By (points)', 'Each complete increase by this amount advances the protected-profit calculation.'],
-  ['tsl_lock_step_points', 'Increase TSL By (points)', 'At every profit step, lock this many additional points. BUY and SELL are mirrored.'],
+  ['target_points', 'Target points from entry', 'Price distance in favor from the actual market fill.'],
+  ['sl_points', 'Stop-loss points from entry', 'Price distance against the actual market fill.'],
 ];
 
 const INDICATOR_FIELDS: Field[] = [
@@ -66,6 +63,11 @@ const EXIT_MODES = [
   ['fixed_target_sl', 'Fixed Target + SL', 'Exit at fixed target, normal SL, or EOD. Trailing is ignored.'],
   ['trailing_sl_only', 'Trailing SL Only', 'No fixed target exit. Winners run until trailing/normal SL or EOD.'],
   ['fixed_target_trailing_sl', 'Fixed Target + Trailing SL', 'Exit at target, or let trailing SL protect profit if price reverses first.'],
+];
+
+const SILVER_EXIT_MODES = [
+  ['fixed_target_sl', 'Fixed Target + Fixed Stop Loss', 'Close at the fixed target or the initial stop loss. Neither level moves.'],
+  ['target_to_breakeven_sl', 'Target to Breakeven Stop Loss', 'At target, keep the trade open and move the stop once to the actual entry price. A return to entry exits protected at breakeven.'],
 ];
 
 export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId: string; tradingMode?: 'paper' | 'live' }) {
@@ -187,8 +189,8 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
         {algoId === 'algo2' && (
           <ScanToggle algoId={algoId} settings={settings} setSettings={setSettings} />
         )}
-        <ExitModeSelect settings={settings} setSettings={setSettings} />
-        <TrailingStopToggle settings={settings} setSettings={setSettings} />
+        <ExitModeSelect algoId={algoId} settings={settings} setSettings={setSettings} />
+        {!isSilver && <TrailingStopToggle settings={settings} setSettings={setSettings} />}
         {isSilver ? (
           <SilverRiskSettings settings={settings} setSettings={setSettings} />
         ) : (
@@ -201,7 +203,7 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
         )}
           {algoId === 'algo3' && (
             <div className="mt-5 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
-            {isLive ? 'Live Silver uses completed 15-minute reference candles. BUY carries the latest green close above EMA20 and enters at reference + n, including a prior-day gap at 09:00. SELL carries the latest red close below EMA20 through intervening green candles and enters at reference - n during a later red move, including a prior-day 09:00 gap.' : 'Silver backtests replay the same 15-minute reference BUY and selected SELL logic used by the live engine.'} Position size is in LOTS (1 lot = 1 kg). SL, target, and trailing SL are all in POINTS from entry. Default order type is MARKET.
+            {isLive ? 'Live Silver uses completed 15-minute reference candles. BUY carries the latest green close above EMA20 and enters at reference + n, including a prior-day gap at 09:00. SELL carries the latest red close below EMA20 through intervening green candles and enters at reference - n during a later red move, including a prior-day 09:00 gap.' : 'Silver backtests replay the same 15-minute reference BUY and selected SELL logic used by the live engine.'} Position size is in LOTS (1 lot = 1 kg). Entry price is always the actual market fill; SL and target values are POINTS from that fill. Default order type is MARKET.
             </div>
           )}
         {(algoId === 'algo1' || algoId === 'algo4') && <TestSchedule settings={settings} setSettings={setSettings} />}
@@ -340,9 +342,11 @@ function OrderTypeSelect({
 }
 
 function ExitModeSelect({
+  algoId,
   settings,
   setSettings,
 }: {
+  algoId: string;
   settings: Record<string, any>;
   setSettings: (settings: Record<string, any>) => void;
 }) {
@@ -350,7 +354,7 @@ function ExitModeSelect({
     <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3">
       <div className="label mb-3">Exit Mode</div>
       <div className="grid gap-2">
-        {EXIT_MODES.map(([value, label, helper]) => (
+        {(algoId === 'algo3' ? SILVER_EXIT_MODES : EXIT_MODES).map(([value, label, helper]) => (
           <label key={value} className={`rounded border p-3 ${
             settings.exit_mode === value ? 'border-[#3b82f6] bg-[#3b82f6]/10' : 'border-[#1f2937] bg-[#0d1117]'
           }`}>
@@ -440,64 +444,36 @@ function SilverRiskSettings({
   settings: Record<string, any>;
   setSettings: (settings: Record<string, any>) => void;
 }) {
-  const exitMode = String(settings.exit_mode || 'fixed_target_trailing_sl');
-  const targetUsed = exitMode !== 'trailing_sl_only';
-  const modeUsesTrailing = exitMode === 'trailing_sl_only' || exitMode === 'fixed_target_trailing_sl';
-  const trailingUsed = modeUsesTrailing && Boolean(settings.trailing_sl_enabled);
-  const tradeFields = SILVER_RISK_FIELDS.filter(([key]) => (
-    key === 'silver_breakout_points' || key === 'target_points' || key === 'sl_points'
-  ));
-  const trailingFields = SILVER_RISK_FIELDS.filter(([key]) => (
-    key === 'tsl_activate_points' || key === 'tsl_profit_step_points' || key === 'tsl_lock_step_points'
-  ));
+  const breakevenMode = settings.exit_mode === 'target_to_breakeven_sl';
 
   return (
     <>
       <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3">
         <div className="label mb-3">Trade Risk Settings</div>
         <div className="grid gap-3 md:grid-cols-2">
-          {tradeFields.map(([key, label, helper]) => (
+          {SILVER_RISK_FIELDS.map(([key, label, helper]) => (
             <NumberField
               key={key}
               fieldKey={key}
-              label={label}
-              helper={key === 'target_points' && !targetUsed ? 'Ignored while Trailing SL Only is selected.' : helper}
+              label={key === 'target_points'
+                ? (breakevenMode ? 'Initial target / breakeven trigger (points)' : label)
+                : key === 'sl_points' && breakevenMode
+                  ? 'Initial stop-loss points'
+                  : label}
+              helper={key === 'target_points' && breakevenMode
+                ? 'When this profit milestone is reached, the position stays open and the stop moves once to the actual entry price.'
+                : helper}
               settings={settings}
               setSettings={setSettings}
-              disabled={key === 'target_points' && !targetUsed}
             />
           ))}
         </div>
       </div>
-
-      <div className={`mt-5 rounded border p-3 transition ${trailingUsed ? 'border-[#3b82f6]/50 bg-[#3b82f6]/5' : 'border-[#1f2937] bg-[#111827] opacity-50'}`}>
-        <div className="flex flex-wrap items-center justify-between gap-2">
-          <div className="label">Trailing Stop Loss Settings</div>
-          <span className={`rounded px-2 py-0.5 text-[10px] font-semibold ${trailingUsed ? 'bg-[#3b82f6]/15 text-[#93c5fd]' : 'bg-gray-700 text-gray-400'}`}>
-            {trailingUsed ? 'ACTIVE' : 'NOT IN USE'}
-          </span>
+      {breakevenMode && (
+        <div className="mt-5 rounded border border-[#3b82f6]/50 bg-[#3b82f6]/5 p-3 text-xs text-[#bfdbfe]">
+          The initial FYERS stop stays active until the target milestone is reached. At that point it is amended once to the actual entry price; there are no further trailing steps.
         </div>
-        <p className="mt-1 text-xs text-gray-500">
-          {trailingUsed
-            ? 'At activation the stop moves to breakeven, then each profit step locks additional points.'
-            : modeUsesTrailing
-              ? 'Turn on Trailing Stop Loss above to use these values.'
-              : 'Choose an exit mode that includes trailing SL to use these values.'}
-        </p>
-        <div className="mt-3 grid gap-3 md:grid-cols-2">
-          {trailingFields.map(([key, label, helper]) => (
-            <NumberField
-              key={key}
-              fieldKey={key}
-              label={label}
-              helper={helper}
-              settings={settings}
-              setSettings={setSettings}
-              disabled={!trailingUsed}
-            />
-          ))}
-        </div>
-      </div>
+      )}
     </>
   );
 }

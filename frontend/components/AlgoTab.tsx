@@ -898,8 +898,6 @@ function PositionsTable({
                 <MobileField label="Qty" value={row.qty} />
                 <MobileField label="Entry" value={formatNumber(row.entry_price)} />
                 <MobileField label="LTP" value={Number.isFinite(ltp) ? formatNumber(ltp) : '--'} />
-                <MobileField label="Position High" value={formatNumber(row.high_price ?? row.highest_price)} />
-                <MobileField label="Position Low" value={formatNumber(row.low_price ?? row.lowest_price)} />
                 <MobileField label="SL" value={formatNumber(row.sl_price)} />
                 <MobileField label="Target" value={formatNumber(row.target_price)} />
                 <MobileField label="Trailing SL" value={<TrailingBadge row={row} />} wide />
@@ -912,10 +910,10 @@ function PositionsTable({
         })}
       </div>
       <div className="hidden w-full max-w-full overflow-x-auto overscroll-x-contain rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1760px] table-auto border-collapse text-xs">
+        <table className="w-full min-w-[1550px] table-auto border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'Position High', 'Position Low', 'SL', 'Target', 'Trailing SL', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
+            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'SL', 'Target', 'Trailing SL', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
               <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
@@ -923,7 +921,7 @@ function PositionsTable({
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={17} className="table-cell text-gray-500">No open positions</td>
+              <td colSpan={15} className="table-cell text-gray-500">No open positions</td>
             </tr>
           ) : visibleRows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
@@ -947,8 +945,6 @@ function PositionsTable({
                 <td className="table-cell num whitespace-nowrap text-gray-400">{formatDateTime(row.entry_time)}</td>
                 <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.entry_price)}</td>
                 <td className="table-cell num whitespace-nowrap text-gray-100">{Number.isFinite(ltp) ? formatNumber(ltp) : '--'}</td>
-                <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.high_price ?? row.highest_price)}</td>
-                <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.low_price ?? row.lowest_price)}</td>
                 <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.sl_price)}</td>
                 <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.target_price)}</td>
                 <td className="table-cell w-[170px] whitespace-nowrap"><TrailingBadge row={row} /></td>
@@ -1190,6 +1186,7 @@ function TrailingBadge({ row }: { row: any }) {
     return <span className="text-xs text-gray-500">--</span>;
   }
   const trailing = snap.trailing;
+  const breakevenPolicy = snap.silver_exit_policy === 'target_to_breakeven_sl';
   const activated = !!(trailing && trailing.activated);
   const initialSl = Number(snap.initial_sl_price);
   const side = String(row?.side || '').toUpperCase();
@@ -1238,11 +1235,11 @@ function TrailingBadge({ row }: { row: any }) {
     <div className="text-xs text-gray-300">
       <div className="flex items-center gap-1 font-semibold text-[#22c55e]">
         <span className="h-1.5 w-1.5 rounded-full bg-[#22c55e]" />
-        {arrow} {currentSlIsFinite ? currentSl!.toFixed(2) : '--'}
+        {breakevenPolicy ? 'BE' : arrow} {currentSlIsFinite ? currentSl!.toFixed(2) : '--'}
         <span className="text-gray-400">{deltaLabel}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-gray-500">
-        <span>{firstAt ? `active ${firstAt}` : 'active'} · {bumps}x{Number.isFinite(initialSl) ? ` · init ${initialSl.toFixed(2)}` : ''}</span>
+        <span>{breakevenPolicy ? 'breakeven armed' : (firstAt ? `active ${firstAt}` : 'active')} · {bumps}x{Number.isFinite(initialSl) ? ` · init ${initialSl.toFixed(2)}` : ''}</span>
         <button
           type="button"
           onClick={() => setHistoryOpen(true)}
@@ -1263,7 +1260,7 @@ function TrailingBadge({ row }: { row: any }) {
         >
           <div className="flex items-start justify-between gap-4 border-b border-[#1f2937] px-4 py-3 sm:px-5">
             <div>
-              <h4 className="text-lg font-semibold text-gray-100">Trailing SL history</h4>
+              <h4 className="text-lg font-semibold text-gray-100">{breakevenPolicy ? 'Breakeven stop history' : 'Trailing SL history'}</h4>
               <p className="mt-1 text-sm text-gray-400">
                 {row?.symbol || 'Position'} · {side || '--'} · {bumps} saved trail {bumps === 1 ? 'move' : 'moves'}
               </p>
