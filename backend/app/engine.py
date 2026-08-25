@@ -841,7 +841,10 @@ def _critical_symbol_rest_fallback_loop():
             # NSE closes at 15:30, but MCX Silver Micro continues into the
             # evening session. Keep the REST fallback alive for the full MCX
             # window so post-15:30 algo3 can still trade.
-            if not ("09:15" <= hhmm < "23:30"):
+            # Silver is tradable from 09:00 IST. The REST backup must cover
+            # that opening window too, otherwise a WS outage can delay a
+            # carried-reference gap entry until 09:15.
+            if not ("09:00" <= hhmm < "23:30"):
                 time.sleep(5)
                 continue
 
