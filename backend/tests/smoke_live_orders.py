@@ -693,6 +693,64 @@ def test_trailing_metadata_tracks_activation_and_bumps():
           f"events={t4.get('events')}")
 
 
+# ── 13. Daily trade totals preserve every row ──────────────────────────
+def test_daily_trade_totals_do_not_collapse_same_side_rows():
+    print("\n13. Daily trade totals — every same-side row is counted")
+    import app.paper_broker as pb
+
+    source_rows = {
+        "trades": [
+            {"id": "trade-1", "side": "SELL"},
+            {"id": "trade-2", "side": "SELL"},
+            {"id": "trade-3", "side": "BUY"},
+        ],
+        "positions": [{"id": "position-1", "side": "SELL"}],
+    }
+
+    class Query:
+        def __init__(self, table_name):
+            self.table_name = table_name
+            self.columns = "*"
+
+        def select(self, columns):
+            self.columns = columns
+            return self
+
+        def eq(self, *_args):
+            return self
+
+        def gte(self, *_args):
+            return self
+
+        def execute(self):
+            selected = {column.strip() for column in self.columns.split(",")}
+            rows = [
+                {key: value for key, value in row.items() if key in selected}
+                for row in source_rows[self.table_name]
+            ]
+            return type("Result", (), {"data": rows})()
+
+    class FakeSupabase:
+        def table(self, table_name):
+            return Query(table_name)
+
+    original_run_with_supabase = pb.run_with_supabase
+    try:
+        pb.run_with_supabase = lambda callback: callback(FakeSupabase())
+        broker = object.__new__(pb.PaperBroker)
+        broker.algo_id = "algo3"
+        broker.storage_algo_candidates = lambda: ["algo3__smoke"]
+        broker.trades_table_name = lambda: "trades"
+        broker.positions_table_name = lambda: "positions"
+        counts = broker.today_counts()
+    finally:
+        pb.run_with_supabase = original_run_with_supabase
+
+    check("daily total counts closed and open trades", counts["trade_count_today"] == 4, str(counts))
+    check("daily total keeps repeated SELL trades", counts["sell_count_today"] == 3, str(counts))
+    check("daily total keeps BUY trades", counts["buy_count_today"] == 1, str(counts))
+
+
 # ── 13. WS pre-market warmup gating (fix 17, 2026-08-12) ────────────
 def test_ws_premarket_warmup_gating():
     print("\n13. WS warmup gating — feed_permitted for each IST hour")
@@ -1256,6 +1314,45 @@ def test_silver_setup_history_repairs_future_shifted_legacy_rows():
     check("legacy row shifted back by 5h30",
           fixed.get("candle_time") == "2026-08-20T17:45:00+00:00",
           f"got={fixed.get('candle_time')}")
+
+
+def test_silver_setup_history_requires_candle_to_close_on_correct_ema_side():
+    print("\n26e. Silver setup history — invalid candle/EMA rows cannot be saved or displayed")
+    import app.silver_setup_history as ssh
+
+    valid_buy = {
+        "setup_side": "BUY",
+        "candle_open": 244_500,
+        "candle_close": 244_900,
+        "ema20": 244_800,
+    }
+    invalid_buy = {
+        "setup_side": "BUY",
+        "candle_open": 244_500,
+        "candle_close": 244_900,
+        "ema20": 245_100,
+    }
+    valid_sell = {
+        "setup_side": "SELL",
+        "candle_open": 245_100,
+        "candle_close": 244_700,
+        "ema20": 244_900,
+    }
+    invalid_sell = {
+        "setup_side": "SELL",
+        "candle_open": 245_100,
+        "candle_close": 244_700,
+        "ema20": 244_600,
+    }
+
+    check("green candle above EMA qualifies as BUY history",
+          ssh._is_qualifying_setup_row(valid_buy))
+    check("green candle below EMA is rejected as BUY history",
+          not ssh._is_qualifying_setup_row(invalid_buy))
+    check("red candle below EMA qualifies as SELL history",
+          ssh._is_qualifying_setup_row(valid_sell))
+    check("red candle above EMA is rejected as SELL history",
+          not ssh._is_qualifying_setup_row(invalid_sell))
 
 
 # ── 27. F4 pre-market watchdog skip ────────────────────────────────────
@@ -1871,7 +1968,16 @@ def test_algo3_closed_15m_bucket_finalizes_without_next_bucket_tick():
             "volume": 10,
         })
     fake_now = _dt.datetime(2026, 8, 21, 12, 19, 0, tzinfo=algo3_mod.IST)
-    with patch.object(algo3_mod, "_latest_closed_minute_cutoff", return_value=fake_now.replace(second=0, microsecond=0, tzinfo=None)):
+    verified_bar = {
+        "time": _dt.datetime(2026, 8, 21, 12, 0),
+        "open": candles[0]["open"],
+        "high": max(candle["high"] for candle in candles),
+        "low": min(candle["low"] for candle in candles),
+        "close": candles[-1]["close"],
+        "volume": sum(candle["volume"] for candle in candles),
+    }
+    with patch.object(algo3_mod, "_latest_closed_minute_cutoff", return_value=fake_now.replace(second=0, microsecond=0, tzinfo=None)), \
+         patch.object(algo3_mod, "get_intraday_candle_at", return_value=verified_bar):
         for candle in candles:
             strat._ingest_minute_candle(candle, allow_signals=True)
         finalized = strat.flush_clock_closed_bar(allow_signals=True)
@@ -1882,6 +1988,76 @@ def test_algo3_closed_15m_bucket_finalizes_without_next_bucket_tick():
     check("buy setup updated from the finalized 12:00 green bar",
           strat._buy_setup_close == candles[-1]["close"],
           f"buy_setup={strat._buy_setup_close}")
+
+
+def test_algo3_clock_finalization_waits_for_fyers_settle_window():
+    print("\n33ff. algo3 waits briefly after a 15m close before clock-finalizing a live reference")
+    import datetime as _dt
+    from unittest.mock import patch
+    import app.strategies.algo3_silver_micro as algo3_mod
+
+    strat = _make_bare_algo3()
+    bucket = _dt.datetime(2026, 8, 21, 12, 0)
+    strat._current_bucket = bucket
+    strat._minute_buffer = [{
+        "time": bucket + _dt.timedelta(minutes=minute),
+        "open": 246000.0,
+        "high": 246100.0,
+        "low": 245900.0,
+        "close": 246050.0,
+        "volume": 10.0,
+    } for minute in range(15)]
+
+    with patch.object(algo3_mod, "_is_bucket_closed", return_value=True), \
+         patch.object(algo3_mod, "_is_bucket_settled", return_value=False):
+        # The scheduler normally calls with no explicit mode. It must still
+        # honor the settle window when scanning is enabled.
+        finalized_early = strat.flush_clock_closed_bar()
+    check("default clock finalization waits for the FYERS settle window",
+          finalized_early is False and len(strat._bars) == 0 and len(strat._minute_buffer) == 15,
+          f"finalized={finalized_early} bars={len(strat._bars)} buffer={len(strat._minute_buffer)}")
+
+    with patch.object(algo3_mod, "_is_bucket_closed", return_value=True), \
+         patch.object(algo3_mod, "_is_bucket_settled", return_value=True), \
+         patch.object(algo3_mod, "get_intraday_candle_at", return_value={
+             "time": bucket,
+             "open": 246000.0,
+             "high": 246100.0,
+             "low": 245900.0,
+             "close": 246079.0,
+             "volume": 150.0,
+         }):
+        finalized_settled = strat.flush_clock_closed_bar(allow_signals=True)
+    check("settled FYERS candle is then finalized",
+          finalized_settled is True and strat._bars[-1]["close"] == 246079.0,
+          f"finalized={finalized_settled} bars={strat._bars}")
+
+
+def test_algo3_unverified_local_bar_never_becomes_a_setup_reference():
+    print("\n33fg. algo3 refuses a local-only 15m close as a BUY/SELL setup reference")
+    import datetime as _dt
+    from unittest.mock import patch
+    import app.strategies.algo3_silver_micro as algo3_mod
+
+    strat = _make_bare_algo3()
+    strat._ema20 = 245000.0
+    bucket = _dt.datetime(2026, 8, 21, 12, 0)
+    strat._current_bucket = bucket
+    strat._minute_buffer = [{
+        "time": bucket + _dt.timedelta(minutes=minute),
+        "open": 246000.0,
+        "high": 246100.0,
+        "low": 245900.0,
+        "close": 246050.0,
+        "volume": 10.0,
+    } for minute in range(15)]
+
+    with patch.object(algo3_mod, "get_intraday_candle_at", return_value=None):
+        strat._finalize_bar(allow_signals=True, require_closed=False)
+    check("unverified local bar is not added to EMA history",
+          len(strat._bars) == 0, f"bars={strat._bars}")
+    check("unverified local bar cannot create a BUY setup",
+          strat._buy_setup_close is None, f"buy_setup={strat._buy_setup_close}")
 
 
 def test_algo3_live_15m_setup_uses_fyers_verified_bar_close():
@@ -1923,6 +2099,47 @@ def test_algo3_live_15m_setup_uses_fyers_verified_bar_close():
     check("BUY setup came from FYERS verified close",
           float(strat._buy_setup_close) == 248351.0,
           f"buy_setup={strat._buy_setup_close}")
+
+
+def test_algo3_live_15m_sell_setup_uses_fyers_verified_bar_close():
+    """A local partial close must not replace FYERS's final SELL reference."""
+    print("\n33gh. algo3 live SELL setup stores FYERS close 244479, not local 244456")
+    import datetime as _dt
+    from unittest.mock import patch
+    import app.strategies.algo3_silver_micro as algo3_mod
+
+    strat = _make_bare_algo3()
+    strat._ema20 = 245000.0
+    bucket = _dt.datetime(2026, 8, 25, 12, 45)
+    strat._current_bucket = bucket
+    strat._minute_buffer = [
+        {
+            "time": bucket + _dt.timedelta(minutes=minute),
+            "open": 244700.0,
+            "high": 244800.0,
+            "low": 244300.0,
+            "close": 244456.0,
+            "volume": 100.0,
+        }
+        for minute in range(15)
+    ]
+
+    with patch.object(algo3_mod, "get_intraday_candle_at", return_value={
+        "time": bucket,
+        "open": 244700.0,
+        "high": 244800.0,
+        "low": 244300.0,
+        "close": 244479.0,
+        "volume": 1200.0,
+    }):
+        strat._finalize_bar(allow_signals=True, require_closed=False)
+
+    check("stored SELL bar uses FYERS final close 244479",
+          len(strat._bars) == 1 and float(strat._bars[-1]["close"]) == 244479.0,
+          f"bars={list(strat._bars)}")
+    check("SELL setup uses FYERS final close 244479",
+          float(strat._sell_setup_close) == 244479.0,
+          f"sell_setup={strat._sell_setup_close}")
 
 
 # ── 34-35. Setup capture (green above / red below) + overwrite ─────────
@@ -2533,6 +2750,13 @@ def test_algo3_black_box_end_to_end():
     print("\n45. algo3 BLACK-BOX: buy tick-cross + sell red-chain close produce expected reversal")
     import datetime as _dt
     strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
+    # This offline replay supplies synthetic minute candles, so mark their
+    # aggregate as the authoritative 15m response that production receives
+    # from FYERS. Live code must never use this local fallback by default.
+    strat._rest_verify_live_bar = lambda bar, allow_signals: {
+        **bar,
+        "source": "rest_verified_15m",
+    }
 
     def minute_candle(minute_offset, open_, high, low, close, vol=100):
         base = _dt.datetime(2026, 8, 19, 9, 0)
@@ -2899,6 +3123,12 @@ def test_algo3_backtest_parity_with_live():
     strat = _make_bare_algo3(settings_overrides=settings)
     strat.symbol = symbol
     strat.watchlist = [symbol]
+    # This is an offline parity fixture. Mark its synthesized 15m bars as the
+    # authoritative FYERS response so live setup finalization is exercised.
+    strat._rest_verify_live_bar = lambda bar, allow_signals: {
+        **bar,
+        "source": "rest_verified_15m",
+    }
     for candle in history:
         strat.on_candle_close(symbol, candle, {})
         # For each 1m candle also push the close as a tick so trigger detection runs.
@@ -3370,6 +3600,12 @@ def test_algo3_candle_close_trigger_fires():
     strat._buy_setup_close = 238000.0
     strat._buy_setup_bar_at = _dt.datetime(2026, 8, 19, 23, 45)
     strat._ema20 = 237000.0  # so the closing bar's setup detection doesn't overwrite
+    # The fixture has no FYERS SDK. Treat its constructed closed bar as the
+    # verified broker bar so this checks candle-close entry behavior only.
+    strat._rest_verify_live_bar = lambda bar, allow_signals: {
+        **bar,
+        "source": "rest_verified_15m",
+    }
     # Feed a fresh 09:00 bar via the aggregation path so _finalize_bar runs.
     # Build 15 one-minute candles all closing at 241104, then a 16th minute
     # in the next bucket to force finalization of the 09:00 bar.
@@ -4923,6 +5159,7 @@ def main():
     test_protective_retry()
     test_streaming_fcfs_phase2()
     test_trailing_metadata_tracks_activation_and_bumps()
+    test_daily_trade_totals_do_not_collapse_same_side_rows()
     test_ws_premarket_warmup_gating()
     test_token_expired_guard()
     test_mode_toggle_cooldown()
@@ -4941,6 +5178,7 @@ def main():
     test_connection_status_bad_request_stays_degraded_not_expired()
     test_silver_setup_history_naive_ist_stores_as_correct_utc()
     test_silver_setup_history_repairs_future_shifted_legacy_rows()
+    test_silver_setup_history_requires_candle_to_close_on_correct_ema_side()
     test_pre_market_no_tick_not_counted_as_failure()
     test_critical_live_feed_symbols_ignore_nse_noise()
     test_engine_rest_fallback_targets_stale_non_nse_symbols()
@@ -4958,6 +5196,10 @@ def main():
     test_algo3_partial_15m_bucket_is_not_finalized_on_warmup_tail()
     test_algo3_partial_15m_bucket_does_not_persist_setup_history()
     test_algo3_closed_15m_bucket_finalizes_without_next_bucket_tick()
+    test_algo3_clock_finalization_waits_for_fyers_settle_window()
+    test_algo3_unverified_local_bar_never_becomes_a_setup_reference()
+    test_algo3_live_15m_setup_uses_fyers_verified_bar_close()
+    test_algo3_live_15m_sell_setup_uses_fyers_verified_bar_close()
     test_algo3_setup_captures_and_overwrites()
     test_algo3_no_setup_when_wrong_side_of_ema()
     test_algo3_setup_persistence_emits_history_event()
