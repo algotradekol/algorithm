@@ -53,6 +53,27 @@ def _normalize_legacy_row(row: dict) -> dict:
     return normalized
 
 
+def _is_qualifying_setup_row(row: dict) -> bool:
+    """Return whether a persisted setup still satisfies Silver's rule.
+
+    This is deliberately shared by the writer and reader.  The strategy is
+    the primary gate, but a second gate here prevents malformed callers or
+    legacy rows from ever becoming a visible BUY/SELL reference.
+    """
+    try:
+        side = str(row.get("setup_side") or "").upper()
+        open_price = float(row["candle_open"])
+        close = float(row["candle_close"])
+        ema20 = float(row["ema20"])
+    except (KeyError, TypeError, ValueError):
+        return False
+    if side == "BUY":
+        return close > open_price and close > ema20
+    if side == "SELL":
+        return close < open_price and close < ema20
+    return False
+
+
 def record_setup_event(
     *,
     algo_id: str,
@@ -88,6 +109,13 @@ def record_setup_event(
         "source": str(source or "live"),
         "captured_at": _now_utc().isoformat(),
     }
+    if not _is_qualifying_setup_row(payload):
+        print(
+            "[silver_setup_history] record skipped: non-qualifying "
+            f"{side} setup O={payload['candle_open']:.2f} "
+            f"C={payload['candle_close']:.2f} EMA20={payload['ema20']}"
+        )
+        return
     try:
         run_with_supabase(
             lambda supabase: supabase.table("silver_setup_events").upsert(
@@ -140,14 +168,34 @@ def get_setup_history(
         return rows
 
     try:
-        rows = [_normalize_legacy_row(row) for row in run_with_supabase(query)]
+        raw_rows = [_normalize_legacy_row(row) for row in run_with_supabase(query)]
+        rows = [row for row in raw_rows if _is_qualifying_setup_row(row)]
+        invalid_rows = [row for row in raw_rows if not _is_qualifying_setup_row(row)]
+        excluded_count = len(invalid_rows)
+        if excluded_count:
+            print(
+                "[silver_setup_history] excluded "
+                f"{excluded_count} invalid persisted setup row(s) from history"
+            )
+            for row in invalid_rows:
+                print(
+                    "[silver_setup_history] invalid row "
+                    f"side={row.get('setup_side')} time={row.get('candle_time')} "
+                    f"O={row.get('candle_open')} C={row.get('candle_close')} "
+                    f"EMA20={row.get('ema20')}"
+                )
         for row in rows:
             row["algo_id"] = algo_id
         return {
             "algo_id": algo_id,
             "side": side,
             "rows": rows,
-            "warning": "",
+            "warning": (
+                f"Excluded {excluded_count} older setup row(s) that do not satisfy "
+                "the stored candle/EMA qualification rule."
+                if excluded_count
+                else ""
+            ),
             "current_session_only": current_session_only,
             "live_only": live_only,
         }

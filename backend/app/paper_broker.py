@@ -384,14 +384,16 @@ class PaperBroker:
         today = datetime.date.today().isoformat()
         trades = self._merge_storage_rows([
             run_with_supabase(
-                lambda supabase, key=candidate: supabase.table(self.trades_table_name()).select("side").eq("algo_id", key)
+                # Include the row id: _merge_storage_rows de-duplicates across
+                # namespaced/legacy storage candidates, not across real trades.
+                lambda supabase, key=candidate: supabase.table(self.trades_table_name()).select("id,side").eq("algo_id", key)
                 .gte("entry_time", today).execute()
             ).data
             for candidate in self.storage_algo_candidates()
         ])
         positions = self._merge_storage_rows([
             run_with_supabase(
-                lambda supabase, key=candidate: supabase.table(self.positions_table_name()).select("side").eq("algo_id", key)
+                lambda supabase, key=candidate: supabase.table(self.positions_table_name()).select("id,side").eq("algo_id", key)
                 .eq("status", "open").gte("entry_time", today).execute()
             ).data
             for candidate in self.storage_algo_candidates()

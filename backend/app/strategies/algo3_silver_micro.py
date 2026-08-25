@@ -58,6 +58,10 @@ from ..timezone import IST
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
 BUCKET_MINUTES = 15
+# FYERS may expose a just-closed historical candle before its final close has
+# settled. Waiting briefly prevents a first boundary snapshot from becoming a
+# different setup reference than the candle ultimately shown by FYERS.
+REST_BAR_SETTLE_SECONDS = 30
 SILVER_BUY_PLAN_REFERENCE_BREAKOUT = "reference_breakout"
 SILVER_MICRO_ROOT = "SILVERMIC"
 # MCX Silver Micro contract size: 1 lot = 1 kg = 1 unit on Fyers.
@@ -139,6 +143,21 @@ def _is_bucket_closed(
     20:30 and the first closed minute from that next bucket exists.
     """
     return bucket_start + datetime.timedelta(minutes=minutes) <= _latest_closed_minute_cutoff(now)
+
+
+def _is_bucket_settled(
+    bucket_start: datetime.datetime,
+    now: datetime.datetime | None = None,
+    minutes: int = BUCKET_MINUTES,
+) -> bool:
+    """Return True once FYERS has had a short post-close settle window."""
+    current = now.astimezone(IST) if now and now.tzinfo is not None else now
+    current = current or datetime.datetime.now(IST)
+    current = current.replace(tzinfo=None)
+    return bucket_start + datetime.timedelta(
+        minutes=minutes,
+        seconds=REST_BAR_SETTLE_SECONDS,
+    ) <= current
 
 
 def _fmt(value: float | None) -> str:
@@ -532,6 +551,17 @@ class Algo3SilverMicro(Strategy):
             "minute_count": len(self._minute_buffer),
         }
         bar = self._rest_verify_live_bar(bar, allow_signals=allow_signals)
+        if allow_signals and bar.get("source") != "rest_verified_15m":
+            # Never make a trade reference from a sparse local aggregation.
+            # Exact FYERS 15m OHLC is mandatory before EMA, setup, or
+            # persistence can move.
+            print(
+                f"[algo3] 15m setup SKIPPED: FYERS verification unavailable for "
+                f"{self.symbol} @ {bar['time'].isoformat()}; local close "
+                f"{bar['close']:.2f} was not used as a reference"
+            )
+            self._minute_buffer = []
+            return
         self._bars.append(bar)
         self._ema20 = _ema_step(self._ema20, bar["close"])
         self._last_bar_at = bar["time"].isoformat()
@@ -628,6 +658,8 @@ class Algo3SilverMicro(Strategy):
             return False
         if allow_signals is None:
             allow_signals = self.scan_enabled()
+        if allow_signals and not _is_bucket_settled(self._current_bucket):
+            return False
         bars_before = len(self._bars)
         self._finalize_bar(allow_signals=allow_signals, require_closed=True)
         return len(self._bars) > bars_before
