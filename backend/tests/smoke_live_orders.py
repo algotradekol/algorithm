@@ -738,6 +738,12 @@ def test_silver_target_to_breakeven_policy():
         "exit_mode": "fixed_target_trailing_sl",
         "trailing_sl_enabled": True,
     }, "algo3")
+    persisted_legacy_settings = strategy_settings._settings_for_persistence(legacy_settings)
+    check(
+        "runtime-only legacy Silver fields never reach Supabase",
+        not any(key.startswith("_legacy_silver_") for key in persisted_legacy_settings),
+        f"settings={persisted_legacy_settings}",
+    )
     legacy_position_settings = broker._legacy_silver_position_settings(
         {"signal_snapshot": {}}, legacy_settings
     )

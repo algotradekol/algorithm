@@ -288,6 +288,16 @@ _NEW_COLUMNS_TOLERATE_MISSING = {
 }
 
 
+def _settings_for_persistence(settings: dict) -> dict:
+    """Drop runtime-only compatibility metadata before writing Supabase.
+
+    Silver can attach private legacy-policy details while normalizing an
+    existing position. Those fields keep an already-open position safe after
+    a settings upgrade, but they are not columns in ``strategy_settings``.
+    """
+    return {key: value for key, value in settings.items() if not str(key).startswith("_")}
+
+
 def _upsert_settings_with_fallback(algo_id: str, settings: dict, mode: str | None = None) -> list[str]:
     """Try to write every setting; if Supabase rejects an unknown column,
     strip that column from the payload and retry. Prevents the whole
@@ -296,7 +306,7 @@ def _upsert_settings_with_fallback(algo_id: str, settings: dict, mode: str | Non
 
     payload = {
         "algo_id": get_settings_storage_key(algo_id, mode=mode),
-        **settings,
+        **_settings_for_persistence(settings),
         # PostgREST treats "now()" as a literal string, not a SQL function.
         # Send a real RFC3339 value so a timestamptz column always accepts it.
         "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
