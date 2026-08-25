@@ -714,10 +714,10 @@ function SilverFeedPanel({ status }: { status: any }) {
                   {activeHistoryGroup && (
                     <>
                       <div className="max-h-[48vh] overflow-auto rounded border border-[#1f2937]">
-                        <table className="w-full min-w-[980px] border-collapse text-xs">
+                        <table className="w-full min-w-[440px] border-collapse text-xs">
                           <thead className="bg-[#111827]">
                             <tr>
-                              {['Time', 'Open', 'High', 'Low', 'Close', 'EMA20', 'Trigger', 'Volume', 'Source'].map((column) => (
+                              {['Time', 'Close', 'Target'].map((column) => (
                                 <th key={column} className="table-cell label">{column}</th>
                               ))}
                             </tr>
@@ -726,14 +726,8 @@ function SilverFeedPanel({ status }: { status: any }) {
                             {activeHistoryGroup.rows.map((row, index) => (
                               <tr key={`${row.setup_side}-${row.candle_time}-${index}`} className={index % 2 === 0 ? 'bg-[#0d1117]' : 'bg-[#111827]'}>
                                 <td className="table-cell text-gray-300">{formatDateTimeWithDate(row.candle_time)}</td>
-                                <td className="table-cell num text-gray-100">{formatNumber(row.candle_open)}</td>
-                                <td className="table-cell num text-gray-100">{formatNumber(row.candle_high)}</td>
-                                <td className="table-cell num text-gray-100">{formatNumber(row.candle_low)}</td>
                                 <td className="table-cell num text-gray-100">{formatNumber(row.candle_close)}</td>
-                                <td className="table-cell num text-gray-100">{formatNumber(row.ema20)}</td>
                                 <td className="table-cell num text-gray-100">{formatNumber(row.trigger_level)}</td>
-                                <td className="table-cell num text-gray-100">{formatNumber(row.candle_volume)}</td>
-                                <td className="table-cell text-gray-400">{row.source || '--'}</td>
                               </tr>
                             ))}
                           </tbody>
@@ -1537,7 +1531,9 @@ function buildSetupHistoryGroups(rows: any[]) {
   return Array.from(groups.values())
     .map((group) => ({
       ...group,
-      rows: [...group.rows].sort((a, b) => new Date(String(a.candle_time)).getTime() - new Date(String(b.candle_time)).getTime()),
+      // Setup history is a live audit view, so show the newest captured
+      // reference first instead of making users scroll to the bottom.
+      rows: [...group.rows].sort((a, b) => new Date(String(b.candle_time)).getTime() - new Date(String(a.candle_time)).getTime()),
     }))
     .sort((a, b) => b.latestTime - a.latestTime);
 }

@@ -735,7 +735,12 @@ class LiveBroker(PaperBroker):
         return any(response.get(key) for key in ("id", "order_id", "orderId"))
 
     def _entry_order_params(self, entry_price: float) -> tuple[str, float]:
-        """Read order_type setting for this algo. Defaults to LIMIT at LTP."""
+        """Choose the entry order parameters for this strategy."""
+        # Silver Micro breakout entries must not remain pending while price
+        # crosses a trigger. Enforce MARKET even if an older saved setting
+        # still contains LIMIT from before Silver became market-only.
+        if self.algo_id == "algo3":
+            return "MARKET", 0.0
         try:
             from .strategy_settings import get_settings
             settings = get_settings(self.algo_id)

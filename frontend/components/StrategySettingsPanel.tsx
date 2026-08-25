@@ -148,9 +148,10 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
   if (!settings) return <p className="text-sm text-gray-500">Loading strategy settings...</p>;
 
   const preview = calculatePreview(settings);
+  const isSilver = algoId === 'algo3';
 
   return (
-    <section className="grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(340px,0.8fr)]">
+    <section className={isSilver ? 'grid gap-4' : 'grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(340px,0.8fr)]'}>
       <div className="panel space-y-4 p-4">
         <div className="rounded border border-[#1f2937] bg-[#0d1117] px-3 py-3">
           <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
@@ -181,19 +182,23 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
             Live mode: wallet balance comes from Fyers in real time. "Available Cash" and "Starting Capital" are paper-mode-only and hidden here.
           </p>
         )}
-        <OrderTypeSelect settings={settings} setSettings={setSettings} />
+        <OrderTypeSelect algoId={algoId} settings={settings} setSettings={setSettings} />
         {isLive && <ParallelPaperToggle settings={settings} setSettings={setSettings} />}
-        {(algoId === 'algo2' || algoId === 'algo3') && (
+        {algoId === 'algo2' && (
           <ScanToggle algoId={algoId} settings={settings} setSettings={setSettings} />
         )}
         <ExitModeSelect settings={settings} setSettings={setSettings} />
         <TrailingStopToggle settings={settings} setSettings={setSettings} />
-        <FieldGroup
-          title="Risk Settings"
-          fields={algoId === 'algo3' ? SILVER_RISK_FIELDS : RISK_FIELDS}
-          settings={settings}
-          setSettings={setSettings}
-        />
+        {isSilver ? (
+          <SilverRiskSettings settings={settings} setSettings={setSettings} />
+        ) : (
+          <FieldGroup
+            title="Risk Settings"
+            fields={RISK_FIELDS}
+            settings={settings}
+            setSettings={setSettings}
+          />
+        )}
           {algoId === 'algo3' && (
             <div className="mt-5 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
             {isLive ? 'Live Silver uses completed 15-minute reference candles. BUY carries the latest green close above EMA20 and enters at reference + n, including a prior-day gap at 09:00. SELL carries the latest red close below EMA20 through intervening green candles and enters at reference - n during a later red move, including a prior-day 09:00 gap.' : 'Silver backtests replay the same 15-minute reference BUY and selected SELL logic used by the live engine.'} Position size is in LOTS (1 lot = 1 kg). SL, target, and trailing SL are all in POINTS from entry. Default order type is MARKET.
@@ -223,17 +228,19 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
         </div>
       </div>
 
-      <aside className="panel p-4">
-        <h3 className="text-base font-semibold text-gray-100">Live Strategy Preview</h3>
-        <p className="mt-2 text-xs text-gray-500">Assumes example price Rs 500 at full {Number(settings.margin_multiplier || 5)}x cap.</p>
-        <div className="mt-4 divide-y divide-[#1f2937] border-y border-[#1f2937] text-sm">
-          <PreviewRow label="Position size (at cap)" value={`${preview.positionSize.toLocaleString('en-IN')} qty`} />
-          <PreviewRow label="Effective capital at cap" value={formatMoney(preview.effectiveCapital)} />
-          <PreviewRow label="Max daily risk" value={formatMoney(preview.maxDailyRisk)} tone="text-[#ef4444]" />
-          <PreviewRow label="Max daily reward" value={formatMoney(preview.maxDailyReward)} tone="text-[#22c55e]" />
-        </div>
-        <p className="mt-3 text-xs text-gray-500">Actual quantity is sized per stock: capital × that stock’s broker-approved margin (1x–5x), so lower-margin names get proportionally fewer shares.</p>
-      </aside>
+      {!isSilver && (
+        <aside className="panel p-4">
+          <h3 className="text-base font-semibold text-gray-100">Live Strategy Preview</h3>
+          <p className="mt-2 text-xs text-gray-500">Assumes example price Rs 500 at full {Number(settings.margin_multiplier || 5)}x cap.</p>
+          <div className="mt-4 divide-y divide-[#1f2937] border-y border-[#1f2937] text-sm">
+            <PreviewRow label="Position size (at cap)" value={`${preview.positionSize.toLocaleString('en-IN')} qty`} />
+            <PreviewRow label="Effective capital at cap" value={formatMoney(preview.effectiveCapital)} />
+            <PreviewRow label="Max daily risk" value={formatMoney(preview.maxDailyRisk)} tone="text-[#ef4444]" />
+            <PreviewRow label="Max daily reward" value={formatMoney(preview.maxDailyReward)} tone="text-[#22c55e]" />
+          </div>
+          <p className="mt-3 text-xs text-gray-500">Actual quantity is sized per stock: capital × that stock’s broker-approved margin (1x–5x), so lower-margin names get proportionally fewer shares.</p>
+        </aside>
+      )}
     </section>
   );
 }
@@ -287,17 +294,22 @@ function ScanToggle({
 }
 
 function OrderTypeSelect({
+  algoId,
   settings,
   setSettings,
 }: {
+  algoId: string;
   settings: Record<string, any>;
   setSettings: (settings: Record<string, any>) => void;
 }) {
-  const current = String(settings.order_type || 'LIMIT').toUpperCase();
+  const isSilver = algoId === 'algo3';
+  const current = isSilver ? 'MARKET' : String(settings.order_type || 'LIMIT').toUpperCase();
   const options: [string, string, string][] = [
-    ['LIMIT', 'Limit @ LTP', 'Entry order is placed as LIMIT at the live LTP snapshot. Safer, but may go unfilled if price moves away before Fyers receives it.'],
     ['MARKET', 'Market', 'Entry order is placed as MARKET. Guaranteed fill, but slippage on fast-moving stocks.'],
   ];
+  if (!isSilver) {
+    options.unshift(['LIMIT', 'Limit @ LTP', 'Entry order is placed as LIMIT at the live LTP snapshot. Safer, but may go unfilled if price moves away before Fyers receives it.']);
+  }
   return (
     <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3">
       <div className="label mb-3">Entry Order Type</div>
@@ -312,6 +324,7 @@ function OrderTypeSelect({
                 name="order_type"
                 checked={current === value}
                 onChange={() => setSettings({ ...settings, order_type: value })}
+                disabled={isSilver}
                 className="mt-1"
               />
               <span>
@@ -420,6 +433,75 @@ function TrailingStopToggle({
   );
 }
 
+function SilverRiskSettings({
+  settings,
+  setSettings,
+}: {
+  settings: Record<string, any>;
+  setSettings: (settings: Record<string, any>) => void;
+}) {
+  const exitMode = String(settings.exit_mode || 'fixed_target_trailing_sl');
+  const targetUsed = exitMode !== 'trailing_sl_only';
+  const modeUsesTrailing = exitMode === 'trailing_sl_only' || exitMode === 'fixed_target_trailing_sl';
+  const trailingUsed = modeUsesTrailing && Boolean(settings.trailing_sl_enabled);
+  const tradeFields = SILVER_RISK_FIELDS.filter(([key]) => (
+    key === 'silver_breakout_points' || key === 'target_points' || key === 'sl_points'
+  ));
+  const trailingFields = SILVER_RISK_FIELDS.filter(([key]) => (
+    key === 'tsl_activate_points' || key === 'tsl_profit_step_points' || key === 'tsl_lock_step_points'
+  ));
+
+  return (
+    <>
+      <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3">
+        <div className="label mb-3">Trade Risk Settings</div>
+        <div className="grid gap-3 md:grid-cols-2">
+          {tradeFields.map(([key, label, helper]) => (
+            <NumberField
+              key={key}
+              fieldKey={key}
+              label={label}
+              helper={key === 'target_points' && !targetUsed ? 'Ignored while Trailing SL Only is selected.' : helper}
+              settings={settings}
+              setSettings={setSettings}
+              disabled={key === 'target_points' && !targetUsed}
+            />
+          ))}
+        </div>
+      </div>
+
+      <div className={`mt-5 rounded border p-3 transition ${trailingUsed ? 'border-[#3b82f6]/50 bg-[#3b82f6]/5' : 'border-[#1f2937] bg-[#111827] opacity-50'}`}>
+        <div className="flex flex-wrap items-center justify-between gap-2">
+          <div className="label">Trailing Stop Loss Settings</div>
+          <span className={`rounded px-2 py-0.5 text-[10px] font-semibold ${trailingUsed ? 'bg-[#3b82f6]/15 text-[#93c5fd]' : 'bg-gray-700 text-gray-400'}`}>
+            {trailingUsed ? 'ACTIVE' : 'NOT IN USE'}
+          </span>
+        </div>
+        <p className="mt-1 text-xs text-gray-500">
+          {trailingUsed
+            ? 'At activation the stop moves to breakeven, then each profit step locks additional points.'
+            : modeUsesTrailing
+              ? 'Turn on Trailing Stop Loss above to use these values.'
+              : 'Choose an exit mode that includes trailing SL to use these values.'}
+        </p>
+        <div className="mt-3 grid gap-3 md:grid-cols-2">
+          {trailingFields.map(([key, label, helper]) => (
+            <NumberField
+              key={key}
+              fieldKey={key}
+              label={label}
+              helper={helper}
+              settings={settings}
+              setSettings={setSettings}
+              disabled={!trailingUsed}
+            />
+          ))}
+        </div>
+      </div>
+    </>
+  );
+}
+
 function CashControl({
   value,
   setValue,
@@ -520,13 +602,13 @@ function FieldGroup({
   );
 }
 
-function NumberField({ fieldKey, label, helper, settings, setSettings }: { fieldKey: string; label: string; helper: string; settings: Record<string, any>; setSettings: (settings: Record<string, any>) => void }) {
+function NumberField({ fieldKey, label, helper, settings, setSettings, disabled = false }: { fieldKey: string; label: string; helper: string; settings: Record<string, any>; setSettings: (settings: Record<string, any>) => void; disabled?: boolean }) {
   const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume', 'silver_lots', 'silver_breakout_points', 'sl_points', 'target_points', 'tsl_activate_points', 'tsl_profit_step_points', 'tsl_lock_step_points', 'tsl_trigger_points', 'tsl_distance_points']);
   const rupeeFields = new Set(['starting_capital', 'capital_per_trade', 'min_total_value', 'ltp_min', 'ltp_max']);
   const signedFields = new Set(['sl_pct', 'target_pct']);
   const step = integerFields.has(fieldKey) ? '1' : rupeeFields.has(fieldKey) ? '0.01' : '0.0001';
   const allowNegative = signedFields.has(fieldKey);
-  return <label><div className="label">{label}</div><input type="number" step={step} {...(allowNegative ? {} : { min: '0' })} value={Number.isFinite(settings[fieldKey]) ? settings[fieldKey] : 0} onChange={(e) => setSettings({ ...settings, [fieldKey]: Number(e.target.value) || 0 })} onBlur={(e) => setSettings({ ...settings, [fieldKey]: roundForField(fieldKey, Math.abs(Number(e.target.value) || 0)) })} className="control mt-1 num" /><div className="mt-1 text-xs text-gray-500">{helper}</div></label>;
+  return <label className={disabled ? 'cursor-not-allowed opacity-50' : ''}><div className="label">{label}</div><input type="number" step={step} {...(allowNegative ? {} : { min: '0' })} disabled={disabled} value={Number.isFinite(settings[fieldKey]) ? settings[fieldKey] : 0} onChange={(e) => setSettings({ ...settings, [fieldKey]: Number(e.target.value) || 0 })} onBlur={(e) => setSettings({ ...settings, [fieldKey]: roundForField(fieldKey, Math.abs(Number(e.target.value) || 0)) })} className="control mt-1 num disabled:cursor-not-allowed" /><div className="mt-1 text-xs text-gray-500">{helper}</div></label>;
 }
 
 function PreviewRow({ label, value, tone = 'text-gray-100' }: { label: string; value: string; tone?: string }) {
