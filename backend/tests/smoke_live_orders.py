@@ -4737,6 +4737,48 @@ def test_algo3_warmup_debounce_blocks_repeat_calls():
               len(load_calls) == 2, f"calls={len(load_calls)}")
 
 
+def test_algo3_manual_history_refresh_is_single_owner_and_rate_limited():
+    """The History-panel recovery button must not become a FYERS 429 loop.
+
+    It starts at most one forced warm-up, leaves the feed alone, and rejects
+    a second browser-tab click for the configured cooldown window.
+    """
+    print("\n54b. algo3 manual history refresh is guarded")
+    from unittest.mock import patch
+    import app.strategies.algo3_silver_micro as algo3_mod
+
+    load_calls = []
+
+    def counting_load(self):
+        load_calls.append(1)
+        self._history_loading = False
+
+    strat = _make_bare_algo3()
+    strat._history_lock = __import__("threading").Lock()
+    strat._history_loading = False
+    strat._last_warmup_at = None
+    strat._last_manual_history_refresh_at = None
+
+    class SyncThread:
+        def __init__(self, target=None, daemon=None):
+            self._target = target
+
+        def start(self):
+            self._target()
+
+    with patch.object(algo3_mod.Algo3SilverMicro, "_load_history_background", counting_load), \
+         patch.object(algo3_mod.threading, "Thread", SyncThread):
+        started, message = strat.request_manual_history_refresh()
+        check("manual Silver refresh starts one forced warm-up", started and len(load_calls) == 1, message)
+
+        started_again, message_again = strat.request_manual_history_refresh()
+        check(
+            "manual Silver refresh suppresses repeated browser clicks",
+            not started_again and len(load_calls) == 1 and "wait" in message_again.lower(),
+            message_again,
+        )
+
+
 def test_algo3_warmup_resets_state_before_replay():
     """A mid-day warmup must wipe prior aggregation state before
     replaying history. Otherwise an old historical candle appended to
@@ -5314,6 +5356,7 @@ def main():
     test_live_fill_timestamp_integrity()
     test_algo3_warmup_end_date_is_today()
     test_algo3_warmup_debounce_blocks_repeat_calls()
+    test_algo3_manual_history_refresh_is_single_owner_and_rate_limited()
     test_algo3_warmup_resets_state_before_replay()
     test_algo3_warmup_transient_zero_result_preserves_state()
     test_strategy_specific_square_off_times()

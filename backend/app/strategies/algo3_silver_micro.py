@@ -202,6 +202,7 @@ class Algo3SilverMicro(Strategy):
         self._history_error: str | None = None
         self._warmup_minute_candles = 0
         self._last_warmup_at: float | None = None  # monotonic seconds; None = never
+        self._last_manual_history_refresh_at: float | None = None
 
         # 15-min bucket aggregation from 1-min inputs.
         self._minute_buffer: list[dict] = []
@@ -264,7 +265,7 @@ class Algo3SilverMicro(Strategy):
     def scan_enabled(self) -> bool:
         return bool(self.settings.get("scan_enabled", True))
 
-    def refresh_market_data(self, force: bool = False):
+    def refresh_market_data(self, force: bool = False) -> bool:
         """Trigger a background warmup. Debounced by default — a fresh
         warmup within WARMUP_DEBOUNCE_SECONDS of the last successful one
         is a no-op unless `force=True`.
@@ -278,7 +279,7 @@ class Algo3SilverMicro(Strategy):
         now_monotonic = time.monotonic()
         with self._history_lock:
             if self._history_loading or not self.symbol:
-                return
+                return False
             if (
                 not force
                 and self._last_warmup_at is not None
@@ -286,9 +287,38 @@ class Algo3SilverMicro(Strategy):
             ):
                 remaining = int(WARMUP_DEBOUNCE_SECONDS - (now_monotonic - self._last_warmup_at))
                 print(f"[algo3] warmup debounced ({remaining}s remaining); pass force=True to override")
-                return
+                return False
             self._history_loading = True
         threading.Thread(target=self._load_history_background, daemon=True).start()
+        return True
+
+    def request_manual_history_refresh(self) -> tuple[bool, str]:
+        """Start one explicitly requested warm-up without touching FYERS WS.
+
+        A manual retry is useful after a transient FYERS history 429, but it
+        must not become a refresh storm when several browser tabs are open.
+        This guard is intentionally local to the strategy: it protects only
+        the Silver history request and never clears tokens or restarts feeds.
+        """
+        cooldown_seconds = 60
+        now_monotonic = time.monotonic()
+        with self._history_lock:
+            if not self.symbol:
+                return False, "Silver symbol is not configured."
+            if self._history_loading:
+                return False, "Silver history refresh is already running."
+            if self._last_manual_history_refresh_at is not None:
+                elapsed = now_monotonic - self._last_manual_history_refresh_at
+                if elapsed < cooldown_seconds:
+                    remaining = max(1, int(cooldown_seconds - elapsed))
+                    return False, f"Please wait {remaining}s before requesting Silver history again."
+
+        if not self.refresh_market_data(force=True):
+            return False, "Silver history refresh could not be started; another warm-up is already running."
+
+        with self._history_lock:
+            self._last_manual_history_refresh_at = now_monotonic
+        return True, "Silver history refresh started. Existing references remain in place until FYERS returns fresh candles."
 
     def _reset_aggregation_state(self):
         """Wipe intra-day aggregation state before a warmup replay.
@@ -1290,6 +1320,7 @@ class Algo3SilverMicro(Strategy):
             "history_ready": self._history_ready,
             "history_loading": self._history_loading,
             "history_error": self._history_error,
+            "last_manual_history_refresh_at": self._last_manual_history_refresh_at,
             "warmup_minute_candles": self._warmup_minute_candles,
             "bars_15m": len(self._bars),
             "minute_buffer_count": len(self._minute_buffer),

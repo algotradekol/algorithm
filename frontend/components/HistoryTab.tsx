@@ -30,6 +30,8 @@ export default function HistoryTab({
   const [walletStatus, setWalletStatus] = useState<any>(null);
   const [walletStatusError, setWalletStatusError] = useState('');
   const [disconnecting, setDisconnecting] = useState(false);
+  const [refreshingSilverHistory, setRefreshingSilverHistory] = useState(false);
+  const [silverHistoryRefreshNotice, setSilverHistoryRefreshNotice] = useState('');
   const [recoveryLockError, setRecoveryLockError] = useState<{ message: string; eta: number } | null>(null);
   const walletRequestId = useRef(0);
 
@@ -173,6 +175,22 @@ export default function HistoryTab({
     }
   }
 
+  async function handleRefreshSilverHistory() {
+    if (!fyersConnected) {
+      setSilverHistoryRefreshNotice('Connect FYERS before requesting Silver history.');
+      return;
+    }
+    try {
+      setRefreshingSilverHistory(true);
+      const result = await api.refreshSilverHistory();
+      setSilverHistoryRefreshNotice(result?.message || 'Silver history refresh requested.');
+    } catch (e: any) {
+      setSilverHistoryRefreshNotice(e?.message || 'Could not request Silver history refresh.');
+    } finally {
+      setRefreshingSilverHistory(false);
+    }
+  }
+
   return (
     <section
       className="space-y-4"
@@ -194,6 +212,10 @@ export default function HistoryTab({
         onDisconnect={() => handleDisconnectFyers(false)}
         onForceDisconnect={() => handleDisconnectFyers(true)}
         recoveryLockError={recoveryLockError}
+        fyersConnected={fyersConnected}
+        refreshingSilverHistory={refreshingSilverHistory}
+        silverHistoryRefreshNotice={silverHistoryRefreshNotice}
+        onRefreshSilverHistory={handleRefreshSilverHistory}
       />
 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
@@ -260,6 +282,10 @@ function TokenRefreshPanel({
   onDisconnect,
   onForceDisconnect,
   recoveryLockError,
+  fyersConnected,
+  refreshingSilverHistory,
+  silverHistoryRefreshNotice,
+  onRefreshSilverHistory,
 }: {
   status: any;
   error: string;
@@ -269,6 +295,10 @@ function TokenRefreshPanel({
   onDisconnect: () => void;
   onForceDisconnect: () => void;
   recoveryLockError: { message: string; eta: number } | null;
+  fyersConnected: boolean;
+  refreshingSilverHistory: boolean;
+  silverHistoryRefreshNotice: string;
+  onRefreshSilverHistory: () => void;
 }) {
   const daysLeft = Number(status?.refresh_token_days_left);
   const hasRefreshToken = Boolean(status?.refresh_token_present);
@@ -371,6 +401,33 @@ function TokenRefreshPanel({
           {lastError}
         </div>
       )}
+
+      <div className="mt-3 rounded border border-[#2563eb]/40 bg-[#2563eb]/10 p-3">
+        <div className="flex flex-wrap items-center justify-between gap-3">
+          <div>
+            <div className="text-xs font-semibold text-[#93c5fd]">Silver history recovery</div>
+            <p className="mt-1 text-xs text-gray-400">
+              Reloads only Silver's 15-minute EMA and reference candles. It does not restart FYERS,
+              clear tokens, or alter open positions. Requests are limited to one per minute.
+            </p>
+          </div>
+          <button
+            type="button"
+            onClick={onRefreshSilverHistory}
+            disabled={!fyersConnected || refreshingSilverHistory}
+            className="inline-flex min-h-10 items-center justify-center gap-2 rounded border border-[#60a5fa]/70 bg-[#2563eb]/15 px-3 py-2 text-xs font-semibold text-[#bfdbfe] transition hover:bg-[#2563eb]/25 disabled:cursor-not-allowed disabled:opacity-40"
+          >
+            <i className="ri-refresh-line text-sm" />
+            {refreshingSilverHistory ? 'Requesting refresh...' : 'Refresh Silver History'}
+          </button>
+        </div>
+        {silverHistoryRefreshNotice && (
+          <p className="mt-2 text-xs text-[#bfdbfe]">{silverHistoryRefreshNotice}</p>
+        )}
+        {!fyersConnected && (
+          <p className="mt-2 text-xs text-[#f59e0b]">Connect FYERS to enable this recovery action.</p>
+        )}
+      </div>
 
       <div className="mt-3">
         <div className="label mb-2">Recent Refresh Attempts</div>

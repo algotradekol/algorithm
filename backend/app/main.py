@@ -253,6 +253,35 @@ def fyers_refresh_token(_user=Depends(require_auth)):
     return {"status": "ok", "message": "Fyers access token refreshed from refresh token."}
 
 
+@app.post("/api/algo/algo3/refresh-history")
+def refresh_silver_history(_user=Depends(require_auth)):
+    """Request only the Silver history warm-up.
+
+    This intentionally does not refresh tokens or restart the live feed. It
+    gives the dashboard a safe recovery action when a transient FYERS history
+    throttle left the 15-minute EMA/reference state empty after a deploy.
+    """
+    strategy = get_strategy_or_raise("algo3")
+    request_refresh = getattr(strategy, "request_manual_history_refresh", None)
+    if not callable(request_refresh):
+        raise HTTPException(status_code=404, detail="Silver history refresh is not available for this strategy.")
+
+    started, message = request_refresh()
+    feed_status = strategy.feed_status()
+    audit_log(
+        "algo3",
+        "manual Silver history refresh requested" if started else "manual Silver history refresh suppressed",
+        symbol=feed_status.get("symbol"),
+        started=started,
+        result_message=message,
+    )
+    return {
+        "status": "started" if started else "suppressed",
+        "message": message,
+        "feed_status": feed_status,
+    }
+
+
 @app.get("/api/fyers/token-status")
 def fyers_token_status(_user=Depends(require_auth)):
     from .fyers_auth import get_token_status
