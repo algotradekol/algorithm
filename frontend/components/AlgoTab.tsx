@@ -376,16 +376,18 @@ export default function AlgoTab({
           </button>
         </div>
         <SettingsDrawer open={settingsOpen} algoId={algoId} tradingMode={tradingMode} onClose={() => setSettingsOpen(false)} />
-        <div className="mt-4">
-        <ScanResultsPanel
-          algoId={algoId}
-          results={scanResults}
-          openPositions={positions}
-          onRefresh={async () => {
-            await Promise.allSettled([refreshSummary(), refreshPositions()]);
-          }}
-        />
-        </div>
+        {algoId !== 'algo3' && (
+          <div className="mt-4">
+            <ScanResultsPanel
+              algoId={algoId}
+              results={scanResults}
+              openPositions={positions}
+              onRefresh={async () => {
+                await Promise.allSettled([refreshSummary(), refreshPositions()]);
+              }}
+            />
+          </div>
+        )}
         <p className="mt-2 text-sm text-gray-500">{error || 'Loading strategy data...'}</p>
       </section>
     );
@@ -516,7 +518,9 @@ export default function AlgoTab({
 
       <SettingsDrawer open={settingsOpen} algoId={algoId} tradingMode={tradingMode} onClose={() => setSettingsOpen(false)} />
 
-      <ScanResultsPanel algoId={algoId} results={scanResults} openPositions={positions} onRefresh={loadData} />
+      {algoId !== 'algo3' && (
+        <ScanResultsPanel algoId={algoId} results={scanResults} openPositions={positions} onRefresh={loadData} />
+      )}
 
       <div className="grid min-w-0 gap-4">
         <section className="min-w-0">
@@ -653,8 +657,8 @@ function SilverFeedPanel({ status }: { status: any }) {
       </div>
       {historyOpenSide && (
         <div className="fixed inset-0 z-40 flex items-center justify-center bg-black/60 p-4">
-          <div className="max-h-[80vh] w-full max-w-4xl overflow-hidden rounded border border-[#1f2937] bg-[#0d1117] shadow-2xl">
-            <div className="flex items-center justify-between gap-3 border-b border-[#1f2937] px-4 py-3">
+          <div className="flex max-h-[80vh] w-full max-w-5xl flex-col overflow-hidden rounded border border-[#1f2937] bg-[#0d1117] shadow-2xl">
+            <div className="flex shrink-0 items-center justify-between gap-3 border-b border-[#1f2937] px-4 py-3">
               <div>
                 <div className="text-sm font-semibold text-gray-100">{historyOpenSide} setup history</div>
                 <div className="text-xs text-gray-500">
@@ -663,7 +667,7 @@ function SilverFeedPanel({ status }: { status: any }) {
               </div>
               <button onClick={() => setHistoryOpenSide(null)} className="text-sm text-gray-500 hover:text-gray-100">X</button>
             </div>
-            <div className="p-4">
+            <div className="min-h-0 flex-1 overflow-y-auto p-4">
               {historyError && (
                 <p className="mb-3 rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-xs text-[#f59e0b]">
                   {historyError}
@@ -709,14 +713,7 @@ function SilverFeedPanel({ status }: { status: any }) {
 
                   {activeHistoryGroup && (
                     <>
-                      <SetupHistoryChart side={historyOpenSide} group={activeHistoryGroup} />
-                      <div className="grid gap-2 sm:grid-cols-4">
-                        <FeedStat label="Selected date" value={activeHistoryGroup.dateLabel} />
-                        <FeedStat label="Candles saved" value={activeHistoryGroup.rows.length} />
-                        <FeedStat label="Latest close" value={formatNumber(activeHistoryGroup.rows[activeHistoryGroup.rows.length - 1]?.candle_close)} />
-                        <FeedStat label="Latest trigger" value={formatNumber(activeHistoryGroup.rows[activeHistoryGroup.rows.length - 1]?.trigger_level)} />
-                      </div>
-                      <div className="overflow-x-auto rounded border border-[#1f2937]">
+                      <div className="max-h-[48vh] overflow-auto rounded border border-[#1f2937]">
                         <table className="w-full min-w-[980px] border-collapse text-xs">
                           <thead className="bg-[#111827]">
                             <tr>
@@ -808,166 +805,6 @@ function FeedStat({ label, value }: { label: string; value: any }) {
     <div className="rounded border border-[#1f2937] bg-[#111827] p-2">
       <div className="label text-[10px]">{label}</div>
       <div className="num mt-1 truncate text-xs font-semibold text-gray-100">{String(value ?? '--')}</div>
-    </div>
-  );
-}
-
-function SetupHistoryChart({
-  side,
-  group,
-}: {
-  side: 'BUY' | 'SELL';
-  group: { dateKey: string; dateLabel: string; rows: any[] };
-}) {
-  const candles = useMemo(() => group.rows.map((row) => ({
-    ...row,
-    open: Number(row.candle_open),
-    high: Number(row.candle_high),
-    low: Number(row.candle_low),
-    close: Number(row.candle_close),
-    ema20: Number(row.ema20),
-    trigger: Number(row.trigger_level),
-    volume: Number(row.candle_volume || 0),
-  })).filter((row) => (
-    Number.isFinite(row.open)
-    && Number.isFinite(row.high)
-    && Number.isFinite(row.low)
-    && Number.isFinite(row.close)
-  )), [group.rows]);
-
-  if (!candles.length) return null;
-
-  const width = 960;
-  const height = 360;
-  const leftPad = 56;
-  const rightPad = 24;
-  const topPad = 18;
-  const priceBottom = 232;
-  const volumeTop = 252;
-  const volumeBottom = 320;
-  const plotWidth = width - leftPad - rightPad;
-  const candleSlot = plotWidth / Math.max(candles.length, 1);
-  const candleBodyWidth = Math.max(8, candleSlot * 0.56);
-  const rangeHigh = Math.max(...candles.flatMap((row) => [row.high, row.ema20, row.trigger]));
-  const rangeLow = Math.min(...candles.flatMap((row) => [row.low, row.ema20, row.trigger]));
-  const priceSpan = Math.max(rangeHigh - rangeLow, 1);
-  const maxVolume = Math.max(...candles.map((row) => row.volume), 1);
-  const rowTone = side === 'BUY' ? '#22c55e' : '#ef4444';
-  const emaPoints = candles
-    .filter((row) => Number.isFinite(row.ema20))
-    .map((row, index) => `${x(index)},${y(row.ema20)}`)
-    .join(' ');
-  const triggerPoints = candles
-    .filter((row) => Number.isFinite(row.trigger))
-    .map((row, index) => `${x(index)},${y(row.trigger)}`)
-    .join(' ');
-
-  function x(index: number) {
-    return leftPad + index * candleSlot + candleSlot / 2;
-  }
-
-  function y(price: number) {
-    return topPad + ((rangeHigh - price) / priceSpan) * (priceBottom - topPad);
-  }
-
-  function volumeY(volume: number) {
-    return volumeBottom - (volume / maxVolume) * (volumeBottom - volumeTop);
-  }
-
-  const yTicks = Array.from({ length: 5 }, (_, index) => rangeLow + (priceSpan * index) / 4).reverse();
-  const labelStep = Math.max(1, Math.ceil(candles.length / 8));
-
-  return (
-    <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
-      <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
-        <div>
-          <div className="text-xs font-semibold text-gray-100">{group.dateLabel} candle map</div>
-          <div className="text-[11px] text-gray-500">Qualifying {side.toLowerCase()} setup candles with EMA20 overlay and trigger guide.</div>
-        </div>
-        <div className="flex flex-wrap gap-3 text-[11px] text-gray-400">
-          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#22c55e]" /> Bull candle</span>
-          <span className="inline-flex items-center gap-1"><span className="h-2 w-2 rounded-full bg-[#ef4444]" /> Bear candle</span>
-          <span className="inline-flex items-center gap-1"><span className="h-[2px] w-4 bg-white/80" /> EMA20</span>
-          <span className="inline-flex items-center gap-1"><span className="h-[2px] w-4 bg-amber-400" /> Trigger</span>
-        </div>
-      </div>
-      <div className="overflow-x-auto">
-        <svg viewBox={`0 0 ${width} ${height}`} className="min-w-[760px]">
-          <rect x="0" y="0" width={width} height={height} fill="#0d1117" rx="12" />
-
-          {yTicks.map((tick, index) => (
-            <g key={`tick-${index}`}>
-              <line x1={leftPad} x2={width - rightPad} y1={y(tick)} y2={y(tick)} stroke="rgba(148, 163, 184, 0.12)" strokeDasharray="4 6" />
-              <text x={leftPad - 8} y={y(tick) + 4} fill="#94a3b8" fontSize="11" textAnchor="end">{formatNumber(tick)}</text>
-            </g>
-          ))}
-
-          <line x1={leftPad} x2={width - rightPad} y1={volumeTop} y2={volumeTop} stroke="rgba(148, 163, 184, 0.12)" />
-
-          {triggerPoints && (
-            <polyline
-              fill="none"
-              stroke="#fbbf24"
-              strokeWidth="1.8"
-              strokeDasharray="6 6"
-              points={triggerPoints}
-            />
-          )}
-          {emaPoints && (
-            <polyline
-              fill="none"
-              stroke="rgba(255,255,255,0.85)"
-              strokeWidth="2.2"
-              points={emaPoints}
-            />
-          )}
-
-          {candles.map((row, index) => {
-            const bullish = row.close >= row.open;
-            const candleColor = bullish ? '#22c55e' : '#ef4444';
-            const centerX = x(index);
-            const bodyTop = y(Math.max(row.open, row.close));
-            const bodyBottom = y(Math.min(row.open, row.close));
-            const bodyHeight = Math.max(2, bodyBottom - bodyTop);
-            const volumeHeight = Math.max(2, volumeBottom - volumeY(row.volume));
-            return (
-              <g key={`${row.candle_time}-${index}`}>
-                <line x1={centerX} x2={centerX} y1={y(row.high)} y2={y(row.low)} stroke={candleColor} strokeWidth="1.5" />
-                <rect
-                  x={centerX - candleBodyWidth / 2}
-                  y={bodyTop}
-                  width={candleBodyWidth}
-                  height={bodyHeight}
-                  rx="2"
-                  fill={candleColor}
-                  opacity="0.92"
-                />
-                <rect
-                  x={centerX - candleBodyWidth / 2}
-                  y={volumeY(row.volume)}
-                  width={candleBodyWidth}
-                  height={volumeHeight}
-                  rx="1.5"
-                  fill={candleColor}
-                  opacity="0.38"
-                />
-                {index % labelStep === 0 && (
-                  <text x={centerX} y={height - 18} fill="#94a3b8" fontSize="11" textAnchor="middle">
-                    {formatTimeOnly(row.candle_time)}
-                  </text>
-                )}
-              </g>
-            );
-          })}
-
-          <text x={leftPad} y={height - 42} fill={rowTone} fontSize="11" fontWeight="600">
-            {side} chain reference view
-          </text>
-          <text x={width - rightPad} y={height - 42} fill="#94a3b8" fontSize="11" textAnchor="end">
-            {candles.length} candle{candles.length === 1 ? '' : 's'}
-          </text>
-        </svg>
-      </div>
     </div>
   );
 }
