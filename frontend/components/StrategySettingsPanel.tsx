@@ -75,6 +75,7 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
   const [settings, setSettings] = useState<Record<string, any> | null>(null);
   const [availableCash, setAvailableCash] = useState('');
   const [cashSaving, setCashSaving] = useState(false);
+  const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
   const defaultsLabel = 'Reset to Tradetron defaults';
@@ -94,14 +95,23 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
   }, [algoId]);
 
   async function save() {
-    if (!settings) return;
+    if (!settings || saving) return;
+    setSaving(true);
     try {
-      await api.updateSettings(algoId, settings);
+      const result = await api.updateSettings(algoId, settings);
+      if (result?.settings) setSettings(result.settings);
+      const missing = Array.isArray(result?.missing_columns) ? result.missing_columns : [];
+      if (missing.length) {
+        setError(`Settings saved, but ${missing.join(', ')} need the Supabase strategy_settings migration before they can persist after refresh.`);
+        return;
+      }
       setSaved(true);
       setError('');
       setTimeout(() => setSaved(false), 2000);
     } catch (e: any) {
       setError(e?.message || 'Failed to save strategy settings');
+    } finally {
+      setSaving(false);
     }
   }
 
@@ -188,7 +198,7 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
         />
           {algoId === 'algo3' && (
             <div className="mt-5 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
-            {isLive ? 'Live Silver uses the legacy 5-minute BUY EMA/volume confirmation model and the current 15-minute SELL red-chain model. BUY confirmation enters at the next 5-minute open; SELL uses the latest qualifying red reference comparison.' : 'Silver Micro backtests can compare the legacy 5-minute BUY confirmation model with the current 15-minute BUY breakout model, while selecting the SELL plan separately.'} Position size is in LOTS (1 lot = 1 kg). SL, target, and trailing SL are all in POINTS from entry. Default order type is MARKET.
+            {isLive ? 'Live Silver uses completed 15-minute reference candles. BUY carries the latest green close above EMA20 and enters at reference + n, including a prior-day gap at 09:00. SELL carries the latest red close below EMA20 through intervening green candles and enters at reference - n during a later red move, including a prior-day 09:00 gap.' : 'Silver backtests replay the same 15-minute reference BUY and selected SELL logic used by the live engine.'} Position size is in LOTS (1 lot = 1 kg). SL, target, and trailing SL are all in POINTS from entry. Default order type is MARKET.
             </div>
           )}
         {(algoId === 'algo1' || algoId === 'algo4') && <TestSchedule settings={settings} setSettings={setSettings} />}
@@ -199,10 +209,11 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
         <div className="mt-5 grid gap-2 sm:grid-cols-[1fr_auto]">
           <button
             onClick={save}
-            className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2.5 text-sm font-semibold text-white"
+            disabled={saving}
+            className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
           >
             <i className="ri-save-fill text-sm text-white" />
-            {saved ? 'Saved' : 'Save settings'}
+            {saving ? 'Saving...' : saved ? 'Saved' : 'Save settings'}
           </button>
           <button
             onClick={resetDefaults}

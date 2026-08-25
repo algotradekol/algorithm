@@ -658,7 +658,7 @@ function SilverFeedPanel({ status }: { status: any }) {
               <div>
                 <div className="text-sm font-semibold text-gray-100">{historyOpenSide} setup history</div>
                 <div className="text-xs text-gray-500">
-                  Saved qualifying {historyOpenSide === 'BUY' && status?.silver_buy_plan === 'legacy_confirmation' ? '5m' : '15m'} candles for Silver Micro
+                  Saved qualifying 15m candles for Silver Micro
                 </div>
               </div>
               <button onClick={() => setHistoryOpenSide(null)} className="text-sm text-gray-500 hover:text-gray-100">X</button>
@@ -1168,9 +1168,9 @@ function TradesTable({ rows }: { rows: any[] }) {
               {row.side === "SELL" ? "S" : "B"}
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
-              <MobileField label="Entry Time" value={formatDateTime(row.entry_time)} />
+              <MobileField label="Entry Time" value={formatTradeTime(row.entry_time, row.exit_time)} />
               <MobileField label="Entry" value={formatNumber(row.entry_price)} />
-              <MobileField label="Exit Time" value={row.exit_time ? formatDateTime(row.exit_time) : "--"} />
+              <MobileField label="Exit Time" value={row.exit_time ? formatTradeTime(row.exit_time, row.entry_time) : "--"} />
               <MobileField label="Exit" value={formatNumber(row.exit_price)} />
               <MobileField label="Reason" value={formatReason(row.exit_reason)} />
               <MobileField label="Trailing SL" value={<TrailingBadge row={row} />} wide />
@@ -1201,9 +1201,9 @@ function TradesTable({ rows }: { rows: any[] }) {
                 <i className={`${row.side === "SELL" ? "ri-indeterminate-circle-fill" : "ri-add-circle-fill"} mr-1 text-sm`} />
                 {row.side === "SELL" ? "S" : "B"}
               </td>
-              <td className="table-cell num whitespace-nowrap text-gray-400">{formatDateTime(row.entry_time)}</td>
+              <td className="table-cell num whitespace-nowrap text-gray-400">{formatTradeTime(row.entry_time, row.exit_time)}</td>
               <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.entry_price)}</td>
-              <td className="table-cell num whitespace-nowrap text-gray-400">{row.exit_time ? formatDateTime(row.exit_time) : "--"}</td>
+              <td className="table-cell num whitespace-nowrap text-gray-400">{row.exit_time ? formatTradeTime(row.exit_time, row.entry_time) : "--"}</td>
               <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.exit_price)}</td>
               <td className={`table-cell font-semibold ${reasonColor(row.exit_reason)}`}>
                 {reasonIcon(row.exit_reason)}
@@ -1585,9 +1585,8 @@ function formatSignedMoney(value: number) {
 }
 
 function formatDateTime(value: unknown) {
-  if (!value) return '--';
-  const date = new Date(String(value));
-  if (Number.isNaN(date.getTime())) return String(value);
+  const date = parseMarketTimestamp(value);
+  if (!date) return '--';
   return date.toLocaleTimeString('en-IN', {
     timeZone: 'Asia/Kolkata',
     hour: '2-digit',
@@ -1602,9 +1601,8 @@ function formatDateTime(value: unknown) {
 // yesterday's stale value carried through warmup. Rendered as
 // "20 Aug 16:15:00" so the user always knows the day.
 function formatDateTimeWithDate(value: unknown) {
-  if (!value) return '--';
-  const date = new Date(String(value));
-  if (Number.isNaN(date.getTime())) return String(value);
+  const date = parseMarketTimestamp(value);
+  if (!date) return value ? String(value) : '--';
   return date.toLocaleString('en-IN', {
     timeZone: 'Asia/Kolkata',
     day: '2-digit',
@@ -1617,9 +1615,8 @@ function formatDateTimeWithDate(value: unknown) {
 }
 
 function formatDateOnly(value: unknown) {
-  if (!value) return '--';
-  const date = new Date(String(value));
-  if (Number.isNaN(date.getTime())) return String(value);
+  const date = parseMarketTimestamp(value);
+  if (!date) return value ? String(value) : '--';
   return date.toLocaleDateString('en-IN', {
     timeZone: 'Asia/Kolkata',
     day: '2-digit',
@@ -1629,9 +1626,8 @@ function formatDateOnly(value: unknown) {
 }
 
 function formatTimeOnly(value: unknown) {
-  if (!value) return '--';
-  const date = new Date(String(value));
-  if (Number.isNaN(date.getTime())) return String(value);
+  const date = parseMarketTimestamp(value);
+  if (!date) return value ? String(value) : '--';
   return date.toLocaleTimeString('en-IN', {
     timeZone: 'Asia/Kolkata',
     hour: '2-digit',
@@ -1641,9 +1637,8 @@ function formatTimeOnly(value: unknown) {
 }
 
 function toKolkataDateKey(value: unknown) {
-  if (!value) return null;
-  const date = new Date(String(value));
-  if (Number.isNaN(date.getTime())) return null;
+  const date = parseMarketTimestamp(value);
+  if (!date) return null;
   const parts = new Intl.DateTimeFormat('en-US', {
     timeZone: 'Asia/Kolkata',
     year: 'numeric',
@@ -1655,6 +1650,32 @@ function toKolkataDateKey(value: unknown) {
   const day = parts.find((part) => part.type === 'day')?.value;
   if (!year || !month || !day) return null;
   return `${year}-${month}-${day}`;
+}
+
+function formatTradeTime(value: unknown, pairedValue: unknown) {
+  const date = parseMarketTimestamp(value);
+  if (!date) return '--';
+  const pairedDate = parseMarketTimestamp(pairedValue);
+  // A closed-trades row can legitimately span dates after an outage/manual
+  // recovery. Show the date in that exceptional case so time-only cells do
+  // not falsely look like an exit happened before its entry.
+  if (pairedDate && toKolkataDateKey(value) !== toKolkataDateKey(pairedValue)) {
+    return formatDateTimeWithDate(value);
+  }
+  return formatDateTime(value);
+}
+
+function parseMarketTimestamp(value: unknown): Date | null {
+  if (!value) return null;
+  const raw = String(value).trim();
+  if (!raw) return null;
+  // Strategy candle timestamps without an offset are IST by contract. Attach
+  // the offset explicitly so browser locale/timezone never changes the shown
+  // market time. Broker fills now include UTC offsets and bypass this branch.
+  const hasOffset = /(?:Z|[+-]\d{2}:?\d{2})$/i.test(raw);
+  const normalized = hasOffset ? raw : `${raw.replace(' ', 'T')}+05:30`;
+  const date = new Date(normalized);
+  return Number.isNaN(date.getTime()) ? null : date;
 }
 
 function buildSetupHistoryGroups(rows: any[]) {
@@ -1698,21 +1719,28 @@ function pnlColor(value?: number | null) {
 }
 
 function reasonColor(reason: string) {
-  if (reason === 'TARGET') return 'text-[#22c55e]';
-  if (reason === 'SL') return 'text-[#ef4444]';
-  if (reason === 'EOD_SQUAREOFF' || reason === 'EOD') return 'text-[#f59e0b]';
+  const normalized = String(reason || '').toUpperCase();
+  if (normalized === 'TARGET' || normalized === 'TARGET_FYERS') return 'text-[#22c55e]';
+  if (normalized === 'TRAILING_SL' || normalized === 'TRAILING_SL_FYERS') return 'text-[#f59e0b]';
+  if (normalized === 'SL' || normalized === 'SL_FYERS') return 'text-[#ef4444]';
+  if (normalized === 'EOD_SQUAREOFF' || normalized === 'EOD') return 'text-[#f59e0b]';
   return 'text-gray-100';
 }
 
 function reasonIcon(reason: string) {
-  if (reason === 'TARGET') return <i className="ri-checkbox-circle-fill mr-1 text-sm text-[#22c55e]" />;
-  if (reason === 'SL') return <i className="ri-close-circle-fill mr-1 text-sm text-[#ef4444]" />;
-  if (reason === 'EOD_SQUAREOFF' || reason === 'EOD') return <i className="ri-error-warning-fill mr-1 text-sm text-[#f59e0b]" />;
+  const normalized = String(reason || '').toUpperCase();
+  if (normalized === 'TARGET' || normalized === 'TARGET_FYERS') return <i className="ri-checkbox-circle-fill mr-1 text-sm text-[#22c55e]" />;
+  if (normalized === 'TRAILING_SL' || normalized === 'TRAILING_SL_FYERS') return <i className="ri-route-fill mr-1 text-sm text-[#f59e0b]" />;
+  if (normalized === 'SL' || normalized === 'SL_FYERS') return <i className="ri-close-circle-fill mr-1 text-sm text-[#ef4444]" />;
+  if (normalized === 'EOD_SQUAREOFF' || normalized === 'EOD') return <i className="ri-error-warning-fill mr-1 text-sm text-[#f59e0b]" />;
   return null;
 }
 
 function formatReason(reason: string) {
-  if (reason === 'EOD_SQUAREOFF') return 'EOD';
+  const normalized = String(reason || '').toUpperCase();
+  if (normalized === 'EOD_SQUAREOFF') return 'EOD';
+  if (normalized === 'TRAILING_SL' || normalized === 'TRAILING_SL_FYERS') return 'Trailing SL';
+  if (normalized === 'SL_FYERS') return 'SL';
   return reason || '--';
 }
 

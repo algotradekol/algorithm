@@ -58,9 +58,6 @@ from ..timezone import IST
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
 BUCKET_MINUTES = 15
-LEGACY_BUY_BUCKET_MINUTES = 5
-LEGACY_BUY_CONFIRMATION_MINUTES = 15
-SILVER_BUY_PLAN_LEGACY_CONFIRMATION = "legacy_confirmation"
 SILVER_BUY_PLAN_REFERENCE_BREAKOUT = "reference_breakout"
 SILVER_MICRO_ROOT = "SILVERMIC"
 # MCX Silver Micro contract size: 1 lot = 1 kg = 1 unit on Fyers.
@@ -119,11 +116,6 @@ def _bucket_start(ts: datetime.datetime, minutes: int = BUCKET_MINUTES) -> datet
     return ts.replace(minute=minute, second=0, microsecond=0)
 
 
-def _legacy_buy_bucket_start(ts: datetime.datetime) -> datetime.datetime:
-    """Round a minute timestamp down to the legacy BUY 5-minute bucket."""
-    return _bucket_start(ts, LEGACY_BUY_BUCKET_MINUTES)
-
-
 def _latest_closed_minute_cutoff(now: datetime.datetime | None = None) -> datetime.datetime:
     """Return the earliest minute timestamp that is still forming.
 
@@ -161,9 +153,11 @@ def _fmt(value: float | None) -> str:
 def _entry_time_iso(value) -> str:
     """Serialize a market event time consistently for broker audit rows."""
     if isinstance(value, datetime.datetime):
-        if value.tzinfo is not None:
-            value = value.astimezone(IST).replace(tzinfo=None)
-        return value.isoformat()
+        # Engine market timestamps are naive IST. Persist an explicit UTC
+        # offset so Supabase and the browser cannot interpret them differently.
+        if value.tzinfo is None:
+            value = value.replace(tzinfo=IST)
+        return value.astimezone(datetime.timezone.utc).isoformat()
     return str(value)
 
 
@@ -195,17 +189,6 @@ class Algo3SilverMicro(Strategy):
         self._last_ingested_minute_at: datetime.datetime | None = None
         self._bars: deque[dict] = deque(maxlen=500)
         self._ema20: float | None = None
-
-        # Keep the old 5m fields only for persisted-state compatibility. They
-        # are no longer fed by the live runtime.
-        self._legacy_buy_5m_buffer: list[dict] = []
-        self._legacy_buy_5m_bucket: datetime.datetime | None = None
-        self._legacy_buy_price_ema20: float | None = None
-        self._legacy_buy_volume_ema20: float | None = None
-        self._legacy_buy_bars_finalized = 0
-        self._legacy_buy_pending_setup: dict | None = None
-        self._legacy_buy_pending_entry: dict | None = None
-        self._legacy_buy_entry_context: dict | None = None
 
         # Stored setup levels — most recent qualifying candle's close.
         # Persist across candles until overwritten by a fresh qualifier.
@@ -247,7 +230,6 @@ class Algo3SilverMicro(Strategy):
     def reload_settings(self):
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
-        self._reset_legacy_buy_state()
         self._buy_reentry_after_exit = None
 
     def market_session_start(self) -> str:
@@ -303,7 +285,6 @@ class Algo3SilverMicro(Strategy):
         self._last_ingested_minute_at = None
         self._bars.clear()
         self._ema20 = None
-        self._reset_legacy_buy_state()
         self._buy_setup_close = None
         self._sell_setup_close = None
         self._buy_setup_bar_at = None
@@ -317,26 +298,8 @@ class Algo3SilverMicro(Strategy):
         self._entry_attempt_in_flight = False
         self._entry_cooldown_until_monotonic = 0.0
 
-    def _reset_legacy_buy_state(self):
-        self._legacy_buy_5m_buffer = []
-        self._legacy_buy_5m_bucket = None
-        self._legacy_buy_price_ema20 = None
-        self._legacy_buy_volume_ema20 = None
-        self._legacy_buy_bars_finalized = 0
-        self._legacy_buy_pending_setup = None
-        self._legacy_buy_pending_entry = None
-        self._legacy_buy_entry_context = None
-
     def _silver_buy_plan(self) -> str:
-        """Return the single canonical live BUY model.
-
-        Older rows used ``legacy_confirmation`` or ``live_breakout``. Treat
-        both as compatibility aliases so a stale setting can never switch the
-        runtime back to the removed 5-minute confirmation path.
-        """
-        raw = str(self.settings.get("silver_buy_plan") or SILVER_BUY_PLAN_REFERENCE_BREAKOUT).strip().lower()
-        if raw in {SILVER_BUY_PLAN_REFERENCE_BREAKOUT, SILVER_BUY_PLAN_LEGACY_CONFIRMATION, "live_breakout"}:
-            return SILVER_BUY_PLAN_REFERENCE_BREAKOUT
+        """Silver BUY always uses the finalized 15-minute EMA reference."""
         return SILVER_BUY_PLAN_REFERENCE_BREAKOUT
 
     def _load_history_background(self):
@@ -441,15 +404,17 @@ class Algo3SilverMicro(Strategy):
 
         if side == "BUY":
             if ltp <= sl:
-                self.broker.close_trade(position, ltp, "SL")
-                self._arm_buy_reentry_after_exit("SL")
+                exit_reason = self._stop_exit_reason(position)
+                self.broker.close_trade(position, ltp, exit_reason)
+                self._arm_buy_reentry_after_exit(exit_reason)
             elif use_target and ltp >= target:
                 self.broker.close_trade(position, ltp, "TARGET")
                 self._arm_buy_reentry_after_exit("TARGET")
         else:
             if ltp >= sl:
-                self.broker.close_trade(position, ltp, "SL")
-                self._arm_sell_reentry_after_exit("SL")
+                exit_reason = self._stop_exit_reason(position)
+                self.broker.close_trade(position, ltp, exit_reason)
+                self._arm_sell_reentry_after_exit(exit_reason)
             elif use_target and ltp <= target:
                 self.broker.close_trade(position, ltp, "TARGET")
                 self._arm_sell_reentry_after_exit("TARGET")
@@ -466,7 +431,7 @@ class Algo3SilverMicro(Strategy):
         # Keep the reference alive for either protective exit. After a stop,
         # a qualifying downward tick can re-enter once it is at/below the
         # carried reference - n level; it cannot re-enter above that level.
-        if exit_reason not in {"SL", "TARGET"}:
+        if exit_reason not in {"SL", "TRAILING_SL", "TARGET"}:
             return
         if self._sell_setup_close is None or self._sell_setup_bar_at is None:
             self._sell_reentry_after_exit = None
@@ -486,7 +451,7 @@ class Algo3SilverMicro(Strategy):
         preceding tick. This prevents repeated orders on a flat/stale tick
         while allowing a renewed move above the same finalized reference.
         """
-        if exit_reason not in {"SL", "TARGET"}:
+        if exit_reason not in {"SL", "TRAILING_SL", "TARGET"}:
             return
         if self._buy_setup_close is None or self._buy_setup_bar_at is None:
             self._buy_reentry_after_exit = None
@@ -502,6 +467,20 @@ class Algo3SilverMicro(Strategy):
         for position in self.broker.open_positions():
             ltp = position.get("_last_ltp", position["entry_price"])
             self.broker.close_trade(position, ltp, "EOD_SQUAREOFF")
+
+    @staticmethod
+    def _stop_exit_reason(position: dict) -> str:
+        """Preserve whether the effective stop was a trailed stop.
+
+        A point-lock TSL moves the stored SL only after activation. Recording
+        that distinction at the source makes paper, live, and UI audit rows
+        agree instead of relabeling a profitable trailing exit as a normal SL.
+        """
+        snapshot = position.get("signal_snapshot") or {}
+        trailing = snapshot.get("trailing") if isinstance(snapshot, dict) else None
+        if bool(position.get("trailing_sl_active")) or bool(isinstance(trailing, dict) and trailing.get("activated")):
+            return "TRAILING_SL"
+        return "SL"
 
     # ── aggregation ──────────────────────────────────────────────────
     def _ingest_minute_candle(self, candle: dict, allow_signals: bool):
@@ -537,123 +516,6 @@ class Algo3SilverMicro(Strategy):
             return
 
         self._minute_buffer.append(minute_candle)
-
-    def _ingest_legacy_buy_minute(self, candle: dict, allow_signals: bool):
-        if self._silver_buy_plan() != SILVER_BUY_PLAN_LEGACY_CONFIRMATION:
-            return
-        bucket = _legacy_buy_bucket_start(candle["time"])
-        if self._legacy_buy_5m_bucket is None:
-            self._legacy_buy_5m_bucket = bucket
-            self._legacy_buy_5m_buffer = [candle]
-            return
-        if bucket != self._legacy_buy_5m_bucket:
-            self._finalize_legacy_buy_bar(allow_signals=allow_signals)
-            self._legacy_buy_5m_bucket = bucket
-            self._legacy_buy_5m_buffer = [candle]
-            # A confirmed setup enters at the OPEN of this new 5m bucket,
-            # not at a later close or an arbitrary websocket tick.
-            if allow_signals:
-                self._execute_legacy_buy_entry(candle)
-            return
-        self._legacy_buy_5m_buffer.append(candle)
-
-    def _finalize_legacy_buy_bar(self, allow_signals: bool, require_closed: bool = True):
-        if not self._legacy_buy_5m_buffer or self._legacy_buy_5m_bucket is None:
-            return
-        if require_closed and not _is_bucket_closed(self._legacy_buy_5m_bucket):
-            return
-        bar = {
-            "time": self._legacy_buy_5m_bucket,
-            "open": self._legacy_buy_5m_buffer[0]["open"],
-            "high": max(c["high"] for c in self._legacy_buy_5m_buffer),
-            "low": min(c["low"] for c in self._legacy_buy_5m_buffer),
-            "close": self._legacy_buy_5m_buffer[-1]["close"],
-            "volume": sum(c["volume"] for c in self._legacy_buy_5m_buffer),
-            "minute_count": len(self._legacy_buy_5m_buffer),
-        }
-        self._legacy_buy_5m_buffer = []
-        self._legacy_buy_price_ema20 = _ema_step(self._legacy_buy_price_ema20, bar["close"])
-        self._legacy_buy_volume_ema20 = _ema_step(self._legacy_buy_volume_ema20, bar["volume"])
-        self._legacy_buy_bars_finalized += 1
-        if allow_signals:
-            self._evaluate_legacy_buy_bar(bar)
-
-    def _evaluate_legacy_buy_bar(self, bar: dict):
-        if self._legacy_buy_bars_finalized < EMA_PERIOD:
-            return
-
-        pending = self._legacy_buy_pending_setup
-        if pending:
-            deadline = pending["setup_bucket"] + datetime.timedelta(minutes=LEGACY_BUY_CONFIRMATION_MINUTES)
-            if bar["time"] > deadline:
-                self._legacy_buy_pending_setup = None
-            elif (
-                bar["time"] > pending["setup_bucket"]
-                and bar["close"] > bar["open"]
-                and bar["close"] > pending["setup_close"]
-            ):
-                self._legacy_buy_pending_entry = {
-                    "entry_bucket": bar["time"] + datetime.timedelta(minutes=LEGACY_BUY_BUCKET_MINUTES),
-                    "setup": pending["setup"],
-                    "confirmation": bar,
-                }
-                self._legacy_buy_pending_setup = None
-
-        if (
-            bar["close"] > bar["open"]
-            and self._legacy_buy_price_ema20 is not None
-            and self._legacy_buy_volume_ema20 is not None
-            and bar["close"] > self._legacy_buy_price_ema20
-            and bar["volume"] > self._legacy_buy_volume_ema20
-        ):
-            # The live engine defaults to this legacy 5m BUY model. Keep its
-            # qualifying setup visible in the same current-session history
-            # used by the dashboard; warmup never reaches this method with
-            # allow_signals=True, so historical rebuilds remain silent.
-            self._persist_setup_event(
-                "BUY",
-                bar,
-                source="live",
-                ema20_override=self._legacy_buy_price_ema20,
-            )
-            self._legacy_buy_pending_setup = {
-                "setup_bucket": bar["time"],
-                "setup_close": bar["close"],
-                "setup": bar,
-            }
-            if self._last_bar_at:
-                print(
-                    f"[algo3] legacy BUY setup {bar['time'].isoformat()} "
-                    f"close={bar['close']:.2f} price_ema20={_fmt(self._legacy_buy_price_ema20)} "
-                    f"volume={bar['volume']:.0f} volume_ema20={_fmt(self._legacy_buy_volume_ema20)}"
-                )
-
-    def _execute_legacy_buy_entry(self, candle: dict):
-        pending = self._legacy_buy_pending_entry
-        if not pending or candle["time"] < pending["entry_bucket"]:
-            return
-        if self._open_position() and self._open_position().get("side") == "BUY":
-            self._legacy_buy_pending_entry = None
-            return
-        setup = pending["setup"]
-        self._legacy_buy_entry_context = {
-            "setup_close": float(setup["close"]),
-            "setup_time": setup["time"],
-            "confirmation_close": float(pending["confirmation"]["close"]),
-            "confirmation_time": pending["confirmation"]["time"],
-        }
-        try:
-            entered = self._fire_entry(
-                "BUY",
-                float(candle["open"]),
-                float(setup["close"]),
-                setup_bar_at_override=setup["time"],
-            )
-            if entered:
-                self._mark_fired("BUY", setup["time"])
-        finally:
-            self._legacy_buy_entry_context = None
-            self._legacy_buy_pending_entry = None
 
     def _finalize_bar(self, allow_signals: bool, require_closed: bool = True):
         if not self._minute_buffer or self._current_bucket is None:
@@ -1014,6 +876,12 @@ class Algo3SilverMicro(Strategy):
         # crosses anchor - n. This must run from ticks, not from the candle's
         # eventual close, otherwise a fast move can give away the entry.
         sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
+        opening_sell_gap = bool(
+            sell_level is not None
+            and self._sell_setup_bar_at is not None
+            and ltp <= sell_level
+            and self._is_opening_gap_from_prior_session(event_time, self._sell_setup_bar_at)
+        )
         sell_reentry = self._sell_reentry_after_exit
         same_sell_reference = bool(
             sell_reentry
@@ -1044,18 +912,21 @@ class Algo3SilverMicro(Strategy):
             and ltp < self._ema20
         )
         if (
-            current_sell_candle
+            (opening_sell_gap or current_sell_candle)
             and (
+                opening_sell_gap
+                or (
                 (
                     ltp <= sell_level
                     and (self._prev_ltp is None or self._prev_ltp > sell_level)
                 )
                 or same_reference_downturn
+                )
             )
             and not self._failed_attempt_blocks_setup("SELL", self._sell_setup_bar_at)
         ):
             print(
-                f"[algo3] TRIGGER SELL (red-chain tick-cross): previous red reference "
+                f"[algo3] TRIGGER SELL ({'opening gap' if opening_sell_gap else 'red-chain tick-cross'}): previous red reference "
                 f"{self._sell_setup_close:.2f} - n={n:.0f} = level {sell_level:.2f}; "
                 f"forming red candle LTP={ltp:.2f}"
             )
@@ -1092,6 +963,7 @@ class Algo3SilverMicro(Strategy):
             and ltp >= buy_level
             and self._buy_setup_bar_at is not None
             and (not same_buy_reference or renewed_buy_move)
+            and (self._prev_ltp is not None or self._is_opening_gap_from_prior_session(event_time, self._buy_setup_bar_at))
             and not self._failed_attempt_blocks_setup("BUY")
         ):
             print(f"[algo3] TRIGGER BUY (gap-through): LTP {ltp:.2f} >= level {buy_level:.2f} (setup {self._buy_setup_close:.2f} + n={n:.0f})")
@@ -1099,9 +971,9 @@ class Algo3SilverMicro(Strategy):
                 self._buy_reentry_after_exit = None
                 self._mark_fired("BUY")
                 return
-        # Classic live tick-cross for the case where a normal live tick
-        # walks through the level (not a gap-open). Guard against
-        # double-firing when the gap-through path already handled it.
+
+        # A normal intraday tick still needs the usual crossing path. This is
+        # separate from the deliberately narrow prior-session opening-gap path.
         if prev is None:
             return
         if (
@@ -1114,6 +986,23 @@ class Algo3SilverMicro(Strategy):
                 self._buy_reentry_after_exit = None
                 self._mark_fired("BUY")
                 return
+
+    @staticmethod
+    def _is_opening_gap_from_prior_session(event_time, setup_bar_at: datetime.datetime) -> bool:
+        """Allow the first 09:00-09:14 IST market window to use a carried setup.
+
+        Restarting a feed later in the day must not convert a stale first tick
+        into a fake gap entry. This exception is intentionally limited to a
+        prior-session setup during the real opening 15-minute window.
+        ``None`` remains accepted for lightweight legacy smoke doubles.
+        """
+        if event_time is None:
+            return True
+        if not isinstance(event_time, datetime.datetime):
+            return False
+        local = event_time.astimezone(IST).replace(tzinfo=None) if event_time.tzinfo else event_time
+        start = local.replace(hour=9, minute=0, second=0, microsecond=0)
+        return setup_bar_at.date() < local.date() and start <= local < start + datetime.timedelta(minutes=15)
     def _check_candle_close_trigger(self, bar: dict):
         """Fallback trigger check on every completed 15m bar.
 
@@ -1354,11 +1243,6 @@ class Algo3SilverMicro(Strategy):
             "current_bucket": self._current_bucket.isoformat() if self._current_bucket else None,
             "ema20": self._ema20,
             "silver_buy_plan": self._silver_buy_plan(),
-            "legacy_buy_5m_bars": self._legacy_buy_bars_finalized,
-            "legacy_buy_price_ema20": self._legacy_buy_price_ema20,
-            "legacy_buy_volume_ema20": self._legacy_buy_volume_ema20,
-            "legacy_buy_pending_setup": bool(self._legacy_buy_pending_setup),
-            "legacy_buy_pending_entry": bool(self._legacy_buy_pending_entry),
             "buy_setup_close": self._buy_setup_close,
             "sell_setup_close": self._sell_setup_close,
             "buy_setup_bar_at": self._buy_setup_bar_at.isoformat() if self._buy_setup_bar_at else None,

@@ -427,8 +427,8 @@ function DashboardContent() {
                 <AlgoTab
                   key={`algo3-${tradingMode}`}
                   algoId="algo3"
-                  displayName="Silver Micro - MCX:SILVERMIC26AUGFUT - legacy BUY / red-chain SELL"
-                  description="Tracks MCX:SILVERMIC26AUGFUT with the tested live rules. BUY uses 5-minute price EMA20 plus volume EMA20 confirmation, then enters at the next 5-minute candle open. SELL uses the current 15-minute red-chain reference comparison below EMA20. Reversal, points-based SL/target, and trailing protection follow the active settings."
+                  displayName="Silver Micro - 15m reference BUY / red-chain SELL"
+                  description="Uses completed 15-minute candles. BUY carries the latest green close above EMA20 and enters at reference + n, including a carried prior-day gap at 09:00. SELL carries the latest red close below EMA20 through green candles and enters at reference - n during a later red move. Reversal, points-based SL/target, and trailing protection follow the active settings."
                   tradingMode={tradingMode}
                   fyersConnected={fyersConnectedForMode}
                   onWebSocketStatus={setWsStatus}

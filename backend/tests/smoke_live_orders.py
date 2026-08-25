@@ -228,6 +228,37 @@ def test_oco_reconcile():
           f"cancelled={rec['cancelled']}")
 
 
+def test_oco_reconcile_marks_trailing_stop():
+    print("\n5b. OCO reconcile records a filled moved stop as TRAILING_SL")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+    rec["orderbook"] = [
+        {"id": "SL-TRAIL", "status": 2, "tradedPrice": 1050.0, "orderDateTime": "2026-08-10 10:15:00"},
+        {"id": "TP-TRAIL", "status": 6},
+    ]
+    position = {
+        "symbol": "MCX:SILVERMIC26AUGFUT", "side": "BUY", "qty": 1,
+        "sl_price": 1050.0, "target_price": 1300.0, "trailing_sl_active": True,
+        "signal_snapshot": {
+            "fyers_sl_order_id": "SL-TRAIL",
+            "fyers_target_order_id": "TP-TRAIL",
+            "trailing": {"activated": True},
+        },
+    }
+    closed = []
+    broker.open_positions = lambda: [position]
+    import app.paper_broker as pb
+    original_close = pb.PaperBroker.close_trade
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: closed.append((exit_reason, price))
+    try:
+        broker.reconcile_open_positions()
+    finally:
+        pb.PaperBroker.close_trade = original_close
+    check("filled moved stop is recorded as TRAILING_SL_FYERS",
+          len(closed) == 1 and closed[0][0] == "TRAILING_SL_FYERS",
+          f"closed={closed}")
+
+
 # ── 6. trailing SL pushes modify to Fyers ──────────────────────────────
 def test_trailing_sl_syncs_to_fyers():
     print("\n6. Trailing SL modifies the SL-M order at Fyers (server-side)")
@@ -1584,14 +1615,6 @@ def _make_bare_algo3(settings_overrides=None):
     strat._last_ingested_minute_at = None
     strat._bars = deque(maxlen=500)
     strat._ema20 = None
-    strat._legacy_buy_5m_buffer = []
-    strat._legacy_buy_5m_bucket = None
-    strat._legacy_buy_price_ema20 = None
-    strat._legacy_buy_volume_ema20 = None
-    strat._legacy_buy_bars_finalized = 0
-    strat._legacy_buy_pending_setup = None
-    strat._legacy_buy_pending_entry = None
-    strat._legacy_buy_entry_context = None
     strat._buy_setup_close = None
     strat._sell_setup_close = None
     strat._buy_setup_bar_at = None
@@ -2303,8 +2326,8 @@ def test_algo3_entry_uses_exchange_event_time():
     strat._prev_ltp = 92100.0
     strat._check_triggers(92200.0, event_time=event_time)
     check("BUY opened with one event timestamp", len(strat.broker.opens) == 1)
-    check("entry_time matches the market event, not receipt now",
-          strat.broker.opens[0].get("entry_time") == event_time.isoformat(),
+    check("entry_time is the market event converted from IST to explicit UTC",
+          strat.broker.opens[0].get("entry_time") == "2026-08-20T13:52:07+00:00",
           f"entry_time={strat.broker.opens[0].get('entry_time')!r}")
 
 
@@ -3090,6 +3113,16 @@ def test_algo3_live_buy_reference_reentry_and_rollover():
     check("green 15m close above EMA becomes BUY reference",
           target_strat._buy_setup_close == 1100.0,
           f"reference={target_strat._buy_setup_close}")
+    target_strat._update_setups({
+        "time": _dt.datetime(2026, 8, 20, 19, 30), "open": 990.0,
+        "high": 999.0, "low": 985.0, "close": 995.0, "volume": 1,
+    })
+    check("green 15m close below EMA cannot replace BUY reference",
+          target_strat._buy_setup_close == 1100.0
+          and target_strat._buy_setup_bar_at == _dt.datetime(2026, 8, 20, 19, 15),
+          f"reference={target_strat._buy_setup_close} at={target_strat._buy_setup_bar_at}")
+    check("live BUY strategy no longer contains 5m confirmation state",
+          not hasattr(target_strat, "_legacy_buy_5m_buffer"))
     target_strat._prev_ltp = 1290.0
     target_strat._check_triggers(1305.0)
     check("BUY enters at reference + 200 crossing",
@@ -3248,14 +3281,14 @@ def test_algo3_gap_through_fires_immediately():
     check("gap-through BUY does NOT re-fire on same setup",
           len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
 
-    # SELL side no longer gap-fires; it waits for a fully closed
-    # qualifying red candle to compare against the previous red reference.
+    # A feed restart later in the day must not turn its first tick into a
+    # false opening-gap SELL entry.
     strat2 = _make_bare_algo3()
     strat2._sell_setup_close = 231000.0
     strat2._sell_setup_bar_at = _dt.datetime(2026, 8, 19, 23, 45)
     strat2._prev_ltp = None
-    strat2.on_tick("MCX:SILVERMIC26AUGFUT", 228000, None)
-    check("gap-through SELL does not fire on first tick anymore",
+    strat2.on_tick("MCX:SILVERMIC26AUGFUT", 228000, _dt.datetime(2026, 8, 20, 10, 0))
+    check("stale SELL setup does not gap-fire outside the opening window",
           len(strat2.broker.opens) == 0,
           f"opens={strat2.broker.opens}")
 
@@ -3275,6 +3308,43 @@ def test_algo3_previous_day_buy_setup_gap_open_fires_immediately():
         check("entry uses the actual first tick gap-open price",
               abs(float(strat.broker.opens[0]["entry_price"]) - 1500.0) < 1e-9,
               f"entry={strat.broker.opens[0]['entry_price']}")
+
+
+def test_algo3_previous_day_sell_setup_gap_open_fires_immediately():
+    print("\n49c. algo3 previous-day SELL setup fires immediately on the next day's opening gap tick")
+    import datetime as _dt
+    strat = _make_bare_algo3()
+    strat._sell_setup_close = 1000.0
+    strat._sell_setup_bar_at = _dt.datetime(2026, 8, 20, 22, 15)
+    strat._prev_ltp = None
+    strat.on_tick("MCX:SILVERMIC26AUGFUT", 700, _dt.datetime(2026, 8, 21, 9, 0))
+    check("next-session first tick below prior trigger opens SELL immediately",
+          len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "SELL",
+          f"opens={strat.broker.opens}")
+    if strat.broker.opens:
+        check("SELL entry uses the actual first tick gap-open price",
+              abs(float(strat.broker.opens[0]["entry_price"]) - 700.0) < 1e-9,
+              f"entry={strat.broker.opens[0]['entry_price']}")
+
+
+def test_algo3_trailing_stop_exit_reason_is_preserved():
+    print("\n49d. algo3 records TRAILING_SL rather than generic SL after a trailed stop")
+    strat = _make_bare_algo3()
+    position = {
+        "symbol": strat.symbol,
+        "side": "BUY",
+        "entry_price": 1000.0,
+        "sl_price": 1050.0,
+        "target_price": 1300.0,
+        "_last_ltp": 1040.0,
+        "trailing_sl_active": True,
+        "signal_snapshot": {"trailing": {"activated": True}},
+    }
+    strat.broker._open_positions.append(position)
+    strat.check_exits()
+    check("trailed protective exit is labeled TRAILING_SL",
+          len(strat.broker.closes) == 1 and strat.broker.closes[0]["reason"] == "TRAILING_SL",
+          f"closes={strat.broker.closes}")
 
 
 def test_algo3_candle_close_trigger_fires():
@@ -4218,6 +4288,52 @@ def test_broker_positions_entry_time_from_tradebook():
           f"got={positions_c[0]['entry_time']}")
 
 
+def test_live_fill_timestamp_integrity():
+    """FYERS fill rows must not create shifted or cross-order timestamps."""
+    print("\n52b. live fill timestamps use IST and exact Fyers order identity")
+    broker = make_broker({"placed": [], "cancelled": [], "modified": [], "orderbook": []})
+
+    parsed = broker._parse_fill_time({"tradeDateTime": "2026-08-20 09:22:07"})
+    check(
+        "naive Fyers fill timestamp is interpreted as IST",
+        parsed is not None and parsed.isoformat().startswith("2026-08-20T03:52:07"),
+        f"parsed={parsed}",
+    )
+
+    class FillHistory:
+        def tradebook(self):
+            return {"tradeBook": [
+                {"id": "OLD", "symbol": "MCX:SILVERMIC26AUGFUT", "side": 1, "qty": 1,
+                 "tradeDateTime": "2026-08-20 09:22:07"},
+                {"id": "NEW", "symbol": "MCX:SILVERMIC26AUGFUT", "side": 1, "qty": 1,
+                 "tradeDateTime": "2026-08-20 09:23:07"},
+                # A row without an order id must never impersonate NEW.
+                {"symbol": "MCX:SILVERMIC26AUGFUT", "side": 1, "qty": 1,
+                 "tradeDateTime": "2026-08-20 15:29:30"},
+            ]}
+
+        def tradehistory(self, _payload):
+            return {"tradeHistory": []}
+
+    history = FillHistory()
+    matched = broker._find_latest_fill(history, "MCX:SILVERMIC26AUGFUT", "BUY", 1, "NEW")
+    missing = broker._find_latest_fill(history, "MCX:SILVERMIC26AUGFUT", "BUY", 1, "MISSING")
+    check("fill lookup uses the exact Fyers order id", matched and matched.get("id") == "NEW", f"matched={matched}")
+    check("fill lookup rejects unidentifiable historical rows", missing is None, f"missing={missing}")
+
+    import datetime
+    entry = (datetime.datetime.now(datetime.timezone.utc) - datetime.timedelta(minutes=1)).isoformat()
+    safe_exit = broker._safe_exit_time(
+        {"symbol": "MCX:SILVERMIC26AUGFUT", "entry_time": entry},
+        "2026-08-20T03:52:07+00:00",
+    )
+    check(
+        "stale exit timestamp is replaced instead of preceding entry",
+        datetime.datetime.fromisoformat(safe_exit) > datetime.datetime.fromisoformat(entry),
+        f"entry={entry} exit={safe_exit}",
+    )
+
+
 def test_algo3_warmup_end_date_is_today():
     """Warmup must include today's completed 1m candles so a mid-day
     restart rebuilds today's 15m bars + setups, not just yesterday's.
@@ -4782,6 +4898,7 @@ def main():
     test_live_funds_cap_still_limits_cash_equity()
     test_live_open_trade_refuses_unprotected_position()
     test_oco_reconcile()
+    test_oco_reconcile_marks_trailing_stop()
     test_trailing_sl_syncs_to_fyers()
     test_tick_rounding_and_slm_limit()
     test_external_close_sync()
@@ -4863,12 +4980,15 @@ def main():
     test_algo3_live_buy_reference_reentry_and_rollover()
     test_algo3_gap_through_fires_immediately()
     test_algo3_previous_day_buy_setup_gap_open_fires_immediately()
+    test_algo3_previous_day_sell_setup_gap_open_fires_immediately()
+    test_algo3_trailing_stop_exit_reason_is_preserved()
     test_algo3_candle_close_trigger_fires()
     test_algo3_backtest_sell_red_chain_survives_green_candles()
     test_algo3_backtest_sell_reentry_requires_carried_trigger()
     test_algo3_backtest_sell_trailing_exits_on_reversal()
     test_algo3_lot_based_qty()
     test_broker_positions_entry_time_from_tradebook()
+    test_live_fill_timestamp_integrity()
     test_algo3_warmup_end_date_is_today()
     test_algo3_warmup_debounce_blocks_repeat_calls()
     test_algo3_warmup_resets_state_before_replay()

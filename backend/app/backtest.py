@@ -29,8 +29,6 @@ MAX_BACKTEST_DAYS = 31
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
 SILVER_MICRO_BUCKET_MINUTES = 15
-SILVER_LEGACY_BUY_BUCKET_MINUTES = 5
-SILVER_LEGACY_BUY_CONFIRMATION_MINUTES = 15
 SILVER_MICRO_MCX_CLOSE_HHMM = "23:30"  # MCX evening session close
 OPENING_WINDOW_START = "09:15"
 OPENING_WINDOW_END = "09:16"
@@ -1569,13 +1567,6 @@ def _simulate_silver_micro_range(
     last_fired_sell_setup_at: datetime.datetime | None = None
     minute_buffer: list[dict] = []
     current_bucket: datetime.datetime | None = None
-    legacy_buy_5m_buffer: list[dict] = []
-    legacy_buy_5m_bucket: datetime.datetime | None = None
-    legacy_buy_price_ema20: float | None = None
-    legacy_buy_volume_ema20: float | None = None
-    legacy_buy_bars_finalized = 0
-    legacy_buy_pending_setup: dict | None = None
-    legacy_buy_pending_entry: dict | None = None
     prev_ltp: float | None = None
     bars_finalized = 0
     current_day: datetime.date | None = None
@@ -1778,135 +1769,6 @@ def _simulate_silver_micro_range(
         if is_red and ema20 is not None and bar["close"] < ema20:
             sell_setup_close = bar["close"]
             sell_setup_bar_at = bar["time"]
-
-    def finalize_legacy_buy_5m_bar(allow_signals: bool):
-        """Replay the pre-15m BUY model without changing the live-parity path.
-
-        The historical model used a 5m price EMA20, a 5m volume EMA20, a
-        green/above-EMA setup, a same-direction confirmation within 15
-        minutes, and entry at the next 5m candle open. Its candidate is still
-        sent through the shared Silver position/exit engine so the selected
-        BUY plan can be compared fairly with either SELL plan.
-        """
-        nonlocal legacy_buy_5m_buffer, legacy_buy_price_ema20, legacy_buy_volume_ema20
-        nonlocal legacy_buy_5m_bucket, legacy_buy_bars_finalized
-        nonlocal legacy_buy_pending_setup, legacy_buy_pending_entry, buy_setup_context
-        if not legacy_buy_5m_buffer or legacy_buy_5m_bucket is None:
-            return
-        bar = {
-            "time": legacy_buy_5m_bucket,
-            "open": legacy_buy_5m_buffer[0]["open"],
-            "high": max(c["high"] for c in legacy_buy_5m_buffer),
-            "low": min(c["low"] for c in legacy_buy_5m_buffer),
-            "close": legacy_buy_5m_buffer[-1]["close"],
-            "volume": sum(c["volume"] for c in legacy_buy_5m_buffer),
-        }
-        legacy_buy_5m_buffer = []
-        legacy_buy_price_ema20 = _ema_step(legacy_buy_price_ema20, bar["close"])
-        legacy_buy_volume_ema20 = _ema_step(legacy_buy_volume_ema20, bar["volume"])
-        legacy_buy_bars_finalized += 1
-        day = bar["time"].date()
-        in_scope = first_date <= day <= last_date
-        day_result = daily_results.get(day)
-        if not allow_signals or not in_scope or not day_result or legacy_buy_bars_finalized < EMA_PERIOD:
-            return
-
-        # A confirmation is evaluated on the closed 5m bar. The actual entry
-        # is deliberately deferred to the first minute of the next 5m bar.
-        if legacy_buy_pending_setup:
-            setup = legacy_buy_pending_setup
-            if bar["time"] > setup["setup_bucket"] + datetime.timedelta(minutes=SILVER_LEGACY_BUY_CONFIRMATION_MINUTES):
-                setup["candidate"]["signal_stage"] = "rejected"
-                setup["candidate"]["rejection_reason"] = "confirmation_timeout"
-                legacy_buy_pending_setup = None
-            elif (
-                bar["time"] > setup["setup_bucket"]
-                and bar["close"] > bar["open"]
-                and bar["close"] > setup["setup_close"]
-            ):
-                candidate = setup["candidate"]
-                candidate["signal_stage"] = "confirmed"
-                candidate["confirmation_time"] = bar["time"].isoformat()
-                candidate["confirmation_close"] = round(float(bar["close"]), 2)
-                legacy_buy_pending_entry = {
-                    "side": "BUY",
-                    "entry_bucket": bar["time"] + datetime.timedelta(minutes=SILVER_LEGACY_BUY_BUCKET_MINUTES),
-                    "candidate": candidate,
-                }
-                day_result["condition_breakdown"][2]["passed"] += 1
-                legacy_buy_pending_setup = None
-
-        is_green = bar["close"] > bar["open"]
-        qualifies = (
-            is_green
-            and legacy_buy_price_ema20 is not None
-            and legacy_buy_volume_ema20 is not None
-            and bar["close"] > legacy_buy_price_ema20
-            and bar["volume"] > legacy_buy_volume_ema20
-        )
-        if not qualifies:
-            return
-
-        if legacy_buy_pending_setup:
-            legacy_buy_pending_setup["candidate"]["signal_stage"] = "rejected"
-            legacy_buy_pending_setup["candidate"]["rejection_reason"] = "superseded_by_new_setup"
-
-        candidate = {
-            "symbol": symbol,
-            "sector": "MCX",
-            "side": "BUY",
-            "open": round(float(bar["open"]), 2),
-            "high": round(float(bar["high"]), 2),
-            "low": round(float(bar["low"]), 2),
-            "close": round(float(bar["close"]), 2),
-            "volume": round(float(bar["volume"]), 2),
-            "setup_time": bar["time"].isoformat(),
-            "setup_close": round(float(bar["close"]), 2),
-            "trigger_level": None,
-            "ema20": round(float(legacy_buy_price_ema20), 2),
-            "ema20_price": round(float(legacy_buy_price_ema20), 2),
-            "ema20_volume": round(float(legacy_buy_volume_ema20), 2),
-            "n_points": None,
-            "signal_stage": "setup",
-            "selected_for_trade": False,
-            "rejection_reason": None,
-            "entry_time": None,
-            "entry_price": None,
-            "exit_time": None,
-            "exit_price": None,
-            "exit_reason": None,
-            "net_pnl": None,
-            "gross_pnl": None,
-            "total_charges": None,
-        }
-        day_result["candidates"].append(candidate)
-        day_result["condition_breakdown"][1]["passed"] += 1
-        day_result["condition_breakdown"][2]["total"] += 1
-        day_result["chart"]["setups"].append({
-            "side": "BUY",
-            "time": bar["time"].isoformat(),
-            "timeframe": "5",
-            "setup_close": round(float(bar["close"]), 2),
-            "trigger_level": None,
-            "ema20": round(float(legacy_buy_price_ema20), 2),
-            "ema20_volume": round(float(legacy_buy_volume_ema20), 2),
-        })
-        buy_setup_context = {
-            "side": "BUY",
-            "setup_time": bar["time"].isoformat(),
-            "setup_close": round(float(bar["close"]), 2),
-            "trigger_level": None,
-            "ema20": round(float(legacy_buy_price_ema20), 2),
-            "n_points": None,
-            "previous_red_reference_close": None,
-            "current_qualifying_red_close": None,
-        }
-        legacy_buy_pending_setup = {
-            "side": "BUY",
-            "setup_close": float(bar["close"]),
-            "setup_bucket": bar["time"],
-            "candidate": candidate,
-        }
 
     def close_position(exit_price: float, exit_time: datetime.datetime, exit_reason: str, day: datetime.date):
         nonlocal position, position_candidate, sell_reentry_after_exit, buy_reentry_after_exit
@@ -2447,8 +2309,8 @@ def _simulate_silver_micro_range(
         prev_ltp = candle["close"]
         last_bar_processed = candle
 
-    # Final flush — finalize the 15m aggregation before closing any open
-    # position. The 5m BUY compatibility code is intentionally not called.
+    # Final flush — finalize the completed 15m aggregation before closing any
+    # open position.
     finalize_15m_bar(allow_signals=True)
     if current_day and position and last_bar_processed:
         close_position(float(last_bar_processed["close"]), last_bar_processed["time"], "EOD_SQUAREOFF", current_day)

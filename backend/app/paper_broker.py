@@ -200,7 +200,10 @@ class PaperBroker:
             "entry_trigger": entry_trigger or "Strategy entry conditions matched",
             "signal_snapshot": merged_snapshot,
             "status": "open",
-            "entry_time": entry_time or datetime.datetime.now().isoformat(),
+            # Persist every new trade time as an offset-aware UTC timestamp.
+            # The UI renders this in IST, avoiding server/browser timezone
+            # drift and impossible entry/exit ordering.
+            "entry_time": entry_time or datetime.datetime.now(datetime.timezone.utc).isoformat(),
         }
         try:
             run_with_supabase(
@@ -430,7 +433,7 @@ class PaperBroker:
             "entry_price": entry_price,
             "exit_price": exit_price,
             "entry_time": position["entry_time"],
-            "exit_time": exit_time or datetime.datetime.now().isoformat(),
+            "exit_time": exit_time or datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "entry_trigger": position.get("entry_trigger"),
             "signal_snapshot": position.get("signal_snapshot"),
             "exit_reason": exit_reason,

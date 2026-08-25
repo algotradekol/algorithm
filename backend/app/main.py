@@ -711,11 +711,11 @@ def get_algo_settings(algo_id: str, _user=Depends(require_auth)):
 @app.put("/api/algo/{algo_id}/settings")
 def update_algo_settings(algo_id: str, settings: dict, _user=Depends(require_auth)):
     from .strategy_settings import update_settings
-    update_settings(algo_id, settings)
+    result = update_settings(algo_id, settings)
     strategy = STRATEGIES.get(algo_id)
     if strategy and hasattr(strategy, "reload_settings"):
         strategy.reload_settings()
-    return {"status": "updated", "algo_id": algo_id}
+    return {"status": "updated", "algo_id": algo_id, **result}
 
 
 @app.put("/api/algo/{algo_id}/available-cash")

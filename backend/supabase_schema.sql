@@ -220,7 +220,16 @@ ALTER TABLE strategy_settings
 ALTER TABLE strategy_settings
     ADD COLUMN IF NOT EXISTS tsl_activate_points numeric default 100,
     ADD COLUMN IF NOT EXISTS tsl_profit_step_points numeric default 100,
-    ADD COLUMN IF NOT EXISTS tsl_lock_step_points numeric default 50;
+    ADD COLUMN IF NOT EXISTS tsl_lock_step_points numeric default 50,
+    ADD COLUMN IF NOT EXISTS tsl_trigger_points numeric default 100,
+    ADD COLUMN IF NOT EXISTS tsl_distance_points numeric default 50,
+    ADD COLUMN IF NOT EXISTS silver_breakout_points numeric default 150,
+    ADD COLUMN IF NOT EXISTS sl_points numeric default 100,
+    ADD COLUMN IF NOT EXISTS target_points numeric default 300,
+    ADD COLUMN IF NOT EXISTS silver_lots int default 1,
+    ADD COLUMN IF NOT EXISTS silver_buy_plan text default 'reference_breakout',
+    ADD COLUMN IF NOT EXISTS order_type text default 'MARKET',
+    ADD COLUMN IF NOT EXISTS parallel_paper_enabled boolean default false;
 
 ALTER TABLE strategy_settings
     ADD COLUMN IF NOT EXISTS exit_mode text default 'fixed_target_trailing_sl';

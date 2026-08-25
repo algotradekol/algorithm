@@ -15,6 +15,7 @@ from .fyers_client import get_fyers_model, get_wallet_balance
 from .paper_broker import PaperBroker
 from .proxy_health import check_proxy_reachable
 from .runtime_mode import get_fyers_config, get_runtime_trading_mode
+from .timezone import IST
 
 
 # NSE equity tick size. Fyers V3 rejects prices that aren't a multiple of the
@@ -162,7 +163,7 @@ class LiveBroker(PaperBroker):
             # Fyers tradebook time is authoritative when available. The
             # strategy event time is a safe fallback for delayed tradebook
             # hydration and keeps paper/live audit rows aligned.
-            entry_time=actual_entry_time or entry_time,
+            entry_time=self._safe_entry_time(actual_entry_time, entry_time),
         )
 
     def close_trade(self, position: dict, exit_price: float, exit_reason: str):
@@ -190,7 +191,12 @@ class LiveBroker(PaperBroker):
             order_response=order_response,
             fallback_price=exit_price,
         )
-        super().close_trade(position, actual_exit_price, exit_reason, exit_time=actual_exit_time)
+        super().close_trade(
+            position,
+            actual_exit_price,
+            exit_reason,
+            exit_time=self._safe_exit_time(position, actual_exit_time),
+        )
 
     # ── Protective order helpers ──────────────────────────────────────
     def _place_protective_orders(
@@ -604,12 +610,21 @@ class LiveBroker(PaperBroker):
             # PaperBroker.close_trade, using the actual Fyers fill price
             # from the filled order.
             fill_price = self._extract_fill_price(filled_order, float(position.get("sl_price") if filled_reason == "SL" else position.get("target_price")))
+            exit_reason = f"{filled_reason}_FYERS"
+            if filled_reason == "SL" and self._is_trailing_stop(position):
+                exit_reason = "TRAILING_SL_FYERS"
             try:
                 super().close_trade(
                     position,
                     fill_price,
-                    exit_reason=f"{filled_reason}_FYERS",
-                    exit_time=self._extract_fill_time(filled_order),
+                    exit_reason=exit_reason,
+                    # An orderbook's orderDateTime is when the protection was
+                    # created, not necessarily when it filled. Use it only as
+                    # a last resort for tradebook rows, never for this path.
+                    exit_time=self._safe_exit_time(
+                        position,
+                        self._extract_fill_time(filled_order, allow_order_time=False),
+                    ),
                 )
                 summary["reconciled"] += 1
                 print(f"[live_broker] reconciled {symbol} {filled_reason} @ {fill_price}")
@@ -775,7 +790,7 @@ class LiveBroker(PaperBroker):
         qty: int,
         order_response: dict,
         fallback_price: float,
-    ) -> tuple[float, str]:
+    ) -> tuple[float, str | None]:
         fyers = get_fyers_model("live")
         order_id = self._extract_order_id(order_response)
         deadline = time.time() + 8
@@ -785,9 +800,15 @@ class LiveBroker(PaperBroker):
             if latest_match:
                 break
             time.sleep(0.5)
-        price = self._extract_fill_price(latest_match, fallback_price)
-        executed_at = self._extract_fill_time(latest_match)
-        return price, executed_at
+        if not latest_match:
+            # Do not substitute an arbitrary historical trade merely to get a
+            # timestamp. The strategy event/current time is safer than a false
+            # broker fill time and preserves chronological trade records.
+            return float(fallback_price), None
+        return (
+            self._extract_fill_price(latest_match, fallback_price),
+            self._extract_fill_time(latest_match),
+        )
 
     def _find_latest_fill(
         self,
@@ -813,7 +834,10 @@ class LiveBroker(PaperBroker):
                 if row_side and row_side != side.upper():
                     continue
                 row_order_id = self._extract_order_id(row)
-                if order_id and row_order_id and row_order_id != order_id:
+                # Once Fyers has returned an order id, never fall back to a
+                # same-symbol/same-side row. That can select an older fill and
+                # write an entry or exit time from a different trade.
+                if order_id and row_order_id != order_id:
                     continue
                 row_qty = self._safe_int(
                     row.get("qty"),
@@ -858,7 +882,10 @@ class LiveBroker(PaperBroker):
     def _extract_order_id(self, row: dict | None) -> str | None:
         if not isinstance(row, dict):
             return None
-        for key in ("id", "order_id", "orderId", "fyOrderId", "exchangeOrderId"):
+        for key in (
+            "id", "order_id", "orderId", "orderNumber", "orderNo",
+            "fyOrderId", "exchangeOrderId",
+        ):
             value = row.get(key)
             if value:
                 return str(value)
@@ -910,27 +937,42 @@ class LiveBroker(PaperBroker):
             or fallback_price
         )
 
-    def _extract_fill_time(self, row: dict | None) -> str:
-        parsed = self._parse_fill_time(row)
+    def _extract_fill_time(self, row: dict | None, *, allow_order_time: bool = True) -> str:
+        parsed = self._parse_fill_time(row, allow_order_time=allow_order_time)
         if parsed:
-            return parsed.isoformat()
-        return datetime.datetime.now(datetime.timezone.utc).astimezone().isoformat()
+            return parsed.astimezone(datetime.timezone.utc).isoformat()
+        return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
-    def _parse_fill_time(self, row: dict | None) -> datetime.datetime | None:
+    @staticmethod
+    def _is_trailing_stop(position: dict) -> bool:
+        """Whether a filled broker stop is the currently trailed stop."""
+        snapshot = position.get("signal_snapshot") or {}
+        trailing = snapshot.get("trailing") if isinstance(snapshot, dict) else None
+        return bool(position.get("trailing_sl_active")) or bool(
+            isinstance(trailing, dict) and trailing.get("activated")
+        )
+
+    def _parse_fill_time(
+        self,
+        row: dict | None,
+        *,
+        allow_order_time: bool = True,
+    ) -> datetime.datetime | None:
         if not isinstance(row, dict):
             return None
-        for key in (
+        keys = [
             "tradeTime",
             "tradeDateTime",
             "tradedAt",
             "tradedOn",
             "updatedAt",
             "updated_at",
-            "orderDateTime",
-            "createdAt",
             "timestamp",
             "time",
-        ):
+        ]
+        if allow_order_time:
+            keys.extend(("orderDateTime", "createdAt"))
+        for key in keys:
             value = row.get(key)
             parsed = self._coerce_datetime(value)
             if parsed:
@@ -955,13 +997,37 @@ class LiveBroker(PaperBroker):
         try:
             parsed = datetime.datetime.fromisoformat(iso_candidate)
             if parsed.tzinfo is None:
-                parsed = parsed.replace(tzinfo=datetime.timezone.utc)
-            return parsed
+                # FYERS returns no-offset wall-clock timestamps in IST.
+                parsed = parsed.replace(tzinfo=IST)
+            return parsed.astimezone(datetime.timezone.utc)
         except ValueError:
             pass
         for fmt in ("%d-%m-%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
             try:
-                return datetime.datetime.strptime(text, fmt).replace(tzinfo=datetime.timezone.utc)
+                return datetime.datetime.strptime(text, fmt).replace(tzinfo=IST).astimezone(datetime.timezone.utc)
             except ValueError:
                 continue
         return None
+
+    def _safe_entry_time(self, candidate: str | None, fallback: str | None) -> str:
+        """Use a matched broker fill time, otherwise retain the strategy event."""
+        return candidate or fallback or datetime.datetime.now(datetime.timezone.utc).isoformat()
+
+    def _safe_exit_time(self, position: dict, candidate: str | None) -> str:
+        """Never persist an exit before the recorded entry.
+
+        A broker orderbook can expose its creation time instead of execution
+        time. If that value is stale, using the reconciliation timestamp is
+        truthful enough for the audit row and avoids impossible intervals.
+        """
+        now = datetime.datetime.now(datetime.timezone.utc)
+        exit_at = self._coerce_datetime(candidate) if candidate else now
+        entry_at = self._coerce_datetime(position.get("entry_time"))
+        if entry_at and exit_at <= entry_at:
+            print(
+                "[live_broker] rejected non-monotonic Fyers exit timestamp "
+                f"symbol={position.get('symbol')} entry={entry_at.isoformat()} "
+                f"candidate_exit={exit_at.isoformat()}"
+            )
+            exit_at = now
+        return exit_at.astimezone(datetime.timezone.utc).isoformat()

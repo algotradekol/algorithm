@@ -290,37 +290,52 @@ _NEW_COLUMNS_TOLERATE_MISSING = {
 }
 
 
-def _upsert_settings_with_fallback(algo_id: str, settings: dict, mode: str | None = None) -> None:
+def _upsert_settings_with_fallback(algo_id: str, settings: dict, mode: str | None = None) -> list[str]:
     """Try to write every setting; if Supabase rejects an unknown column,
-    strip that column from the payload and retry once. Prevents the whole
+    strip that column from the payload and retry. Prevents the whole
     save from silently failing when a new field hasn't been migrated yet."""
     from .supabase_client import run_with_supabase
 
     payload = {
         "algo_id": get_settings_storage_key(algo_id, mode=mode),
         **settings,
-        "updated_at": "now()",
+        # PostgREST treats "now()" as a literal string, not a SQL function.
+        # Send a real RFC3339 value so a timestamptz column always accepts it.
+        "updated_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
-    try:
-        run_with_supabase(lambda supabase: supabase.table("strategy_settings").upsert(payload).execute())
-        return
-    except Exception as exc:
-        text = str(exc).lower()
-        dropped = []
-        for col in list(_NEW_COLUMNS_TOLERATE_MISSING):
-            if col in text and col in payload:
+    dropped: list[str] = []
+    while True:
+        try:
+            run_with_supabase(lambda supabase: supabase.table("strategy_settings").upsert(payload).execute())
+            return dropped
+        except Exception as exc:
+            text = str(exc).lower()
+            rejected = [
+                col for col in _NEW_COLUMNS_TOLERATE_MISSING
+                if col in text and col in payload
+            ]
+            if not rejected:
+                raise
+            for col in rejected:
                 payload.pop(col, None)
                 dropped.append(col)
-        if not dropped:
-            raise
-        print(f"[strategy_settings] Supabase rejected column(s) {dropped}; retrying without them. To make these persist, run: ALTER TABLE public.strategy_settings ADD COLUMN IF NOT EXISTS {dropped[0]} ...")
-        run_with_supabase(lambda supabase: supabase.table("strategy_settings").upsert(payload).execute())
+            print(
+                "[strategy_settings] Supabase rejected missing column(s) "
+                f"{rejected}; retrying remaining fields. Run the Silver settings migration "
+                "to persist these settings."
+            )
 
 
 def update_settings(algo_id: str, settings: dict, mode: str | None = None):
-    """Write updated settings back to Supabase."""
+    """Write updated settings back to Supabase and report schema gaps."""
     settings = _normalize(settings, algo_id)
-    _upsert_settings_with_fallback(algo_id, settings, mode=mode)
+    missing_columns = _upsert_settings_with_fallback(algo_id, settings, mode=mode)
+    # Read through the same mode/deployment namespace used by the runtime so
+    # the UI never claims an ephemeral value has been durably persisted.
+    return {
+        "settings": get_settings(algo_id, mode=mode),
+        "missing_columns": missing_columns,
+    }
 
 
 def reset_settings(algo_id: str, mode: str | None = None) -> dict:
