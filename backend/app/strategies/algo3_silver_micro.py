@@ -35,8 +35,9 @@ Rules per spec:
                 after boot can already fire an entry based on
                 yesterday's qualifier.
 
-  Exits:        either fixed target + fixed SL, or a target milestone that
-                moves the SL once to breakeven and then lets the trade run.
+  Exits:        either fixed target + fixed SL, or a separate profit
+                milestone that moves the SL once to breakeven while the
+                final target remains active.
 """
 from __future__ import annotations
 
@@ -53,7 +54,7 @@ from ..mcx_symbols import get_active_mcx_contract
 from ..silver_setup_history import record_setup_event
 from ..strategy_settings import get_settings
 from ..timezone import IST
-from ..trailing_stop import normalize_silver_exit_mode
+from ..trailing_stop import SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN, normalize_silver_exit_mode
 
 EMA_PERIOD = 20
 WARMUP_LOOKBACK_DAYS = 10
@@ -1165,25 +1166,32 @@ class Algo3SilverMicro(Strategy):
         if qty < 1:
             return False
 
-        sl_pts = float(self.settings.get("sl_points", 100))
-        target_pts = float(self.settings.get("target_points", 300))
+        sl_pts = float(self.settings.get("sl_points", 200))
+        target_pts = float(self.settings.get("target_points", 2000))
+        activation_pts = float(self.settings.get("tsl_activate_points", 500))
         if side == "BUY":
             sl_price = float(entry_price) - sl_pts
             target_price = float(entry_price) + target_pts
+            activation_price = float(entry_price) + activation_pts
         else:
             sl_price = float(entry_price) + sl_pts
             target_price = float(entry_price) - target_pts
+            activation_price = float(entry_price) - activation_pts
 
         trigger = self._entry_trigger(side, entry_price, trigger_level)
         snapshot = self._signal_snapshot(side, entry_price, trigger_level)
         snapshot["silver_exit_policy"] = normalize_silver_exit_mode(
             self.settings.get("exit_mode")
         )
-        snapshot["silver_breakeven"] = {
-            "armed": False,
-            "target_price": target_price,
-            "initial_sl_price": sl_price,
-        }
+        if snapshot["silver_exit_policy"] == SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN:
+            snapshot["silver_breakeven"] = {
+                "armed": False,
+                "activation_price": activation_price,
+                "activation_points": activation_pts,
+                "target_price": target_price,
+                "final_target_enabled": True,
+                "initial_sl_price": sl_price,
+            }
         try:
             open_trade_args = (
                 self.symbol, side, qty, float(entry_price),
@@ -1203,7 +1211,8 @@ class Algo3SilverMicro(Strategy):
             print(
                 f"[algo3] ENTERED {side} {self.symbol} @ {entry_price:.2f} "
                 f"qty={qty} (trigger {_fmt(trigger_level)}, "
-                f"sl={_fmt(sl_price)}, tgt={_fmt(target_price)})"
+                f"sl={_fmt(sl_price)}, activation={_fmt(activation_price)}, "
+                f"final_target={_fmt(target_price)})"
             )
             return True
         except Exception as exc:

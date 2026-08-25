@@ -908,9 +908,14 @@ function csvValue(value: unknown) {
 
 function backtestTrailingLabel(trade: any) {
   if (trade.silver_exit_policy === 'target_to_breakeven_sl') {
+    const activationPoints = Number(trade.trailing_activate_points || 0);
+    const entry = Number(trade.entry_price || 0);
+    const activation = Number.isFinite(Number(trade.breakeven_activation_price))
+      ? Number(trade.breakeven_activation_price)
+      : trade.side === 'SELL' ? entry - activationPoints : entry + activationPoints;
     return trade.trailing_sl_active
       ? `breakeven @ ${number(trade.sl_price || trade.entry_price || 0)}`
-      : `arms at ${number(trade.target_price || 0)}`;
+      : `arms at ${number(activation)}`;
   }
   if (!trade.trailing_sl_enabled) return 'OFF';
   if (!trade.trailing_sl_active) return `armed · ${number(trade.trailing_trigger_points || 0)} pts`;

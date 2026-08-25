@@ -91,14 +91,15 @@ STRATEGY_DEFAULT_OVERRIDES = {
         # - n: breakout offset above/below the stored setup close. Entry
         #   fires when live LTP crosses (setup_close +/- n) in the setup
         #   direction. Default 150 = doc's example value; user can tune.
-        # - sl_points / target_points: fixed rupee distance from entry.
-        # - target_points / sl_points are the only exit distances. The
-        #   optional breakeven mode moves SL to entry once target is reached.
-        "silver_breakout_points": 150,
+        # - sl_points: initial stop distance from entry.
+        # - tsl_activate_points: profit needed before moving SL to entry.
+        # - target_points: final profit-taking distance from entry.
+        "silver_breakout_points": 200,
         # Silver BUY uses the finalized 15m green-above-EMA reference.
         "silver_buy_plan": "reference_breakout",
-        "sl_points": 100,
-        "target_points": 300,
+        "sl_points": 200,
+        "tsl_activate_points": 500,
+        "target_points": 2000,
         "exit_mode": "fixed_target_sl",
         # Position sizing for MCX Silver Micro is done in LOTS, not by
         # dividing capital by price. 1 lot of SILVERMIC = 1 kg = 1 unit
@@ -233,6 +234,26 @@ def _normalize(settings: dict, algo_id: str) -> dict:
     return normalized
 
 
+def validate_settings(settings: dict, algo_id: str) -> None:
+    """Reject invalid new-entry settings before they reach a live strategy."""
+    if algo_id != "algo3":
+        return
+    required = {
+        "silver_breakout_points": "Breakout Offset",
+        "sl_points": "Initial Stop Loss",
+        "tsl_activate_points": "TSL Activates At",
+        "target_points": "Final Target",
+    }
+    for key, label in required.items():
+        if float(settings.get(key) or 0) <= 0:
+            raise ValueError(f"{label} must be greater than zero.")
+    if (
+        str(settings.get("exit_mode") or "") == "target_to_breakeven_sl"
+        and float(settings["tsl_activate_points"]) >= float(settings["target_points"])
+    ):
+        raise ValueError("TSL Activates At must be lower than Final Target.")
+
+
 def get_settings(algo_id: str, mode: str | None = None) -> dict:
     """Read settings for this algo from Supabase. Fall back to hardcoded defaults if missing."""
     from .supabase_client import run_with_supabase
@@ -337,6 +358,7 @@ def _upsert_settings_with_fallback(algo_id: str, settings: dict, mode: str | Non
 def update_settings(algo_id: str, settings: dict, mode: str | None = None):
     """Write updated settings back to Supabase and report schema gaps."""
     settings = _normalize(settings, algo_id)
+    validate_settings(settings, algo_id)
     missing_columns = _upsert_settings_with_fallback(algo_id, settings, mode=mode)
     # Read through the same mode/deployment namespace used by the runtime so
     # the UI never claims an ephemeral value has been durably persisted.

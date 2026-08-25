@@ -1109,8 +1109,8 @@ def _silver_micro_execution_assumption(
     target_pts = int(settings.get("target_points", 300))
     exit_mode = normalize_silver_exit_mode(settings.get("exit_mode"))
     trailing_clause = (
-        " Target is a breakeven milestone: reaching it keeps the position open "
-        "and moves the stop once to the actual entry price."
+        f" TSL activates at {float(settings.get('tsl_activate_points', 500))} points: reaching it moves the stop once to the actual entry price; "
+        f"the final target remains {target_pts} points from entry."
         if exit_mode == SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN
         else " Target closes the position and the initial stop remains fixed."
     )
@@ -1131,7 +1131,7 @@ def _silver_micro_execution_assumption(
         f"({history_resolution}). Each closed 15m bar updates the SELL EMA20; a red candle "
         f"closing below EMA20 stores the SELL red-reference close. {buy_plan_text} "
         f"{sell_plan_text} BUY entries use 1-minute "
-        f"bar extremes and enter at the trigger level itself. {sell_entry_text} Initial SL={sl_pts} points, target milestone={target_pts} "
+        f"bar extremes and enter at the trigger level itself. {sell_entry_text} Initial SL={sl_pts} points, final target={target_pts} "
         f"points from entry. In fixed-target mode, if a 1-minute bar touches both "
         f"SL and target, SL is assumed first (conservative). Reversal on "
         f"contra trigger closes the current position and flips at the same bar."
@@ -1526,9 +1526,10 @@ def _simulate_silver_micro_range(
     """
     silver_buy_plan = normalize_silver_buy_plan(silver_buy_plan)
     silver_sell_plan = normalize_silver_sell_plan(silver_sell_plan)
-    n = float(settings.get("silver_breakout_points", 150))
-    sl_pts = float(settings.get("sl_points", 100))
-    target_pts = float(settings.get("target_points", 300))
+    n = float(settings.get("silver_breakout_points", 200))
+    sl_pts = float(settings.get("sl_points", 200))
+    activation_pts = float(settings.get("tsl_activate_points", 500))
+    target_pts = float(settings.get("target_points", 2000))
     exit_mode = normalize_silver_exit_mode(settings.get("exit_mode"))
     breakeven_mode = exit_mode == SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN
 
@@ -1809,6 +1810,7 @@ def _simulate_silver_micro_range(
             "exit_price": trade["exit_price"],
             "initial_sl_price": trade["initial_sl_price"],
             "final_sl_price": trade["sl_price"],
+            "breakeven_activation_price": trade.get("breakeven_activation_price"),
             "target_price": trade["target_price"],
             "trailing_sl_enabled": trade["trailing_sl_enabled"],
             "trailing_sl_active": trade["trailing_sl_active"],
@@ -1846,9 +1848,11 @@ def _simulate_silver_micro_range(
         if side == "BUY":
             sl_price = float(entry_price) - sl_pts
             target_price = float(entry_price) + target_pts
+            activation_price = float(entry_price) + activation_pts
         else:
             sl_price = float(entry_price) + sl_pts
             target_price = float(entry_price) - target_pts
+            activation_price = float(entry_price) - activation_pts
         entry_metadata = dict(entry_metadata or {})
         position = {
             "symbol": symbol,
@@ -1865,12 +1869,13 @@ def _simulate_silver_micro_range(
             "trailing_sl_enabled": bool(breakeven_mode),
             "trailing_sl_active": False,
             "silver_exit_policy": exit_mode,
-            "trailing_activate_points": float(target_pts if breakeven_mode else 0),
+            "trailing_activate_points": float(activation_pts if breakeven_mode else 0),
             "trailing_profit_step_points": 0.0,
             "trailing_lock_step_points": 0.0,
             # Compatibility aliases retained in the result/diagnostics shape.
-            "trailing_trigger_points": float(target_pts if breakeven_mode else 0),
+            "trailing_trigger_points": float(activation_pts if breakeven_mode else 0),
             "trailing_distance_points": 0.0,
+            "breakeven_activation_price": float(activation_price) if breakeven_mode else None,
             "trailing_moves": [],
             "entry_mode": entry_metadata.get("entry_mode") or (
                 "THRESHOLD_TRIGGER"
@@ -1936,14 +1941,14 @@ def _simulate_silver_micro_range(
         position_candidate = source_candidate
 
     def maybe_apply_trailing(entry: float, side: str):
-        """Arm one fixed breakeven stop after the target milestone."""
+        """Arm one fixed breakeven stop after the separate TSL milestone."""
         nonlocal position
         if not position or not breakeven_mode or position.get("trailing_sl_active"):
             return
-        target = float(position["target_price"])
+        activation_price = float(position.get("breakeven_activation_price") or position["target_price"])
         milestone_reached = (
-            float(position["highest"]) >= target if side == "BUY"
-            else float(position["lowest"]) <= target
+            float(position["highest"]) >= activation_price if side == "BUY"
+            else float(position["lowest"]) <= activation_price
         )
         if not milestone_reached:
             return
@@ -1953,7 +1958,7 @@ def _simulate_silver_micro_range(
         position.setdefault("trailing_moves", []).append({
             "time": position.get("_last_trail_time"),
             "side": side,
-            "reference_price": target,
+            "reference_price": activation_price,
             "previous_sl": previous_sl,
             "new_sl": float(entry),
             "reason": "target_to_breakeven",
@@ -2292,7 +2297,9 @@ def _simulate_silver_micro_range(
                 sl = float(position["sl_price"])
                 stop_hit = candle["low"] <= sl if side == "BUY" else candle["high"] >= sl
                 target_hit = candle["high"] >= target if side == "BUY" else candle["low"] <= target
-                use_target = not breakeven_mode
+                # The four-input breakeven mode still takes profit at its
+                # final target; activation only moves the stop to entry.
+                use_target = True
                 if stop_hit and target_hit and use_target and not position.get("same_candle_sl_priority"):
                     position["same_candle_sl_priority"] = True
                     position["same_candle_sl_priority_time"] = ts.isoformat()
@@ -2397,6 +2404,7 @@ def _close_silver_micro_position(
         "target_price": round(target, 2),
         "sl_price": round(sl, 2),
         "initial_sl_price": round(initial_sl, 2),
+        "breakeven_activation_price": _round_or_none(position.get("breakeven_activation_price")),
         "trailing_sl_enabled": trailing_enabled,
         "trailing_sl_active": trailing_active,
         "trailing_activate_points": round(float(position.get("trailing_activate_points") or 0), 2),

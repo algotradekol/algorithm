@@ -1187,6 +1187,9 @@ function TrailingBadge({ row }: { row: any }) {
   }
   const trailing = snap.trailing;
   const breakevenPolicy = snap.silver_exit_policy === 'target_to_breakeven_sl';
+  const breakeven = snap.silver_breakeven && typeof snap.silver_breakeven === 'object'
+    ? snap.silver_breakeven
+    : {};
   const activated = !!(trailing && trailing.activated);
   const initialSl = Number(snap.initial_sl_price);
   const side = String(row?.side || '').toUpperCase();
@@ -1207,7 +1210,9 @@ function TrailingBadge({ row }: { row: any }) {
     return (
       <span className="inline-flex items-center gap-1 text-xs text-gray-500">
         <span className="h-1.5 w-1.5 rounded-full bg-gray-600" />
-        OFF
+        {breakevenPolicy && Number.isFinite(Number(breakeven.activation_price))
+          ? `arms at ${Number(breakeven.activation_price).toFixed(2)}`
+          : 'OFF'}
       </span>
     );
   }
@@ -1239,7 +1244,7 @@ function TrailingBadge({ row }: { row: any }) {
         <span className="text-gray-400">{deltaLabel}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-gray-500">
-        <span>{breakevenPolicy ? 'breakeven armed' : (firstAt ? `active ${firstAt}` : 'active')} · {bumps}x{Number.isFinite(initialSl) ? ` · init ${initialSl.toFixed(2)}` : ''}</span>
+        <span>{breakevenPolicy ? `breakeven armed${firstAt ? ` ${firstAt}` : ''}` : (firstAt ? `active ${firstAt}` : 'active')} · {bumps}x{Number.isFinite(initialSl) ? ` · init ${initialSl.toFixed(2)}` : ''}</span>
         <button
           type="button"
           onClick={() => setHistoryOpen(true)}

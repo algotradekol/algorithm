@@ -695,7 +695,7 @@ def test_trailing_metadata_tracks_activation_and_bumps():
 
 # ── 12b. Silver target-to-breakeven policy ───────────────────────────
 def test_silver_target_to_breakeven_policy():
-    print("\n12b. Silver target-to-breakeven — one stop move, no target exit")
+    print("\n12b. Silver target-to-breakeven — one stop move plus final target")
     import app.paper_broker as pb
     import app.live_broker as lb
     import app.strategy_settings as strategy_settings
@@ -707,29 +707,47 @@ def test_silver_target_to_breakeven_policy():
     settings = {"exit_mode": "target_to_breakeven_sl"}
     position = {
         "id": "silver-be-1", "symbol": "MCX:SILVERMIC31AUGFUT", "side": "BUY",
-        "entry_price": 100.0, "sl_price": 90.0, "target_price": 110.0,
+        "entry_price": 100.0, "sl_price": 90.0, "target_price": 120.0,
         "highest_price": 100.0, "lowest_price": 100.0, "trailing_sl_active": False,
         "signal_snapshot": {
             "silver_exit_policy": "target_to_breakeven_sl",
             "initial_sl_price": 90.0,
-            "silver_breakeven": {"armed": False},
+            "silver_breakeven": {
+                "armed": False,
+                "activation_price": 110.0,
+                "activation_points": 10.0,
+                "final_target_enabled": True,
+            },
         },
     }
     before = broker.apply_trailing_stop(position, ltp=109.0, settings=settings)
     check("breakeven is not armed before target", not before["trailing_sl_active"] and before["sl_price"] == 90.0)
     at_target = broker.apply_trailing_stop(before, ltp=110.0, settings=settings)
     check("target arms one breakeven stop at entry", at_target["trailing_sl_active"] and at_target["sl_price"] == 100.0)
-    after = broker.apply_trailing_stop(at_target, ltp=125.0, settings=settings)
+    after = broker.apply_trailing_stop(at_target, ltp=115.0, settings=settings)
     check("breakeven stop does not keep trailing", after["sl_price"] == 100.0 and len(after["signal_snapshot"]["trailing"]["events"]) == 1)
-    check("breakeven target is not a close signal", not broker.should_exit_at_target(settings, after))
+    check("breakeven final target remains a close signal", broker.should_exit_at_target(settings, after))
     check("fixed Silver target remains an exit signal", broker.should_exit_at_target({"exit_mode": "fixed_target_sl"}, {"signal_snapshot": {"silver_exit_policy": "fixed_target_sl"}}))
 
     live = object.__new__(lb.LiveBroker)
     live._place_slm_order = lambda *args: {"s": "ok", "id": "sl-only"}
     target_calls = []
     live._place_limit_order = lambda *args: target_calls.append(args) or {"s": "ok", "id": "target"}
-    protection = live._place_protective_orders("MCX:SILVERMIC31AUGFUT", "BUY", 1, 90.0, 110.0, include_target=False)
-    check("live breakeven creates only the FYERS SL", protection["sl_order_id"] == "sl-only" and protection["target_order_id"] is None and not target_calls)
+    protection = live._place_protective_orders("MCX:SILVERMIC31AUGFUT", "BUY", 1, 90.0, 120.0, include_target=True)
+    check("live breakeven keeps both FYERS SL and final target", protection["sl_order_id"] == "sl-only" and protection["target_order_id"] == "target" and target_calls)
+
+    try:
+        strategy_settings.validate_settings({
+            "silver_breakout_points": 200,
+            "sl_points": 200,
+            "tsl_activate_points": 2000,
+            "target_points": 2000,
+            "exit_mode": "target_to_breakeven_sl",
+        }, "algo3")
+        invalid_activation_rejected = False
+    except ValueError:
+        invalid_activation_rejected = True
+    check("breakeven activation must be below final target", invalid_activation_rejected)
 
     normalized = strategy_settings._normalize({"exit_mode": "fixed_target_trailing_sl"}, "algo3")
     check("legacy Silver mode defaults new entries to fixed", normalized["exit_mode"] == "fixed_target_sl")
@@ -3894,6 +3912,7 @@ def test_algo3_backtest_breakeven_metadata():
     settings = {
         "silver_breakout_points": 150,
         "sl_points": 100,
+        "tsl_activate_points": 200,
         "target_points": 200,
         "exit_mode": "target_to_breakeven_sl",
         "silver_lots": 1,
@@ -3958,7 +3977,7 @@ def test_algo3_backtest_sell_breakeven_exits_on_reversal():
         push(21 * 15 + m, 90020, 90160, 90010, 90150)
     push(22 * 15, 89850, 89780, 89690, 89650)
 
-    # Favorable low = 89,480. The 200-point target milestone arms the stop at
+    # Favorable low = 89,480. The 200-point activation milestone arms the stop at
     # breakeven (89,700). The green reversal trades through that level.
     push(22 * 15 + 1, 89650, 89650, 89480, 89500)
     push(22 * 15 + 2, 89500, 89900, 89490, 89900)
@@ -3967,7 +3986,10 @@ def test_algo3_backtest_sell_breakeven_exits_on_reversal():
     settings = {
         "silver_breakout_points": 200,
         "sl_points": 100,
-        "target_points": 200,
+        "tsl_activate_points": 200,
+        # Keep the final target beyond the 200-point breakeven milestone so
+        # the following reversal verifies the amended stop rather than target exit.
+        "target_points": 500,
         "exit_mode": "target_to_breakeven_sl",
         "silver_lots": 1,
     }
@@ -4184,6 +4206,7 @@ def test_algo3_backtest_trailing_stop_diagnostics():
         {
             "silver_breakout_points": 150,
             "sl_points": 100,
+            "tsl_activate_points": 200,
             "target_points": 200,
             "exit_mode": "target_to_breakeven_sl",
             "silver_lots": 1,
@@ -4434,6 +4457,7 @@ def test_algo3_backtest_chart_payload():
         {
             "silver_breakout_points": 150,
             "sl_points": 100,
+            "tsl_activate_points": 200,
             "target_points": 200,
             "exit_mode": "target_to_breakeven_sl",
             "silver_lots": 1,

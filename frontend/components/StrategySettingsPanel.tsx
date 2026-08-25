@@ -30,9 +30,9 @@ const RISK_FIELDS: Field[] = [
 // algo3 (Silver Micro) uses POINTS instead of %, per spec doc. Separate
 // field list keeps the UI honest about units.
 const SILVER_RISK_FIELDS: Field[] = [
-  ['silver_breakout_points', 'Breakout Offset n (points)', 'Entry fires when live price crosses (setup close +/- n). Default 150.'],
-  ['target_points', 'Target points from entry', 'Price distance in favor from the actual market fill.'],
-  ['sl_points', 'Stop-loss points from entry', 'Price distance against the actual market fill.'],
+  ['silver_breakout_points', 'Breakout Offset (points)', 'Entry fires when live price crosses the saved reference close by this many points. Default 200.'],
+  ['sl_points', 'Initial Stop Loss (points)', 'Price distance against the actual market fill. Default 200.'],
+  ['target_points', 'Final Target (points)', 'Maximum price distance in favor from the actual market fill. Default 2000.'],
 ];
 
 const INDICATOR_FIELDS: Field[] = [
@@ -67,7 +67,7 @@ const EXIT_MODES = [
 
 const SILVER_EXIT_MODES = [
   ['fixed_target_sl', 'Fixed Target + Fixed Stop Loss', 'Close at the fixed target or the initial stop loss. Neither level moves.'],
-  ['target_to_breakeven_sl', 'Target to Breakeven Stop Loss', 'At target, keep the trade open and move the stop once to the actual entry price. A return to entry exits protected at breakeven.'],
+  ['target_to_breakeven_sl', 'Target + Breakeven Stop Loss', 'At the earlier TSL activation milestone, move the stop once to the actual entry price. The final target remains active.'],
 ];
 
 export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId: string; tradingMode?: 'paper' | 'live' }) {
@@ -96,6 +96,18 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
 
   async function save() {
     if (!settings || saving) return;
+    if (algoId === 'algo3') {
+      const values = ['silver_breakout_points', 'sl_points', 'tsl_activate_points', 'target_points']
+        .map((key) => Number(settings[key]));
+      if (values.some((value) => !Number.isFinite(value) || value <= 0)) {
+        setError('Breakout Offset, Initial Stop Loss, TSL Activates At, and Final Target must all be greater than zero.');
+        return;
+      }
+      if (settings.exit_mode === 'target_to_breakeven_sl' && Number(settings.tsl_activate_points) >= Number(settings.target_points)) {
+        setError('TSL Activates At must be lower than Final Target.');
+        return;
+      }
+    }
     setSaving(true);
     try {
       const result = await api.updateSettings(algoId, settings);
@@ -445,24 +457,21 @@ function SilverRiskSettings({
   setSettings: (settings: Record<string, any>) => void;
 }) {
   const breakevenMode = settings.exit_mode === 'target_to_breakeven_sl';
+  const fields = breakevenMode
+    ? [SILVER_RISK_FIELDS[0], SILVER_RISK_FIELDS[1], ['tsl_activate_points', 'TSL Activates At (points)', 'When this profit is reached, the initial SL moves once to the actual entry price. Default 500.'] as Field, SILVER_RISK_FIELDS[2]]
+    : SILVER_RISK_FIELDS;
 
   return (
     <>
       <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3">
         <div className="label mb-3">Trade Risk Settings</div>
         <div className="grid gap-3 md:grid-cols-2">
-          {SILVER_RISK_FIELDS.map(([key, label, helper]) => (
+          {fields.map(([key, label, helper]) => (
             <NumberField
               key={key}
               fieldKey={key}
-              label={key === 'target_points'
-                ? (breakevenMode ? 'Initial target / breakeven trigger (points)' : label)
-                : key === 'sl_points' && breakevenMode
-                  ? 'Initial stop-loss points'
-                  : label}
-              helper={key === 'target_points' && breakevenMode
-                ? 'When this profit milestone is reached, the position stays open and the stop moves once to the actual entry price.'
-                : helper}
+              label={label}
+              helper={helper}
               settings={settings}
               setSettings={setSettings}
             />
@@ -471,7 +480,7 @@ function SilverRiskSettings({
       </div>
       {breakevenMode && (
         <div className="mt-5 rounded border border-[#3b82f6]/50 bg-[#3b82f6]/5 p-3 text-xs text-[#bfdbfe]">
-          The initial FYERS stop stays active until the target milestone is reached. At that point it is amended once to the actual entry price; there are no further trailing steps.
+          FYERS keeps both the initial stop and the final target active. When TSL Activates At is reached, it amends only the existing stop to the actual entry price once; there are no further trailing steps.
         </div>
       )}
     </>

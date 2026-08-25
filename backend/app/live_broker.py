@@ -108,34 +108,51 @@ class LiveBroker(PaperBroker):
             order_response=order_response,
             fallback_price=entry_price,
         )
+        # Silver risk is expressed in absolute points, so rebuild both
+        # protection levels from the actual fill instead of proportionally
+        # scaling planned prices (which silently changes point distances).
+        initial_sl_points = abs(float(entry_price) - float(sl_price))
+        final_target_points = abs(float(target_price) - float(entry_price))
         if side == "BUY":
-            sl_price = actual_entry_price * (sl_price / entry_price) if entry_price else sl_price
-            target_price = actual_entry_price * (target_price / entry_price) if entry_price else target_price
+            sl_price = actual_entry_price - initial_sl_points
+            target_price = actual_entry_price + final_target_points
         else:
-            sl_price = actual_entry_price * (sl_price / entry_price) if entry_price else sl_price
-            target_price = actual_entry_price * (target_price / entry_price) if entry_price else target_price
+            sl_price = actual_entry_price + initial_sl_points
+            target_price = actual_entry_price - final_target_points
 
         # ── HARD FYERS PROTECTION ───────────────────────────────────────
         # Place protective orders IMMEDIATELY after entry fill so Fyers
-        # holds the stop server-side. Fixed mode also receives a target
-        # order; breakeven mode deliberately does not, because the target is
-        # only the milestone that will amend this stop to entry.
+        # holds both the initial stop and final target server-side. In the
+        # four-input breakeven policy only the SL changes at activation.
         # Both orders are on the reverse side and MIS/INTRADAY so they're
         # linked to the same intraday position.
         entry_order_id = self._extract_order_id(order_response)
+        merged_snapshot = dict(signal_snapshot or {})
         breakeven_mode = (
-            (signal_snapshot or {}).get("silver_exit_policy")
+            merged_snapshot.get("silver_exit_policy")
             == SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN
         )
+        breakeven_snapshot = dict(merged_snapshot.get("silver_breakeven") or {})
+        if breakeven_mode and breakeven_snapshot.get("final_target_enabled"):
+            activation_points = float(breakeven_snapshot.get("activation_points") or 0)
+            if activation_points > 0:
+                breakeven_snapshot["activation_price"] = (
+                    actual_entry_price + activation_points
+                    if side == "BUY"
+                    else actual_entry_price - activation_points
+                )
+            breakeven_snapshot["target_price"] = target_price
+            breakeven_snapshot["initial_sl_price"] = sl_price
+            merged_snapshot["silver_breakeven"] = breakeven_snapshot
+        target_required = not breakeven_mode or bool(breakeven_snapshot.get("final_target_enabled"))
         protective = self._place_protective_orders(
             symbol=symbol,
             entry_side=side,
             qty=qty,
             sl_price=sl_price,
             target_price=target_price,
-            include_target=not breakeven_mode,
+            include_target=target_required,
         )
-        target_required = not breakeven_mode
         if not protective.get("sl_order_id") or (target_required and not protective.get("target_order_id")):
             # Live positions must not remain naked. If either protective
             # order failed, immediately flatten the fresh entry at Fyers
@@ -153,14 +170,13 @@ class LiveBroker(PaperBroker):
         # Persist Fyers order IDs in signal_snapshot so the reconciliation
         # thread can look them up and detect SL/Target fills without any
         # in-memory dependency (survives container restarts).
-        merged_snapshot = dict(signal_snapshot or {})
         merged_snapshot["fyers_entry_order_id"] = entry_order_id
         merged_snapshot["fyers_sl_order_id"] = protective.get("sl_order_id")
         merged_snapshot["fyers_target_order_id"] = protective.get("target_order_id")
         merged_snapshot["fyers_sl_error"] = protective.get("sl_error")
         merged_snapshot["fyers_target_error"] = protective.get("target_error")
         merged_snapshot["fyers_protection_policy"] = (
-            "sl_only_until_breakeven" if breakeven_mode else "sl_and_target"
+            "sl_and_final_target_with_breakeven" if breakeven_mode else "sl_and_target"
         )
 
         super().open_trade(

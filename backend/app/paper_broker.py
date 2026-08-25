@@ -183,11 +183,15 @@ class PaperBroker:
         merged_snapshot.setdefault("initial_sl_price", float(sl_price))
         if merged_snapshot.get("silver_exit_policy") == SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN:
             breakeven = dict(merged_snapshot.get("silver_breakeven") or {})
-            breakeven.update({
-                "armed": False,
-                "target_price": float(target_price),
-                "initial_sl_price": float(sl_price),
-            })
+            # Four-input entries retain a separate activation milestone and
+            # final target. These defaults preserve historical open rows that
+            # used the target itself as their breakeven milestone.
+            breakeven.setdefault("armed", False)
+            breakeven.setdefault("activation_price", float(target_price))
+            breakeven.setdefault("activation_points", abs(float(target_price) - float(entry_price)))
+            breakeven.setdefault("target_price", float(target_price))
+            breakeven.setdefault("final_target_enabled", False)
+            breakeven.setdefault("initial_sl_price", float(sl_price))
             merged_snapshot["silver_breakeven"] = breakeven
         merged_snapshot.setdefault("trailing", {
             "activated": False,
@@ -394,20 +398,21 @@ class PaperBroker:
         return {**position, **updates, "sl_price": current_sl}
 
     def _apply_silver_breakeven_stop(self, position: dict, ltp: float) -> dict:
-        """Arm a one-time breakeven stop after Silver reaches its target.
+        """Arm a one-time breakeven stop after Silver reaches activation.
 
         This intentionally is not a point-lock trail: after target is touched
         the stop moves once to the actual entry and remains there.
         """
         entry = float(position["entry_price"])
-        target = float(position["target_price"])
+        final_target = float(position["target_price"])
         side = str(position["side"] or "").upper()
         current_sl = float(position["sl_price"])
         highest = max(float(position.get("highest_price") or entry), float(ltp))
         lowest = min(float(position.get("lowest_price") or entry), float(ltp))
-        reached_target = highest >= target if side == "BUY" else lowest <= target
         snapshot = dict(position.get("signal_snapshot") or {})
         breakeven = dict(snapshot.get("silver_breakeven") or {})
+        activation_price = float(breakeven.get("activation_price") or final_target)
+        reached_target = highest >= activation_price if side == "BUY" else lowest <= activation_price
         already_armed = bool(breakeven.get("armed") or position.get("trailing_sl_active"))
         updates = {"highest_price": highest, "lowest_price": lowest}
 
@@ -421,7 +426,8 @@ class PaperBroker:
                 "armed": True,
                 "armed_at": now_iso,
                 "armed_ltp": float(ltp),
-                "target_price": target,
+                "activation_price": activation_price,
+                "target_price": final_target,
                 "initial_sl_price": float(snapshot.get("initial_sl_price") or current_sl),
                 "current_sl": entry,
                 "model": "target_to_breakeven",
@@ -474,7 +480,11 @@ class PaperBroker:
 
     def should_exit_at_target(self, settings: dict, position: dict | None = None) -> bool:
         if uses_silver_breakeven_stop(position, settings):
-            return False
+            snapshot = (position or {}).get("signal_snapshot") or {}
+            breakeven = snapshot.get("silver_breakeven") or {}
+            # Pre-upgrade open positions do not have the explicit flag and
+            # retain their old no-final-target behavior.
+            return bool(breakeven.get("final_target_enabled"))
         settings = self._legacy_silver_position_settings(position, settings)
         return should_use_fixed_target(settings)
 
