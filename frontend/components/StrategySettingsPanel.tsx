@@ -10,12 +10,10 @@ const CAPITAL_FIELDS: Field[] = [
   ['margin_multiplier', 'Margin Cap (x)', 'ceiling only. Actual leverage is per-stock from the broker approved list (1x–5x); this caps it. Keep at 5 to use each stock’s full approved margin.'],
 ];
 
-// Silver Micro is sized in whole lots, not by margin. Replace the
-// Margin Cap slot with a Lots-per-trade field; keep Capital Per Trade
-// for the paper preview and Starting Capital where the mode allows it.
+// Silver Micro is sized in whole lots. Generic paper-capital fields do not
+// affect its order quantity, so keep the Silver panel focused on the one
+// setting that does.
 const SILVER_CAPITAL_FIELDS: Field[] = [
-  ['starting_capital', 'Starting Capital (Rs)', 'baseline capital shown in strategy summary'],
-  ['capital_per_trade', 'Capital Per Trade (Rs)', 'paper capital allocated to one new trade'],
   ['silver_lots', 'Lots per trade', 'Position size in lots. 1 lot of SILVERMIC = 1 kg = 1 unit on Fyers. Default 1.'],
 ];
 
@@ -170,7 +168,7 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
 
         {!isLive && <CashControl value={availableCash} setValue={setAvailableCash} onSave={saveAvailableCash} saving={cashSaving} />}
         <FieldGroup
-          title="Capital Settings"
+          title={algoId === 'algo3' ? 'Position Settings' : 'Capital Settings'}
           fields={(() => {
             const base = algoId === 'algo3' ? SILVER_CAPITAL_FIELDS : CAPITAL_FIELDS;
             return isLive ? base.filter(([key]) => key !== 'starting_capital') : base;
