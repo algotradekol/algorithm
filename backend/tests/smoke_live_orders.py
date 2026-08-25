@@ -146,6 +146,19 @@ def test_market_mode():
     check("entry limitPrice = 0", entry["limitPrice"] == 0)
 
 
+def test_silver_forces_market_entry():
+    print("\n2b1. Silver Micro rejects legacy LIMIT entry settings")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec, order_type="LIMIT")
+    broker.algo_id = "algo3"
+    order_type, limit_price = broker._entry_order_params(248_000.0)
+    check(
+        "Silver entry remains MARKET when legacy setting says LIMIT",
+        order_type == "MARKET" and limit_price == 0.0,
+        f"got {order_type} @ {limit_price}",
+    )
+
+
 def test_live_funds_cap_bypasses_mcx_futures():
     print("\n2c. Live funds cap bypasses full-price check for MCX futures")
     rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
@@ -4894,6 +4907,7 @@ def main():
     test_dynamic_qty()
     test_entry_and_protective_payloads()
     test_market_mode()
+    test_silver_forces_market_entry()
     test_live_funds_cap_bypasses_mcx_futures()
     test_live_funds_cap_still_limits_cash_equity()
     test_live_open_trade_refuses_unprotected_position()
