@@ -1069,6 +1069,20 @@ function PositionsTable({
   );
 }
 
+function formatTradeQty(row: any): string {
+  const qty = Number(row?.qty ?? 0);
+  if (!Number.isFinite(qty) || qty <= 0) return '--';
+  const symbol = String(row?.symbol || '').toUpperCase();
+  // Silver Micro is sized in lots (1 lot = 1 kg = 1 unit on Fyers). NSE
+  // instruments are sized in raw share quantity. Show the correct label so
+  // 1 kg of silver does not read like 1 share of equity.
+  const isSilverMicro = symbol.startsWith('MCX:SILVERMIC');
+  if (isSilverMicro) {
+    return `${qty} lot${qty === 1 ? '' : 's'}`;
+  }
+  return `${qty} qty`;
+}
+
 function TradesTable({ rows }: { rows: any[] }) {
   const [page, setPage] = useState(0);
   const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
@@ -1093,6 +1107,7 @@ function TradesTable({ rows }: { rows: any[] }) {
               {row.side === "SELL" ? "S" : "B"}
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
+              <MobileField label="Qty / Lots" value={formatTradeQty(row)} />
               <MobileField label="Entry Time" value={formatTradeTime(row.entry_time, row.exit_time)} />
               <MobileField label="Entry" value={formatNumber(row.entry_price)} />
               <MobileField label="Exit Time" value={row.exit_time ? formatTradeTime(row.exit_time, row.entry_time) : "--"} />
@@ -1106,10 +1121,10 @@ function TradesTable({ rows }: { rows: any[] }) {
         ))}
       </div>
       <div className="hidden w-full max-w-full overflow-x-auto overscroll-x-contain rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1580px] table-auto border-collapse text-xs">
+        <table className="w-full min-w-[1680px] table-auto border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {["Symbol", "Side", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Trailing SL", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
+            {["Symbol", "Side", "Qty / Lots", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Trailing SL", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
               <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
@@ -1117,7 +1132,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={13} className="table-cell text-gray-500">No closed trades yet</td>
+              <td colSpan={14} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
           ) : visibleRows.map((row, index) => (
             <tr key={row.id || index} className={`align-top ${index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}`}>
@@ -1126,6 +1141,7 @@ function TradesTable({ rows }: { rows: any[] }) {
                 <i className={`${row.side === "SELL" ? "ri-indeterminate-circle-fill" : "ri-add-circle-fill"} mr-1 text-sm`} />
                 {row.side === "SELL" ? "S" : "B"}
               </td>
+              <td className="table-cell num whitespace-nowrap text-gray-100">{formatTradeQty(row)}</td>
               <td className="table-cell num whitespace-nowrap text-gray-400">{formatTradeTime(row.entry_time, row.exit_time)}</td>
               <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.entry_price)}</td>
               <td className="table-cell num whitespace-nowrap text-gray-400">{row.exit_time ? formatTradeTime(row.exit_time, row.entry_time) : "--"}</td>
