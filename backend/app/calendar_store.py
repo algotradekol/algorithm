@@ -3,7 +3,7 @@ import json
 from decimal import Decimal
 from typing import Any
 
-from .storage_namespace import current_and_legacy_values, namespaced_value, strip_current_namespace
+from .storage_namespace import current_storage_values, current_and_legacy_values, namespaced_value, strip_current_namespace
 from .supabase_client import run_with_supabase
 
 
@@ -34,7 +34,7 @@ def _preferred_calendar_rows(rows: list[dict]) -> list[dict]:
     preferred: list[dict] = []
     for (_, base_algo_id), bucket in grouped.items():
         selected = None
-        for candidate in current_and_legacy_values(base_algo_id):
+        for candidate in current_storage_values(base_algo_id):
             if candidate in bucket:
                 selected = dict(bucket[candidate])
                 break
@@ -137,7 +137,7 @@ def delete_calendar_day(snapshot_date: str) -> dict:
 
 def delete_calendar_snapshot(snapshot_date: str, algo_id: str) -> dict:
     deleted = 0
-    for candidate in current_and_legacy_values(algo_id):
+    for candidate in current_storage_values(algo_id):
         result = run_with_supabase(
             lambda supabase, key=candidate: supabase.table("calendar_snapshots")
             .delete()

@@ -9,7 +9,7 @@ from __future__ import annotations
 import datetime
 
 from .charges import calculate_charges, get_charges_config
-from .storage_namespace import current_and_legacy_values, namespaced_value
+from .storage_namespace import current_storage_values, namespaced_value
 from .supabase_client import run_with_supabase
 from .trailing_stop import (
     SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN,
@@ -38,7 +38,7 @@ class PaperBroker:
         return namespaced_value(self.algo_id)
 
     def storage_algo_candidates(self) -> list[str]:
-        return current_and_legacy_values(self.algo_id)
+        return current_storage_values(self.algo_id)
 
     def _merge_storage_rows(self, rows_by_candidate: list[list[dict]], *, limit: int | None = None, order_key: str | None = None, reverse: bool = False) -> list[dict]:
         merged: list[dict] = []
@@ -62,17 +62,8 @@ class PaperBroker:
             lambda supabase: supabase.table(self.state_table_name()).select("*").eq("algo_id", self.storage_algo_id()).execute()
         )
         if not existing.data:
-            seed_row = None
-            if self.storage_algo_id() != self.algo_id:
-                legacy = run_with_supabase(
-                    lambda supabase: supabase.table(self.state_table_name()).select("*").eq("algo_id", self.algo_id).execute()
-                )
-                if legacy.data:
-                    seed_row = dict(legacy.data[0])
-                    seed_row.pop("id", None)
-                    seed_row["algo_id"] = self.storage_algo_id()
             run_with_supabase(
-                lambda supabase, payload=seed_row or {
+                lambda supabase, payload={
                     "algo_id": self.storage_algo_id(),
                     "cash": self.starting_capital,
                     "trade_count_today": 0,

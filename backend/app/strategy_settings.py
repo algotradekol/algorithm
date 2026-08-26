@@ -14,12 +14,13 @@ DEFAULT_SETTINGS = {
     # exits and trailing SL for open positions, and still lets the user
     # manually open or exit trades from the dashboard — it only blocks
     # the algo's own new-entry submissions (including reversals).
-    # Default OFF (2026-08-27): safety-first — a fresh boot or a mode
+    # Default OFF (2026-08-26): safety-first — a fresh boot or a mode
     # switch must NOT start placing live orders until the user has
     # explicitly clicked Trading: ON on the dashboard. Every setting
-    # read merges these defaults over the stored row, so existing rows
-    # without a persisted trading_enabled column will also read False
-    # and require an explicit ON click before entries resume.
+    # read merges these defaults over the stored row. The
+    # strategy_settings.trading_enabled DB column is therefore required;
+    # if it is missing, save must fail loudly instead of pretending the
+    # value was persisted.
     "trading_enabled": False,
     "target_pct": 2.0,
     "sl_pct": 1.0,
@@ -322,7 +323,6 @@ def get_settings(algo_id: str, mode: str | None = None) -> dict:
 _NEW_COLUMNS_TOLERATE_MISSING = {
     "order_type",             # added 2026-08-10
     "parallel_paper_enabled", # added 2026-08-13
-    "trading_enabled",        # added 2026-08-27 (kill-switch on entry path)
     # algo3 spec-doc rewrite (2026-08-19). Points-based risk fields
     # replace percent fields for Silver Micro only.
     "silver_breakout_points",
@@ -388,7 +388,16 @@ def update_settings(algo_id: str, settings: dict, mode: str | None = None):
     """Write updated settings back to Supabase and report schema gaps."""
     settings = _normalize(settings, algo_id)
     validate_settings(settings, algo_id)
-    missing_columns = _upsert_settings_with_fallback(algo_id, settings, mode=mode)
+    try:
+        missing_columns = _upsert_settings_with_fallback(algo_id, settings, mode=mode)
+    except Exception as exc:
+        text = str(exc)
+        if "trading_enabled" in text.lower():
+            raise ValueError(
+                "Supabase strategy_settings is missing the required trading_enabled column. "
+                "Run the latest SQL migration, then save again."
+            ) from exc
+        raise
     # Read through the same mode/deployment namespace used by the runtime so
     # the UI never claims an ephemeral value has been durably persisted.
     return {
