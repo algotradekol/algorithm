@@ -831,6 +831,42 @@ def test_ws_dispatch_parses_orders_and_positions_bundle():
           f"event={received[1]}")
 
 
+def test_order_update_ws_status_callback_accepts_fyers_payload():
+    print("\n8n. Order-WS status callback accepts FYERS positional payloads")
+    import app.engine as eng
+
+    old_status = dict(eng._order_update_ws_last_status)
+    was_connected = eng._order_update_ws_connected.is_set()
+    try:
+        eng._order_update_ws_connected.clear()
+        eng._record_order_update_ws_status({
+            "connected": True,
+            "message": "Order-update WS subscribed",
+            "feed_name": "order_updates",
+        })
+        check("positional subscribed status marks Order-WS connected",
+              eng._order_update_ws_connected.is_set(),
+              f"status={eng._order_update_ws_last_status}")
+        check("positional status payload is retained",
+              eng._order_update_ws_last_status.get("message") == "Order-update WS subscribed",
+              f"status={eng._order_update_ws_last_status}")
+
+        eng._record_order_update_ws_status(
+            connected=False,
+            message="Order-update WS closed",
+        )
+        check("keyword closed status clears Order-WS connection",
+              not eng._order_update_ws_connected.is_set(),
+              f"status={eng._order_update_ws_last_status}")
+    finally:
+        eng._order_update_ws_last_status.clear()
+        eng._order_update_ws_last_status.update(old_status)
+        if was_connected:
+            eng._order_update_ws_connected.set()
+        else:
+            eng._order_update_ws_connected.clear()
+
+
 def test_open_trade_refuses_duplicate_when_fyers_already_positioned():
     print("\n8h. Design B open_trade — Fyers already holds symbol → refuse duplicate entry")
     rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
@@ -2245,6 +2281,14 @@ def _make_bare_algo3(settings_overrides=None):
             self.closes.append({"symbol": position["symbol"], "reason": reason, "exit_price": exit_price})
             if position in self._open_positions:
                 self._open_positions.remove(position)
+            callback = getattr(self, "on_position_closed", None)
+            if callable(callback):
+                callback(
+                    position=position,
+                    exit_price=exit_price,
+                    exit_reason=reason,
+                    exit_time=position.get("entry_time"),
+                )
         def open_positions(self):
             return list(self._open_positions)
         def apply_trailing_stop(self, position, ltp, settings):
@@ -2957,6 +3001,73 @@ def test_algo3_unlimited_reentry_after_exit_same_setup():
     cross_up()
     check("same setup can re-enter again after second exit", len(strat.broker.opens) == 3,
           f"opens={strat.broker.opens}")
+
+
+def test_algo3_manual_exit_clears_handoff_and_requires_fresh_trigger():
+    print("\n41b. algo3 manual closes do not force a reverse trade, but a fresh trigger can re-enter later")
+    import datetime as _dt
+    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
+    strat.broker.on_position_closed = strat._handle_broker_position_closed
+    strat._buy_setup_close = 92000.0
+    strat._buy_setup_bar_at = _dt.datetime(2026, 8, 20, 19, 15)
+
+    strat._prev_ltp = 92000.0
+    strat._check_triggers(92200.0)
+    check("initial BUY opened", len(strat.broker.opens) == 1 and len(strat.broker.open_positions()) == 1)
+
+    open_position = strat.broker.open_positions()[0]
+    strat._buy_reentry_after_exit = {
+        "setup_bar_at": strat._buy_setup_bar_at,
+        "trigger_level": 92200.0,
+        "exit_reason": "TARGET",
+    }
+    strat._sell_reentry_after_exit = {
+        "setup_bar_at": _dt.datetime(2026, 8, 20, 18, 45),
+        "trigger_level": 89700.0,
+        "exit_reason": "SL",
+    }
+    strat._prev_ltp = 92150.0
+    strat.broker.close_trade(open_position, 92150.0, "MANUAL_EXIT")
+
+    check("manual close clears carried BUY reentry",
+          strat._buy_reentry_after_exit is None, f"buy_reentry={strat._buy_reentry_after_exit}")
+    check("manual close clears carried SELL reentry",
+          strat._sell_reentry_after_exit is None, f"sell_reentry={strat._sell_reentry_after_exit}")
+    check("manual close does not auto-open another position",
+          len(strat.broker.open_positions()) == 0 and len(strat.broker.opens) == 1,
+          f"opens={strat.broker.opens} open_positions={strat.broker.open_positions()}")
+
+    strat._prev_ltp = 92000.0
+    strat._check_triggers(92200.0)
+    check("fresh normal trigger can re-enter after manual close",
+          len(strat.broker.opens) == 2 and strat.broker.opens[-1]["side"] == "BUY",
+          f"opens={strat.broker.opens}")
+
+
+def test_algo3_mode_switch_keeps_reference_but_clears_previous_mode_fired_state():
+    print("\n41c. algo3 mode switch reuses the warmed reference immediately in the new mode")
+    import datetime as _dt
+    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
+    strat.broker.on_position_closed = strat._handle_broker_position_closed
+    setup_bar = _dt.datetime(2026, 8, 26, 10, 15)
+    strat._buy_setup_close = 242000.0
+    strat._buy_setup_bar_at = setup_bar
+    strat._last_fired_buy_bar_at = setup_bar
+    strat._last_attempted_buy_bar_at = setup_bar
+    strat._last_tick_ltp = 242260.0
+    strat._prev_ltp = 242180.0
+
+    strat.on_trading_mode_switched("live", "paper")
+
+    check("same warmed BUY reference can fire immediately after switch",
+          len(strat.broker.opens) == 1 and strat.broker.opens[0]["side"] == "BUY",
+          f"opens={strat.broker.opens}")
+    check("new mode stamps the same setup as freshly fired in live",
+          strat._last_fired_buy_bar_at == setup_bar,
+          f"last_fired={strat._last_fired_buy_bar_at}")
+    check("new mode stamps the same setup as freshly attempted in live",
+          strat._last_attempted_buy_bar_at == setup_bar,
+          f"last_attempted={strat._last_attempted_buy_bar_at}")
 
 
 def test_algo3_sell_target_reenters_when_reference_still_crossed():
@@ -5069,6 +5180,36 @@ def test_broker_positions_entry_time_from_tradebook():
           f"got={positions_c[0]['entry_time']}")
 
 
+def test_fyers_positions_pnl_summary_normalization():
+    """Dashboard live P&L must prefer FYERS's aggregate, not browser math."""
+    print("\n52a. FYERS positions P&L summary is normalized for the dashboard")
+    from app.fyers_client import _normalize_broker_pnl_summary
+
+    summary = _normalize_broker_pnl_summary(
+        {
+            "pl_total": "1,250.50",
+            "pl_realized": 200,
+            "pl_unrealized": 1050.5,
+        },
+        [{"realized_pnl": 10, "unrealized_pnl": 20, "total_pnl": 30}],
+    )
+    check("FYERS overall total takes precedence", summary["total_pnl"] == 1250.5, f"got={summary}")
+    check("FYERS overall realised takes precedence", summary["realized_pnl"] == 200.0, f"got={summary}")
+    check("FYERS overall unrealised takes precedence", summary["unrealized_pnl"] == 1050.5, f"got={summary}")
+    check("summary identifies FYERS overall source", summary["source"] == "fyers_overall", f"got={summary}")
+
+    fallback = _normalize_broker_pnl_summary(
+        {},
+        [
+            {"realized_pnl": 40, "unrealized_pnl": 60, "total_pnl": 100},
+            {"realized_pnl": -10, "unrealized_pnl": 5, "total_pnl": -5},
+        ],
+    )
+    check("position fallback sums broker rows", fallback["total_pnl"] == 95.0, f"got={fallback}")
+    check("position fallback preserves realised P&L", fallback["realized_pnl"] == 30.0, f"got={fallback}")
+    check("position fallback identifies broker rows", fallback["source"] == "fyers_positions", f"got={fallback}")
+
+
 def test_live_fill_timestamp_integrity():
     """FYERS fill rows must not create shifted or cross-order timestamps."""
     print("\n52b. live fill timestamps use IST and exact Fyers order identity")
@@ -5738,6 +5879,7 @@ def main():
     test_ws_manual_external_entry_logged_not_persisted()
     test_ws_cancelled_protective_order_clears_snapshot()
     test_ws_dispatch_parses_orders_and_positions_bundle()
+    test_order_update_ws_status_callback_accepts_fyers_payload()
     test_open_trade_refuses_duplicate_when_fyers_already_positioned()
     test_algo1_open_position_guard()
     test_protective_retry()
@@ -5796,6 +5938,8 @@ def main():
     test_algo3_reversal_on_contra_signal()
     test_algo3_no_reentry_same_side()
     test_algo3_unlimited_reentry_after_exit_same_setup()
+    test_algo3_manual_exit_clears_handoff_and_requires_fresh_trigger()
+    test_algo3_mode_switch_keeps_reference_but_clears_previous_mode_fired_state()
     test_algo3_sell_target_reenters_when_reference_still_crossed()
     test_algo3_sell_stop_does_not_reenter_above_old_trigger()
     test_algo3_entry_uses_exchange_event_time()
@@ -5830,6 +5974,7 @@ def main():
     test_algo3_backtest_sell_breakeven_exits_on_reversal()
     test_algo3_lot_based_qty()
     test_broker_positions_entry_time_from_tradebook()
+    test_fyers_positions_pnl_summary_normalization()
     test_live_fill_timestamp_integrity()
     test_algo3_warmup_end_date_is_today()
     test_algo3_warmup_debounce_blocks_repeat_calls()

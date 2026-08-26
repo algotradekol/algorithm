@@ -195,6 +195,7 @@ class Algo3SilverMicro(Strategy):
         self.watchlist = [self.symbol] if self.symbol else []
         self.settings = get_settings(self.algo_id)
         self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
+        self.broker.on_position_closed = self._handle_broker_position_closed
 
         self._history_lock = threading.Lock()
         self._history_loading = False
@@ -251,7 +252,91 @@ class Algo3SilverMicro(Strategy):
     def reload_settings(self):
         self.settings = get_settings(self.algo_id)
         self.broker.starting_capital = self.settings["starting_capital"]
+        self.broker.on_position_closed = self._handle_broker_position_closed
         self._buy_reentry_after_exit = None
+        self._sell_reentry_after_exit = None
+
+    def on_trading_mode_switched(self, new_mode: str, previous_mode: str | None = None) -> None:
+        """Keep warmed Silver references, but clear per-mode entry consumption.
+
+        Paper and live intentionally share the same warmed 15-minute BUY/SELL
+        references. What must *not* carry across a mode switch is the memory
+        that a given setup already fired in the previous mode, otherwise the
+        freshly selected mode inherits a false "already used this candle"
+        state and waits for a brand-new setup before it can trade.
+        """
+        self.broker.on_position_closed = self._handle_broker_position_closed
+        self._last_fired_buy_bar_at = None
+        self._last_fired_sell_bar_at = None
+        self._last_attempted_buy_bar_at = None
+        self._last_attempted_sell_bar_at = None
+        self._buy_reentry_after_exit = None
+        self._sell_reentry_after_exit = None
+        self._entry_attempt_in_flight = False
+        self._entry_cooldown_until_monotonic = 0.0
+
+        if self._open_position():
+            return
+        if self._last_tick_ltp is None or float(self._last_tick_ltp) <= 0:
+            return
+
+        event_time = datetime.datetime.now(IST).replace(tzinfo=None)
+        try:
+            self._check_triggers(float(self._last_tick_ltp), event_time=event_time)
+        except Exception as exc:
+            print(
+                f"[algo3] mode-switch recheck failed for "
+                f"{previous_mode or 'unknown'} -> {new_mode}: {exc}"
+            )
+
+    def _handle_broker_position_closed(
+        self,
+        *,
+        position: dict,
+        exit_price: float,
+        exit_reason: str,
+        exit_time: str | None = None,
+    ) -> None:
+        """Manual closes should reset handoff state, then re-check live logic.
+
+        Earlier fail-safe behavior could treat a manual flatten as if the
+        strategy itself had decided to reverse. For Silver we want the
+        opposite: a manual close clears any carried re-entry handoff, then
+        allows only a fresh normal trigger to re-open a trade.
+        """
+        if str(exit_reason or "").upper() not in {"MANUAL_EXIT", "MANUAL_EXTERNAL_EXIT"}:
+            return
+        self._buy_reentry_after_exit = None
+        self._sell_reentry_after_exit = None
+
+        symbol = str(position.get("symbol") or "").strip().upper()
+        active_symbol = str(self.symbol or "").strip().upper()
+        if not symbol or symbol != active_symbol:
+            return
+
+        try:
+            ltp = float(exit_price)
+        except (TypeError, ValueError):
+            return
+        if ltp <= 0:
+            return
+        if self._open_position():
+            return
+
+        self._last_tick_ltp = ltp
+        if exit_time:
+            self._last_tick_at = str(exit_time)
+
+        event_time = None
+        if exit_time:
+            try:
+                event_time = datetime.datetime.fromisoformat(str(exit_time).replace("Z", "+00:00"))
+            except ValueError:
+                event_time = None
+        try:
+            self._check_triggers(ltp, event_time=event_time)
+        except Exception as exc:
+            print(f"[algo3] manual-close recheck failed: {exc}")
 
     def market_session_start(self) -> str:
         return self._MCX_SESSION_START

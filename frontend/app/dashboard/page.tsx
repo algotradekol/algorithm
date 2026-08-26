@@ -254,7 +254,7 @@ function DashboardContent() {
 
   return (
     <main className="min-h-screen overflow-x-hidden bg-[#0a0e14]" data-ai-active-tab={tab}>
-      <div className="w-full px-0 py-3 sm:px-0 sm:py-4">
+      <div className="w-full px-3 py-3 sm:px-4 sm:py-4">
         {fyersLoginResult && showFyersBanner && (
           <div
             className={`mb-3 flex items-start justify-between gap-3 rounded border px-3 py-2 ${

@@ -938,6 +938,7 @@ def get_broker_positions(mode: str | None = None) -> dict:
             "count": 0,
             "positions": [],
             "overall": {},
+            "pnl_summary": {},
             "available": False,
             "cached": False,
             "stale": False,
@@ -992,6 +993,13 @@ def get_broker_positions(mode: str | None = None) -> dict:
             "count": len(positions),
             "positions": positions,
             "overall": response.get("overall") if isinstance(response.get("overall"), dict) else {},
+            # Keep the dashboard tied to the broker's own P&L snapshot in
+            # live mode. The raw `overall` shape varies across FYERS API
+            # versions, so expose one stable, normalized contract.
+            "pnl_summary": _normalize_broker_pnl_summary(
+                response.get("overall") if isinstance(response.get("overall"), dict) else {},
+                positions,
+            ),
             "available": True,
             "cached": False,
             "stale": False,
@@ -1046,6 +1054,7 @@ def get_broker_positions(mode: str | None = None) -> dict:
             "count": 0,
             "positions": [],
             "overall": {},
+            "pnl_summary": {},
             "available": False,
             "cached": False,
             "stale": False,
@@ -1154,6 +1163,54 @@ def get_broker_orders(mode: str | None = None) -> dict:
             }
     finally:
         lock.release()
+
+
+def _normalize_broker_pnl_summary(overall: dict, positions: list[dict]) -> dict:
+    """Return stable P&L fields from FYERS's varying positions response.
+
+    FYERS has used camelCase, snake_case, and ``pl_*`` keys for the
+    ``overall`` object. Prefer that broker-provided aggregate whenever it is
+    present; otherwise sum the already-normalized open positions. This is a
+    broker P&L snapshot, not a locally estimated browser value.
+    """
+    lowered = {str(key).lower(): value for key, value in (overall or {}).items()}
+
+    def number(*keys: str) -> tuple[float | None, bool]:
+        for key in keys:
+            raw = overall.get(key) if key in overall else lowered.get(key.lower())
+            if raw is None or isinstance(raw, bool):
+                continue
+            try:
+                return float(str(raw).replace(",", "").strip()), True
+            except (TypeError, ValueError):
+                continue
+        return None, False
+
+    position_realized = sum(float(row.get("realized_pnl") or 0.0) for row in positions)
+    position_unrealized = sum(float(row.get("unrealized_pnl") or 0.0) for row in positions)
+    position_total = sum(float(row.get("total_pnl") or 0.0) for row in positions)
+
+    realized, has_realized = number(
+        "pl_realized", "realized_pl", "realizedPnl", "realized_pnl", "realizedProfit",
+    )
+    unrealized, has_unrealized = number(
+        "pl_unrealized", "unrealized_pl", "unrealizedPnl", "unrealized_pnl", "unrealizedProfit",
+    )
+    total, has_total = number(
+        "pl_total", "total_pl", "totalPnl", "total_pnl", "pnl", "pl",
+    )
+
+    realized = position_realized if not has_realized else realized
+    unrealized = position_unrealized if not has_unrealized else unrealized
+    if not has_total:
+        total = realized + unrealized if has_realized or has_unrealized else position_total
+
+    return {
+        "source": "fyers_overall" if has_total or has_realized or has_unrealized else "fyers_positions",
+        "realized_pnl": round(float(realized or 0.0), 2),
+        "unrealized_pnl": round(float(unrealized or 0.0), 2),
+        "total_pnl": round(float(total or 0.0), 2),
+    }
 
 
 def _normalize_broker_position(row: dict) -> dict | None:
