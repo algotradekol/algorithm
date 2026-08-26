@@ -2252,6 +2252,7 @@ def _make_bare_algo3(settings_overrides=None):
     strat._entry_attempt_in_flight = False
     strat._entry_guard_lock = _threading.Lock()
     strat._entry_cooldown_until_monotonic = 0.0
+    strat._sl_cooldown_until_monotonic = 0.0
     strat._persist_setup_event = lambda side, bar, source: None
     strat._last_tick_at = None
     strat._last_tick_ltp = None
@@ -3124,7 +3125,10 @@ def test_algo3_sell_stop_does_not_reenter_above_old_trigger():
           len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
 
     # Once the renewed move reaches the actual threshold, the same reference
-    # can re-enter immediately without waiting for another 200-point move.
+    # can re-enter without waiting for another 200-point move. The 30s
+    # post-SL cooldown is disabled here so this test isolates the
+    # re-entry mechanics from the cooldown feature (covered separately).
+    strat._sl_cooldown_until_monotonic = 0.0
     strat._prev_ltp = 710.0
     strat._check_triggers(690.0)
     check("SELL re-enters at/below the carried trigger",
@@ -4051,6 +4055,9 @@ def test_algo3_live_buy_reference_reentry_and_rollover():
           and stop_strat.broker.closes[0]["reason"] == "SL"
           and stop_strat._buy_reentry_after_exit is not None,
           f"closes={stop_strat.broker.closes} handoff={stop_strat._buy_reentry_after_exit}")
+    # Disable the 30s post-SL cooldown so this test isolates the
+    # re-entry mechanics from the cooldown feature (covered separately).
+    stop_strat._sl_cooldown_until_monotonic = 0.0
     stop_strat._prev_ltp = 1295.0
     stop_strat._check_triggers(1305.0)
     check("BUY re-enters after SL once price resumes above the same threshold",
@@ -5210,6 +5217,132 @@ def test_fyers_positions_pnl_summary_normalization():
     check("position fallback identifies broker rows", fallback["source"] == "fyers_positions", f"got={fallback}")
 
 
+def test_paper_summary_uses_exit_date_for_realized_totals():
+    """Paper realized P&L must follow closed-today trades, not opened-today trades."""
+    print("\n52aa. paper realized totals use exit_time semantics")
+    import datetime as _dt
+    import app.paper_broker as pb
+
+    today = _dt.date.today()
+    yesterday = today - _dt.timedelta(days=1)
+    today_iso = today.isoformat()
+    yesterday_iso = yesterday.isoformat()
+    query_log = []
+
+    class FakeResult:
+        def __init__(self, data):
+            self.data = data
+
+    class FakeQuery:
+        def __init__(self, rows):
+            self._rows = [dict(row) for row in rows]
+
+        def select(self, _fields):
+            return self
+
+        def eq(self, key, value):
+            self._rows = [row for row in self._rows if row.get(key) == value]
+            return self
+
+        def gte(self, key, value):
+            query_log.append((key, value))
+            self._rows = [row for row in self._rows if str(row.get(key) or "") >= str(value)]
+            return self
+
+        def order(self, key, desc=False):
+            self._rows = sorted(self._rows, key=lambda row: str(row.get(key) or ""), reverse=desc)
+            return self
+
+        def limit(self, value):
+            self._rows = self._rows[:value]
+            return self
+
+        def execute(self):
+            return FakeResult(self._rows)
+
+    class FakeSupabase:
+        def __init__(self, rows):
+            self._rows = rows
+
+        def table(self, _name):
+            return FakeQuery(self._rows)
+
+    rows = [
+        {
+            "id": "closed-today-opened-yesterday",
+            "algo_id": "algo3",
+            "entry_time": f"{yesterday_iso}T23:55:00+00:00",
+            "exit_time": f"{today_iso}T03:45:00+00:00",
+            "gross_pnl": 1000.0,
+            "net_pnl": 900.0,
+            "total_charges": 100.0,
+        },
+        {
+            "id": "closed-yesterday",
+            "algo_id": "algo3",
+            "entry_time": f"{yesterday_iso}T10:00:00+00:00",
+            "exit_time": f"{yesterday_iso}T11:00:00+00:00",
+            "gross_pnl": 5000.0,
+            "net_pnl": 4500.0,
+            "total_charges": 500.0,
+        },
+        {
+            "id": "closed-today-opened-today",
+            "algo_id": "algo3",
+            "entry_time": f"{today_iso}T04:00:00+00:00",
+            "exit_time": f"{today_iso}T04:10:00+00:00",
+            "gross_pnl": -250.0,
+            "net_pnl": -275.0,
+            "total_charges": 25.0,
+        },
+    ]
+
+    original_run_with_supabase = pb.run_with_supabase
+    broker = object.__new__(pb.PaperBroker)
+    broker.algo_id = "algo3"
+    broker.starting_capital = 100000.0
+    broker._get_state = lambda: {"cash": 123456.78}
+    broker.today_counts = lambda: {"trade_count_today": 2, "buy_count_today": 1, "sell_count_today": 1}
+    broker.storage_algo_candidates = lambda: ["algo3"]
+    broker.trades_table_name = lambda: "paper_trades"
+
+    try:
+        pb.run_with_supabase = lambda callback: callback(FakeSupabase(rows))
+        summary = broker.summary()
+        recent = broker.recent_trades(limit=10, today_only=True)
+    finally:
+        pb.run_with_supabase = original_run_with_supabase
+
+    check(
+        "summary gross includes trades closed today even if opened yesterday",
+        summary["realized_gross_pnl"] == 750.0,
+        f"summary={summary}",
+    )
+    check(
+        "summary net includes closed-today rows only",
+        summary["realized_net_pnl"] == 625.0,
+        f"summary={summary}",
+    )
+    check(
+        "summary charges include closed-today rows only",
+        summary["realized_charges"] == 125.0,
+        f"summary={summary}",
+    )
+    check(
+        "recent_trades(today_only=True) follows exit_time filter",
+        [row["id"] for row in recent] == [
+            "closed-today-opened-today",
+            "closed-today-opened-yesterday",
+        ],
+        f"recent={[row['id'] for row in recent]}",
+    )
+    check(
+        "paper summary queries were filtered on exit_time",
+        query_log and all(key == "exit_time" for key, _ in query_log),
+        f"query_log={query_log}",
+    )
+
+
 def test_live_fill_timestamp_integrity():
     """FYERS fill rows must not create shifted or cross-order timestamps."""
     print("\n52b. live fill timestamps use IST and exact Fyers order identity")
@@ -5975,6 +6108,7 @@ def main():
     test_algo3_lot_based_qty()
     test_broker_positions_entry_time_from_tradebook()
     test_fyers_positions_pnl_summary_normalization()
+    test_paper_summary_uses_exit_date_for_realized_totals()
     test_live_fill_timestamp_integrity()
     test_algo3_warmup_end_date_is_today()
     test_algo3_warmup_debounce_blocks_repeat_calls()

@@ -78,6 +78,11 @@ SILVER_MICRO_LOT_SIZE = 1
 # to not run more than 12 times per hour in a worst-case restart storm.
 WARMUP_DEBOUNCE_SECONDS = 300
 ENTRY_ATTEMPT_COOLDOWN_SECONDS = 180
+# Client rule (2026-08-27): after a stop-loss (SL or TRAILING_SL) exit,
+# hold off any fresh normal entry for this many seconds. TARGET exits do
+# NOT arm this cooldown. A REVERSAL (contra-signal against a still-open
+# position) also bypasses it — reversals do not require a prior stop.
+POST_SL_COOLDOWN_SECONDS = 30
 # Fallback if the MCX symbol-master download fails at boot AND the
 # in-memory cache is empty. Client confirmed the front-month contract
 # on 2026-08-18 is 31AUGFUT (matches Fyers naming: expiry-day + month).
@@ -239,6 +244,12 @@ class Algo3SilverMicro(Strategy):
         self._entry_attempt_in_flight = False
         self._entry_guard_lock = threading.Lock()
         self._entry_cooldown_until_monotonic = 0.0
+        # 30s post-SL cooldown: after an SL / TRAILING_SL exit, block a
+        # fresh SAME-side entry for a short window so a whipsaw does not
+        # immediately re-arm the same losing trade. TARGET exits and
+        # REVERSAL (contra-signal against a still-open position) both
+        # bypass this cooldown per spec.
+        self._sl_cooldown_until_monotonic = 0.0
 
         # Diagnostics.
         self._last_tick_at: str | None = None
@@ -274,6 +285,7 @@ class Algo3SilverMicro(Strategy):
         self._sell_reentry_after_exit = None
         self._entry_attempt_in_flight = False
         self._entry_cooldown_until_monotonic = 0.0
+        self._sl_cooldown_until_monotonic = 0.0
 
         if self._open_position():
             return
@@ -432,6 +444,7 @@ class Algo3SilverMicro(Strategy):
         self._buy_reentry_after_exit = None
         self._entry_attempt_in_flight = False
         self._entry_cooldown_until_monotonic = 0.0
+        self._sl_cooldown_until_monotonic = 0.0
 
     def _silver_buy_plan(self) -> str:
         """Silver BUY always uses the finalized 15-minute EMA reference."""
@@ -572,6 +585,8 @@ class Algo3SilverMicro(Strategy):
         # carried reference - n level; it cannot re-enter above that level.
         if exit_reason not in {"SL", "TRAILING_SL", "TARGET"}:
             return
+        if exit_reason in {"SL", "TRAILING_SL"}:
+            self._arm_post_sl_cooldown(exit_reason)
         if self._sell_setup_close is None or self._sell_setup_bar_at is None:
             self._sell_reentry_after_exit = None
             return
@@ -592,6 +607,8 @@ class Algo3SilverMicro(Strategy):
         """
         if exit_reason not in {"SL", "TRAILING_SL", "TARGET"}:
             return
+        if exit_reason in {"SL", "TRAILING_SL"}:
+            self._arm_post_sl_cooldown(exit_reason)
         if self._buy_setup_close is None or self._buy_setup_bar_at is None:
             self._buy_reentry_after_exit = None
             return
@@ -969,6 +986,30 @@ class Algo3SilverMicro(Strategy):
     def _entry_cooldown_remaining(self) -> float:
         return max(0.0, self._entry_cooldown_until_monotonic - time.monotonic())
 
+    def _arm_post_sl_cooldown(self, exit_reason: str) -> None:
+        """Start the 30s SAME-side lockout after a protective stop exit.
+
+        TARGET exits deliberately never call this. A REVERSAL entry
+        checks _post_sl_cooldown_remaining() but bypasses the block —
+        contra-signals do not require a prior stop.
+        """
+        seconds = float(
+            self.settings.get("silver_post_sl_cooldown_seconds", POST_SL_COOLDOWN_SECONDS)
+            or POST_SL_COOLDOWN_SECONDS
+        )
+        seconds = max(0.0, seconds)
+        self._sl_cooldown_until_monotonic = max(
+            self._sl_cooldown_until_monotonic,
+            time.monotonic() + seconds,
+        )
+        print(
+            f"[algo3] post-SL cooldown armed for {seconds:.0f}s "
+            f"(exit_reason={exit_reason}); TARGET and REVERSAL bypass this."
+        )
+
+    def _post_sl_cooldown_remaining(self) -> float:
+        return max(0.0, self._sl_cooldown_until_monotonic - time.monotonic())
+
     def _is_live_broker(self) -> bool:
         return (
             getattr(self.broker, "_algo3_treat_as_live", False)
@@ -1192,9 +1233,10 @@ class Algo3SilverMicro(Strategy):
         buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
         sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
         buy_setup_identity = bar_at if buy_qualifies else self._buy_setup_bar_at
-        # A red-chain entry is anchored to the PREVIOUS red setup. The
-        # current qualifying bar is the candle that crossed that anchor.
-        sell_setup_identity = self._sell_setup_bar_at if sell_qualifies else None
+        # A red-chain entry still prices against the PREVIOUS stored red
+        # reference, but the consumed setup identity must belong to the
+        # fresh qualifying red candle that actually crossed that level.
+        sell_setup_identity = bar_at if sell_qualifies else None
 
         if (
             buy_level is not None
@@ -1266,6 +1308,18 @@ class Algo3SilverMicro(Strategy):
             cooldown_left = self._entry_cooldown_remaining()
             if cooldown_left > 0:
                 print(f"[algo3] entry SKIPPED for {side}: cooldown active ({cooldown_left:.0f}s remaining)")
+                return False
+            # Post-SL cooldown: block normal entries for 30s after an SL /
+            # TRAILING_SL exit. Reversal (contra-signal while a position
+            # of the OPPOSITE side is still open) bypasses this — the spec
+            # says reversals do not need a prior stop.
+            is_reversal = bool(current and current.get("side") and current["side"] != side)
+            sl_cooldown_left = self._post_sl_cooldown_remaining()
+            if sl_cooldown_left > 0 and not is_reversal:
+                print(
+                    f"[algo3] entry SKIPPED for {side}: post-SL cooldown active "
+                    f"({sl_cooldown_left:.0f}s remaining)"
+                )
                 return False
             self._mark_attempted(side, setup_bar_at_override)
             self._entry_attempt_in_flight = True
@@ -1445,4 +1499,5 @@ class Algo3SilverMicro(Strategy):
             "last_attempted_sell_bar_at": self._last_attempted_sell_bar_at.isoformat() if self._last_attempted_sell_bar_at else None,
             "entry_attempt_in_flight": self._entry_attempt_in_flight,
             "entry_cooldown_remaining_seconds": int(self._entry_cooldown_remaining()),
+            "post_sl_cooldown_remaining_seconds": int(self._post_sl_cooldown_remaining()),
         }
