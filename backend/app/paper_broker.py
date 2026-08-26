@@ -132,7 +132,7 @@ class PaperBroker:
         def query_candidate(supabase, candidate: str):
             request = supabase.table(self.trades_table_name()).select("*").eq("algo_id", candidate)
             if today_only:
-                request = request.gte("entry_time", query_date)
+                request = request.gte("exit_time", query_date)
             return request.order("exit_time", desc=True).limit(limit).execute()
 
         rows_by_candidate = [
@@ -597,16 +597,21 @@ class PaperBroker:
     def summary(self) -> dict:
         state = self._get_state()
         counts = self.today_counts()
-        trades_today = self._merge_storage_rows([
+        # Realized Gross/Net P&L is cumulative across ALL closed trades for
+        # this algo, not just today's — the tile label says "Closed paper
+        # trades only" (not "today"), and a redeploy or a new day must NOT
+        # zero out the running total. Trade-count tiles remain today-scoped
+        # via today_counts() above.
+        closed_trades = self._merge_storage_rows([
             run_with_supabase(
                 lambda supabase, key=candidate: supabase.table(self.trades_table_name()).select("net_pnl,gross_pnl,total_charges")
-                .eq("algo_id", key).gte("entry_time", datetime.date.today().isoformat()).execute()
+                .eq("algo_id", key).execute()
             ).data
             for candidate in self.storage_algo_candidates()
         ])
-        realized_net = sum(t["net_pnl"] for t in trades_today)
-        realized_gross = sum(t["gross_pnl"] for t in trades_today)
-        realized_charges = sum(t["total_charges"] for t in trades_today)
+        realized_net = sum(t["net_pnl"] for t in closed_trades)
+        realized_gross = sum(t["gross_pnl"] for t in closed_trades)
+        realized_charges = sum(t["total_charges"] for t in closed_trades)
         return {
             "cash": round(state["cash"], 2),
             "starting_capital": self.starting_capital,
