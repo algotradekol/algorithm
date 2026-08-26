@@ -921,13 +921,30 @@ class Algo3SilverMicro(Strategy):
                     f"({orders_result.get('warning') or 'unknown error'})"
                 )
                 return True
+            # Fyers status codes: 1=CANCELLED, 2=FILLED/TRADED, 3=REJECTED
+            # (some SDK versions), 4=TRANSIT, 5=REJECTED, 6=PENDING. Only
+            # TRANSIT (4) and PENDING (6) actually reserve capacity — a
+            # FILLED order from earlier today is HISTORY, not a live
+            # blocker. Prior code filtered by symbol only and treated
+            # today's already-filled rows as pending, blocking every
+            # subsequent re-entry (client incident 2026-08-26 12:00 IST:
+            # SELL trigger fired, blocked on a status=2 row from the
+            # morning BUY that had long since filled + closed).
+            _PENDING_STATUSES = {4, 6}
             for row in orders_result.get("orders", []):
-                if row.get("symbol") == self.symbol:
-                    print(
-                        f"[algo3] entry SKIPPED: broker already has pending {self.symbol} "
-                        f"{row.get('side')} order ({row.get('status')})"
-                    )
-                    return True
+                if row.get("symbol") != self.symbol:
+                    continue
+                try:
+                    status_int = int(row.get("status")) if row.get("status") is not None else None
+                except (TypeError, ValueError):
+                    status_int = None
+                if status_int not in _PENDING_STATUSES:
+                    continue
+                print(
+                    f"[algo3] entry SKIPPED: broker already has pending {self.symbol} "
+                    f"{row.get('side')} order (status={status_int})"
+                )
+                return True
             return False
         except Exception as exc:
             print(f"[algo3] entry SKIPPED: live broker guard failed for {self.symbol}: {exc}")
