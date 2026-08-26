@@ -597,21 +597,17 @@ class PaperBroker:
     def summary(self) -> dict:
         state = self._get_state()
         counts = self.today_counts()
-        # Realized Gross/Net P&L is cumulative across ALL closed trades for
-        # this algo, not just today's — the tile label says "Closed paper
-        # trades only" (not "today"), and a redeploy or a new day must NOT
-        # zero out the running total. Trade-count tiles remain today-scoped
-        # via today_counts() above.
-        closed_trades = self._merge_storage_rows([
-            run_with_supabase(
-                lambda supabase, key=candidate: supabase.table(self.trades_table_name()).select("net_pnl,gross_pnl,total_charges")
-                .eq("algo_id", key).execute()
-            ).data
-            for candidate in self.storage_algo_candidates()
-        ])
-        realized_net = sum(t["net_pnl"] for t in closed_trades)
-        realized_gross = sum(t["gross_pnl"] for t in closed_trades)
-        realized_charges = sum(t["total_charges"] for t in closed_trades)
+        # Sum the same trades the UI shows in "Closed Trades Today" so the
+        # Gross/Net tiles and the list stay in lockstep. recent_trades()
+        # uses gte("exit_time", server-date) which, with a UTC server and
+        # IST clients, keeps yesterday-IST rows visible past midnight IST
+        # (which is what the user sees at 01:00 IST after MCX evening
+        # trades). Whatever is visible in the list adds up in the tiles;
+        # old months never pile up forever.
+        closed_trades = self.recent_trades(limit=1000, today_only=True)
+        realized_net = sum(float(t.get("net_pnl") or 0) for t in closed_trades)
+        realized_gross = sum(float(t.get("gross_pnl") or 0) for t in closed_trades)
+        realized_charges = sum(float(t.get("total_charges") or 0) for t in closed_trades)
         return {
             "cash": round(state["cash"], 2),
             "starting_capital": self.starting_capital,
