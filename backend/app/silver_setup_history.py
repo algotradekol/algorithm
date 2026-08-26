@@ -208,3 +208,50 @@ def get_setup_history(
             "current_session_only": current_session_only,
             "live_only": live_only,
         }
+
+
+def get_latest_setup_reference(
+    algo_id: str,
+    *,
+    side: str,
+    live_only: bool = False,
+) -> dict | None:
+    normalized_side = str(side or "").upper()
+    if normalized_side not in {"BUY", "SELL"}:
+        return None
+
+    def query(supabase):
+        rows: list[dict] = []
+        for candidate in current_storage_values(algo_id):
+            request = (
+                supabase.table("silver_setup_events")
+                .select("*")
+                .eq("algo_id", candidate)
+                .eq("setup_side", normalized_side)
+                .order("candle_time", desc=True)
+                .limit(25)
+            )
+            if live_only:
+                request = request.eq("source", "live")
+            result = request.execute()
+            rows.extend(result.data or [])
+            if rows:
+                break
+        return rows
+
+    try:
+        raw_rows = [_normalize_legacy_row(row) for row in run_with_supabase(query)]
+    except Exception as exc:
+        print(
+            "[silver_setup_history] latest reference lookup failed "
+            f"for {normalized_side}: {exc}"
+        )
+        return None
+
+    for row in raw_rows:
+        if not _is_qualifying_setup_row(row):
+            continue
+        normalized = dict(row)
+        normalized["algo_id"] = algo_id
+        return normalized
+    return None
