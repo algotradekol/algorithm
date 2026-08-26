@@ -1,5 +1,6 @@
 import datetime
 
+from . import config
 from .runtime_mode import get_runtime_trading_mode, normalize_trading_mode
 from .storage_namespace import namespaced_value
 
@@ -265,17 +266,31 @@ def get_settings(algo_id: str, mode: str | None = None) -> dict:
     )
     if result.data:
         return _normalize(result.data[0], algo_id)
-    # Backward-compatible fallbacks:
-    # 1. deployment-scoped legacy shared row: algo3__client
-    # 2. historical global shared row: algo3
-    # Only hydrate from these when the mode-specific row does not exist yet.
+    # Backward-compatible fallbacks. Only hydrate from these when the
+    # mode-specific per-deployment row does not exist yet.
+    #
+    # Multi-tenant safety (2026-08-27): when BROKER_KEY_SUFFIX is set,
+    # two backends share one Supabase and MUST NOT cross-read each
+    # other's or a legacy shared row. Previously the plain-unsuffixed
+    # legacy row (e.g. "algo3") was read by every deployment that had
+    # not saved yet, so dev-site and client-site both hydrated from the
+    # same shared record and appeared to mirror each other. Restrict the
+    # fallback to keys within this deployment's own namespace.
     legacy_candidates: list[str] = []
-    deployment_legacy_key = namespaced_value(str(algo_id or "").strip())
-    if deployment_legacy_key != storage_key:
-        legacy_candidates.append(deployment_legacy_key)
-    plain_legacy_key = str(algo_id or "").strip()
-    if plain_legacy_key not in legacy_candidates and plain_legacy_key != storage_key:
-        legacy_candidates.append(plain_legacy_key)
+    if config.BROKER_KEY_SUFFIX:
+        # Only within-namespace fallback: e.g. "algo3__dev" (mode stripped).
+        deployment_legacy_key = namespaced_value(str(algo_id or "").strip())
+        if deployment_legacy_key != storage_key:
+            legacy_candidates.append(deployment_legacy_key)
+    else:
+        # Single-deployment mode: preserve historical behavior so a very
+        # old single-backend install still reads its pre-namespaced row.
+        deployment_legacy_key = namespaced_value(str(algo_id or "").strip())
+        if deployment_legacy_key != storage_key:
+            legacy_candidates.append(deployment_legacy_key)
+        plain_legacy_key = str(algo_id or "").strip()
+        if plain_legacy_key not in legacy_candidates and plain_legacy_key != storage_key:
+            legacy_candidates.append(plain_legacy_key)
     for legacy_key in legacy_candidates:
         legacy_result = run_with_supabase(
             lambda supabase, key=legacy_key: supabase.table("strategy_settings").select("*").eq("algo_id", key).execute()
