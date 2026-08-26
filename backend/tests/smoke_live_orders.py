@@ -3113,6 +3113,76 @@ def test_algo3_live_broker_guard_blocks_when_symbol_busy():
           f"attempted={strat._last_attempted_buy_bar_at}")
 
 
+def test_algo3_live_broker_guard_ignores_todays_filled_orders():
+    print("\n41e. algo3 live broker guard — Fyers status=2 (FILLED) from earlier today is NOT a blocker")
+    # 2026-08-26 12:00 IST regression: client's SELL trigger fired at 11:47,
+    # blocked all afternoon because morning BUY (status=2, FILLED, then
+    # closed) still appeared in Fyers orderbook and the guard treated any
+    # symbol match as pending. Real pending statuses are 4=TRANSIT, 6=PENDING.
+    strat = _make_bare_algo3()
+    strat.broker._algo3_treat_as_live = True
+    # Monkey-patch the module-level fetchers the guard imports.
+    from app.strategies import algo3_silver_micro as a3
+    import app.fyers_client as fc
+    orig_get_orders = getattr(fc, "get_broker_orders", None)
+    orig_get_positions = getattr(fc, "get_broker_positions", None)
+    fc.get_broker_positions = lambda mode: {"available": True, "positions": []}
+    try:
+        # Case A: only a FILLED order for our symbol — must NOT block.
+        fc.get_broker_orders = lambda mode: {
+            "available": True,
+            "orders": [{"symbol": strat.symbol, "side": "BUY", "status": 2}],
+        }
+        blocked_filled = strat._live_broker_symbol_busy(current_position=None)
+        check("guard ignores status=2 FILLED history",
+              blocked_filled is False, f"blocked_filled={blocked_filled}")
+
+        # Case B: CANCELLED order — must NOT block.
+        fc.get_broker_orders = lambda mode: {
+            "available": True,
+            "orders": [{"symbol": strat.symbol, "side": "SELL", "status": 1}],
+        }
+        blocked_cancelled = strat._live_broker_symbol_busy(current_position=None)
+        check("guard ignores status=1 CANCELLED history",
+              blocked_cancelled is False, f"blocked_cancelled={blocked_cancelled}")
+
+        # Case C: a live TRANSIT order — MUST block.
+        fc.get_broker_orders = lambda mode: {
+            "available": True,
+            "orders": [{"symbol": strat.symbol, "side": "BUY", "status": 4}],
+        }
+        blocked_transit = strat._live_broker_symbol_busy(current_position=None)
+        check("guard blocks on status=4 TRANSIT (real pending)",
+              blocked_transit is True, f"blocked_transit={blocked_transit}")
+
+        # Case D: a live PENDING order — MUST block.
+        fc.get_broker_orders = lambda mode: {
+            "available": True,
+            "orders": [{"symbol": strat.symbol, "side": "SELL", "status": 6}],
+        }
+        blocked_pending = strat._live_broker_symbol_busy(current_position=None)
+        check("guard blocks on status=6 PENDING (real pending)",
+              blocked_pending is True, f"blocked_pending={blocked_pending}")
+
+        # Case E: mixed history + one pending — MUST block.
+        fc.get_broker_orders = lambda mode: {
+            "available": True,
+            "orders": [
+                {"symbol": strat.symbol, "side": "BUY", "status": 2},   # filled
+                {"symbol": strat.symbol, "side": "SELL", "status": 1},  # cancelled
+                {"symbol": strat.symbol, "side": "BUY", "status": 6},   # pending
+            ],
+        }
+        blocked_mixed = strat._live_broker_symbol_busy(current_position=None)
+        check("guard blocks when at least one pending exists alongside history",
+              blocked_mixed is True, f"blocked_mixed={blocked_mixed}")
+    finally:
+        if orig_get_orders is not None:
+            fc.get_broker_orders = orig_get_orders
+        if orig_get_positions is not None:
+            fc.get_broker_positions = orig_get_positions
+
+
 # ── 42. Entry payload uses POINTS for SL/target ────────────────────────
 def test_algo3_entry_uses_points_sl_target():
     print("\n42. algo3 entry SL/target are computed as POINTS from entry, not %")
@@ -5732,6 +5802,7 @@ def main():
     test_algo3_failed_live_attempt_consumes_setup_once()
     test_algo3_new_setup_rearms_after_failed_attempt()
     test_algo3_live_broker_guard_blocks_when_symbol_busy()
+    test_algo3_live_broker_guard_ignores_todays_filled_orders()
     test_algo3_entry_uses_points_sl_target()
     test_algo3_trailing_settings_use_point_lock_model()
     test_silver_point_lock_trailing_buy_and_sell()
