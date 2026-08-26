@@ -561,6 +561,313 @@ def test_external_close_grace():
     check("fresh position NOT wrongly closed (grace period)", len(closed) == 0, f"closed={closed}")
 
 
+# ── 8e. Design B — Fyers as single source of truth (2026-08-26) ───────
+# Regression: client's account went short 1 because the app-side
+# check_exits fired a duplicate MARKET sell 4s after Fyers's own SL-Limit
+# had already flattened the position. These tests lock in the pre-flight
+# guards that prevent the whole class of double-order races.
+def test_close_trade_skips_market_when_fyers_already_flat():
+    print("\n8e. Design B close_trade — Fyers already flat → skip market exit (2026-08-26 short-position regression)")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+
+    import app.live_broker as lb
+    import app.fyers_client as fc
+    # Fyers is authoritative: it reports net_qty=0 for this symbol.
+    fc.get_broker_positions = lambda mode: {
+        "available": True, "cached": False,
+        "positions": [{"symbol": "MCX:SILVERMIC26AUGFUT", "net_qty": 0}],
+    }
+    # Direct sanity check on the helper itself.
+    check("_fyers_current_net_qty returns 0 when Fyers is flat",
+          lb._fyers_current_net_qty("MCX:SILVERMIC26AUGFUT") == 0.0)
+
+    # Track everything close_trade could do so we can assert what it did NOT.
+    market_exits = []
+    orig_place = broker._place_live_order
+    broker._place_live_order = lambda symbol, side, qty, order_type="MARKET", limit_price=0.0: (
+        market_exits.append((symbol, side, qty, order_type)) or {"s": "ok", "id": "SHOULD-NOT-FIRE"}
+    )
+    persisted = []
+    import app.paper_broker as pb
+    orig_close = pb.PaperBroker.close_trade
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: (
+        persisted.append((pos["symbol"], exit_reason, price))
+    )
+    try:
+        position = {
+            "symbol": "MCX:SILVERMIC26AUGFUT", "side": "BUY", "qty": 1,
+            "entry_price": 246140.0, "sl_price": 245690.0, "target_price": 251140.0,
+            "signal_snapshot": {"fyers_sl_order_id": "SL-42", "fyers_target_order_id": "TP-42"},
+        }
+        broker.close_trade(position, 245813.0, "SL")
+        # Guard skipped the market: no _place_live_order call.
+        check("no MARKET exit sent when Fyers already flat", len(market_exits) == 0,
+              f"unexpected market exits: {market_exits}")
+        # Guard still cancelled the leftover Target order (SL-42 too, though
+        # it's already filled — cancel is idempotent at Fyers).
+        cancelled_ids = {c.get("id") for c in rec["cancelled"]}
+        check("leftover Target LIMIT was cancelled", "TP-42" in cancelled_ids,
+              f"cancelled={rec['cancelled']}")
+        # DB closure still happened so our books reflect reality.
+        check("DB close_trade still recorded", len(persisted) == 1 and persisted[0][1] == "SL",
+              f"persisted={persisted}")
+    finally:
+        broker._place_live_order = orig_place
+        pb.PaperBroker.close_trade = orig_close
+
+
+def test_close_trade_still_sends_market_when_fyers_still_holds():
+    print("\n8f. Design B close_trade — Fyers still holds position → market exit fires normally")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+
+    import app.fyers_client as fc
+    # Fyers is authoritative: it reports net_qty=1 still open.
+    fc.get_broker_positions = lambda mode: {
+        "available": True, "cached": False,
+        "positions": [{"symbol": "MCX:SILVERMIC26AUGFUT", "net_qty": 1}],
+    }
+
+    market_exits = []
+    broker._place_live_order = lambda symbol, side, qty, order_type="MARKET", limit_price=0.0: (
+        market_exits.append((symbol, side, qty)) or {"s": "ok", "id": "REAL-EXIT"}
+    )
+    broker._resolve_fill_details = lambda **kwargs: (245800.0, "2026-08-26T10:00:00+00:00")
+    persisted = []
+    import app.paper_broker as pb
+    orig_close = pb.PaperBroker.close_trade
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: (
+        persisted.append((exit_reason, price))
+    )
+    try:
+        position = {
+            "symbol": "MCX:SILVERMIC26AUGFUT", "side": "BUY", "qty": 1,
+            "entry_price": 246140.0, "sl_price": 245690.0, "target_price": 251140.0,
+            "signal_snapshot": {"fyers_sl_order_id": "SL-99", "fyers_target_order_id": "TP-99"},
+        }
+        broker.close_trade(position, 245813.0, "SL")
+        check("MARKET exit fires when Fyers still holds the position",
+              len(market_exits) == 1 and market_exits[0][1] == "SELL",
+              f"market_exits={market_exits}")
+        check("DB records the actual Fyers fill price",
+              len(persisted) == 1 and persisted[0][1] == 245800.0,
+              f"persisted={persisted}")
+    finally:
+        pb.PaperBroker.close_trade = orig_close
+
+
+def test_close_trade_falls_back_to_market_when_fyers_unavailable():
+    print("\n8g. Design B close_trade — Fyers unreachable (None) → do NOT skip, fall back to market exit")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+
+    import app.fyers_client as fc
+    def _boom(mode):
+        raise RuntimeError("fyers proxy down")
+    fc.get_broker_positions = _boom
+
+    market_exits = []
+    broker._place_live_order = lambda symbol, side, qty, order_type="MARKET", limit_price=0.0: (
+        market_exits.append((symbol, side, qty)) or {"s": "ok", "id": "FALLBACK-EXIT"}
+    )
+    broker._resolve_fill_details = lambda **kwargs: (245800.0, None)
+    import app.paper_broker as pb
+    orig_close = pb.PaperBroker.close_trade
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: None
+    try:
+        position = {
+            "symbol": "MCX:SILVERMIC26AUGFUT", "side": "BUY", "qty": 1,
+            "entry_price": 246140.0, "sl_price": 245690.0, "target_price": 251140.0,
+            "signal_snapshot": {"fyers_sl_order_id": "SL-X", "fyers_target_order_id": "TP-X"},
+        }
+        broker.close_trade(position, 245813.0, "SL")
+        # Fyers-unknown MUST NOT skip the market exit — that would leave a
+        # naked position uncovered during an outage.
+        check("Fyers-unavailable falls back to normal market exit",
+              len(market_exits) == 1,
+              f"market_exits={market_exits}")
+    finally:
+        pb.PaperBroker.close_trade = orig_close
+
+
+# ── 8i. Design B — real-time Fyers→us sync via Order Update WS ────────
+def test_ws_order_fill_closes_position_immediately():
+    print("\n8i. Order-WS push — SL FILLED event closes DB position immediately (no 30s poll wait)")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+    position = {
+        "symbol": "MCX:SILVERMIC26AUGFUT", "side": "BUY", "qty": 1,
+        "entry_price": 246140.0, "sl_price": 245690.0, "target_price": 251140.0,
+        "signal_snapshot": {"fyers_sl_order_id": "SL-42", "fyers_target_order_id": "TP-42"},
+    }
+    broker.open_positions = lambda: [position]
+    closed = []
+    import app.paper_broker as pb
+    orig_close = pb.PaperBroker.close_trade
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: (
+        closed.append((exit_reason, price, exit_time))
+    )
+    try:
+        event = {
+            "kind": "order", "symbol": "MCX:SILVERMIC26AUGFUT",
+            "order_id": "SL-42", "status": 2, "side": "SELL",
+            "traded_price": 245813.0, "traded_qty": 1,
+            "traded_at": "2026-08-26T09:47:40+00:00",
+        }
+        result = broker.handle_order_event(event)
+        check("SL fill event closes the position immediately",
+              result.get("action") == "closed" and result.get("exit_reason") == "SL_FYERS",
+              f"result={result}")
+        check("DB close_trade recorded with Fyers fill price",
+              len(closed) == 1 and closed[0][1] == 245813.0, f"closed={closed}")
+        check("sibling Target LIMIT was cancelled on WS push",
+              any(c.get("id") == "TP-42" for c in rec["cancelled"]),
+              f"cancelled={rec['cancelled']}")
+    finally:
+        pb.PaperBroker.close_trade = orig_close
+
+
+def test_ws_position_flat_force_syncs_stale_db():
+    print("\n8j. Order-WS push — position net_qty=0 force-syncs stale DB row (2026-08-26 stuck-entry regression)")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+    position = {
+        "symbol": "MCX:SILVERMIC26AUGFUT", "side": "BUY", "qty": 1,
+        "entry_price": 246140.0, "sl_price": 245690.0, "target_price": 251140.0,
+        "_last_ltp": 245900.0,
+        "signal_snapshot": {"fyers_sl_order_id": "SL-88", "fyers_target_order_id": "TP-88"},
+    }
+    broker.open_positions = lambda: [position]
+    closed = []
+    import app.paper_broker as pb
+    orig_close = pb.PaperBroker.close_trade
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: (
+        closed.append((exit_reason, price))
+    )
+    try:
+        # Client hit Exit in Fyers app — WS pushes net_qty=0 for our symbol.
+        event = {
+            "kind": "position", "symbol": "MCX:SILVERMIC26AUGFUT", "net_qty": 0,
+        }
+        result = broker.handle_order_event(event)
+        check("position=0 event force-closes the stale DB row",
+              result.get("action") == "closed" and result.get("exit_reason") == "MANUAL_EXTERNAL_EXIT",
+              f"result={result}")
+        check("DB close_trade recorded as MANUAL_EXTERNAL_EXIT",
+              len(closed) == 1 and closed[0][0] == "MANUAL_EXTERNAL_EXIT",
+              f"closed={closed}")
+        check("leftover protective orders cancelled",
+              {c.get("id") for c in rec["cancelled"]} >= {"SL-88", "TP-88"},
+              f"cancelled={rec['cancelled']}")
+    finally:
+        pb.PaperBroker.close_trade = orig_close
+
+
+def test_ws_manual_external_entry_logged_not_persisted():
+    print("\n8k. Order-WS push — manual entry at Fyers (unknown symbol) logged, no fake row written")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+    broker.open_positions = lambda: []  # our DB has nothing for this symbol
+    closed = []
+    import app.paper_broker as pb
+    orig_close = pb.PaperBroker.close_trade
+    pb.PaperBroker.close_trade = lambda self, *a, **k: closed.append(a)
+    try:
+        event = {"kind": "position", "symbol": "MCX:GOLDM26AUGFUT", "net_qty": 1}
+        result = broker.handle_order_event(event)
+        check("manual entry event logged as informational",
+              result.get("action") == "logged_manual_entry", f"result={result}")
+        check("no DB row inserted for manual entry",
+              len(closed) == 0, f"unexpected close_trade calls: {closed}")
+    finally:
+        pb.PaperBroker.close_trade = orig_close
+
+
+def test_ws_cancelled_protective_order_clears_snapshot():
+    print("\n8l. Order-WS push — protective order CANCELLED clears the id from snapshot")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+    position = {
+        "symbol": "MCX:SILVERMIC26AUGFUT", "side": "BUY", "qty": 1,
+        "sl_price": 245690.0, "target_price": 251140.0,
+        "signal_snapshot": {"fyers_sl_order_id": "SL-77", "fyers_target_order_id": "TP-77"},
+    }
+    broker.open_positions = lambda: [position]
+    event = {
+        "kind": "order", "symbol": "MCX:SILVERMIC26AUGFUT",
+        "order_id": "TP-77", "status": 1, "side": "SELL",
+    }
+    result = broker.handle_order_event(event)
+    check("cancelled Target updates the snapshot",
+          result.get("action") == "cleared_snapshot" and result.get("role") == "target",
+          f"result={result}")
+    check("Target id cleared from snapshot after cancel",
+          position["signal_snapshot"].get("fyers_target_order_id") is None,
+          f"snapshot={position['signal_snapshot']}")
+    check("SL id untouched",
+          position["signal_snapshot"].get("fyers_sl_order_id") == "SL-77",
+          f"snapshot={position['signal_snapshot']}")
+
+
+def test_ws_dispatch_parses_orders_and_positions_bundle():
+    print("\n8m. dispatch_message — one Fyers frame with orders+positions fires two normalized events")
+    import app.fyers_order_updates as fo
+    received: list[dict] = []
+    # Fyers V3 sometimes wraps under top-level 'd', sometimes not. Cover both.
+    for wrapper in ({"orders": {"id": "O-1", "symbol": "NSE:TCS-EQ", "status": 2, "side": 1, "tradedPrice": 3900.0, "filledQty": 5}},
+                    {"d": {"positions": [{"symbol": "MCX:SILVERMIC26AUGFUT", "netQty": 0}]}}):
+        count = fo.dispatch_message(wrapper, received.append)
+        check(f"dispatch returned {count} for wrapper {list(wrapper.keys())}", count == 1,
+              f"received={received}")
+    check("first event is a normalized order fill",
+          received[0]["kind"] == "order" and received[0]["symbol"] == "NSE:TCS-EQ"
+          and received[0]["order_id"] == "O-1" and received[0]["side"] == "BUY"
+          and received[0]["status"] == 2,
+          f"event={received[0]}")
+    check("second event is a normalized position flat",
+          received[1]["kind"] == "position" and received[1]["symbol"] == "MCX:SILVERMIC26AUGFUT"
+          and received[1]["net_qty"] == 0,
+          f"event={received[1]}")
+
+
+def test_open_trade_refuses_duplicate_when_fyers_already_positioned():
+    print("\n8h. Design B open_trade — Fyers already holds symbol → refuse duplicate entry")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+
+    import app.fyers_client as fc
+    # Fyers already holds a long 1 — a duplicate entry would double up.
+    fc.get_broker_positions = lambda mode: {
+        "available": True, "cached": False,
+        "positions": [{"symbol": "MCX:SILVERMIC26AUGFUT", "net_qty": 1}],
+    }
+
+    orders_placed = []
+    broker._place_live_order = lambda symbol, side, qty, order_type="MARKET", limit_price=0.0: (
+        orders_placed.append((symbol, side, qty)) or {"s": "ok", "id": "DUP-ENTRY"}
+    )
+    broker._cap_qty_to_live_funds = lambda symbol, qty, price: qty
+    persisted = []
+    import app.paper_broker as pb
+    orig_open = pb.PaperBroker.open_trade
+    pb.PaperBroker.open_trade = lambda self, *args, **kwargs: persisted.append((args, kwargs))
+    try:
+        try:
+            broker.open_trade("MCX:SILVERMIC26AUGFUT", "BUY", 1, 246140.0, 245940.0, 250140.0)
+            check("open_trade should have raised on duplicate", False, "no exception")
+        except RuntimeError as exc:
+            text = str(exc).lower()
+            check("refusal mentions already positioned",
+                  "already positioned" in text or "net_qty" in text, str(exc))
+        check("no entry order sent when Fyers already holds symbol",
+              len(orders_placed) == 0, f"orders_placed={orders_placed}")
+        check("no DB row written for the refused duplicate",
+              len(persisted) == 0, f"persisted={persisted}")
+    finally:
+        pb.PaperBroker.open_trade = orig_open
+
+
 # ── 9. algo1 _has_open_position guard (re-entry prevention) ────────────
 def test_algo1_open_position_guard():
     print("\n9. algo1 refuses to re-enter a symbol that is already open")
@@ -5353,6 +5660,15 @@ def main():
     test_external_close_2026_08_11_regression()
     test_external_close_single_flaky_poll()
     test_external_close_grace()
+    test_close_trade_skips_market_when_fyers_already_flat()
+    test_close_trade_still_sends_market_when_fyers_still_holds()
+    test_close_trade_falls_back_to_market_when_fyers_unavailable()
+    test_ws_order_fill_closes_position_immediately()
+    test_ws_position_flat_force_syncs_stale_db()
+    test_ws_manual_external_entry_logged_not_persisted()
+    test_ws_cancelled_protective_order_clears_snapshot()
+    test_ws_dispatch_parses_orders_and_positions_bundle()
+    test_open_trade_refuses_duplicate_when_fyers_already_positioned()
     test_algo1_open_position_guard()
     test_protective_retry()
     test_streaming_fcfs_phase2()

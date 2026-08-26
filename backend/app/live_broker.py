@@ -8,6 +8,7 @@ isolated and backwards-compatible.
 from __future__ import annotations
 
 import datetime
+import threading
 import time
 
 from .audit_log import audit_log
@@ -18,6 +19,63 @@ from .runtime_mode import get_fyers_config, get_runtime_trading_mode
 from .supabase_client import run_with_supabase
 from .timezone import IST
 from .trailing_stop import SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN, uses_silver_breakeven_stop
+
+
+# ── Fyers as single source of truth (Design B, 2026-08-26) ────────────
+# Every write path (open_trade, close_trade) that touches Fyers for a given
+# symbol runs under _symbol_lock and consults _fyers_current_net_qty right
+# before acting. Two workers (WS tick handler, reconciliation loop, user
+# Exit button, EOD square-off) can no longer race and place duplicate
+# orders. Fyers is the authority — our in-memory / DB state is a mirror,
+# never a decision-maker for whether to send another order.
+#
+# 2026-08-26 incident that motivated this: check_exits() detected SL cross
+# on our WS tick 4s AFTER the Fyers-side SL-Limit had already fired, and
+# fired a fresh MARKET sell to "close" the (already flat) position. That
+# second sell took the client from flat → short 1. Guard prevents it.
+_symbol_locks: dict[str, threading.RLock] = {}
+_symbol_locks_lock = threading.Lock()
+
+
+def _symbol_lock(symbol: str) -> threading.RLock:
+    """Return the per-symbol RLock, creating it on first use. RLock so a
+    caller already holding the lock can reenter (e.g. safety-flatten from
+    inside open_trade)."""
+    key = str(symbol or "").strip().upper()
+    with _symbol_locks_lock:
+        lock = _symbol_locks.get(key)
+        if lock is None:
+            lock = threading.RLock()
+            _symbol_locks[key] = lock
+    return lock
+
+
+def _fyers_current_net_qty(symbol: str) -> float | None:
+    """Fyers-authoritative current net_qty for `symbol`, or None if Fyers
+    is unreachable. Positive = long, negative = short, 0 = flat.
+
+    Returning None on failure is deliberate — callers must treat "unknown"
+    as "do not skip the safety action". If we can't ask Fyers, we fall back
+    to the current behaviour (place the order) so a Fyers outage does not
+    leave a naked position uncovered.
+    """
+    try:
+        from .fyers_client import get_broker_positions
+        result = get_broker_positions("live")
+    except Exception as exc:
+        print(f"[live_broker] pre-flight positions fetch failed for {symbol}: {exc}")
+        return None
+    if not isinstance(result, dict) or not result.get("available"):
+        return None
+    target = str(symbol or "").strip().upper()
+    for row in result.get("positions") or []:
+        if str(row.get("symbol") or "").strip().upper() == target:
+            try:
+                return float(row.get("net_qty", 0) or 0)
+            except (TypeError, ValueError):
+                return 0.0
+    # Fyers responded and this symbol wasn't in the positions list → flat.
+    return 0.0
 
 
 # Default tick size for NSE equity. Fyers V3 rejects prices that aren't a
@@ -159,6 +217,38 @@ class LiveBroker(PaperBroker):
         signal_snapshot: dict | None = None,
         entry_time: str | None = None,
     ):
+        with _symbol_lock(symbol):
+            return self._open_trade_locked(
+                symbol, side, qty, entry_price, sl_price, target_price,
+                entry_trigger, signal_snapshot, entry_time,
+            )
+
+    def _open_trade_locked(
+        self,
+        symbol: str,
+        side: str,
+        qty: int,
+        entry_price: float,
+        sl_price: float,
+        target_price: float,
+        entry_trigger: str | None,
+        signal_snapshot: dict | None,
+        entry_time: str | None,
+    ):
+        # Design B pre-flight — Fyers is the single source of truth for
+        # whether we already hold this symbol. Refuse to double up on a
+        # duplicate signal, restart race, or reconciliation lag.
+        current_net = _fyers_current_net_qty(symbol)
+        if current_net is not None and abs(current_net) >= 1:
+            print(
+                f"[live_broker] pre-flight ABORT open_trade {symbol} {side} x{qty}: "
+                f"Fyers already holds net_qty={current_net} — refusing duplicate entry"
+            )
+            raise RuntimeError(
+                f"Fyers live entry refused: {symbol} already positioned at Fyers "
+                f"(net_qty={current_net}). Reconciliation must clear it first."
+            )
+
         qty = self._cap_qty_to_live_funds(symbol, qty, entry_price)
         if qty < 1:
             raise RuntimeError("Fyers live order failed: available live funds are below the current share price.")
@@ -267,9 +357,44 @@ class LiveBroker(PaperBroker):
         )
 
     def close_trade(self, position: dict, exit_price: float, exit_reason: str):
+        symbol = position["symbol"]
+        with _symbol_lock(symbol):
+            return self._close_trade_locked(position, exit_price, exit_reason)
+
+    def _close_trade_locked(self, position: dict, exit_price: float, exit_reason: str):
+        symbol = position["symbol"]
         side = position["side"]
         qty = int(position["qty"])
         exit_side = "SELL" if side == "BUY" else "BUY"
+
+        # Design B pre-flight — Fyers is the single source of truth for
+        # whether this position is still open. If Fyers already reports
+        # net_qty=0 (SL-Limit fired, Target LIMIT fired, user manually
+        # exited via Fyers app, EOD square-off by broker), the market
+        # exit we're about to place would just OPEN a fresh reverse
+        # position. Cancel any leftover protective orders and record
+        # the DB closure at the caller's price — no fresh market order.
+        #
+        # 2026-08-26 incident: our tick handler saw LTP cross SL 4s after
+        # the Fyers-side SL fired; the resulting duplicate market SELL
+        # took the client from flat → short 1. Guard prevents it.
+        current_net = _fyers_current_net_qty(symbol)
+        if current_net is not None and current_net == 0:
+            print(
+                f"[live_broker] pre-flight SKIP close_trade {symbol}: "
+                f"already flat at Fyers (net_qty=0, reason={exit_reason}) — "
+                f"no market exit sent; cancelling residual protective orders"
+            )
+            snapshot = position.get("signal_snapshot") or {}
+            for order_id_key in ("fyers_sl_order_id", "fyers_target_order_id"):
+                oid = snapshot.get(order_id_key)
+                if oid:
+                    self._cancel_fyers_order(
+                        oid,
+                        reason=f"close_trade:already_flat:{exit_reason}",
+                    )
+            super().close_trade(position, exit_price, exit_reason)
+            return
 
         # Cancel any pending protective orders BEFORE placing the manual
         # market exit. Otherwise the SL/Target order stays live at Fyers
@@ -646,6 +771,212 @@ class LiveBroker(PaperBroker):
                 remaining.append(position)
 
         return remaining
+
+    # ── Fyers → us real-time sync (2026-08-26 Design B, Component 2) ───
+    # Handle a single event pushed by the Fyers Order Update WebSocket.
+    # Called from fyers_order_updates.connect_order_update_feed via a
+    # dispatch thread. Idempotent — receiving the same event twice must
+    # not double-write / double-cancel.
+    #
+    # event shape (normalized by fyers_order_updates._normalize_event):
+    #   {"kind": "order" | "trade" | "position",
+    #    "symbol": "MCX:SILVERMIC26AUGFUT",
+    #    "order_id": "...",          # order events only
+    #    "status": 1|2|4|5|6,        # order events; 2=FILLED, 1=CANCELLED, 5=REJECTED
+    #    "side": "BUY" | "SELL",     # order/trade
+    #    "traded_price": float,      # fills only
+    #    "traded_qty": int,          # fills only
+    #    "net_qty": int,             # position events only
+    #    "traded_at": ISO str,       # optional
+    #    "raw": {...}}               # the untouched payload for logging
+    _ORDER_STATUS_FILLED = 2
+    _ORDER_STATUS_CANCELLED = 1
+    _ORDER_STATUS_REJECTED = 5
+
+    def handle_order_event(self, event: dict) -> dict:
+        """Route one Fyers order-update event to the right DB action.
+
+        Returns a small dict describing what we did — used by the caller
+        for logging and by the smoke tests. Never raises for a routing
+        decision; only raises for underlying DB write failures.
+        """
+        if not isinstance(event, dict):
+            return {"action": "ignored", "reason": "non-dict-event"}
+        kind = event.get("kind")
+        symbol = str(event.get("symbol") or "").strip()
+        if not symbol:
+            return {"action": "ignored", "reason": "missing-symbol", "kind": kind}
+
+        with _symbol_lock(symbol):
+            if kind == "order":
+                return self._handle_order_status_event(event, symbol)
+            if kind == "position":
+                return self._handle_position_snapshot_event(event, symbol)
+            if kind == "trade":
+                # Trade events currently duplicate the fill info we already
+                # get from the order event with status=2. Keep them for
+                # visibility only.
+                return {"action": "ignored", "reason": "trade-event-covered-by-order", "symbol": symbol}
+            return {"action": "ignored", "reason": f"unknown-kind:{kind}", "symbol": symbol}
+
+    def _handle_order_status_event(self, event: dict, symbol: str) -> dict:
+        order_id = str(event.get("order_id") or "").strip()
+        status = event.get("status")
+        try:
+            status_int = int(status) if status is not None else None
+        except (TypeError, ValueError):
+            status_int = None
+
+        matched_position, matched_role = self._find_position_by_order_id(order_id)
+
+        if status_int == self._ORDER_STATUS_FILLED:
+            if matched_position and matched_role in ("sl", "target"):
+                # Fyers-side SL or Target fired. Close DB immediately —
+                # no waiting on the 30s reconciliation poll. Also cancels
+                # the sibling protective order.
+                fill_price = float(event.get("traded_price") or matched_position.get(
+                    "sl_price" if matched_role == "sl" else "target_price"
+                ) or 0.0)
+                exit_reason = f"{matched_role.upper()}_FYERS"
+                if matched_role == "sl" and self._is_trailing_stop(matched_position):
+                    exit_reason = "TRAILING_SL_FYERS"
+                snapshot = matched_position.get("signal_snapshot") or {}
+                sibling_key = "fyers_target_order_id" if matched_role == "sl" else "fyers_sl_order_id"
+                sibling_id = snapshot.get(sibling_key)
+                if sibling_id:
+                    self._cancel_fyers_order(sibling_id, reason=f"{exit_reason}_ws_push_sibling_cancel")
+                try:
+                    super().close_trade(
+                        matched_position,
+                        fill_price,
+                        exit_reason=exit_reason,
+                        exit_time=event.get("traded_at"),
+                    )
+                except TypeError:
+                    super().close_trade(matched_position, fill_price, exit_reason)
+                print(
+                    f"[live_broker] WS push closed {symbol} {exit_reason} @ {fill_price} "
+                    f"(order {order_id})"
+                )
+                return {"action": "closed", "symbol": symbol, "role": matched_role,
+                        "exit_reason": exit_reason, "fill_price": fill_price}
+
+            # Unknown fill for this symbol — a MANUAL entry or exit the
+            # client placed themselves in the Fyers app. Log so it lands
+            # in Railway; downstream reconciliation will pick up the
+            # net_qty change if it opened a new position.
+            side = str(event.get("side") or "").upper()
+            print(
+                f"[live_broker] WS push MANUAL_EXTERNAL {side} {symbol} "
+                f"@ {event.get('traded_price')} qty={event.get('traded_qty')} "
+                f"(order {order_id}) — not one of our tracked protective orders"
+            )
+            return {"action": "logged_manual_fill", "symbol": symbol, "side": side,
+                    "order_id": order_id}
+
+        if status_int == self._ORDER_STATUS_CANCELLED and matched_position and matched_role in ("sl", "target"):
+            # A protective order was cancelled (possibly by the client
+            # from Fyers UI). Clear its id from our snapshot so
+            # close_trade doesn't try to cancel it again later.
+            snapshot = dict(matched_position.get("signal_snapshot") or {})
+            snapshot[f"fyers_{matched_role}_order_id"] = None
+            self._persist_snapshot(matched_position, snapshot)
+            print(
+                f"[live_broker] WS push {matched_role.upper()} order cancelled at Fyers "
+                f"for {symbol} (order {order_id}) — snapshot cleared"
+            )
+            return {"action": "cleared_snapshot", "symbol": symbol, "role": matched_role,
+                    "order_id": order_id}
+
+        return {"action": "ignored", "reason": f"status:{status_int}", "symbol": symbol,
+                "order_id": order_id}
+
+    def _handle_position_snapshot_event(self, event: dict, symbol: str) -> dict:
+        try:
+            net_qty = float(event.get("net_qty", 0) or 0)
+        except (TypeError, ValueError):
+            net_qty = 0.0
+
+        matched = self._find_open_position_for_symbol(symbol)
+        if matched and net_qty == 0:
+            # Fyers pushed "you are flat on this symbol" but our DB still
+            # thinks it's open. This is exactly the today-morning stuck-
+            # entry case: client manually exited from Fyers app, and we
+            # otherwise would have waited for the 30s poll + 2-poll
+            # confirmation + 300s grace before catching up.
+            snapshot = matched.get("signal_snapshot") or {}
+            for order_key in ("fyers_sl_order_id", "fyers_target_order_id"):
+                oid = snapshot.get(order_key)
+                if oid:
+                    self._cancel_fyers_order(oid, reason="ws_push_position_flat_cleanup")
+            exit_price = float(matched.get("_last_ltp") or matched.get("entry_price") or 0.0)
+            try:
+                super().close_trade(
+                    matched, exit_price, exit_reason="MANUAL_EXTERNAL_EXIT",
+                )
+            except TypeError:
+                super().close_trade(matched, exit_price, "MANUAL_EXTERNAL_EXIT")
+            print(
+                f"[live_broker] WS push MANUAL_EXTERNAL_EXIT {symbol} — Fyers reports "
+                f"net_qty=0, DB row force-synced (no polling delay)"
+            )
+            return {"action": "closed", "symbol": symbol, "exit_reason": "MANUAL_EXTERNAL_EXIT"}
+
+        if not matched and abs(net_qty) >= 1:
+            # Manual entry at Fyers we didn't place. Don't insert a fake
+            # tracking row (the algo's guards would then think it owns
+            # this position). Just log so audit sees it.
+            print(
+                f"[live_broker] WS push MANUAL_EXTERNAL_ENTRY {symbol} net_qty={net_qty} — "
+                "not managed by algo; algo entry guard will still block duplicate entry"
+            )
+            return {"action": "logged_manual_entry", "symbol": symbol, "net_qty": net_qty}
+
+        return {"action": "ignored", "reason": "position-in-sync", "symbol": symbol, "net_qty": net_qty}
+
+    # ── Helpers for the WS handler ────────────────────────────────────
+    def _find_position_by_order_id(self, order_id: str) -> tuple[dict | None, str | None]:
+        """Return (position, role) where role is 'sl', 'target', or 'entry',
+        or (None, None) if no open position matches this Fyers order id."""
+        if not order_id:
+            return None, None
+        oid = str(order_id).strip()
+        try:
+            positions = self.open_positions()
+        except Exception:
+            return None, None
+        for position in positions:
+            snap = position.get("signal_snapshot") or {}
+            if str(snap.get("fyers_sl_order_id") or "") == oid:
+                return position, "sl"
+            if str(snap.get("fyers_target_order_id") or "") == oid:
+                return position, "target"
+            if str(snap.get("fyers_entry_order_id") or "") == oid:
+                return position, "entry"
+        return None, None
+
+    def _find_open_position_for_symbol(self, symbol: str) -> dict | None:
+        target = str(symbol or "").strip().upper()
+        try:
+            positions = self.open_positions()
+        except Exception:
+            return None
+        for position in positions:
+            if str(position.get("symbol") or "").strip().upper() == target:
+                return position
+        return None
+
+    def _persist_snapshot(self, position: dict, snapshot: dict) -> None:
+        """Best-effort snapshot update. Falls back to in-memory only if
+        the parent broker doesn't expose a persistence hook — the smoke
+        tests exercise both paths."""
+        position["signal_snapshot"] = snapshot
+        updater = getattr(super(), "update_position_snapshot", None)
+        if callable(updater):
+            try:
+                updater(position, snapshot)
+            except Exception as exc:
+                print(f"[live_broker] snapshot persist failed for {position.get('symbol')}: {exc}")
 
     def reconcile_open_positions(self) -> dict:
         """Poll Fyers orderbook and detect SL/Target fills. For each fill:
