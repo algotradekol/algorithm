@@ -62,6 +62,13 @@ _feed_watchdog_last_restart_at = 0.0
 _position_ltp_poll_started = False
 _critical_rest_fallback_started = False
 _live_broker_reconcile_started = False
+_order_update_ws_started = False
+# Feature flag — default OFF so a broken SDK / auth path can't take the
+# engine down before we've watched a full trading day with it on.
+# Set FYERS_ORDER_WS_ENABLED=true (or 1) in Railway env to activate.
+import os as _os_for_flags
+_ORDER_UPDATE_WS_ENABLED = _os_for_flags.getenv("FYERS_ORDER_WS_ENABLED", "").strip().lower() in {"1", "true", "yes", "on"}
+del _os_for_flags
 # Reconnect strategy for the Fyers WebSocket. Two mechanisms stacked:
 #
 # 1) Exponential backoff — 5s, 10s, 20s, 40s, 60s between successive retries.
@@ -1243,7 +1250,75 @@ def _live_broker_reconcile_loop():
         except Exception as exc:
             print(f"[engine] LiveBroker reconcile loop error: {exc}")
 
-        time.sleep(30)
+        # WS-first design (2026-08-26): with the Order Update WS carrying
+        # fills/cancels in real time, this poll only needs to cover the
+        # backup case (WS down). 60s is enough — the 2-poll + 300s grace
+        # inside _sync_externally_closed_positions still protects against
+        # Fyers positions-endpoint indexing lag.
+        time.sleep(60)
+
+
+def _dispatch_order_update_event(event: dict) -> None:
+    """Route a normalized Fyers Order-WS event to whichever strategy's
+    LiveBroker owns the symbol. Runs on the WS callback thread."""
+    if not isinstance(event, dict):
+        return
+    symbol = str(event.get("symbol") or "").strip().upper()
+    if not symbol:
+        return
+    for strategy in STRATEGIES.values():
+        broker = getattr(strategy, "broker", None)
+        if not isinstance(broker, LiveBroker):
+            continue
+        watchlist = {str(s or "").strip().upper() for s in getattr(strategy, "watchlist", []) or []}
+        if watchlist and symbol not in watchlist:
+            continue
+        try:
+            outcome = broker.handle_order_event(event)
+            if outcome and outcome.get("action") not in (None, "ignored"):
+                print(
+                    f"[engine] order-update handled ({strategy.algo_id}): {outcome}"
+                )
+        except Exception as exc:
+            print(f"[engine] order-update handler failed for {strategy.algo_id}: {exc}")
+
+
+def _order_update_ws_loop():
+    """Maintain a Fyers Order Update WebSocket connection so fills,
+    cancellations, and position changes flow into our DB in near real time
+    (Design B, Component 3, 2026-08-26).
+
+    Reconnects with exponential backoff on failure. Never crashes the
+    engine — worst case it stays down and the 60s reconcile poll picks up
+    the slack, same as before this WS existed.
+    """
+    from .fyers_order_updates import connect_order_update_feed
+
+    backoff = 5.0
+    while True:
+        try:
+            if get_stored_access_token() is None:
+                time.sleep(15)
+                continue
+            print("[engine] starting Fyers Order Update WS")
+            socket = connect_order_update_feed(
+                on_event_callback=_dispatch_order_update_event,
+                on_status_callback=lambda **s: print(f"[engine] order-ws status: {s}"),
+            )
+            # SDK keeps the socket alive on its own thread; we just idle
+            # here holding a reference. If the socket object goes away we
+            # loop back and reconnect.
+            backoff = 5.0
+            while socket is not None:
+                time.sleep(30)
+                if not getattr(socket, "is_connected", lambda: True)():
+                    print("[engine] Order Update WS reports disconnected — will reconnect")
+                    break
+        except Exception as exc:
+            print(f"[engine] Order Update WS loop error: {exc}")
+        sleep_for = min(backoff, 300.0)
+        time.sleep(sleep_for)
+        backoff = min(backoff * 2, 300.0)
 
 
 def _open_position_ltp_poll_loop():
@@ -1952,6 +2027,13 @@ def start_engine():
         if not _live_broker_reconcile_started:
             threading.Thread(target=_live_broker_reconcile_loop, daemon=True).start()
             _live_broker_reconcile_started = True
+        global _order_update_ws_started
+        if _ORDER_UPDATE_WS_ENABLED and not _order_update_ws_started:
+            threading.Thread(target=_order_update_ws_loop, daemon=True).start()
+            _order_update_ws_started = True
+            print("[engine] Fyers Order Update WS enabled (real-time fill/exit sync)")
+        elif not _ORDER_UPDATE_WS_ENABLED:
+            print("[engine] Fyers Order Update WS DISABLED (set FYERS_ORDER_WS_ENABLED=true to activate)")
 
         try_refresh_access_token(reason="startup")
         # Deploy-race guard: skip the immediate WS handshake during the boot
