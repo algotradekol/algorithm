@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import datetime
 
-from .storage_namespace import current_and_legacy_values, namespaced_value
+from .storage_namespace import current_storage_values, namespaced_value
 from .supabase_client import run_with_supabase
 from .timezone import IST
 
@@ -148,7 +148,7 @@ def get_setup_history(
 
     def query(supabase):
         rows: list[dict] = []
-        for candidate in current_and_legacy_values(algo_id):
+        for candidate in current_storage_values(algo_id):
             request = (
                 supabase.table("silver_setup_events")
                 .select("*")

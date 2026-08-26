@@ -504,13 +504,11 @@ export default function AlgoTab({
             enabled={summary?.scan_enabled !== false}
             onChange={(next) => setSummary((prev: any) => (prev ? { ...prev, scan_enabled: next } : prev))}
           />
-          {tradingMode === 'live' && (
-            <TradingToggleButton
-              algoId={algoId}
-              enabled={summary?.trading_enabled !== false}
-              onChange={(next) => setSummary((prev: any) => (prev ? { ...prev, trading_enabled: next } : prev))}
-            />
-          )}
+          <TradingToggleButton
+            algoId={algoId}
+            enabled={summary?.trading_enabled !== false}
+            onChange={(next) => setSummary((prev: any) => (prev ? { ...prev, trading_enabled: next } : prev))}
+          />
           <button
             onClick={() => setSettingsOpen((open) => !open)}
             className="min-h-10 rounded border border-[#3b82f6] px-3 py-1.5 text-xs font-semibold text-[#3b82f6]"
@@ -524,7 +522,7 @@ export default function AlgoTab({
           Scan is OFF for this strategy. No entries will be evaluated until you turn it back ON above.
         </p>
       )}
-      {summary && summary.trading_enabled === false && tradingMode === 'live' && (
+      {summary && summary.trading_enabled === false && (
         <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">
           Trading is OFF for this strategy. Scan and setups are still running, and open positions are still managed — but no NEW entries (including reversals) will be submitted until you turn it back ON above.
         </p>

@@ -567,7 +567,7 @@ def test_external_close_grace():
 # had already flattened the position. These tests lock in the pre-flight
 # guards that prevent the whole class of double-order races.
 def test_close_trade_skips_market_when_fyers_already_flat():
-    print("\n8e. Design B close_trade — Fyers already flat → skip market exit (2026-08-26 short-position regression)")
+    print("\n8e. Design B close_trade — Fyers already flat -> skip market exit (2026-08-26 short-position regression)")
     rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
     broker = make_broker(rec)
 
@@ -618,7 +618,7 @@ def test_close_trade_skips_market_when_fyers_already_flat():
 
 
 def test_close_trade_still_sends_market_when_fyers_still_holds():
-    print("\n8f. Design B close_trade — Fyers still holds position → market exit fires normally")
+    print("\n8f. Design B close_trade — Fyers still holds position -> market exit fires normally")
     rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
     broker = make_broker(rec)
 
@@ -658,7 +658,7 @@ def test_close_trade_still_sends_market_when_fyers_still_holds():
 
 
 def test_close_trade_falls_back_to_market_when_fyers_unavailable():
-    print("\n8g. Design B close_trade — Fyers unreachable (None) → do NOT skip, fall back to market exit")
+    print("\n8g. Design B close_trade — Fyers unreachable (None) -> do NOT skip, fall back to market exit")
     rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
     broker = make_broker(rec)
 
@@ -868,7 +868,7 @@ def test_order_update_ws_status_callback_accepts_fyers_payload():
 
 
 def test_open_trade_refuses_duplicate_when_fyers_already_positioned():
-    print("\n8h. Design B open_trade — Fyers already holds symbol → refuse duplicate entry")
+    print("\n8h. Design B open_trade — Fyers already holds symbol -> refuse duplicate entry")
     rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
     broker = make_broker(rec)
 
