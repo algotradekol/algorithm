@@ -864,8 +864,19 @@ def _critical_symbol_rest_fallback_loop():
             # Silver is tradable from 09:00 IST. The REST backup must cover
             # that opening window too, otherwise a WS outage can delay a
             # carried-reference gap entry until 09:15.
-            if not ("09:00" <= hhmm < "23:30"):
+            # Pre-open lead-in from 08:59: keep the loop hot at 1s cadence so
+            # the first burst poll lands within a second of 09:00:00 IST
+            # instead of up to 5s late. We deliberately do NOT inject any
+            # ticks before 09:00:00 — MCX has no live LTP pre-open, and a
+            # stale yesterday-close injection would become `prev_ltp` and
+            # cause the next stale 08:59 tick to fire a false gap-through
+            # BUY (both prev_ltp and ltp = same stale value >= buy_level).
+            if not ("08:59" <= hhmm < "23:30"):
                 time.sleep(5)
+                continue
+
+            if hhmm < "09:00":
+                time.sleep(1)
                 continue
 
             # First 90s after MCX open: burst-poll at 1s cadence so gap-open
