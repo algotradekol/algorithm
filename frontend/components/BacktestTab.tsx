@@ -4,6 +4,7 @@ import { useEffect, useMemo, useState } from 'react';
 import { api } from '../lib/api';
 import { PAGE_SIZE, PaginationControls } from './PaginationControls';
 import SilverBacktestChart from './SilverBacktestChart';
+import StrategySettingsPanel from './StrategySettingsPanel';
 
 const today = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(new Date());
 const defaultStart = new Date(`${today}T00:00:00`);
@@ -11,6 +12,7 @@ defaultStart.setDate(defaultStart.getDate() - 6);
 const weekAgo = new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata' }).format(defaultStart);
 const BACKTEST_STORAGE_KEY = 'backtest-tab-state-v2';
 const BACKTEST_UI_STORAGE_KEY = 'backtest-tab-ui-v2';
+const BACKTEST_SETTINGS_STORAGE_KEY = 'backtest-tab-settings-overrides-v1';
 const SILVER_SELL_PLANS = {
   red_chain: {
     label: 'Red-chain comparison (current)',
@@ -30,9 +32,27 @@ export default function BacktestTab() {
   const [job, setJob] = useState<any>(null);
   const [error, setError] = useState('');
   const [storageReady, setStorageReady] = useState(false);
+  // Per-algo backtest settings overrides. Persisted to localStorage so a page
+  // reload keeps the user's tuned values, but never sent to the settings API
+  // — they only ride along on the next backtest run.
+  const [settingsOverrides, setSettingsOverrides] = useState<Record<string, Record<string, any>>>({});
+  const [showSettings, setShowSettings] = useState(false);
   const active = ['queued', 'running', 'cancelling'].includes(job?.status);
+  const activeOverride = settingsOverrides[algoId] || null;
+  const hasOverride = Boolean(activeOverride && Object.keys(activeOverride).length);
 
   useEffect(() => {
+    try {
+      const overridesRaw = window.localStorage.getItem(BACKTEST_SETTINGS_STORAGE_KEY);
+      if (overridesRaw) {
+        const parsed = JSON.parse(overridesRaw);
+        if (parsed && typeof parsed === 'object') {
+          setSettingsOverrides(parsed as Record<string, Record<string, any>>);
+        }
+      }
+    } catch {
+      // Corrupted overrides — start clean.
+    }
     try {
       const raw = window.localStorage.getItem(BACKTEST_STORAGE_KEY);
       if (!raw) {
@@ -70,6 +90,15 @@ export default function BacktestTab() {
     }
   }, [algoId, silverSellPlan, startDate, endDate, job, error, storageReady]);
 
+  useEffect(() => {
+    if (!storageReady) return;
+    try {
+      window.localStorage.setItem(BACKTEST_SETTINGS_STORAGE_KEY, JSON.stringify(settingsOverrides));
+    } catch {
+      // Best-effort persistence only.
+    }
+  }, [settingsOverrides, storageReady]);
+
   async function run() {
     setError('');
     setJob(null);
@@ -91,6 +120,7 @@ export default function BacktestTab() {
         start_date: startDate,
         end_date: endDate,
         ...(algoId === 'algo3' ? { silver_sell_plan: silverSellPlan } : {}),
+        ...(hasOverride ? { settings_override: activeOverride } : {}),
       }));
     } catch (e: any) {
       setError(e?.message || 'Could not start backtest');
@@ -159,8 +189,21 @@ export default function BacktestTab() {
   return (
     <section className="space-y-4">
       <div className="panel p-4">
-        <h2 className="text-base font-semibold text-gray-100">{introCopy.title}</h2>
-        <p className="mt-1 max-w-3xl text-sm text-gray-500">{introCopy.body}</p>
+        <div className="flex flex-wrap items-start justify-between gap-3">
+          <div>
+            <h2 className="text-base font-semibold text-gray-100">{introCopy.title}</h2>
+            <p className="mt-1 max-w-3xl text-sm text-gray-500">{introCopy.body}</p>
+          </div>
+          <button
+            type="button"
+            onClick={() => setShowSettings(true)}
+            className="min-h-10 rounded border border-[#3b82f6] px-3 py-1.5 text-xs font-semibold text-[#3b82f6] transition hover:bg-[#3b82f6]/10"
+            title="Edit the settings this backtest will use. Live and paper strategy settings are not changed."
+          >
+            <i className="ri-equalizer-line mr-1 text-sm" />
+            Settings{hasOverride ? ' · overridden' : ''}
+          </button>
+        </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
           <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option><option value="algo3">Silver Micro (MCX:SILVERMIC26AUGFUT)</option></select></label>
           {algoId === 'algo3' && <div><span className="label">Silver BUY logic</span><div className="control mt-1 flex items-center text-sm text-gray-200">15m EMA reference breakout</div><span className="mt-1 block text-[11px] leading-4 text-gray-500">A finalized green 15m close above EMA20 becomes the reference; BUY fires at reference + n and can re-enter after BUY target/SL while upward movement resumes.</span></div>}
@@ -181,6 +224,44 @@ export default function BacktestTab() {
         </div>
         <p className="mt-3 text-xs text-[#f59e0b]"><i className="ri-error-warning-fill mr-1" />{introCopy.note}</p>
       </div>
+
+      {showSettings && (
+        <div className="fixed inset-0 z-50 flex items-start justify-center overflow-y-auto bg-black/70 p-4" role="dialog" aria-modal="true">
+          <div className="w-full max-w-4xl rounded border border-[#1f2937] bg-[#0d1117] shadow-lg">
+            <div className="sticky top-0 z-10 flex items-center justify-between border-b border-[#1f2937] bg-[#0d1117] px-4 py-3">
+              <div>
+                <div className="text-sm font-semibold text-gray-100">Backtest settings · {algoId}</div>
+                <div className="text-xs text-gray-500">Save writes to browser storage only. Regular strategy settings are untouched.</div>
+              </div>
+              <button
+                type="button"
+                onClick={() => setShowSettings(false)}
+                className="text-gray-500 hover:text-gray-300"
+                aria-label="Close backtest settings"
+              >
+                <i className="ri-close-line text-lg" />
+              </button>
+            </div>
+            <div className="p-4">
+              <StrategySettingsPanel
+                algoId={algoId}
+                overrideMode
+                initialSettings={activeOverride}
+                onOverrideSave={(nextSettings) => {
+                  setSettingsOverrides((current) => ({ ...current, [algoId]: nextSettings }));
+                }}
+                onOverrideClear={() => {
+                  setSettingsOverrides((current) => {
+                    const next = { ...current };
+                    delete next[algoId];
+                    return next;
+                  });
+                }}
+              />
+            </div>
+          </div>
+        </div>
+      )}
 
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
       {job && !result && <section className="panel p-4"><div className="flex justify-between gap-3 text-sm text-gray-200"><span>{job.message}</span><span className="num">{progressCompleted} / {progressTotal}</span></div><div className="mt-3 h-2 overflow-hidden rounded bg-[#020617]"><div className="h-full bg-[#3b82f6] transition-[width] duration-500" style={{ width: `${progress}%` }} /></div><p className="mt-2 text-xs text-gray-500">{progress}% complete. {replaying ? `${job.replay_failed || 0} selected signals could not be replayed.` : `${job.failed_symbols || 0} symbols returned no usable history.`}</p>{replaying && <ReplayMonitor activity={job.replay_activity || []} />}</section>}

@@ -504,6 +504,13 @@ export default function AlgoTab({
             enabled={summary?.scan_enabled !== false}
             onChange={(next) => setSummary((prev: any) => (prev ? { ...prev, scan_enabled: next } : prev))}
           />
+          {tradingMode === 'live' && (
+            <TradingToggleButton
+              algoId={algoId}
+              enabled={summary?.trading_enabled !== false}
+              onChange={(next) => setSummary((prev: any) => (prev ? { ...prev, trading_enabled: next } : prev))}
+            />
+          )}
           <button
             onClick={() => setSettingsOpen((open) => !open)}
             className="min-h-10 rounded border border-[#3b82f6] px-3 py-1.5 text-xs font-semibold text-[#3b82f6]"
@@ -515,6 +522,11 @@ export default function AlgoTab({
       {summary && summary.scan_enabled === false && (
         <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
           Scan is OFF for this strategy. No entries will be evaluated until you turn it back ON above.
+        </p>
+      )}
+      {summary && summary.trading_enabled === false && tradingMode === 'live' && (
+        <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">
+          Trading is OFF for this strategy. Scan and setups are still running, and open positions are still managed — but no NEW entries (including reversals) will be submitted until you turn it back ON above.
         </p>
       )}
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
@@ -883,6 +895,57 @@ function ScanToggleButton({
   );
 }
 
+function TradingToggleButton({
+  algoId,
+  enabled,
+  onChange,
+}: {
+  algoId: string;
+  enabled: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function toggle() {
+    if (busy) return;
+    const next = !enabled;
+    // Confirm only when turning OFF — flipping back ON is harmless.
+    if (!next && !window.confirm(
+      'Turn TRADING OFF for this strategy? Scan and setups keep running and open positions are still managed, but no NEW entries (including reversals) will be submitted until you turn it back ON. Persists across restarts.'
+    )) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const res = await api.setTradingEnabled(algoId, next);
+      onChange(res?.trading_enabled !== false);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to update trading state');
+    } finally {
+      setBusy(false);
+    }
+  }
+  const tone = enabled
+    ? 'border-[#22c55e] text-[#22c55e]'
+    : 'border-[#ef4444] text-[#ef4444]';
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <button
+        onClick={toggle}
+        disabled={busy}
+        title={enabled
+          ? 'Trading is ON. Click to turn it OFF — scan keeps running but no new entries will be submitted.'
+          : 'Trading is OFF. Scan is still running; click to turn trading back ON.'}
+        className={`min-h-10 rounded border px-3 py-1.5 text-xs font-semibold disabled:cursor-wait ${tone}`}
+      >
+        {busy ? '...' : enabled ? 'Trading: ON' : 'Trading: OFF'}
+      </button>
+      {error && <p className="m-0 max-w-xs text-right text-[10px] text-[#ef4444]">{error}</p>}
+    </div>
+  );
+}
+
 function FeedStat({ label, value }: { label: string; value: any }) {
   return (
     <div className="rounded border border-[#1f2937] bg-[#111827] p-2">
@@ -1069,6 +1132,20 @@ function PositionsTable({
   );
 }
 
+function formatTradeQty(row: any): string {
+  const qty = Number(row?.qty ?? 0);
+  if (!Number.isFinite(qty) || qty <= 0) return '--';
+  const symbol = String(row?.symbol || '').toUpperCase();
+  // Silver Micro is sized in lots (1 lot = 1 kg = 1 unit on Fyers). NSE
+  // instruments are sized in raw share quantity. Show the correct label so
+  // 1 kg of silver does not read like 1 share of equity.
+  const isSilverMicro = symbol.startsWith('MCX:SILVERMIC');
+  if (isSilverMicro) {
+    return `${qty} lot${qty === 1 ? '' : 's'}`;
+  }
+  return `${qty} qty`;
+}
+
 function TradesTable({ rows }: { rows: any[] }) {
   const [page, setPage] = useState(0);
   const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
@@ -1093,6 +1170,7 @@ function TradesTable({ rows }: { rows: any[] }) {
               {row.side === "SELL" ? "S" : "B"}
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
+              <MobileField label="Qty / Lots" value={formatTradeQty(row)} />
               <MobileField label="Entry Time" value={formatTradeTime(row.entry_time, row.exit_time)} />
               <MobileField label="Entry" value={formatNumber(row.entry_price)} />
               <MobileField label="Exit Time" value={row.exit_time ? formatTradeTime(row.exit_time, row.entry_time) : "--"} />
@@ -1106,10 +1184,10 @@ function TradesTable({ rows }: { rows: any[] }) {
         ))}
       </div>
       <div className="hidden w-full max-w-full overflow-x-auto overscroll-x-contain rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1580px] table-auto border-collapse text-xs">
+        <table className="w-full min-w-[1680px] table-auto border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {["Symbol", "Side", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Trailing SL", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
+            {["Symbol", "Side", "Qty / Lots", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Trailing SL", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
               <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
@@ -1117,7 +1195,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={13} className="table-cell text-gray-500">No closed trades yet</td>
+              <td colSpan={14} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
           ) : visibleRows.map((row, index) => (
             <tr key={row.id || index} className={`align-top ${index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}`}>
@@ -1126,6 +1204,7 @@ function TradesTable({ rows }: { rows: any[] }) {
                 <i className={`${row.side === "SELL" ? "ri-indeterminate-circle-fill" : "ri-add-circle-fill"} mr-1 text-sm`} />
                 {row.side === "SELL" ? "S" : "B"}
               </td>
+              <td className="table-cell num whitespace-nowrap text-gray-100">{formatTradeQty(row)}</td>
               <td className="table-cell num whitespace-nowrap text-gray-400">{formatTradeTime(row.entry_time, row.exit_time)}</td>
               <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.entry_price)}</td>
               <td className="table-cell num whitespace-nowrap text-gray-400">{row.exit_time ? formatTradeTime(row.exit_time, row.entry_time) : "--"}</td>

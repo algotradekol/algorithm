@@ -86,6 +86,11 @@ class Algo2Momentum(Strategy):
             self._enter(symbol, price)
 
     def _enter(self, symbol: str, entry_price: float):
+        # trading_enabled kill-switch: block new entries only. Scan / exit
+        # paths keep running so an existing position is still managed.
+        if not bool(self.settings.get("trading_enabled", True)):
+            print(f"[algo2] entry SKIPPED for {symbol}: trading_enabled is OFF (scan still runs)")
+            return
         qty = int(self.settings["capital_per_trade"] // entry_price)
         if qty < 1:
             return

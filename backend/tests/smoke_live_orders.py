@@ -4234,6 +4234,49 @@ def test_algo3_previous_day_sell_setup_gap_open_fires_immediately():
               f"entry={strat.broker.opens[0]['entry_price']}")
 
 
+def test_algo3_trading_enabled_kill_switch_blocks_new_entries_but_keeps_exits():
+    """Client rule (2026-08-27): trading_enabled=False must block ONLY new
+    entries. Scan, setup, reference update, exit, and trailing-SL logic
+    all keep running so an existing position is still managed. The
+    setup must NOT be consumed while trading is OFF, so flipping the
+    switch back ON re-arms the very next qualifying tick."""
+    print("\n49c-trading. algo3 trading_enabled OFF blocks new entries, keeps exits, doesn't consume setup")
+    import datetime as _dt
+    strat = _make_bare_algo3()
+    strat._buy_setup_close = 90500.0
+    strat._buy_setup_bar_at = _dt.datetime(2026, 8, 20, 22, 15)
+    strat._ema20 = 90000.0
+    strat._current_bucket = _dt.datetime(2026, 8, 20, 22, 30)
+    strat._minute_buffer = [{"open": 90500.0}]
+
+    # trading_enabled=OFF: normal breakout tick must NOT open a trade.
+    strat.settings["trading_enabled"] = False
+    strat._prev_ltp = 90600.0
+    strat._check_triggers(90700.0)
+    check("trading_enabled=False blocks new BUY entry",
+          len(strat.broker.opens) == 0, f"opens={strat.broker.opens}")
+    check("trading_enabled=False does not consume the setup (no _mark_attempted)",
+          strat._last_attempted_buy_bar_at is None,
+          f"last_attempted={strat._last_attempted_buy_bar_at}")
+
+    # Flip trading_enabled back ON: the very next qualifying tick fires.
+    strat.settings["trading_enabled"] = True
+    strat._prev_ltp = 90600.0
+    strat._check_triggers(90700.0)
+    check("trading_enabled=True after re-enable fires the entry cleanly",
+          len(strat.broker.opens) == 1, f"opens={strat.broker.opens}")
+
+    # Now with a position open, turn trading OFF again and simulate an SL
+    # hit — the exit path must still run.
+    strat.settings["trading_enabled"] = False
+    position = strat.broker._open_positions[0]
+    position["_last_ltp"] = 90300.0  # below sl (entry-200=90500)
+    strat.check_exits()
+    check("trading_enabled=False still allows protective SL exit",
+          len(strat.broker.closes) == 1 and strat.broker.closes[0]["reason"] == "SL",
+          f"closes={strat.broker.closes}")
+
+
 def test_algo3_trailing_stop_exit_reason_is_preserved():
     print("\n49d. algo3 records TRAILING_SL rather than generic SL after a trailed stop")
     strat = _make_bare_algo3()
@@ -6100,6 +6143,7 @@ def main():
     test_algo3_gap_through_fires_immediately()
     test_algo3_previous_day_buy_setup_gap_open_fires_immediately()
     test_algo3_previous_day_sell_setup_gap_open_fires_immediately()
+    test_algo3_trading_enabled_kill_switch_blocks_new_entries_but_keeps_exits()
     test_algo3_trailing_stop_exit_reason_is_preserved()
     test_algo3_candle_close_trigger_fires()
     test_algo3_backtest_sell_red_chain_survives_green_candles()

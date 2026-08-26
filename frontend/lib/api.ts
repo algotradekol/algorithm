@@ -176,6 +176,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ enabled }),
     }),
+  setTradingEnabled: (algoId: string, enabled: boolean) =>
+    authedFetch(`/api/algo/${algoId}/trading-enabled`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
   compare: () => authedFetch('/api/compare'),
   calendarDays: (days = 60) => authedFetch(`/api/calendar?days=${days}`),
   calendarDay: (date: string) => authedFetch(`/api/calendar/${encodeURIComponent(date)}`),
@@ -209,7 +214,7 @@ export const api = {
   watchlist: () => authedFetch('/api/watchlist'),
   marketHistory: (symbol: string, days = 5, resolution = '15') =>
     authedFetch(`/api/market/history?symbol=${encodeURIComponent(symbol)}&days=${days}&resolution=${encodeURIComponent(resolution)}`),
-  startBacktest: (payload: { algo_id: string; start_date: string; end_date: string; silver_buy_plan?: string; silver_sell_plan?: string }) =>
+  startBacktest: (payload: { algo_id: string; start_date: string; end_date: string; silver_buy_plan?: string; silver_sell_plan?: string; settings_override?: Record<string, any> }) =>
     authedFetch('/api/backtests', { method: 'POST', body: JSON.stringify(payload) }),
   backtestStatus: (jobId: string) => authedFetch(`/api/backtests/${encodeURIComponent(jobId)}`),
   cancelBacktest: (jobId: string) =>

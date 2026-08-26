@@ -13,7 +13,7 @@ from pathlib import Path
 
 from .charges import calculate_charges, get_charges_config
 from .fyers_client import get_intraday_candles_for_range
-from .strategy_settings import get_settings
+from .strategy_settings import _normalize as _normalize_strategy_settings, get_settings
 from .strategies.algo4_opening_range_indicators import Algo4OpeningRangeIndicators
 from .candidate_ranking import build_sector_breakdown
 from .candidate_selection import select_candidates_first_come
@@ -116,6 +116,7 @@ def start_backtest(
     watchlist: list[str],
     silver_buy_plan: str | None = None,
     silver_sell_plan: str | None = None,
+    settings_override: dict | None = None,
 ) -> dict:
     if algo_id not in SUPPORTED_ALGOS:
         raise ValueError("Backtesting is currently available for Simple, Filter, and Silver Micro only.")
@@ -169,6 +170,7 @@ def start_backtest(
     threading.Thread(
         target=_run_job,
         args=(job_id, algo_id, first_date, last_date, list(watchlist), normalized_buy_plan, normalized_sell_plan),
+        kwargs={"settings_override": dict(settings_override) if isinstance(settings_override, dict) else None},
         daemon=True,
     ).start()
     return _public_job(job)
@@ -271,11 +273,23 @@ def _run_job(
     watchlist: list[str],
     silver_buy_plan: str | None = None,
     silver_sell_plan: str | None = None,
+    settings_override: dict | None = None,
 ):
     history_cache = BacktestHistoryCache()
     try:
         _raise_if_cancelled(job_id)
+        # Backtest can accept per-run setting overrides so the user can test
+        # different SL / Target / breakout values without disturbing the
+        # persisted live/paper strategy_settings row. Merge on top of the
+        # server-stored settings and re-normalize so type coercion + range
+        # validation still applies.
         settings = get_settings(algo_id)
+        if isinstance(settings_override, dict) and settings_override:
+            merged = {**settings, **{k: v for k, v in settings_override.items() if v is not None}}
+            try:
+                settings = _normalize_strategy_settings(merged, algo_id)
+            except Exception as exc:
+                raise ValueError(f"Invalid backtest settings override: {exc}") from exc
         if algo_id == "algo3":
             if not watchlist:
                 raise ValueError("The Silver Micro contract could not be resolved for backtesting.")

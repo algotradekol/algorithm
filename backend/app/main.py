@@ -568,6 +568,7 @@ def algo_summary(algo_id: str, _user=Depends(require_auth)):
         "max_buy_trades": settings.get("max_buy_trades", 5),
         "max_sell_trades": settings.get("max_sell_trades", 5),
         "scan_enabled": bool(settings.get("scan_enabled", True)),
+        "trading_enabled": bool(settings.get("trading_enabled", True)),
     }
 
 
@@ -857,6 +858,31 @@ def set_algo_scan_enabled(algo_id: str, payload: dict, _user=Depends(require_aut
     }
 
 
+@app.post("/api/algo/{algo_id}/trading-enabled")
+def set_algo_trading_enabled(algo_id: str, payload: dict, _user=Depends(require_auth)):
+    """Kill-switch on the ENTRY path only. Setup, reference, exit, and
+    trailing-SL logic all keep running; only the algo's new-entry
+    submissions (including reversals) are blocked while OFF. Persists
+    across restarts and day boundaries, mirroring the scan_enabled
+    toggle. Manual dashboard entries / exits are unaffected."""
+    from .strategy_settings import get_settings, update_settings
+    strategy = get_strategy_or_raise(algo_id)
+    active_mode = get_runtime_trading_mode()
+    enabled = bool(payload.get("enabled", True))
+    current = get_settings(algo_id)
+    current["trading_enabled"] = enabled
+    update_settings(algo_id, current)
+    saved = get_settings(algo_id)
+    if hasattr(strategy, "reload_settings"):
+        strategy.reload_settings()
+    audit_log("strategy", "trading_enabled toggled", algo_id=algo_id, enabled=enabled, trading_mode=active_mode)
+    return {
+        "algo_id": algo_id,
+        "trading_mode": active_mode,
+        "trading_enabled": bool(saved.get("trading_enabled", True)),
+    }
+
+
 @app.get("/api/algo/{algo_id}/scan-results")
 def get_scan_results(algo_id: str, _user=Depends(require_auth)):
     from .engine import SCAN_RESULTS
@@ -972,6 +998,9 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
     algo_id = str(payload.get("algo_id") or "")
     silver_buy_plan = payload.get("silver_buy_plan")
     silver_sell_plan = payload.get("silver_sell_plan")
+    settings_override = payload.get("settings_override")
+    if settings_override is not None and not isinstance(settings_override, dict):
+        raise HTTPException(status_code=400, detail="settings_override must be an object.")
     # Accept date for existing clients while range-aware clients send both fields.
     start_date = str(payload.get("start_date") or payload.get("date") or "")
     end_date = str(payload.get("end_date") or start_date)
@@ -986,8 +1015,15 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
                 [_resolve_silver_symbol()],
                 silver_buy_plan=silver_buy_plan,
                 silver_sell_plan=silver_sell_plan,
+                settings_override=settings_override,
             )
-        return start_backtest(algo_id, start_date, end_date, engine.WATCHLIST)
+        return start_backtest(
+            algo_id,
+            start_date,
+            end_date,
+            engine.WATCHLIST,
+            settings_override=settings_override,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

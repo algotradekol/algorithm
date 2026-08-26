@@ -1274,6 +1274,14 @@ class Algo3SilverMicro(Strategy):
         setup_bar_at_override: datetime.datetime | None = None,
         event_time=None,
     ) -> bool:
+        # trading_enabled is a kill-switch on the entry path only. Scan,
+        # setup, reference, exit, and trailing-SL logic keep running; only
+        # new entries (including reversals) are blocked while it is False.
+        # Placed BEFORE any state mutation so the setup is not consumed —
+        # flipping the switch back ON re-arms the very next qualifying tick.
+        if not bool(self.settings.get("trading_enabled", True)):
+            print(f"[algo3] entry SKIPPED for {side}: trading_enabled is OFF (scan still runs)")
+            return False
         # Never submit an entry on the wrong side of its breakout level. This
         # is especially important for SELL re-entry after an exit: a renewed
         # downturn must already be at/below reference - n, not merely lower
