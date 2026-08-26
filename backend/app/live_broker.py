@@ -622,6 +622,113 @@ class LiveBroker(PaperBroker):
         print(f"[live_broker] modify_slm {order_id} @stop={rounded_stop} limit={limit_price}: {response}")
         return response if isinstance(response, dict) else {"raw": response}
 
+    def _modify_limit_order(self, order_id: str, new_limit_price: float, symbol: str | None = None) -> dict:
+        """Update the limitPrice of an existing LIMIT order at Fyers.
+
+        Used to move a protective TARGET order after the user edits the
+        target from the website. The stop version already exists as
+        _modify_slm_order; this is its sibling for pure LIMIT orders.
+        """
+        fyers = get_fyers_model(use_proxy=True)
+        rounded_limit = _round_to_tick(new_limit_price, symbol=symbol)
+        payload = {
+            "id": str(order_id),
+            "type": 1,                                # keep LIMIT
+            "limitPrice": rounded_limit,
+            "qty": 0,                                 # 0 = keep current qty
+        }
+        response = fyers.modify_order(payload)
+        print(f"[live_broker] modify_limit {order_id} @limit={rounded_limit}: {response}")
+        return response if isinstance(response, dict) else {"raw": response}
+
+    def modify_protection(
+        self,
+        position_id,
+        *,
+        sl_price: float | None = None,
+        target_price: float | None = None,
+    ) -> dict:
+        """Edit SL and/or Target on an open live position.
+
+        Order of operations is FYERS-FIRST, DB-SECOND for each leg — if the
+        exchange rejects the amend we never write a fake in-sync DB value.
+        Unsupplied fields are left untouched. A leg with no stored order id
+        (e.g. a soft-SL-only position) skips the Fyers call and updates
+        just the DB record — matches how the trailing-SL amender behaves.
+        """
+        position = self._find_open_position(position_id)
+        if not position:
+            raise ValueError(f"Position {position_id!r} is not open for this algo.")
+        side = str(position.get("side") or "").upper()
+        entry_price = float(position.get("entry_price") or 0)
+        symbol = position.get("symbol")
+        snapshot = position.get("signal_snapshot") or {}
+        exit_side = "SELL" if side == "BUY" else "BUY"
+
+        updates: dict = {}
+        errors: list[str] = []
+
+        if sl_price is not None:
+            new_sl = float(sl_price)
+            if new_sl <= 0:
+                raise ValueError("Stop loss must be greater than zero.")
+            if side == "BUY" and entry_price and new_sl >= entry_price:
+                raise ValueError("Stop loss for a BUY must be below the entry price.")
+            if side == "SELL" and entry_price and new_sl <= entry_price:
+                raise ValueError("Stop loss for a SELL must be above the entry price.")
+            sl_order_id = snapshot.get("fyers_sl_order_id")
+            if sl_order_id:
+                try:
+                    response = self._modify_slm_order(sl_order_id, new_sl, exit_side, symbol=symbol)
+                    if not self._looks_successful(response):
+                        errors.append(f"Fyers refused SL amend: {response}")
+                    else:
+                        updates["sl_price"] = round(new_sl, 2)
+                except Exception as exc:
+                    errors.append(f"Fyers SL amend raised: {exc}")
+            else:
+                # Soft-SL only — no live protective order at Fyers to move.
+                updates["sl_price"] = round(new_sl, 2)
+
+        if target_price is not None:
+            new_target = float(target_price)
+            if new_target <= 0:
+                raise ValueError("Target must be greater than zero.")
+            if side == "BUY" and entry_price and new_target <= entry_price:
+                raise ValueError("Target for a BUY must be above the entry price.")
+            if side == "SELL" and entry_price and new_target >= entry_price:
+                raise ValueError("Target for a SELL must be below the entry price.")
+            target_order_id = snapshot.get("fyers_target_order_id")
+            if target_order_id:
+                try:
+                    response = self._modify_limit_order(target_order_id, new_target, symbol=symbol)
+                    if not self._looks_successful(response):
+                        errors.append(f"Fyers refused target amend: {response}")
+                    else:
+                        updates["target_price"] = round(new_target, 2)
+                except Exception as exc:
+                    errors.append(f"Fyers target amend raised: {exc}")
+            else:
+                updates["target_price"] = round(new_target, 2)
+
+        if updates:
+            run_with_supabase(
+                lambda supabase: supabase.table(self.positions_table_name())
+                .update(updates).eq("id", position["id"]).execute()
+            )
+            print(
+                f"[live_broker] protection updated for position {position.get('id')} "
+                f"{symbol} {side}: {updates}"
+            )
+
+        if errors:
+            # Partial-failure path: raise so the endpoint returns 502 and the
+            # UI can show what Fyers said. Any successful legs are already
+            # persisted so the two sides don't drift silently.
+            raise RuntimeError("; ".join(errors))
+
+        return {**position, **updates}
+
     def _cancel_fyers_order(self, order_id: str, reason: str = "") -> dict:
         try:
             fyers = get_fyers_model(use_proxy=True)
@@ -1045,6 +1152,11 @@ class LiveBroker(PaperBroker):
                     break
 
             if not filled_order:
+                # No fill yet — but the user might have edited the SL or
+                # Target price directly at Fyers (mobile app / web). Push
+                # any drift back into our DB so the website's Open Trades
+                # panel reflects the current live protective levels.
+                self._sync_pending_protection_drift(position, sl_id, tp_id, orders_by_id)
                 continue
 
             # Cancel the sibling protective order (if it's still open) so
@@ -1086,6 +1198,70 @@ class LiveBroker(PaperBroker):
                 print(f"[live_broker] reconcile close_trade failed for {symbol}: {exc}")
 
         return summary
+
+    def _sync_pending_protection_drift(
+        self,
+        position: dict,
+        sl_id,
+        tp_id,
+        orders_by_id: dict[str, dict],
+    ) -> None:
+        """If the user edited stop/limit at Fyers, mirror the drift to our DB.
+
+        Only applies to still-PENDING protective orders (Fyers status 4/6).
+        A filled or cancelled order is handled by the surrounding reconcile
+        logic; we do not treat those as protection drift.
+        """
+        drift_updates: dict = {}
+
+        def _current_price(row: dict, price_key: str) -> float | None:
+            value = row.get(price_key)
+            try:
+                num = float(value)
+            except (TypeError, ValueError):
+                return None
+            return num if num > 0 else None
+
+        try:
+            if sl_id:
+                sl_row = orders_by_id.get(str(sl_id))
+                if sl_row and self._safe_int(sl_row.get("status")) in {4, 6}:
+                    fyers_stop = _current_price(sl_row, "stopPrice")
+                    stored_stop = float(position.get("sl_price") or 0)
+                    if (
+                        fyers_stop is not None
+                        and stored_stop > 0
+                        and abs(fyers_stop - stored_stop) >= 0.01
+                    ):
+                        drift_updates["sl_price"] = round(fyers_stop, 2)
+            if tp_id:
+                tp_row = orders_by_id.get(str(tp_id))
+                if tp_row and self._safe_int(tp_row.get("status")) in {4, 6}:
+                    fyers_limit = _current_price(tp_row, "limitPrice")
+                    stored_target = float(position.get("target_price") or 0)
+                    if (
+                        fyers_limit is not None
+                        and stored_target > 0
+                        and abs(fyers_limit - stored_target) >= 0.01
+                    ):
+                        drift_updates["target_price"] = round(fyers_limit, 2)
+            if not drift_updates:
+                return
+            run_with_supabase(
+                lambda supabase: supabase.table(self.positions_table_name())
+                .update(drift_updates).eq("id", position["id"]).execute()
+            )
+            print(
+                f"[live_broker] Fyers protection drift synced back to DB for "
+                f"position {position.get('id')} {position.get('symbol')}: "
+                f"{drift_updates}"
+            )
+        except Exception as exc:
+            # Never let a drift-sync failure abort the reconcile loop.
+            print(
+                f"[live_broker] pending protection drift sync failed for "
+                f"position {position.get('id')} {position.get('symbol')}: {exc}"
+            )
 
     def _proxy_preflight(self, symbol: str, side: str, qty: int, op: str) -> dict | None:
         """Return a Fyers-style error dict if the proxy is configured but

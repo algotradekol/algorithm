@@ -619,6 +619,63 @@ class PaperBroker:
             "realized_net_pnl": round(realized_net, 2),
         }
 
+    def modify_protection(
+        self,
+        position_id,
+        *,
+        sl_price: float | None = None,
+        target_price: float | None = None,
+    ) -> dict:
+        """Update SL and/or Target on an already-open position.
+
+        Paper: DB-only update. LiveBroker overrides this to ALSO amend the
+        matching pending SL / target orders at Fyers before writing the DB
+        so a UI edit reflects on both sides. Only the fields supplied are
+        changed; the untouched leg keeps its current level.
+        """
+        position = self._find_open_position(position_id)
+        if not position:
+            raise ValueError(f"Position {position_id!r} is not open for this algo.")
+        updates: dict = {}
+        side = str(position.get("side") or "").upper()
+        entry_price = float(position.get("entry_price") or 0)
+        if sl_price is not None:
+            sl_value = float(sl_price)
+            if sl_value <= 0:
+                raise ValueError("Stop loss must be greater than zero.")
+            if side == "BUY" and entry_price and sl_value >= entry_price:
+                raise ValueError("Stop loss for a BUY must be below the entry price.")
+            if side == "SELL" and entry_price and sl_value <= entry_price:
+                raise ValueError("Stop loss for a SELL must be above the entry price.")
+            updates["sl_price"] = round(sl_value, 2)
+        if target_price is not None:
+            target_value = float(target_price)
+            if target_value <= 0:
+                raise ValueError("Target must be greater than zero.")
+            if side == "BUY" and entry_price and target_value <= entry_price:
+                raise ValueError("Target for a BUY must be above the entry price.")
+            if side == "SELL" and entry_price and target_value >= entry_price:
+                raise ValueError("Target for a SELL must be below the entry price.")
+            updates["target_price"] = round(target_value, 2)
+        if not updates:
+            return position
+        run_with_supabase(
+            lambda supabase: supabase.table(self.positions_table_name())
+            .update(updates).eq("id", position["id"]).execute()
+        )
+        print(
+            f"[paper_broker] protection updated for position {position.get('id')} "
+            f"{position.get('symbol')} {side}: {updates}"
+        )
+        return {**position, **updates}
+
+    def _find_open_position(self, position_id) -> dict | None:
+        target = str(position_id)
+        for position in self.open_positions():
+            if str(position.get("id")) == target:
+                return position
+        return None
+
     def set_available_cash(self, amount: float) -> float:
         """Set this algo's paper balance without changing trade history or limits."""
         cash = round(float(amount), 2)

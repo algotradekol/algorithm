@@ -136,6 +136,15 @@ export const api = {
   positions: (algoId: string) => authedFetch(`/api/algo/${algoId}/positions`),
   exitPosition: (algoId: string, positionId: string) =>
     authedFetch(`/api/algo/${algoId}/positions/${encodeURIComponent(positionId)}/exit`, { method: 'POST' }),
+  updatePositionProtection: (
+    algoId: string,
+    positionId: string,
+    payload: { sl_price?: number; target_price?: number },
+  ) =>
+    authedFetch(
+      `/api/algo/${algoId}/positions/${encodeURIComponent(positionId)}/protection`,
+      { method: 'PATCH', body: JSON.stringify(payload) },
+    ),
   manualTrade: (algoId: string, payload: { symbol: string; side: 'BUY' | 'SELL'; price?: number; trigger?: string }) =>
     authedFetch(`/api/algo/${algoId}/manual-trade`, { method: 'POST', body: JSON.stringify(payload) }),
   trades: (algoId: string) => authedFetch(`/api/algo/${algoId}/trades`),
