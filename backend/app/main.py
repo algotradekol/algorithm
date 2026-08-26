@@ -972,6 +972,9 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
     algo_id = str(payload.get("algo_id") or "")
     silver_buy_plan = payload.get("silver_buy_plan")
     silver_sell_plan = payload.get("silver_sell_plan")
+    settings_override = payload.get("settings_override")
+    if settings_override is not None and not isinstance(settings_override, dict):
+        raise HTTPException(status_code=400, detail="settings_override must be an object.")
     # Accept date for existing clients while range-aware clients send both fields.
     start_date = str(payload.get("start_date") or payload.get("date") or "")
     end_date = str(payload.get("end_date") or start_date)
@@ -986,8 +989,15 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
                 [_resolve_silver_symbol()],
                 silver_buy_plan=silver_buy_plan,
                 silver_sell_plan=silver_sell_plan,
+                settings_override=settings_override,
             )
-        return start_backtest(algo_id, start_date, end_date, engine.WATCHLIST)
+        return start_backtest(
+            algo_id,
+            start_date,
+            end_date,
+            engine.WATCHLIST,
+            settings_override=settings_override,
+        )
     except ValueError as exc:
         raise HTTPException(status_code=400, detail=str(exc))
 

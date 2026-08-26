@@ -70,7 +70,21 @@ const SILVER_EXIT_MODES = [
   ['target_to_breakeven_sl', 'Target + Breakeven Stop Loss', 'At the earlier TSL activation milestone, move the stop once to the actual entry price. The final target remains active.'],
 ];
 
-export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId: string; tradingMode?: 'paper' | 'live' }) {
+export default function StrategySettingsPanel({
+  algoId,
+  tradingMode,
+  overrideMode = false,
+  initialSettings = null,
+  onOverrideSave,
+  onOverrideClear,
+}: {
+  algoId: string;
+  tradingMode?: 'paper' | 'live';
+  overrideMode?: boolean;
+  initialSettings?: Record<string, any> | null;
+  onOverrideSave?: (settings: Record<string, any>) => void;
+  onOverrideClear?: () => void;
+}) {
   const isLive = tradingMode === 'live';
   const [settings, setSettings] = useState<Record<string, any> | null>(null);
   const [availableCash, setAvailableCash] = useState('');
@@ -78,21 +92,33 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
   const [saving, setSaving] = useState(false);
   const [saved, setSaved] = useState(false);
   const [error, setError] = useState('');
-  const defaultsLabel = 'Reset to Tradetron defaults';
+  const defaultsLabel = overrideMode ? 'Clear override (use live values)' : 'Reset to Tradetron defaults';
 
   useEffect(() => {
     let cancelled = false;
-    Promise.all([api.getSettings(algoId), api.summary(algoId)]).then(([result, summary]) => {
-      if (!cancelled) {
-        setSettings(result);
-        setAvailableCash(formatInputMoney(summary.cash));
-        setError('');
-      }
-    }).catch((e: any) => {
+    // Override mode (used by the Backtest tab) hydrates from the live/paper
+    // settings once, then keeps everything in local component state so the
+    // user can freely tweak values for a backtest run without ever writing
+    // to the persisted strategy_settings row.
+    const loadForOverride = async () => {
+      const base = await api.getSettings(algoId);
+      if (cancelled) return;
+      const merged = initialSettings ? { ...base, ...initialSettings } : base;
+      setSettings(merged);
+      setError('');
+    };
+    const loadForLive = async () => {
+      const [result, summary] = await Promise.all([api.getSettings(algoId), api.summary(algoId)]);
+      if (cancelled) return;
+      setSettings(result);
+      setAvailableCash(formatInputMoney(summary.cash));
+      setError('');
+    };
+    (overrideMode ? loadForOverride() : loadForLive()).catch((e: any) => {
       if (!cancelled) setError(e?.message || 'Failed to load strategy settings');
     });
     return () => { cancelled = true; };
-  }, [algoId]);
+  }, [algoId, overrideMode, initialSettings]);
 
   async function save() {
     if (!settings || saving) return;
@@ -110,6 +136,16 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
     }
     setSaving(true);
     try {
+      if (overrideMode) {
+        // Backtest override path — never hits the DB. Hand the current
+        // in-memory settings back to the caller for stashing (e.g. in
+        // localStorage) and reuse on the next backtest run.
+        onOverrideSave?.(settings);
+        setSaved(true);
+        setError('');
+        setTimeout(() => setSaved(false), 2000);
+        return;
+      }
       const result = await api.updateSettings(algoId, settings);
       if (result?.settings) setSettings(result.settings);
       const missing = Array.isArray(result?.missing_columns) ? result.missing_columns : [];
@@ -129,6 +165,18 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
 
   async function resetDefaults() {
     try {
+      if (overrideMode) {
+        // Clear the local override and hydrate straight from the live/paper
+        // row. The persisted DB row is untouched — this only wipes the
+        // browser-local backtest override.
+        onOverrideClear?.();
+        const base = await api.getSettings(algoId);
+        setSettings(base);
+        setSaved(true);
+        setError('');
+        setTimeout(() => setSaved(false), 2000);
+        return;
+      }
       const result = await api.resetSettings(algoId);
       setSettings(result);
       setSaved(true);
@@ -170,18 +218,30 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
         <div className="rounded border border-[#1f2937] bg-[#0d1117] px-3 py-3">
           <div className="flex flex-col gap-1 sm:flex-row sm:items-start sm:justify-between sm:gap-4">
             <div>
-              <div className="text-sm font-semibold text-gray-100">Strategy Settings</div>
-              <p className="mt-1 text-xs text-gray-500">Adjust the algo rules, capital, and risk controls from one dashboard-styled panel.</p>
+              <div className="text-sm font-semibold text-gray-100">{overrideMode ? 'Backtest Settings (isolated)' : 'Strategy Settings'}</div>
+              <p className="mt-1 text-xs text-gray-500">
+                {overrideMode
+                  ? 'Tweak values just for this backtest run. Live and paper strategy settings are NOT changed.'
+                  : 'Adjust the algo rules, capital, and risk controls from one dashboard-styled panel.'}
+              </p>
             </div>
-            <div className="label text-[10px] text-gray-500">Changes save to paper or live based on the active trading mode.</div>
+            <div className="label text-[10px] text-gray-500">
+              {overrideMode ? 'Overrides live only inside the backtest.' : 'Changes save to paper or live based on the active trading mode.'}
+            </div>
           </div>
         </div>
-        <div className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
-          Changes apply to new trades only. Open positions keep their original entry prices, SL, and targets.
-        </div>
+        {overrideMode ? (
+          <div className="rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-sm text-[#93c5fd]">
+            Backtest override — persisted only in this browser and sent with the next backtest run. Live / paper strategy settings and open positions are untouched.
+          </div>
+        ) : (
+          <div className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
+            Changes apply to new trades only. Open positions keep their original entry prices, SL, and targets.
+          </div>
+        )}
         {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
 
-        {!isLive && <CashControl value={availableCash} setValue={setAvailableCash} onSave={saveAvailableCash} saving={cashSaving} />}
+        {!isLive && !overrideMode && <CashControl value={availableCash} setValue={setAvailableCash} onSave={saveAvailableCash} saving={cashSaving} />}
         <FieldGroup
           title={algoId === 'algo3' ? 'Position Settings' : 'Capital Settings'}
           fields={(() => {
@@ -230,7 +290,7 @@ export default function StrategySettingsPanel({ algoId, tradingMode }: { algoId:
             className="inline-flex min-h-10 w-full items-center justify-center gap-2 rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2.5 text-sm font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
           >
             <i className="ri-save-fill text-sm text-white" />
-            {saving ? 'Saving...' : saved ? 'Saved' : 'Save settings'}
+            {saving ? 'Saving...' : saved ? 'Saved' : (overrideMode ? 'Save backtest override' : 'Save settings')}
           </button>
           <button
             onClick={resetDefaults}
