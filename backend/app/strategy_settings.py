@@ -13,9 +13,14 @@ DEFAULT_SETTINGS = {
     # still scans, still updates references / setups / EMAs, still runs
     # exits and trailing SL for open positions, and still lets the user
     # manually open or exit trades from the dashboard — it only blocks
-    # the algo's own new-entry submissions (including reversals). Kept
-    # ON by default so a fresh install matches historical behavior.
-    "trading_enabled": True,
+    # the algo's own new-entry submissions (including reversals).
+    # Default OFF (2026-08-27): safety-first — a fresh boot or a mode
+    # switch must NOT start placing live orders until the user has
+    # explicitly clicked Trading: ON on the dashboard. Every setting
+    # read merges these defaults over the stored row, so existing rows
+    # without a persisted trading_enabled column will also read False
+    # and require an explicit ON click before entries resume.
+    "trading_enabled": False,
     "target_pct": 2.0,
     "sl_pct": 1.0,
     "exit_mode": "fixed_target_sl",
