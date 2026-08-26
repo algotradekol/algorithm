@@ -582,6 +582,17 @@ class PaperBroker:
             "gross_pnl": charges["gross_pnl"],
             "total_charges": charges["total_charges"],
         })
+        on_position_closed = getattr(self, "on_position_closed", None)
+        if callable(on_position_closed):
+            try:
+                on_position_closed(
+                    position=position,
+                    exit_price=exit_price,
+                    exit_reason=exit_reason,
+                    exit_time=trade_row["exit_time"],
+                )
+            except Exception as exc:
+                print(f"[paper_broker] on_position_closed callback failed: {exc}")
 
     def summary(self) -> dict:
         state = self._get_state()

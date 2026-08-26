@@ -63,6 +63,11 @@ _position_ltp_poll_started = False
 _critical_rest_fallback_started = False
 _live_broker_reconcile_started = False
 _order_update_ws_started = False
+# The FYERS order-update SDK reports its connection state asynchronously. Keep
+# an explicit engine-side signal instead of depending on an optional SDK
+# ``is_connected`` attribute, which differs between SDK releases.
+_order_update_ws_connected = threading.Event()
+_order_update_ws_last_status: dict = {}
 # Feature flag — default OFF so a broken SDK / auth path can't take the
 # engine down before we've watched a full trading day with it on.
 # Set FYERS_ORDER_WS_ENABLED=true (or 1) in Railway env to activate.
@@ -1283,6 +1288,27 @@ def _dispatch_order_update_event(event: dict) -> None:
             print(f"[engine] order-update handler failed for {strategy.algo_id}: {exc}")
 
 
+def _record_order_update_ws_status(status: dict | None = None, **extra) -> None:
+    """Accept both FYERS callback shapes and retain the latest WS status.
+
+    ``connect_order_update_feed`` passes one positional status dictionary.  A
+    previous keyword-only lambda raised TypeError on every subscribed/error/
+    close callback, hiding the real order-update socket state from the engine.
+    """
+    payload = dict(status) if isinstance(status, dict) else {}
+    payload.update(extra)
+    if status is not None and not isinstance(status, dict):
+        payload.setdefault("detail", str(status))
+
+    _order_update_ws_last_status.clear()
+    _order_update_ws_last_status.update(payload)
+    if payload.get("connected") is True:
+        _order_update_ws_connected.set()
+    elif payload.get("connected") is False:
+        _order_update_ws_connected.clear()
+    print(f"[engine] order-ws status: {payload}")
+
+
 def _order_update_ws_loop():
     """Maintain a Fyers Order Update WebSocket connection so fills,
     cancellations, and position changes flow into our DB in near real time
@@ -1301,17 +1327,30 @@ def _order_update_ws_loop():
                 time.sleep(15)
                 continue
             print("[engine] starting Fyers Order Update WS")
+            _order_update_ws_connected.clear()
             socket = connect_order_update_feed(
                 on_event_callback=_dispatch_order_update_event,
-                on_status_callback=lambda **s: print(f"[engine] order-ws status: {s}"),
+                on_status_callback=_record_order_update_ws_status,
             )
-            # SDK keeps the socket alive on its own thread; we just idle
-            # here holding a reference. If the socket object goes away we
-            # loop back and reconnect.
-            backoff = 5.0
+            # SDK keeps the socket alive on its own thread. Give its async
+            # subscription callback a bounded window, then use both our
+            # normalized status and the optional SDK method when available.
+            subscribed_once = False
+            status_deadline = time.monotonic() + 20.0
             while socket is not None:
-                time.sleep(30)
-                if not getattr(socket, "is_connected", lambda: True)():
+                time.sleep(5)
+                if not _order_update_ws_connected.is_set():
+                    if time.monotonic() < status_deadline:
+                        continue
+                    print("[engine] Order Update WS did not subscribe — will reconnect")
+                    break
+                if not subscribed_once:
+                    # A socket object alone is not proof of recovery. Reset
+                    # retry backoff only after FYERS confirms subscriptions.
+                    backoff = 5.0
+                    subscribed_once = True
+                is_connected = getattr(socket, "is_connected", None)
+                if callable(is_connected) and not is_connected():
                     print("[engine] Order Update WS reports disconnected — will reconnect")
                     break
         except Exception as exc:
@@ -1903,6 +1942,7 @@ def apply_trading_mode(mode: str) -> dict:
             f"{', '.join(f'{algo_id} ({count})' for algo_id, count in open_positions.items())}."
         )
 
+    previous_mode = current_mode
     set_runtime_trading_mode(normalized_mode)
 
     for strategy in STRATEGIES.values():
@@ -1911,6 +1951,9 @@ def apply_trading_mode(mode: str) -> dict:
             refresh_settings()
         starting_capital = float(getattr(strategy, "settings", {}).get("starting_capital") or 500000)
         strategy.broker = create_broker(algo_id=strategy.algo_id, starting_capital=starting_capital)
+        position_closed_callback = getattr(strategy, "_handle_broker_position_closed", None)
+        if callable(position_closed_callback):
+            strategy.broker.on_position_closed = position_closed_callback
         # Rebuild shadow paper broker under the new mode (paper mode: no
         # shadow needed; live mode + parallel: shadow is a fresh PaperBroker).
         rebuild_shadow = getattr(strategy, "_rebuild_shadow_paper_broker", None)
@@ -1919,6 +1962,9 @@ def apply_trading_mode(mode: str) -> dict:
         refresh_market_data = getattr(strategy, "refresh_market_data", None)
         if callable(refresh_market_data):
             refresh_market_data()
+        on_mode_switched = getattr(strategy, "on_trading_mode_switched", None)
+        if callable(on_mode_switched):
+            on_mode_switched(normalized_mode, previous_mode)
 
     with _engine_lock:
         _engine_status["trading_mode"] = normalized_mode

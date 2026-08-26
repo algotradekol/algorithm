@@ -37,6 +37,7 @@ export default function AlgoTab({
   const [walletStatus, setWalletStatus] = useState<any>(null);
   const [walletStatusError, setWalletStatusError] = useState('');
   const [brokerPositions, setBrokerPositions] = useState<any[]>([]);
+  const [brokerPnlSummary, setBrokerPnlSummary] = useState<any>(null);
   const [brokerPositionsError, setBrokerPositionsError] = useState('');
   const [brokerOrders, setBrokerOrders] = useState<any[]>([]);
   const [brokerOrdersError, setBrokerOrdersError] = useState('');
@@ -161,6 +162,7 @@ export default function AlgoTab({
     const requestId = ++brokerPositionsRequestId.current;
     if (tradingMode !== 'live' || !fyersConnected) {
       setBrokerPositions([]);
+      setBrokerPnlSummary(null);
       setBrokerPositionsError('');
       return;
     }
@@ -169,6 +171,7 @@ export default function AlgoTab({
       if (requestId !== brokerPositionsRequestId.current) return;
       if (result?.available !== false) {
         setBrokerPositions(Array.isArray(result?.positions) ? result.positions : []);
+        setBrokerPnlSummary(result?.pnl_summary || null);
       }
       setBrokerPositionsError(result?.warning || '');
     } catch (e: any) {
@@ -213,6 +216,7 @@ export default function AlgoTab({
     setWalletStatus(null);
     setWalletStatusError('');
     setBrokerPositions([]);
+    setBrokerPnlSummary(null);
     setBrokerPositionsError('');
     setBrokerOrders([]);
     setBrokerOrdersError('');
@@ -412,7 +416,23 @@ export default function AlgoTab({
   // Cash already includes closed-trade P&L. Add open mark-to-market movement
   // once so Total Capital represents the live paper-account value.
   const totalCapital = cash + openUnrealizedPnl;
-  const liveNetPnl = netPnl + openUnrealizedPnl;
+  const fyersTotalPnl = optionalNumber(brokerPnlSummary?.total_pnl);
+  const useFyersLivePnl = tradingMode === 'live'
+    && fyersConnected === true
+    && brokerPnlSummary !== null
+    && fyersTotalPnl !== null;
+  const displayedGrossPnl = grossPnl;
+  const displayedNetPnl = tradingMode === 'live'
+    ? (useFyersLivePnl ? fyersTotalPnl : netPnl)
+    : netPnl;
+  const grossPnlHelper = tradingMode === 'paper'
+    ? 'Closed paper trades only'
+    : 'Closed live trades only';
+  const netPnlHelper = useFyersLivePnl
+    ? `source: FYERS ${brokerPnlSummary?.source === 'fyers_overall' ? 'overall positions' : 'open positions'}`
+    : tradingMode === 'live'
+      ? (brokerPositionsError || 'FYERS live P&L unavailable, showing closed-trade net only')
+      : 'Closed paper trades only';
   const managedPositionKeys = new Set(
     positions.map((position) => `${position.symbol}|${position.side}`),
   );
@@ -490,8 +510,19 @@ export default function AlgoTab({
             value={String(summary.trade_count_today ?? 0)}
             helper={`${summary.buy_count_today ?? 0} buy / ${summary.sell_count_today ?? 0} sell`}
           />
-          <MetricCard label="Realized Gross P&L" value={formatMoney(grossPnl)} pnl={grossPnl} />
-          <MetricCard label="Live Net P&L" value={formatMoney(liveNetPnl)} pnl={liveNetPnl} important />
+          <MetricCard
+            label="Realized Gross P&L"
+            value={formatMoney(displayedGrossPnl)}
+            pnl={displayedGrossPnl}
+            helper={grossPnlHelper}
+          />
+          <MetricCard
+            label={useFyersLivePnl ? 'FYERS Live P&L' : 'Net P&L'}
+            value={formatMoney(displayedNetPnl)}
+            pnl={displayedNetPnl}
+            helper={netPnlHelper}
+            important
+          />
         </div>
       ) : (
         <div className="grid grid-cols-3 gap-1.5 sm:gap-2 lg:grid-cols-6">
@@ -511,8 +542,19 @@ export default function AlgoTab({
           <MetricCard label="Capital Used" value={formatMoney(capitalUsed)} />
           <MetricCard label="Trades Today" value={`${summary.trade_count_today} / ${summary.max_trades_per_day || 10}`} />
           <MetricCard label="Buy / Sell" value={`${summary.buy_count_today}B ${summary.sell_count_today}S`} />
-          <MetricCard label="Realized Gross P&L" value={formatMoney(grossPnl)} pnl={grossPnl} />
-          <MetricCard label="Live Net P&L" value={formatMoney(liveNetPnl)} pnl={liveNetPnl} important />
+          <MetricCard
+            label="Realized Gross P&L"
+            value={formatMoney(displayedGrossPnl)}
+            pnl={displayedGrossPnl}
+            helper={grossPnlHelper}
+          />
+          <MetricCard
+            label={useFyersLivePnl ? 'FYERS Live P&L' : 'Net P&L'}
+            value={formatMoney(displayedNetPnl)}
+            pnl={displayedNetPnl}
+            helper={netPnlHelper}
+            important
+          />
         </div>
       )}
 
