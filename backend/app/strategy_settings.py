@@ -9,6 +9,13 @@ DEFAULT_SETTINGS = {
     "capital_per_trade": 50000,
     "margin_multiplier": 5,
     "scan_enabled": True,
+    # trading_enabled kills the ENTRY path only. When False the strategy
+    # still scans, still updates references / setups / EMAs, still runs
+    # exits and trailing SL for open positions, and still lets the user
+    # manually open or exit trades from the dashboard — it only blocks
+    # the algo's own new-entry submissions (including reversals). Kept
+    # ON by default so a fresh install matches historical behavior.
+    "trading_enabled": True,
     "target_pct": 2.0,
     "sl_pct": 1.0,
     "exit_mode": "fixed_target_sl",
@@ -130,6 +137,7 @@ INT_FIELDS = {
 
 BOOL_FIELDS = {
     "scan_enabled",
+    "trading_enabled",
     "parallel_paper_enabled",
     "filter_vwap",
     "filter_rsi",
@@ -309,6 +317,7 @@ def get_settings(algo_id: str, mode: str | None = None) -> dict:
 _NEW_COLUMNS_TOLERATE_MISSING = {
     "order_type",             # added 2026-08-10
     "parallel_paper_enabled", # added 2026-08-13
+    "trading_enabled",        # added 2026-08-27 (kill-switch on entry path)
     # algo3 spec-doc rewrite (2026-08-19). Points-based risk fields
     # replace percent fields for Silver Micro only.
     "silver_breakout_points",

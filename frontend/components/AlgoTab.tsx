@@ -504,6 +504,13 @@ export default function AlgoTab({
             enabled={summary?.scan_enabled !== false}
             onChange={(next) => setSummary((prev: any) => (prev ? { ...prev, scan_enabled: next } : prev))}
           />
+          {tradingMode === 'live' && (
+            <TradingToggleButton
+              algoId={algoId}
+              enabled={summary?.trading_enabled !== false}
+              onChange={(next) => setSummary((prev: any) => (prev ? { ...prev, trading_enabled: next } : prev))}
+            />
+          )}
           <button
             onClick={() => setSettingsOpen((open) => !open)}
             className="min-h-10 rounded border border-[#3b82f6] px-3 py-1.5 text-xs font-semibold text-[#3b82f6]"
@@ -515,6 +522,11 @@ export default function AlgoTab({
       {summary && summary.scan_enabled === false && (
         <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">
           Scan is OFF for this strategy. No entries will be evaluated until you turn it back ON above.
+        </p>
+      )}
+      {summary && summary.trading_enabled === false && tradingMode === 'live' && (
+        <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">
+          Trading is OFF for this strategy. Scan and setups are still running, and open positions are still managed — but no NEW entries (including reversals) will be submitted until you turn it back ON above.
         </p>
       )}
       {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
@@ -877,6 +889,57 @@ function ScanToggleButton({
         className={`min-h-10 rounded border px-3 py-1.5 text-xs font-semibold disabled:cursor-wait ${tone}`}
       >
         {busy ? '...' : enabled ? 'Scan: ON' : 'Scan: OFF'}
+      </button>
+      {error && <p className="m-0 max-w-xs text-right text-[10px] text-[#ef4444]">{error}</p>}
+    </div>
+  );
+}
+
+function TradingToggleButton({
+  algoId,
+  enabled,
+  onChange,
+}: {
+  algoId: string;
+  enabled: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+  async function toggle() {
+    if (busy) return;
+    const next = !enabled;
+    // Confirm only when turning OFF — flipping back ON is harmless.
+    if (!next && !window.confirm(
+      'Turn TRADING OFF for this strategy? Scan and setups keep running and open positions are still managed, but no NEW entries (including reversals) will be submitted until you turn it back ON. Persists across restarts.'
+    )) {
+      return;
+    }
+    setBusy(true);
+    setError('');
+    try {
+      const res = await api.setTradingEnabled(algoId, next);
+      onChange(res?.trading_enabled !== false);
+    } catch (e: any) {
+      setError(e?.message || 'Failed to update trading state');
+    } finally {
+      setBusy(false);
+    }
+  }
+  const tone = enabled
+    ? 'border-[#22c55e] text-[#22c55e]'
+    : 'border-[#ef4444] text-[#ef4444]';
+  return (
+    <div className="flex flex-col items-end gap-1">
+      <button
+        onClick={toggle}
+        disabled={busy}
+        title={enabled
+          ? 'Trading is ON. Click to turn it OFF — scan keeps running but no new entries will be submitted.'
+          : 'Trading is OFF. Scan is still running; click to turn trading back ON.'}
+        className={`min-h-10 rounded border px-3 py-1.5 text-xs font-semibold disabled:cursor-wait ${tone}`}
+      >
+        {busy ? '...' : enabled ? 'Trading: ON' : 'Trading: OFF'}
       </button>
       {error && <p className="m-0 max-w-xs text-right text-[10px] text-[#ef4444]">{error}</p>}
     </div>

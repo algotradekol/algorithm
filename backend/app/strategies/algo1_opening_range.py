@@ -961,6 +961,15 @@ class Algo1OpeningRange(Strategy):
             self.entry_failures[symbol] = "position_already_open"
             return False
 
+        # trading_enabled is a kill-switch on new entries only. Scan and
+        # exit paths keep running while it is OFF, so an existing position
+        # is still managed and the strategy re-arms the moment it flips back
+        # on. Placed before any capital / SL math so nothing is wasted.
+        if not bool(self.settings.get("trading_enabled", True)):
+            self.entry_failures[symbol] = "trading_disabled"
+            print(f"[{self.algo_id}] entry SKIPPED for {symbol}: trading_enabled is OFF (scan still runs)")
+            return False
+
         capital = float(self.settings.get("capital_per_trade", 10000))
         # Margin is per-stock from the broker's approved-securities list, not a
         # flat rate. The global margin_multiplier setting acts only as a ceiling.

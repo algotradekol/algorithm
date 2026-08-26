@@ -592,6 +592,13 @@ class Algo4OpeningRangeIndicators(Strategy):
             self.entry_failures[symbol] = "daily_trade_cap_reached"
             return False
 
+        # trading_enabled kill-switch: block new entries only. Scan and
+        # exit paths keep running while it is OFF.
+        if not bool(self.settings.get("trading_enabled", True)):
+            self.entry_failures[symbol] = "trading_disabled"
+            print(f"[{self.algo_id}] entry SKIPPED for {symbol}: trading_enabled is OFF (scan still runs)")
+            return False
+
         # Per-stock margin from the broker's approved list; global setting caps it.
         margin = effective_multiplier(symbol, self.settings.get("margin_multiplier"))
         qty = int((self.settings["capital_per_trade"] * margin) // entry_price)

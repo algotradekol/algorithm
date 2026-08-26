@@ -176,6 +176,11 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ enabled }),
     }),
+  setTradingEnabled: (algoId: string, enabled: boolean) =>
+    authedFetch(`/api/algo/${algoId}/trading-enabled`, {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
   compare: () => authedFetch('/api/compare'),
   calendarDays: (days = 60) => authedFetch(`/api/calendar?days=${days}`),
   calendarDay: (date: string) => authedFetch(`/api/calendar/${encodeURIComponent(date)}`),
