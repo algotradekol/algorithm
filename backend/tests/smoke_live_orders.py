@@ -1867,6 +1867,47 @@ def test_silver_setup_history_requires_candle_to_close_on_correct_ema_side():
           not ssh._is_qualifying_setup_row(invalid_sell))
 
 
+def test_silver_feed_status_falls_back_to_persisted_setup_history():
+    print("\n26f. Silver feed status — persisted BUY/SELL setup history stays visible after in-memory reset")
+    import datetime as _dt
+    from unittest.mock import patch
+    from app.strategies.algo3_silver_micro import Algo3SilverMicro
+
+    persisted_buy = {
+        "candle_close": 244_975.0,
+        "candle_time": "2026-08-25T05:15:00+00:00",
+    }
+    persisted_sell = {
+        "candle_close": 244_479.0,
+        "candle_time": "2026-08-25T07:15:00+00:00",
+    }
+
+    with patch.object(Algo3SilverMicro, "refresh_market_data", return_value=None), \
+         patch("app.strategies.algo3_silver_micro.get_latest_setup_reference") as latest_setup:
+        latest_setup.side_effect = lambda algo_id, side, live_only=True: (
+            persisted_buy if side == "BUY" else persisted_sell
+        )
+        strategy = Algo3SilverMicro()
+        strategy._buy_setup_close = None
+        strategy._buy_setup_bar_at = None
+        strategy._sell_setup_close = None
+        strategy._sell_setup_bar_at = None
+        status = strategy.feed_status()
+
+    check("BUY close falls back to persisted setup history",
+          status.get("buy_setup_close") == 244_975.0,
+          f"got={status.get('buy_setup_close')}")
+    check("SELL close falls back to persisted setup history",
+          status.get("sell_setup_close") == 244_479.0,
+          f"got={status.get('sell_setup_close')}")
+    check("BUY bar time falls back to persisted setup history",
+          status.get("buy_setup_bar_at") == "2026-08-25T05:15:00+00:00",
+          f"got={status.get('buy_setup_bar_at')}")
+    check("SELL bar time falls back to persisted setup history",
+          status.get("sell_setup_bar_at") == "2026-08-25T07:15:00+00:00",
+          f"got={status.get('sell_setup_bar_at')}")
+
+
 # ── 27. F4 pre-market watchdog skip ────────────────────────────────────
 def test_pre_market_no_tick_not_counted_as_failure():
     print("\n27. F4 — 'no market tick' fired before 09:15 IST does NOT increment failure counter")
@@ -6082,6 +6123,7 @@ def main():
     test_silver_setup_history_naive_ist_stores_as_correct_utc()
     test_silver_setup_history_repairs_future_shifted_legacy_rows()
     test_silver_setup_history_requires_candle_to_close_on_correct_ema_side()
+    test_silver_feed_status_falls_back_to_persisted_setup_history()
     test_pre_market_no_tick_not_counted_as_failure()
     test_critical_live_feed_symbols_ignore_nse_noise()
     test_engine_rest_fallback_targets_stale_non_nse_symbols()

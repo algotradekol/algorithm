@@ -51,7 +51,7 @@ from ..config import SILVER_MICRO_SYMBOL_OVERRIDE
 from ..fyers_client import get_intraday_candle_at, get_intraday_candles_for_range
 from ..broker_factory import create_broker
 from ..mcx_symbols import get_active_mcx_contract
-from ..silver_setup_history import record_setup_event
+from ..silver_setup_history import get_latest_setup_reference, record_setup_event
 from ..strategy_settings import get_settings
 from ..timezone import IST
 from ..trailing_stop import SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN, normalize_silver_exit_mode
@@ -1477,6 +1477,35 @@ class Algo3SilverMicro(Strategy):
     # ── diagnostics ──────────────────────────────────────────────────
     def feed_status(self) -> dict:
         self.flush_clock_closed_bar()
+        buy_setup_close = self._buy_setup_close
+        buy_setup_bar_at = self._buy_setup_bar_at
+        if buy_setup_close is None or buy_setup_bar_at is None:
+            persisted_buy = get_latest_setup_reference(self.algo_id, side="BUY", live_only=True)
+            if persisted_buy:
+                buy_setup_close = float(persisted_buy.get("candle_close") or 0)
+                raw_buy_time = persisted_buy.get("candle_time")
+                if raw_buy_time:
+                    try:
+                        buy_setup_bar_at = datetime.datetime.fromisoformat(
+                            str(raw_buy_time).replace("Z", "+00:00")
+                        )
+                    except Exception:
+                        buy_setup_bar_at = None
+
+        sell_setup_close = self._sell_setup_close
+        sell_setup_bar_at = self._sell_setup_bar_at
+        if sell_setup_close is None or sell_setup_bar_at is None:
+            persisted_sell = get_latest_setup_reference(self.algo_id, side="SELL", live_only=True)
+            if persisted_sell:
+                sell_setup_close = float(persisted_sell.get("candle_close") or 0)
+                raw_sell_time = persisted_sell.get("candle_time")
+                if raw_sell_time:
+                    try:
+                        sell_setup_bar_at = datetime.datetime.fromisoformat(
+                            str(raw_sell_time).replace("Z", "+00:00")
+                        )
+                    except Exception:
+                        sell_setup_bar_at = None
         return {
             "algo_id": self.algo_id,
             "display_name": self.display_name,
@@ -1491,10 +1520,10 @@ class Algo3SilverMicro(Strategy):
             "current_bucket": self._current_bucket.isoformat() if self._current_bucket else None,
             "ema20": self._ema20,
             "silver_buy_plan": self._silver_buy_plan(),
-            "buy_setup_close": self._buy_setup_close,
-            "sell_setup_close": self._sell_setup_close,
-            "buy_setup_bar_at": self._buy_setup_bar_at.isoformat() if self._buy_setup_bar_at else None,
-            "sell_setup_bar_at": self._sell_setup_bar_at.isoformat() if self._sell_setup_bar_at else None,
+            "buy_setup_close": buy_setup_close,
+            "sell_setup_close": sell_setup_close,
+            "buy_setup_bar_at": buy_setup_bar_at.isoformat() if buy_setup_bar_at else None,
+            "sell_setup_bar_at": sell_setup_bar_at.isoformat() if sell_setup_bar_at else None,
             "n_points": self.settings.get("silver_breakout_points", 150),
             "last_tick_at": self._last_tick_at,
             "last_tick_ltp": self._last_tick_ltp,
