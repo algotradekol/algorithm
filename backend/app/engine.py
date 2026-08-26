@@ -829,15 +829,23 @@ def _critical_symbol_rest_fallback_loop():
     symbol: if the websocket subscribes successfully but no tick arrives,
     poll Fyers Quotes for LTP and the completed 1-minute candle so algo3 can
     still update last price, build 15m bars, and trigger entries/exits.
+
+    At MCX market open (09:00 IST) we hammer every 1s for the first 90s so a
+    carried-reference gap entry fires within seconds of open even when the
+    WS is stalled (2026-08-26: WS was dead from 09:00 to 09:15:46; gap-open
+    trigger was 15 min late as a result).
     """
     from .fyers_client import get_live_ltp_batch, get_single_minute_candle
 
     last_candle_seen: dict[str, str] = {}
+    open_burst_logged_date: datetime.date | None = None
 
     while True:
+        sleep_seconds = 5.0
         try:
             now_ist = datetime.datetime.now(IST)
             hhmm = now_ist.strftime("%H:%M")
+            hhmmss = now_ist.strftime("%H:%M:%S")
             # NSE closes at 15:30, but MCX Silver Micro continues into the
             # evening session. Keep the REST fallback alive for the full MCX
             # window so post-15:30 algo3 can still trade.
@@ -848,17 +856,36 @@ def _critical_symbol_rest_fallback_loop():
                 time.sleep(5)
                 continue
 
+            # First 90s after MCX open: burst-poll at 1s cadence so gap-open
+            # detection fires within a couple seconds of 09:00:00 IST even
+            # if the WS is stuck (Cloudflare 502/503 storm as on 2026-08-26).
+            in_open_burst = "09:00:00" <= hhmmss <= "09:01:30"
+            if in_open_burst:
+                sleep_seconds = 1.0
+                if open_burst_logged_date != now_ist.date():
+                    open_burst_logged_date = now_ist.date()
+                    print(
+                        f"[engine] critical-symbol REST burst START at {hhmmss} IST — "
+                        "1s polling for gap-open detection"
+                    )
+
             critical_symbols = [symbol for symbol in _critical_live_feed_symbols() if _symbol_needs_rest_fallback(symbol)]
             if not critical_symbols:
-                time.sleep(5)
+                time.sleep(sleep_seconds)
                 continue
 
             try:
                 ltps = get_live_ltp_batch(critical_symbols, mode=get_runtime_trading_mode())
             except Exception as exc:
                 print(f"[engine] critical-symbol REST LTP fallback failed: {exc}")
-                time.sleep(5)
+                time.sleep(sleep_seconds)
                 continue
+
+            if in_open_burst:
+                # During the open burst every poll matters — surface exactly
+                # what came back so a silent failure is visible in Railway.
+                fetched = ", ".join(f"{s}={v}" for s, v in ltps.items()) or "(empty)"
+                print(f"[engine] REST burst poll @ {hhmmss}: {fetched}")
 
             for symbol, ltp in ltps.items():
                 if not ltp:
@@ -887,7 +914,7 @@ def _critical_symbol_rest_fallback_loop():
         except Exception as exc:
             print(f"[engine] critical-symbol REST fallback loop error: {exc}")
 
-        time.sleep(5)
+        time.sleep(sleep_seconds)
 
 
 def _recover_scheduled_candle_from_buffer(strategy, scan_time: str, today: datetime.date) -> int:

@@ -325,56 +325,73 @@ def _is_recent_token_row(token_row: dict | None, max_age_seconds: int) -> bool:
     return False
 
 
+def _quotes_call(fyers, batch: list[str]) -> list[dict]:
+    response = fyers.quotes({"symbols": ",".join(batch)})
+    rows: list = []
+    if isinstance(response, dict):
+        rows = response.get("d") or response.get("data") or []
+    elif isinstance(response, list):
+        rows = response
+    return [row for row in rows if isinstance(row, dict)]
+
+
+def _parse_quotes_rows(rows: list[dict], result: dict[str, float]) -> None:
+    for row in rows:
+        inner = row.get("v") or row
+        sym = str(inner.get("symbol") or row.get("symbol") or "").upper()
+        ltp_raw = (
+            inner.get("lp") or inner.get("ltp")
+            or inner.get("last_price") or inner.get("close_price")
+        )
+        if sym and ltp_raw is not None:
+            try:
+                result[sym] = float(ltp_raw)
+            except (TypeError, ValueError):
+                pass
+
+
 def get_live_ltp_batch(symbols: list[str], mode: str | None = None) -> dict[str, float]:
-    """Fetch current LTP for multiple symbols in one (or a few) Fyers quotes API calls.
+    """Fetch current LTP for multiple symbols via Fyers quotes API.
 
-    Fyers quotes endpoint accepts up to 50 symbols per call. Returns a dict of
-    {symbol: ltp} for every symbol that returned a valid price. Missing symbols
-    are simply absent from the result dict — callers must handle that.
+    Returns {symbol: ltp} for every symbol that returned a valid price.
+    Missing symbols are simply absent — callers must handle that.
 
-    This is used as a fallback at entry time when the live WebSocket has not
-    yet delivered a tick for a symbol (e.g. low-liquidity symbols at 9:16).
+    Try DIRECT first (fast path); if it fails or returns nothing, retry via
+    the Squid PROXY so a Cloudflare 502/503 on the direct route or a
+    non-whitelisted egress IP does not silently starve gap-open detection.
     """
     if not symbols:
         return {}
-    try:
-        fyers = get_fyers_model(mode, use_proxy=False)
-    except Exception:
-        return {}
 
     result: dict[str, float] = {}
-    # Fyers quotes API allows up to 50 symbols per call
     BATCH_SIZE = 50
-    for i in range(0, len(symbols), BATCH_SIZE):
-        batch = symbols[i: i + BATCH_SIZE]
+
+    def _try(use_proxy: bool) -> tuple[bool, str | None]:
         try:
-            response = fyers.quotes({"symbols": ",".join(batch)})
-            rows = []
-            if isinstance(response, dict):
-                rows = response.get("d") or response.get("data") or []
-            elif isinstance(response, list):
-                rows = response
-            for row in rows:
-                if not isinstance(row, dict):
-                    continue
-                # Fyers v3 wraps each symbol under a "v" key
-                inner = row.get("v") or row
-                sym = (
-                    str(inner.get("symbol") or row.get("symbol") or "").upper()
-                )
-                ltp_raw = (
-                    inner.get("lp")
-                    or inner.get("ltp")
-                    or inner.get("last_price")
-                    or inner.get("close_price")
-                )
-                if sym and ltp_raw is not None:
-                    try:
-                        result[sym] = float(ltp_raw)
-                    except (TypeError, ValueError):
-                        pass
+            fyers = get_fyers_model(mode, use_proxy=use_proxy)
         except Exception as exc:
-            print(f"[fyers_client] batch quotes failed for chunk {i//BATCH_SIZE}: {exc}")
+            return False, f"get_fyers_model failed (use_proxy={use_proxy}): {exc}"
+        any_ok = False
+        first_err: str | None = None
+        for i in range(0, len(symbols), BATCH_SIZE):
+            batch = symbols[i: i + BATCH_SIZE]
+            try:
+                _parse_quotes_rows(_quotes_call(fyers, batch), result)
+                any_ok = True
+            except Exception as exc:
+                msg = f"batch quotes chunk {i//BATCH_SIZE} (use_proxy={use_proxy}): {exc}"
+                if first_err is None:
+                    first_err = msg
+        return any_ok and bool(result), first_err
+
+    ok_direct, err_direct = _try(use_proxy=False)
+    if ok_direct:
+        return result
+    # Retry via proxy — matches the order-placement path that Fyers whitelists.
+    ok_proxy, err_proxy = _try(use_proxy=True)
+    if not ok_proxy:
+        details = " | ".join(m for m in (err_direct, err_proxy) if m) or "empty response both paths"
+        print(f"[fyers_client] get_live_ltp_batch returned empty for {symbols}: {details}")
     return result
 
 
