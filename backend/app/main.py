@@ -618,6 +618,65 @@ def exit_position(algo_id: str, position_id: str, _user=Depends(require_auth)):
     }
 
 
+@app.patch("/api/algo/{algo_id}/positions/{position_id}/protection")
+def modify_position_protection(
+    algo_id: str,
+    position_id: str,
+    payload: dict,
+    _user=Depends(require_auth),
+):
+    """Change SL and/or Target on one open position (paper or live).
+
+    Paper: DB-only update. Live: amends the matching Fyers protective
+    orders first (SLM for SL, LIMIT for Target); DB only moves if the
+    Fyers side accepted the amend. Any Fyers rejection returns 502 with
+    the exchange message so the UI can show what actually failed.
+    """
+    strategy = get_strategy_or_raise(algo_id)
+    sl_raw = payload.get("sl_price")
+    target_raw = payload.get("target_price")
+    if sl_raw is None and target_raw is None:
+        raise HTTPException(status_code=400, detail="Provide sl_price and/or target_price.")
+
+    def _coerce(value, label: str) -> float | None:
+        if value is None:
+            return None
+        try:
+            number = float(value)
+        except (TypeError, ValueError):
+            raise HTTPException(status_code=400, detail=f"{label} must be a valid number.")
+        if not math.isfinite(number):
+            raise HTTPException(status_code=400, detail=f"{label} must be a valid number.")
+        return number
+
+    sl_value = _coerce(sl_raw, "sl_price")
+    target_value = _coerce(target_raw, "target_price")
+
+    try:
+        updated = strategy.broker.modify_protection(
+            position_id,
+            sl_price=sl_value,
+            target_price=target_value,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    except RuntimeError as exc:
+        raise HTTPException(status_code=502, detail=str(exc))
+    except AttributeError:
+        raise HTTPException(
+            status_code=501,
+            detail="This broker does not support editing protection levels.",
+        )
+    return {
+        "status": "updated",
+        "algo_id": algo_id,
+        "position_id": position_id,
+        "symbol": updated.get("symbol"),
+        "sl_price": updated.get("sl_price"),
+        "target_price": updated.get("target_price"),
+    }
+
+
 @app.post("/api/algo/{algo_id}/manual-trade")
 def manual_trade(algo_id: str, payload: dict, _user=Depends(require_auth)):
     """Open a paper position directly from the dashboard, bypassing daily caps."""

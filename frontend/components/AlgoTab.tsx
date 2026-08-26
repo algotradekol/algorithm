@@ -44,6 +44,8 @@ export default function AlgoTab({
   const [error, setError] = useState('');
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [exitingPositionId, setExitingPositionId] = useState<string | null>(null);
+  const [editingProtection, setEditingProtection] = useState<any | null>(null);
+  const [savingProtection, setSavingProtection] = useState(false);
   const walletRequestId = useRef(0);
   const brokerPositionsRequestId = useRef(0);
   const brokerOrdersRequestId = useRef(0);
@@ -343,6 +345,41 @@ export default function AlgoTab({
 
   useWebSocket(handleWsMessage, true, onWebSocketStatus);
 
+  const openEditProtection = useCallback((position: any) => {
+    if (!position?.id) {
+      setError('This legacy position has no ID and cannot be edited from the dashboard.');
+      return;
+    }
+    setError('');
+    setEditingProtection(position);
+  }, []);
+
+  const submitEditProtection = useCallback(async (payload: { sl_price?: number; target_price?: number }) => {
+    if (!editingProtection?.id) return;
+    setSavingProtection(true);
+    setError('');
+    try {
+      const result: any = await api.updatePositionProtection(
+        algoId,
+        String(editingProtection.id),
+        payload,
+      );
+      const updatedFields: Record<string, any> = {};
+      if (typeof result?.sl_price === 'number') updatedFields.sl_price = result.sl_price;
+      if (typeof result?.target_price === 'number') updatedFields.target_price = result.target_price;
+      setPositions((current) => current.map((row) => (
+        String(row.id) === String(editingProtection.id)
+          ? { ...row, ...updatedFields }
+          : row
+      )));
+      setEditingProtection(null);
+    } catch (editError: any) {
+      setError(editError?.message || 'Could not update SL / Target.');
+    } finally {
+      setSavingProtection(false);
+    }
+  }, [algoId, editingProtection]);
+
   const exitPosition = useCallback(async (position: any) => {
     if (!position.id) {
       setError('This legacy position has no ID and cannot be exited from the dashboard.');
@@ -560,6 +597,16 @@ export default function AlgoTab({
 
       <SettingsDrawer open={settingsOpen} algoId={algoId} tradingMode={tradingMode} onClose={() => setSettingsOpen(false)} />
 
+      {editingProtection && (
+        <EditProtectionDialog
+          position={editingProtection}
+          saving={savingProtection}
+          tradingMode={tradingMode}
+          onClose={() => setEditingProtection(null)}
+          onSubmit={submitEditProtection}
+        />
+      )}
+
       {algoId !== 'algo3' && (
         <ScanResultsPanel algoId={algoId} results={scanResults} openPositions={positions} onRefresh={loadData} />
       )}
@@ -567,7 +614,7 @@ export default function AlgoTab({
       <div className="grid min-w-0 gap-4">
         <section className="min-w-0">
           <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Open Positions</h3>
-          <PositionsTable rows={openPositionRows} onExit={exitPosition} exitingPositionId={exitingPositionId} tradingMode={tradingMode} />
+          <PositionsTable rows={openPositionRows} onExit={exitPosition} onEditProtection={openEditProtection} exitingPositionId={exitingPositionId} tradingMode={tradingMode} />
         </section>
 
         <section className="min-w-0">
@@ -902,11 +949,13 @@ function MetricCard({
 function PositionsTable({
   rows,
   onExit,
+  onEditProtection,
   exitingPositionId,
   tradingMode,
 }: {
   rows: any[];
   onExit: (row: any) => void;
+  onEditProtection: (row: any) => void;
   exitingPositionId: string | null;
   tradingMode?: string;
 }) {
@@ -946,7 +995,9 @@ function PositionsTable({
                 <MobileField label="Trigger" value={formatTrigger(row.entry_trigger)} wide />
                 <MobileField label="Signal Audit" value={<SignalAudit row={row} />} wide />
               </div>
-              <ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} tradingMode={tradingMode} mobile />
+              <div className="mt-3 flex w-full gap-2">
+                <EditProtectionButton row={row} onEdit={onEditProtection} tradingMode={tradingMode} mobile />
+                <ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} tradingMode={tradingMode} mobile /></div>
             </div>
           );
         })}
@@ -1001,7 +1052,12 @@ function PositionsTable({
                   </div>
                 </td>
                 <td className={`table-cell w-[120px] num whitespace-nowrap font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
-                <td className="table-cell w-[110px] whitespace-nowrap"><ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} tradingMode={tradingMode} /></td>
+                <td className="table-cell w-[150px] whitespace-nowrap">
+                  <div className="flex items-center gap-1.5">
+                    <EditProtectionButton row={row} onEdit={onEditProtection} tradingMode={tradingMode} />
+                    <ManualExitButton row={row} onExit={onExit} exitingPositionId={exitingPositionId} tradingMode={tradingMode} />
+                  </div>
+                </td>
               </tr>
             );
           })}
@@ -1142,6 +1198,168 @@ function ManualExitButton({
       <i className="ri-close-circle-fill mr-1 text-sm" />
       {exiting ? 'Exiting...' : 'Exit'}
     </button>
+  );
+}
+
+function EditProtectionButton({
+  row,
+  onEdit,
+  tradingMode,
+  mobile = false,
+}: {
+  row: any;
+  onEdit: (row: any) => void;
+  tradingMode?: string;
+  mobile?: boolean;
+}) {
+  const isBrokerRow = row.is_broker_order
+    || row.position_source === 'fyers_order'
+    || row.is_broker_position
+    || row.position_source === 'fyers_app';
+  if (isBrokerRow) return null;
+  const title = tradingMode === 'live'
+    ? 'Edit SL / Target — pushed to Fyers immediately'
+    : 'Edit SL / Target for this paper position';
+  return (
+    <button
+      type="button"
+      onClick={() => onEdit(row)}
+      disabled={!row.id}
+      className={`${mobile ? 'flex-1' : ''} min-h-9 rounded border border-[#3b82f6]/70 px-2.5 py-1.5 text-xs font-semibold text-[#3b82f6] transition hover:bg-[#3b82f6]/10 disabled:cursor-not-allowed disabled:opacity-50`}
+      title={title}
+    >
+      <i className="ri-edit-line mr-1 text-sm" />
+      Edit
+    </button>
+  );
+}
+
+function EditProtectionDialog({
+  position,
+  saving,
+  tradingMode,
+  onClose,
+  onSubmit,
+}: {
+  position: any;
+  saving: boolean;
+  tradingMode?: string;
+  onClose: () => void;
+  onSubmit: (payload: { sl_price?: number; target_price?: number }) => void;
+}) {
+  const [slInput, setSlInput] = useState('');
+  const [targetInput, setTargetInput] = useState('');
+  const [localError, setLocalError] = useState('');
+
+  useEffect(() => {
+    if (position) {
+      const sl = Number(position.sl_price);
+      const target = Number(position.target_price);
+      setSlInput(Number.isFinite(sl) && sl > 0 ? String(sl) : '');
+      setTargetInput(Number.isFinite(target) && target > 0 ? String(target) : '');
+      setLocalError('');
+    }
+  }, [position]);
+
+  if (!position) return null;
+
+  const side = String(position.side || '').toUpperCase();
+  const entry = Number(position.entry_price || 0);
+  const currentSl = Number(position.sl_price || 0);
+  const currentTarget = Number(position.target_price || 0);
+
+  function handleSubmit(event: any) {
+    event.preventDefault();
+    const payload: { sl_price?: number; target_price?: number } = {};
+    const slNumber = slInput.trim() === '' ? NaN : Number(slInput);
+    const targetNumber = targetInput.trim() === '' ? NaN : Number(targetInput);
+    if (Number.isFinite(slNumber) && slNumber !== currentSl) {
+      if (slNumber <= 0) { setLocalError('Stop loss must be greater than zero.'); return; }
+      if (side === 'BUY' && entry && slNumber >= entry) { setLocalError('Stop loss for a BUY must be below entry.'); return; }
+      if (side === 'SELL' && entry && slNumber <= entry) { setLocalError('Stop loss for a SELL must be above entry.'); return; }
+      payload.sl_price = slNumber;
+    }
+    if (Number.isFinite(targetNumber) && targetNumber !== currentTarget) {
+      if (targetNumber <= 0) { setLocalError('Target must be greater than zero.'); return; }
+      if (side === 'BUY' && entry && targetNumber <= entry) { setLocalError('Target for a BUY must be above entry.'); return; }
+      if (side === 'SELL' && entry && targetNumber >= entry) { setLocalError('Target for a SELL must be below entry.'); return; }
+      payload.target_price = targetNumber;
+    }
+    if (!Object.keys(payload).length) {
+      setLocalError('Change at least one value.');
+      return;
+    }
+    setLocalError('');
+    onSubmit(payload);
+  }
+
+  return (
+    <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4" role="dialog" aria-modal="true">
+      <form onSubmit={handleSubmit} className="w-full max-w-md rounded border border-[#1f2937] bg-[#0d1117] p-4 shadow-lg">
+        <div className="flex items-start justify-between gap-4">
+          <div>
+            <h3 className="text-base font-semibold text-gray-100">Edit SL / Target</h3>
+            <p className="mt-1 text-xs text-gray-500">
+              {position.symbol} · {side} · Entry {formatNumber(entry)}
+            </p>
+          </div>
+          <button type="button" onClick={onClose} className="text-gray-500 hover:text-gray-300" aria-label="Close">
+            <i className="ri-close-line text-lg" />
+          </button>
+        </div>
+        {tradingMode === 'live' && (
+          <p className="mt-3 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
+            Change is pushed to Fyers first. If Fyers rejects, nothing here or in Fyers moves.
+          </p>
+        )}
+        <div className="mt-4 grid gap-3 sm:grid-cols-2">
+          <label>
+            <div className="label">Stop Loss</div>
+            <input
+              type="number"
+              step="0.05"
+              min="0"
+              value={slInput}
+              onChange={(e) => setSlInput(e.target.value)}
+              className="control mt-1 num"
+              disabled={saving}
+            />
+            <div className="mt-1 text-xs text-gray-500">Current: {formatNumber(currentSl)}</div>
+          </label>
+          <label>
+            <div className="label">Target</div>
+            <input
+              type="number"
+              step="0.05"
+              min="0"
+              value={targetInput}
+              onChange={(e) => setTargetInput(e.target.value)}
+              className="control mt-1 num"
+              disabled={saving}
+            />
+            <div className="mt-1 text-xs text-gray-500">Current: {formatNumber(currentTarget)}</div>
+          </label>
+        </div>
+        {localError && <p className="mt-3 rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{localError}</p>}
+        <div className="mt-4 flex justify-end gap-2">
+          <button
+            type="button"
+            onClick={onClose}
+            disabled={saving}
+            className="min-h-9 rounded border border-[#1f2937] px-3 py-1.5 text-xs font-semibold text-gray-300 disabled:opacity-50"
+          >
+            Cancel
+          </button>
+          <button
+            type="submit"
+            disabled={saving}
+            className="min-h-9 rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-1.5 text-xs font-semibold text-white disabled:cursor-not-allowed disabled:opacity-60"
+          >
+            {saving ? 'Saving...' : 'Save'}
+          </button>
+        </div>
+      </form>
+    </div>
   );
 }
 
