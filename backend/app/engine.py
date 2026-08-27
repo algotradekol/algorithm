@@ -1254,7 +1254,13 @@ def _live_broker_reconcile_loop():
                 if not isinstance(broker, LiveBroker):
                     continue
                 try:
-                    result = broker.reconcile_open_positions()
+                    # Pass this strategy's own watchlist so the broker only
+                    # bootstraps FYERS-app-managed positions for symbols the
+                    # strategy actually cares about — prevents Silver's
+                    # broker from ever bootstrapping a random NSE stock the
+                    # user might have bought manually, and vice versa.
+                    strat_watchlist = list(getattr(strategy, "watchlist", []) or [])
+                    result = broker.reconcile_open_positions(watchlist=strat_watchlist)
                     if result.get("reconciled"):
                         print(
                             f"[engine] LiveBroker reconciled {result['reconciled']} positions "
@@ -1277,6 +1283,10 @@ def _live_broker_reconcile_loop():
 def _dispatch_order_update_event(event: dict) -> None:
     """Route a normalized Fyers Order-WS event to whichever strategy's
     LiveBroker owns the symbol. Runs on the WS callback thread."""
+    # Keep this import local: engine startup also imports broker factories and
+    # strategies, so a module-level LiveBroker import can create a cycle.
+    from .live_broker import LiveBroker
+
     if not isinstance(event, dict):
         return
     symbol = str(event.get("symbol") or "").strip().upper()

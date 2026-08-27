@@ -401,10 +401,26 @@ class LiveBroker(PaperBroker):
         # and can fire against our closed position — which Fyers would
         # execute as a fresh reverse trade (accidental short/long).
         snapshot = position.get("signal_snapshot") or {}
-        for order_id_key in ("fyers_sl_order_id", "fyers_target_order_id"):
-            protective_order_id = snapshot.get(order_id_key)
-            if protective_order_id:
-                self._cancel_fyers_order(protective_order_id, reason=f"close_trade:{exit_reason}")
+        sl_order_id = snapshot.get("fyers_sl_order_id")
+        if sl_order_id:
+            sl_response = self._cancel_fyers_order(
+                sl_order_id,
+                reason=f"close_trade:{exit_reason}",
+            )
+            if isinstance(sl_response, dict) and sl_response.get("code") == -52:
+                print(
+                    f"[live_broker] SKIP market exit: SL {sl_order_id} already "
+                    "filled at Fyers"
+                )
+                super().close_trade(position, exit_price, exit_reason)
+                return
+
+        target_order_id = snapshot.get("fyers_target_order_id")
+        if target_order_id:
+            self._cancel_fyers_order(
+                target_order_id,
+                reason=f"close_trade:{exit_reason}",
+            )
 
         order_response = self._place_live_order(position["symbol"], exit_side, qty)
         if not self._looks_successful(order_response):
@@ -563,7 +579,13 @@ class LiveBroker(PaperBroker):
         entry_side = str(updated.get("side") or position.get("side") or "").upper()
         exit_side = "SELL" if entry_side == "BUY" else "BUY"
         try:
-            modify_response = self._modify_slm_order(sl_order_id, new_sl, exit_side, symbol=position.get("symbol"))
+            modify_response = self._modify_slm_order(
+                sl_order_id,
+                new_sl,
+                exit_side,
+                qty=int(position.get("qty") or 0),
+                symbol=position.get("symbol"),
+            )
             if self._looks_successful(modify_response):
                 print(
                     f"[live_broker] trailed hard SL {position.get('symbol')} "
@@ -599,7 +621,15 @@ class LiveBroker(PaperBroker):
             return {**position, **rollback}
         return updated
 
-    def _modify_slm_order(self, order_id: str, new_stop_price: float, exit_side: str, symbol: str | None = None) -> dict:
+    def _modify_slm_order(
+        self,
+        order_id: str,
+        new_stop_price: float,
+        exit_side: str,
+        *,
+        qty: int,
+        symbol: str | None = None,
+    ) -> dict:
         """Update the stopPrice of an existing SLM order at Fyers so a
         trailing-SL adjustment is enforced server-side, not just in our db.
 
@@ -611,18 +641,27 @@ class LiveBroker(PaperBroker):
         # Per-symbol tick + slack — same rules as fresh SL placement.
         rounded_stop = _round_to_tick(new_stop_price, symbol=symbol)
         limit_price = _sl_limit_price(rounded_stop, exit_side, symbol=symbol)
+        if int(qty) < 1:
+            raise ValueError("FYERS stop-loss amend requires a positive quantity.")
         payload = {
             "id": str(order_id),
             "type": 4,                                # keep SL-M
             "limitPrice": limit_price,
             "stopPrice": rounded_stop,
-            "qty": 0,                                 # 0 = keep current qty
+            "qty": int(qty),
         }
         response = fyers.modify_order(payload)
         print(f"[live_broker] modify_slm {order_id} @stop={rounded_stop} limit={limit_price}: {response}")
         return response if isinstance(response, dict) else {"raw": response}
 
-    def _modify_limit_order(self, order_id: str, new_limit_price: float, symbol: str | None = None) -> dict:
+    def _modify_limit_order(
+        self,
+        order_id: str,
+        new_limit_price: float,
+        *,
+        qty: int,
+        symbol: str | None = None,
+    ) -> dict:
         """Update the limitPrice of an existing LIMIT order at Fyers.
 
         Used to move a protective TARGET order after the user edits the
@@ -631,11 +670,13 @@ class LiveBroker(PaperBroker):
         """
         fyers = get_fyers_model(use_proxy=True)
         rounded_limit = _round_to_tick(new_limit_price, symbol=symbol)
+        if int(qty) < 1:
+            raise ValueError("FYERS target amend requires a positive quantity.")
         payload = {
             "id": str(order_id),
             "type": 1,                                # keep LIMIT
             "limitPrice": rounded_limit,
-            "qty": 0,                                 # 0 = keep current qty
+            "qty": int(qty),
         }
         response = fyers.modify_order(payload)
         print(f"[live_broker] modify_limit {order_id} @limit={rounded_limit}: {response}")
@@ -664,6 +705,9 @@ class LiveBroker(PaperBroker):
         symbol = position.get("symbol")
         snapshot = position.get("signal_snapshot") or {}
         exit_side = "SELL" if side == "BUY" else "BUY"
+        qty = int(position.get("qty") or 0)
+        if qty < 1:
+            raise ValueError("Live position quantity must be at least 1 before editing protection.")
 
         updates: dict = {}
         errors: list[str] = []
@@ -679,7 +723,9 @@ class LiveBroker(PaperBroker):
             sl_order_id = snapshot.get("fyers_sl_order_id")
             if sl_order_id:
                 try:
-                    response = self._modify_slm_order(sl_order_id, new_sl, exit_side, symbol=symbol)
+                    response = self._modify_slm_order(
+                        sl_order_id, new_sl, exit_side, qty=qty, symbol=symbol
+                    )
                     if not self._looks_successful(response):
                         errors.append(f"Fyers refused SL amend: {response}")
                     else:
@@ -687,8 +733,10 @@ class LiveBroker(PaperBroker):
                 except Exception as exc:
                     errors.append(f"Fyers SL amend raised: {exc}")
             else:
-                # Soft-SL only — no live protective order at Fyers to move.
-                updates["sl_price"] = round(new_sl, 2)
+                errors.append(
+                    "No tracked FYERS stop-loss order was found for this live position. "
+                    "Refresh the position or re-arm protection before editing SL."
+                )
 
         if target_price is not None:
             new_target = float(target_price)
@@ -701,7 +749,9 @@ class LiveBroker(PaperBroker):
             target_order_id = snapshot.get("fyers_target_order_id")
             if target_order_id:
                 try:
-                    response = self._modify_limit_order(target_order_id, new_target, symbol=symbol)
+                    response = self._modify_limit_order(
+                        target_order_id, new_target, qty=qty, symbol=symbol
+                    )
                     if not self._looks_successful(response):
                         errors.append(f"Fyers refused target amend: {response}")
                     else:
@@ -709,7 +759,10 @@ class LiveBroker(PaperBroker):
                 except Exception as exc:
                     errors.append(f"Fyers target amend raised: {exc}")
             else:
-                updates["target_price"] = round(new_target, 2)
+                errors.append(
+                    "No tracked FYERS target order was found for this live position. "
+                    "Refresh the position or re-arm protection before editing target."
+                )
 
         if updates:
             run_with_supabase(
@@ -1085,15 +1138,146 @@ class LiveBroker(PaperBroker):
             except Exception as exc:
                 print(f"[live_broker] snapshot persist failed for {position.get('symbol')}: {exc}")
 
-    def reconcile_open_positions(self) -> dict:
+    def _bootstrap_broker_only_positions(
+        self,
+        watchlist: list[str] | None,
+        summary: dict,
+    ) -> int:
+        """Insert a live_positions row for each FYERS-held position in this
+        strategy's watchlist that our DB doesn't already know about.
+
+        The row is marked ``signal_snapshot.origin = "fyers_app_manual"``
+        and given unreachable SL / Target values so the algo's own
+        ``check_exits`` loop can never fire a MARKET order against it.
+        FYERS remains the sole exit path. When the user closes the
+        position from the FYERS app the next reconcile pass sees
+        ``net_qty=0`` and the existing external-close logic writes a
+        MANUAL_EXTERNAL_EXIT row into ``live_trades`` — which is what
+        makes the trade land in Closed Trades Today with a full audit
+        trail (entry, exit, side, qty) instead of silently disappearing
+        from Open Positions.
+        """
+        try:
+            from .fyers_client import get_broker_positions
+            result = get_broker_positions("live")
+        except Exception as exc:
+            print(f"[live_broker] broker-only bootstrap fetch failed: {exc}")
+            return 0
+        if not isinstance(result, dict) or not result.get("available"):
+            return 0
+
+        watchlist_upper = {str(s or "").strip().upper() for s in (watchlist or []) if s}
+        # Empty watchlist = "don't bootstrap anything". Callers that want
+        # to bootstrap every FYERS symbol pass a sentinel; the engine now
+        # always passes the strategy's own watchlist, so an unset value
+        # means "do nothing" which is the safe default.
+        if not watchlist_upper:
+            return 0
+
+        known_symbols = {
+            str(p.get("symbol") or "").strip().upper()
+            for p in self.open_positions()
+        }
+
+        inserted = 0
+        for row in result.get("positions") or []:
+            symbol = str(row.get("symbol") or "").strip()
+            symbol_upper = symbol.upper()
+            if not symbol or symbol_upper not in watchlist_upper:
+                continue
+            if symbol_upper in known_symbols:
+                continue  # DB already tracks this — algo-owned or already bootstrapped.
+            try:
+                net_qty = float(row.get("net_qty", 0) or 0)
+            except (TypeError, ValueError):
+                net_qty = 0.0
+            if abs(net_qty) < 1:
+                continue
+
+            side = "SELL" if net_qty < 0 else "BUY"
+            entry_price = float(row.get("entry_price") or 0)
+            if entry_price <= 0:
+                entry_price = float(row.get("ltp") or 0)
+            if entry_price <= 0:
+                continue
+
+            # Unreachable protective levels so check_exits' ltp<=sl (BUY)
+            # and ltp>=sl (SELL) branches can never fire.
+            if side == "BUY":
+                sl_price = 0.0
+                target_price = 1_000_000_000.0
+            else:
+                sl_price = 1_000_000_000.0
+                target_price = 0.0
+
+            entry_time = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            row_payload = {
+                "algo_id": self.storage_algo_id(),
+                "symbol": symbol,
+                "side": side,
+                "qty": int(abs(net_qty)),
+                "entry_price": entry_price,
+                "sl_price": sl_price,
+                "target_price": target_price,
+                "status": "open",
+                "entry_time": entry_time,
+                "entry_trigger": "Opened directly in FYERS app",
+                "signal_snapshot": {
+                    "origin": "fyers_app_manual",
+                    "fyers_app_managed": True,
+                    "symbol": symbol,
+                    "side": side,
+                    "entry_price": entry_price,
+                },
+            }
+            try:
+                run_with_supabase(
+                    lambda supabase: supabase.table(self.positions_table_name())
+                    .insert(row_payload).execute()
+                )
+                inserted += 1
+                print(
+                    f"[live_broker] bootstrapped fyers-app position {symbol} "
+                    f"{side} qty={int(abs(net_qty))} @ {entry_price:.2f} — will "
+                    f"land in Closed Trades when FYERS reports flat"
+                )
+            except Exception as exc:
+                print(f"[live_broker] bootstrap insert failed for {symbol}: {exc}")
+                continue
+
+        if inserted:
+            summary.setdefault("bootstrapped_fyers_app", 0)
+            summary["bootstrapped_fyers_app"] += inserted
+        return inserted
+
+    def reconcile_open_positions(self, watchlist: list[str] | None = None) -> dict:
         """Poll Fyers orderbook and detect SL/Target fills. For each fill:
         close our position record + cancel the sibling protective order so
         it doesn't accidentally reverse the position later. Meant to be
         called every ~30 seconds by the engine background loop.
 
+        ``watchlist`` restricts the fyers-app-managed bootstrap step to
+        symbols this strategy actually cares about, so Silver's LiveBroker
+        never bootstraps a random NSE stock the user might have bought
+        directly in the FYERS app (and vice versa).
+
         Returns a summary dict: {'reconciled': N, 'errors': M}.
         """
         summary = {"reconciled": 0, "errors": 0, "already_closed": 0, "externally_closed": 0}
+
+        # Step 0 — for each symbol in this strategy's watchlist that FYERS
+        # reports as HELD but our DB has no matching open row (user opened
+        # the position directly in the FYERS app), insert a placeholder
+        # live_positions row. That row rides the existing external-close
+        # detection path in Step 1, so when FYERS reports the position
+        # flat the algo writes a MANUAL_EXTERNAL_EXIT row into
+        # live_trades — which is what puts it into the Closed Trades panel.
+        try:
+            self._bootstrap_broker_only_positions(watchlist, summary)
+        except Exception as exc:
+            print(f"[live_broker] fyers-app-position bootstrap error: {exc}")
+            summary["errors"] += 1
+
         open_positions = self.open_positions()
         if not open_positions:
             return summary

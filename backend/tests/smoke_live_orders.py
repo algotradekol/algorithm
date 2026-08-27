@@ -23,6 +23,7 @@ Exit code 0 = all checks passed, 1 = a check failed.
 from __future__ import annotations
 
 import sys
+from types import SimpleNamespace
 
 import app.live_broker as lb
 import app.paper_broker as _pb_module
@@ -211,6 +212,62 @@ def test_live_open_trade_refuses_unprotected_position():
         pb.PaperBroker.open_trade = orig_open_trade
 
 
+def test_live_modify_protection_requires_tracked_fyers_orders():
+    print("\n2f. Live modify_protection refuses local-only edits when FYERS protection ids are missing")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec, order_type="MARKET")
+    position = {
+        "id": "live-pos-1",
+        "symbol": "MCX:SILVERMIC26AUGFUT",
+        "side": "BUY",
+        "qty": 1,
+        "entry_price": 243000.0,
+        "sl_price": 242800.0,
+        "target_price": 245000.0,
+        "signal_snapshot": {},
+    }
+    broker._find_open_position = lambda position_id: position if position_id == "live-pos-1" else None
+
+    persisted = []
+    import app.live_broker as live_broker_module
+    original_run_with_supabase = live_broker_module.run_with_supabase
+    live_broker_module.run_with_supabase = lambda fn: persisted.append("write-blocked")
+    try:
+        try:
+            broker.modify_protection("live-pos-1", sl_price=242700.0)
+            check("missing FYERS SL id raises", False, "expected RuntimeError")
+        except RuntimeError as exc:
+            text = str(exc)
+            check("missing FYERS SL id explains why", "no tracked fyers stop-loss order" in text.lower(), text)
+        check("missing FYERS SL id avoids DB write", not persisted, f"persisted={persisted}")
+
+        try:
+            broker.modify_protection("live-pos-1", target_price=245100.0)
+            check("missing FYERS target id raises", False, "expected RuntimeError")
+        except RuntimeError as exc:
+            text = str(exc)
+            check("missing FYERS target id explains why", "no tracked fyers target order" in text.lower(), text)
+        check("missing FYERS target id still avoids DB write", not persisted, f"persisted={persisted}")
+
+        position["signal_snapshot"] = {
+            "fyers_sl_order_id": "SL-EDIT",
+            "fyers_target_order_id": "TP-EDIT",
+        }
+        broker.modify_protection("live-pos-1", sl_price=242600.0, target_price=245200.0)
+        check(
+            "SL amend sends the live position quantity",
+            any(row.get("id") == "SL-EDIT" and row.get("qty") == 1 for row in rec["modified"]),
+            f"modified={rec['modified']}",
+        )
+        check(
+            "target amend sends the live position quantity",
+            any(row.get("id") == "TP-EDIT" and row.get("qty") == 1 for row in rec["modified"]),
+            f"modified={rec['modified']}",
+        )
+    finally:
+        live_broker_module.run_with_supabase = original_run_with_supabase
+
+
 # ── 5. OCO reconcile: SL fills -> cancel Target ────────────────────────
 def test_oco_reconcile():
     print("\n5. OCO — SL fill triggers cancel of the leftover Target order")
@@ -283,13 +340,14 @@ def test_trailing_sl_syncs_to_fyers():
         **position, "sl_price": 870.00,
         "signal_snapshot": {"fyers_sl_order_id": "SL-1"},
     }
-    position = {"symbol": "NSE:TATATECH-EQ", "sl_price": 864.05,
+    position = {"symbol": "NSE:TATATECH-EQ", "qty": 57, "sl_price": 864.05,
                 "signal_snapshot": {"fyers_sl_order_id": "SL-1"}}
     broker.apply_trailing_stop(position, ltp=885.0, settings={})
     check("modify_order sent to Fyers", len(rec["modified"]) == 1, f"modified={rec['modified']}")
     if rec["modified"]:
         m = rec["modified"][0]
         check("modify keeps SL-M (type 4)", m["type"] == 4)
+        check("modify sends positive order qty", m["qty"] == 57, f"qty={m['qty']}")
         check("modify new stopPrice = trailed SL", m["stopPrice"] == 870.00, f"stopPrice={m['stopPrice']}")
         check("modify carries limitPrice > 0 (Fyers V3)", m["limitPrice"] > 0, f"limitPrice={m['limitPrice']}")
 
@@ -617,6 +675,138 @@ def test_close_trade_skips_market_when_fyers_already_flat():
         pb.PaperBroker.close_trade = orig_close
 
 
+def test_close_trade_skips_market_when_sl_cancel_reports_already_filled():
+    print("\n8e2. Design B close_trade — SL cancel -52 means already filled, so skip market exit")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+
+    import app.fyers_client as fc
+    # Pre-flight still thinks the position exists, so the close path must rely
+    # on the SL cancel response itself as the hard abort signal.
+    fc.get_broker_positions = lambda mode: {
+        "available": True, "cached": False,
+        "positions": [{"symbol": "MCX:SILVERMIC26AUGFUT", "net_qty": 1}],
+    }
+
+    cancel_calls = []
+    broker._cancel_fyers_order = lambda order_id, reason="": (
+        cancel_calls.append((order_id, reason)) or (
+            {"code": -52, "message": "Not a pending order", "s": "error"}
+            if order_id == "SL-52"
+            else {"s": "ok", "id": order_id}
+        )
+    )
+
+    market_exits = []
+    broker._place_live_order = lambda symbol, side, qty, order_type="MARKET", limit_price=0.0: (
+        market_exits.append((symbol, side, qty, order_type)) or {"s": "ok", "id": "SHOULD-NOT-FIRE"}
+    )
+
+    persisted = []
+    import app.paper_broker as pb
+    orig_close = pb.PaperBroker.close_trade
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: (
+        persisted.append((pos["symbol"], exit_reason, price))
+    )
+    try:
+        position = {
+            "symbol": "MCX:SILVERMIC26AUGFUT", "side": "BUY", "qty": 1,
+            "entry_price": 246140.0, "sl_price": 245690.0, "target_price": 251140.0,
+            "signal_snapshot": {"fyers_sl_order_id": "SL-52", "fyers_target_order_id": "TP-52"},
+        }
+        broker.close_trade(position, 245813.0, "SL")
+        check("SL cancel attempted first", cancel_calls[:1] == [("SL-52", "close_trade:SL")],
+              f"cancel_calls={cancel_calls}")
+        check("target cancel is skipped after -52 abort", all(order_id != "TP-52" for order_id, _ in cancel_calls),
+              f"cancel_calls={cancel_calls}")
+        check("no MARKET exit sent after -52 already-filled signal", len(market_exits) == 0,
+              f"market_exits={market_exits}")
+        check("DB close_trade still recorded after -52 abort", len(persisted) == 1 and persisted[0][1] == "SL",
+              f"persisted={persisted}")
+    finally:
+        pb.PaperBroker.close_trade = orig_close
+
+
+def test_bootstrap_fyers_app_position_and_land_in_closed_trades():
+    """A user opens a position directly in the FYERS app. Our reconcile
+    should bootstrap a DB row so that when they later flatten it in FYERS
+    the trade lands in Closed Trades Today with MANUAL_EXTERNAL_EXIT
+    rather than silently disappearing from the Open Positions panel."""
+    print("\n8p. reconcile — FYERS-app-managed position bootstrapped, closes into live_trades")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+
+    import app.fyers_client as fc
+    import app.live_broker as live_broker_module
+
+    # Phase 1: FYERS holds a SELL 1 that the DB doesn't know about.
+    fc.get_broker_positions = lambda mode: {
+        "available": True, "cached": False,
+        "positions": [{
+            "symbol": "MCX:SILVERMIC26AUGFUT", "net_qty": -1,
+            "entry_price": 248500.0, "ltp": 248500.0,
+        }],
+    }
+
+    inserted_rows: list[dict] = []
+    original_run_with_supabase = live_broker_module.run_with_supabase
+
+    class _StubTable:
+        def __init__(self, sink): self._sink = sink
+        def insert(self, payload):
+            self._sink.append(payload); return self
+        def execute(self): return {"data": self._sink[-1:]}
+    class _StubClient:
+        def __init__(self, sink): self._sink = sink
+        def table(self, _name): return _StubTable(self._sink)
+
+    def _fake_run(fn):
+        return fn(_StubClient(inserted_rows))
+    live_broker_module.run_with_supabase = _fake_run
+
+    broker.open_positions = lambda: []
+    try:
+        inserted = broker._bootstrap_broker_only_positions(
+            watchlist=["MCX:SILVERMIC26AUGFUT"],
+            summary={"errors": 0},
+        )
+        check("one fyers-app position was bootstrapped", inserted == 1,
+              f"inserted={inserted}, rows={inserted_rows}")
+        row = inserted_rows[0]
+        check("bootstrapped row has fyers_app_manual origin",
+              (row.get("signal_snapshot") or {}).get("origin") == "fyers_app_manual",
+              f"row={row}")
+        check("bootstrapped row uses unreachable protective levels for SELL",
+              row.get("sl_price") >= 1_000_000_000 and row.get("target_price") == 0.0,
+              f"row={row}")
+        check("bootstrapped row carries the FYERS entry price and side",
+              row.get("side") == "SELL" and row.get("entry_price") == 248500.0,
+              f"row={row}")
+        check("bootstrapped row is labeled as opened in the FYERS app",
+              row.get("entry_trigger") == "Opened directly in FYERS app",
+              f"row={row}")
+
+        # A symbol outside the strategy's watchlist must never be bootstrapped.
+        inserted_rows.clear()
+        fc.get_broker_positions = lambda mode: {
+            "available": True, "cached": False,
+            "positions": [{"symbol": "NSE:RANDOM-EQ", "net_qty": 5, "entry_price": 100.0}],
+        }
+        inserted_off_wl = broker._bootstrap_broker_only_positions(
+            watchlist=["MCX:SILVERMIC26AUGFUT"], summary={"errors": 0},
+        )
+        check("off-watchlist FYERS positions are ignored", inserted_off_wl == 0,
+              f"rows={inserted_rows}")
+
+        # Empty watchlist = do nothing (safe default).
+        inserted_empty = broker._bootstrap_broker_only_positions(
+            watchlist=None, summary={"errors": 0},
+        )
+        check("no watchlist = no bootstrap", inserted_empty == 0, "")
+    finally:
+        live_broker_module.run_with_supabase = original_run_with_supabase
+
+
 def test_close_trade_still_sends_market_when_fyers_still_holds():
     print("\n8f. Design B close_trade — Fyers still holds position -> market exit fires normally")
     rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
@@ -865,6 +1055,36 @@ def test_order_update_ws_status_callback_accepts_fyers_payload():
             eng._order_update_ws_connected.set()
         else:
             eng._order_update_ws_connected.clear()
+
+
+def test_engine_order_update_router_handles_all_event_kinds():
+    print("\n8o. Order-WS engine router — order, trade, and position events reach LiveBroker")
+    import app.engine as eng
+
+    symbol = "MCX:SILVERMIC26AUGFUT"
+    broker = object.__new__(LiveBroker)
+    received: list[dict] = []
+    broker.handle_order_event = lambda event: (
+        received.append(event) or {"action": "handled", "kind": event.get("kind")}
+    )
+
+    original_strategies = eng.STRATEGIES
+    eng.STRATEGIES = {
+        "algo3": SimpleNamespace(algo_id="algo3", watchlist=[symbol], broker=broker),
+    }
+    try:
+        events = [
+            {"kind": "order", "symbol": symbol, "order_id": "O-1"},
+            {"kind": "trade", "symbol": symbol, "order_id": "O-1"},
+            {"kind": "position", "symbol": symbol, "net_qty": 0},
+        ]
+        for event in events:
+            eng._dispatch_order_update_event(event)
+        check("all three event kinds are routed without callback exceptions",
+              [event.get("kind") for event in received] == ["order", "trade", "position"],
+              f"received={received}")
+    finally:
+        eng.STRATEGIES = original_strategies
 
 
 def test_open_trade_refuses_duplicate_when_fyers_already_positioned():
@@ -6263,6 +6483,8 @@ def main():
     test_external_close_single_flaky_poll()
     test_external_close_grace()
     test_close_trade_skips_market_when_fyers_already_flat()
+    test_close_trade_skips_market_when_sl_cancel_reports_already_filled()
+    test_bootstrap_fyers_app_position_and_land_in_closed_trades()
     test_close_trade_still_sends_market_when_fyers_still_holds()
     test_close_trade_falls_back_to_market_when_fyers_unavailable()
     test_ws_order_fill_closes_position_immediately()
@@ -6271,6 +6493,7 @@ def main():
     test_ws_cancelled_protective_order_clears_snapshot()
     test_ws_dispatch_parses_orders_and_positions_bundle()
     test_order_update_ws_status_callback_accepts_fyers_payload()
+    test_engine_order_update_router_handles_all_event_kinds()
     test_open_trade_refuses_duplicate_when_fyers_already_positioned()
     test_algo1_open_position_guard()
     test_protective_retry()

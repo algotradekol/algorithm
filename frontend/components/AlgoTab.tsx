@@ -1386,7 +1386,7 @@ function EditProtectionDialog({
         </div>
         {tradingMode === 'live' && (
           <p className="mt-3 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
-            Change is pushed to Fyers first. If Fyers rejects, nothing here or in Fyers moves.
+            Live edit only succeeds if this position still has tracked FYERS protection orders. FYERS is updated first; any rejection or missing tracked order leaves the dashboard unchanged.
           </p>
         )}
         <div className="mt-4 grid gap-3 sm:grid-cols-2">
