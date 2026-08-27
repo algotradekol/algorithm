@@ -115,6 +115,7 @@ STRATEGY_DEFAULT_OVERRIDES = {
         "tsl_activate_points": 500,
         "target_points": 2000,
         "exit_mode": "fixed_target_sl",
+        "manual_exit_reentry_enabled": False,
         # Position sizing for MCX Silver Micro is done in LOTS, not by
         # dividing capital by price. 1 lot of SILVERMIC = 1 kg = 1 unit
         # on Fyers. Client trades in lots; default 1.
@@ -155,6 +156,7 @@ BOOL_FIELDS = {
     "filter_liquidity",
     "filter_price_range",
     "trailing_sl_enabled",
+    "manual_exit_reentry_enabled",
     "test_schedule_enabled",
 }
 
@@ -335,6 +337,7 @@ _NEW_COLUMNS_TOLERATE_MISSING = {
     "tsl_distance_points",
     "silver_lots",
     "silver_buy_plan",
+    "manual_exit_reentry_enabled",
 }
 
 

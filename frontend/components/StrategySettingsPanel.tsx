@@ -35,6 +35,35 @@ const SILVER_RISK_FIELDS: Field[] = [
   ['target_points', 'Final Target (points)', 'Maximum price distance in favor from the actual market fill. Default 2000.'],
 ];
 
+function SilverManualExitReentryToggle({
+  settings,
+  setSettings,
+}: {
+  settings: Record<string, any>;
+  setSettings: (settings: Record<string, any>) => void;
+}) {
+  const enabled = Boolean(settings.manual_exit_reentry_enabled);
+  return (
+    <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3">
+      <label className="flex gap-3">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => setSettings({ ...settings, manual_exit_reentry_enabled: e.target.checked })}
+          className="peer sr-only"
+        />
+        <span className="mt-1 h-5 w-9 shrink-0 rounded-full border border-[#1f2937] bg-gray-700 after:block after:h-4 after:w-4 after:translate-x-0.5 after:translate-y-0.5 after:rounded-full after:bg-gray-400 after:transition peer-checked:bg-[#22c55e] peer-checked:after:translate-x-4 peer-checked:after:bg-white" />
+        <span>
+          <span className="text-sm font-semibold text-gray-100">Manual exit can re-enter immediately</span>
+          <span className="mt-1 block text-xs text-gray-500">
+            When ON, a manual close in Silver immediately re-checks the same BUY / SELL trigger and can re-open if the carried reference is still valid. When OFF, manual close stays conservative and clears the carried re-entry handoff.
+          </span>
+        </span>
+      </label>
+    </div>
+  );
+}
+
 const INDICATOR_FIELDS: Field[] = [
   ['rsi_buy_threshold', 'RSI Buy Threshold', 'Filter strategy buy confirmation threshold'],
   ['rsi_sell_threshold', 'RSI Sell Threshold', 'Filter strategy sell confirmation threshold'],
@@ -264,7 +293,10 @@ export default function StrategySettingsPanel({
         <ExitModeSelect algoId={algoId} settings={settings} setSettings={setSettings} />
         {!isSilver && <TrailingStopToggle settings={settings} setSettings={setSettings} />}
         {isSilver ? (
-          <SilverRiskSettings settings={settings} setSettings={setSettings} />
+          <>
+            <SilverRiskSettings settings={settings} setSettings={setSettings} />
+            <SilverManualExitReentryToggle settings={settings} setSettings={setSettings} />
+          </>
         ) : (
           <FieldGroup
             title="Risk Settings"

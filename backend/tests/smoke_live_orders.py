@@ -3045,10 +3045,13 @@ def test_algo3_unlimited_reentry_after_exit_same_setup():
           f"opens={strat.broker.opens}")
 
 
-def test_algo3_manual_exit_clears_handoff_and_requires_fresh_trigger():
-    print("\n41b. algo3 manual closes do not force a reverse trade, but a fresh trigger can re-enter later")
+def test_algo3_manual_exit_safe_mode_clears_handoff_and_requires_fresh_trigger():
+    print("\n41b. algo3 manual exit safe mode clears carried handoff and requires a fresh trigger")
     import datetime as _dt
-    strat = _make_bare_algo3(settings_overrides={"silver_breakout_points": 200})
+    strat = _make_bare_algo3(settings_overrides={
+        "silver_breakout_points": 200,
+        "manual_exit_reentry_enabled": False,
+    })
     strat.broker.on_position_closed = strat._handle_broker_position_closed
     strat._buy_setup_close = 92000.0
     strat._buy_setup_bar_at = _dt.datetime(2026, 8, 20, 19, 15)
@@ -3084,6 +3087,41 @@ def test_algo3_manual_exit_clears_handoff_and_requires_fresh_trigger():
     check("fresh normal trigger can re-enter after manual close",
           len(strat.broker.opens) == 2 and strat.broker.opens[-1]["side"] == "BUY",
           f"opens={strat.broker.opens}")
+
+
+def test_algo3_manual_exit_reentry_mode_reopens_same_reference_immediately():
+    print("\n41b2. algo3 manual exit re-entry mode preserves the carried handoff for immediate re-entry")
+    import datetime as _dt
+    strat = _make_bare_algo3(settings_overrides={
+        "silver_breakout_points": 200,
+        "manual_exit_reentry_enabled": True,
+    })
+    strat.broker.on_position_closed = strat._handle_broker_position_closed
+    strat._sell_setup_close = 89900.0
+    strat._sell_setup_bar_at = _dt.datetime(2026, 8, 20, 20, 0)
+    strat._current_bucket = _dt.datetime(2026, 8, 20, 20, 15)
+    strat._minute_buffer = [{"open": 90120.0}]
+    strat._ema20 = 90500.0
+
+    strat._prev_ltp = 89710.0
+    strat._check_triggers(89690.0)
+    check("initial SELL opened", len(strat.broker.opens) == 1 and len(strat.broker.open_positions()) == 1)
+
+    open_position = strat.broker.open_positions()[0]
+    strat._sell_reentry_after_exit = {
+        "setup_bar_at": strat._sell_setup_bar_at,
+        "trigger_level": 89700.0,
+        "exit_reason": "SL",
+    }
+    strat._prev_ltp = 89695.0
+    strat.broker.close_trade(open_position, 89680.0, "MANUAL_EXIT")
+
+    check("manual close immediately re-opened a SELL on the same carried reference",
+          len(strat.broker.open_positions()) == 1 and len(strat.broker.opens) == 2 and strat.broker.opens[-1]["side"] == "SELL",
+          f"opens={strat.broker.opens} open_positions={strat.broker.open_positions()}")
+    check("same-reference SELL handoff is consumed after the re-entry",
+          strat._sell_reentry_after_exit is None,
+          f"sell_reentry={strat._sell_reentry_after_exit}")
 
 
 def test_algo3_mode_switch_keeps_reference_but_clears_previous_mode_fired_state():
@@ -3758,6 +3796,55 @@ def test_algo_settings_routes_pin_active_mode():
     check("reset response returns live defaults",
           reset["scan_enabled"] is False and reset["trading_enabled"] is False,
           f"reset={reset}")
+
+
+def test_algo_summary_reads_persisted_active_mode_toggles():
+    print("\n50c. Algo summary reads persisted active-mode scan/trading toggles")
+    import app.main as mainmod
+    import app.strategy_settings as strat_settings
+    from unittest.mock import patch
+
+    class DummyBroker:
+        def summary(self):
+            return {"cash": 12345, "realized_net_pnl": 0}
+
+    class DummyStrategy:
+        def __init__(self):
+            self.broker = DummyBroker()
+            self.settings = {"scan_enabled": True, "trading_enabled": True}
+
+    strategy = DummyStrategy()
+    get_calls = []
+
+    def fake_get_settings(algo_id, mode=None):
+        get_calls.append((algo_id, mode))
+        return {
+            "scan_enabled": False,
+            "trading_enabled": False,
+            "max_trades_per_day": 7,
+            "max_buy_trades": 3,
+            "max_sell_trades": 4,
+        }
+
+    with patch.object(mainmod, "get_runtime_trading_mode", return_value="paper"), \
+         patch.object(mainmod, "get_strategy_or_raise", return_value=strategy), \
+         patch.object(strat_settings, "get_settings", side_effect=fake_get_settings):
+        result = mainmod.algo_summary("algo3", None)
+
+    check("summary reads settings from active paper-mode row",
+          get_calls == [("algo3", "paper")],
+          f"get_calls={get_calls}")
+    check("summary returns persisted scan/trading flags, not stale in-memory ones",
+          result["scan_enabled"] is False and result["trading_enabled"] is False,
+          f"result={result}")
+    check("summary returns persisted limits from the active row",
+          result["max_trades_per_day"] == 7
+          and result["max_buy_trades"] == 3
+          and result["max_sell_trades"] == 4,
+          f"result={result}")
+    check("summary exposes the active trading mode",
+          result["trading_mode"] == "paper",
+          f"result={result}")
 
 
 def test_paper_broker_storage_key_isolates_deployments():
@@ -6243,7 +6330,8 @@ def main():
     test_algo3_reversal_on_contra_signal()
     test_algo3_no_reentry_same_side()
     test_algo3_unlimited_reentry_after_exit_same_setup()
-    test_algo3_manual_exit_clears_handoff_and_requires_fresh_trigger()
+    test_algo3_manual_exit_safe_mode_clears_handoff_and_requires_fresh_trigger()
+    test_algo3_manual_exit_reentry_mode_reopens_same_reference_immediately()
     test_algo3_mode_switch_keeps_reference_but_clears_previous_mode_fired_state()
     test_algo3_sell_target_reenters_when_reference_still_crossed()
     test_algo3_sell_stop_does_not_reenter_above_old_trigger()
@@ -6263,6 +6351,7 @@ def main():
     test_strategy_settings_storage_key_empty_preserves_legacy_algo_id()
     test_runtime_mode_setting_key_isolates_deployments()
     test_algo_settings_routes_pin_active_mode()
+    test_algo_summary_reads_persisted_active_mode_toggles()
     test_paper_broker_storage_key_isolates_deployments()
     test_charges_config_row_id_isolates_deployments()
     test_algo3_backtest_parity_with_live()

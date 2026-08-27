@@ -553,9 +553,12 @@ def fyers_callback(auth_code: str = None, code: str = None, state: str | None = 
 
 @app.get("/api/algo/{algo_id}/summary")
 def algo_summary(algo_id: str, _user=Depends(require_auth)):
+    from .strategy_settings import get_settings
+
     strategy = get_strategy_or_raise(algo_id)
     summary = strategy.broker.summary()
-    settings = getattr(strategy, "settings", None) or {}
+    active_mode = get_runtime_trading_mode()
+    settings = get_settings(algo_id, mode=active_mode)
     feed_status = getattr(strategy, "feed_status", None)
     if callable(feed_status):
         try:
@@ -569,6 +572,7 @@ def algo_summary(algo_id: str, _user=Depends(require_auth)):
         "max_sell_trades": settings.get("max_sell_trades", 5),
         "scan_enabled": bool(settings.get("scan_enabled", True)),
         "trading_enabled": bool(settings.get("trading_enabled", True)),
+        "trading_mode": active_mode,
     }
 
 
