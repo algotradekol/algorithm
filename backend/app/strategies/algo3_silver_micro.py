@@ -309,17 +309,19 @@ class Algo3SilverMicro(Strategy):
         exit_reason: str,
         exit_time: str | None = None,
     ) -> None:
-        """Manual closes should reset handoff state, then re-check live logic.
+        """Manual closes either stay flat or immediately re-check Silver logic.
 
-        Earlier fail-safe behavior could treat a manual flatten as if the
-        strategy itself had decided to reverse. For Silver we want the
-        opposite: a manual close clears any carried re-entry handoff, then
-        allows only a fresh normal trigger to re-open a trade.
+        Silver now exposes a safety toggle: when OFF, a manual flatten clears
+        any carried same-reference handoff and only a fresh later trigger may
+        re-open. When ON, the manual exit still re-runs trigger evaluation
+        immediately and may re-enter against the same valid carried reference.
         """
         if str(exit_reason or "").upper() not in {"MANUAL_EXIT", "MANUAL_EXTERNAL_EXIT"}:
             return
-        self._buy_reentry_after_exit = None
-        self._sell_reentry_after_exit = None
+        allow_manual_reentry = bool(self.settings.get("manual_exit_reentry_enabled", False))
+        if not allow_manual_reentry:
+            self._buy_reentry_after_exit = None
+            self._sell_reentry_after_exit = None
 
         symbol = str(position.get("symbol") or "").strip().upper()
         active_symbol = str(self.symbol or "").strip().upper()
