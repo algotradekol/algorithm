@@ -45,13 +45,13 @@ class Algo4OpeningRangeIndicators(Strategy):
         self._previous_close_loading = False
         self.refresh_market_data()
 
-    def reload_settings(self):
+    def reload_settings(self, mode: str | None = None):
         from ..strategy_settings import get_settings
         previous_schedule = (
             bool(self.settings.get("test_schedule_enabled")),
             self.scan_candle_time(),
         )
-        self.settings = get_settings(self.algo_id)
+        self.settings = get_settings(self.algo_id, mode=mode)
         self.broker.starting_capital = self.settings["starting_capital"]
         current_schedule = (
             bool(self.settings.get("test_schedule_enabled")),

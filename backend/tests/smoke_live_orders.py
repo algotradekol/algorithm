@@ -3673,6 +3673,93 @@ def test_runtime_mode_setting_key_isolates_deployments():
         importlib.reload(app.runtime_mode)
 
 
+def test_algo_settings_routes_pin_active_mode():
+    print("\n50b. Algo settings routes pin get/update/reset/reload to the active runtime mode")
+    import app.main as mainmod
+    import app.strategy_settings as strat_settings
+    from unittest.mock import patch
+
+    class DummyStrategy:
+        def __init__(self):
+            self.reload_modes = []
+
+        def reload_settings(self, mode: str | None = None):
+            self.reload_modes.append(mode)
+
+    strategy = DummyStrategy()
+    store = {"scan_enabled": False, "trading_enabled": False}
+    get_calls = []
+    update_calls = []
+    reset_calls = []
+
+    def fake_get_settings(algo_id, mode=None):
+        get_calls.append((algo_id, mode))
+        return {
+            "scan_enabled": store["scan_enabled"],
+            "trading_enabled": store["trading_enabled"],
+        }
+
+    def fake_update_settings(algo_id, settings, mode=None):
+        update_calls.append((algo_id, mode, dict(settings)))
+        if "scan_enabled" in settings:
+            store["scan_enabled"] = bool(settings["scan_enabled"])
+        if "trading_enabled" in settings:
+            store["trading_enabled"] = bool(settings["trading_enabled"])
+        return {
+            "scan_enabled": store["scan_enabled"],
+            "trading_enabled": store["trading_enabled"],
+        }
+
+    def fake_reset_settings(algo_id, mode=None):
+        reset_calls.append((algo_id, mode))
+        store["scan_enabled"] = False
+        store["trading_enabled"] = False
+        return {
+            "scan_enabled": False,
+            "trading_enabled": False,
+        }
+
+    with patch.object(mainmod, "get_runtime_trading_mode", return_value="live"), \
+         patch.object(mainmod, "get_strategy_or_raise", return_value=strategy), \
+         patch.dict(mainmod.STRATEGIES, {"algo3": strategy}, clear=False), \
+         patch.object(strat_settings, "get_settings", side_effect=fake_get_settings), \
+         patch.object(strat_settings, "update_settings", side_effect=fake_update_settings), \
+         patch.object(strat_settings, "reset_settings", side_effect=fake_reset_settings):
+        fetched = mainmod.get_algo_settings("algo3", None)
+        scan_saved = mainmod.set_algo_scan_enabled("algo3", {"enabled": True}, None)
+        trading_saved = mainmod.set_algo_trading_enabled("algo3", {"enabled": True}, None)
+        updated = mainmod.update_algo_settings("algo3", {"scan_enabled": True, "trading_enabled": False}, None)
+        reset = mainmod.reset_algo_settings("algo3", None)
+
+    check("settings GET reads active live-mode row",
+          get_calls[0] == ("algo3", "live"),
+          f"first get={get_calls[0] if get_calls else None}")
+    check("scan toggle writes live-mode row",
+          any(call[0] == "algo3" and call[1] == "live" and call[2].get("scan_enabled") is True for call in update_calls),
+          f"updates={update_calls}")
+    check("trading toggle writes live-mode row",
+          any(call[0] == "algo3" and call[1] == "live" and call[2].get("trading_enabled") is True for call in update_calls),
+          f"updates={update_calls}")
+    check("generic settings PUT writes live-mode row",
+          any(call[0] == "algo3" and call[1] == "live" and call[2].get("trading_enabled") is False for call in update_calls),
+          f"updates={update_calls}")
+    check("settings reset clears live-mode row",
+          reset_calls == [("algo3", "live")],
+          f"reset_calls={reset_calls}")
+    check("strategy reload stays pinned to live mode on every mutating route",
+          strategy.reload_modes == ["live", "live", "live", "live"],
+          f"reload_modes={strategy.reload_modes}")
+    check("route responses reflect persisted values before reset",
+          fetched["scan_enabled"] is False
+          and scan_saved["scan_enabled"] is True
+          and trading_saved["trading_enabled"] is True
+          and updated["trading_enabled"] is False,
+          f"fetched={fetched} scan={scan_saved} trading={trading_saved} updated={updated}")
+    check("reset response returns live defaults",
+          reset["scan_enabled"] is False and reset["trading_enabled"] is False,
+          f"reset={reset}")
+
+
 def test_paper_broker_storage_key_isolates_deployments():
     print("\n51. Broker storage key: paper/live state rows split by deployment suffix")
     import importlib, os
@@ -6175,6 +6262,7 @@ def main():
     test_strategy_settings_storage_key_isolates_deployments()
     test_strategy_settings_storage_key_empty_preserves_legacy_algo_id()
     test_runtime_mode_setting_key_isolates_deployments()
+    test_algo_settings_routes_pin_active_mode()
     test_paper_broker_storage_key_isolates_deployments()
     test_charges_config_row_id_isolates_deployments()
     test_algo3_backtest_parity_with_live()
