@@ -220,13 +220,13 @@ class Algo1OpeningRange(Strategy):
         # Load previous closes and LTPs in background to avoid blocking startup
         self.refresh_market_data()
 
-    def reload_settings(self):
+    def reload_settings(self, mode: str | None = None):
         from ..strategy_settings import get_settings
         previous_schedule = (
             bool(self.settings.get("test_schedule_enabled")),
             self.scan_candle_time(),
         )
-        self.settings = get_settings(self.algo_id)
+        self.settings = get_settings(self.algo_id, mode=mode)
         self.broker.starting_capital = self.settings["starting_capital"]
         # Rebuild shadow paper broker in case mode or parallel_paper_enabled changed.
         self._rebuild_shadow_paper_broker()

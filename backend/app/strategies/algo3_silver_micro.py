@@ -260,8 +260,8 @@ class Algo3SilverMicro(Strategy):
         self.refresh_market_data()
 
     # ── settings / lifecycle ─────────────────────────────────────────
-    def reload_settings(self):
-        self.settings = get_settings(self.algo_id)
+    def reload_settings(self, mode: str | None = None):
+        self.settings = get_settings(self.algo_id, mode=mode)
         self.broker.starting_capital = self.settings["starting_capital"]
         self.broker.on_position_closed = self._handle_broker_position_closed
         self._buy_reentry_after_exit = None

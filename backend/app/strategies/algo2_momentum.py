@@ -36,9 +36,9 @@ class Algo2Momentum(Strategy):
         self.settings = get_settings(self.algo_id)
         self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
 
-    def reload_settings(self):
+    def reload_settings(self, mode: str | None = None):
         from ..strategy_settings import get_settings
-        self.settings = get_settings(self.algo_id)
+        self.settings = get_settings(self.algo_id, mode=mode)
         self.broker.starting_capital = self.settings["starting_capital"]
 
     def evaluate_entries(self, get_ltp_fn):

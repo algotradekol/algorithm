@@ -794,19 +794,21 @@ def algo_setup_history(
 @app.get("/api/algo/{algo_id}/settings")
 def get_algo_settings(algo_id: str, _user=Depends(require_auth)):
     from .strategy_settings import get_settings
-    return get_settings(algo_id)
+    active_mode = get_runtime_trading_mode()
+    return get_settings(algo_id, mode=active_mode)
 
 
 @app.put("/api/algo/{algo_id}/settings")
 def update_algo_settings(algo_id: str, settings: dict, _user=Depends(require_auth)):
     from .strategy_settings import update_settings
+    active_mode = get_runtime_trading_mode()
     try:
-        result = update_settings(algo_id, settings)
+        result = update_settings(algo_id, settings, mode=active_mode)
     except (TypeError, ValueError) as exc:
         raise HTTPException(status_code=400, detail=str(exc))
     strategy = STRATEGIES.get(algo_id)
     if strategy and hasattr(strategy, "reload_settings"):
-        strategy.reload_settings()
+        strategy.reload_settings(mode=active_mode)
     return {"status": "updated", "algo_id": algo_id, **result}
 
 
@@ -825,10 +827,11 @@ def update_available_cash(algo_id: str, payload: dict, _user=Depends(require_aut
 @app.post("/api/algo/{algo_id}/settings/reset")
 def reset_algo_settings(algo_id: str, _user=Depends(require_auth)):
     from .strategy_settings import reset_settings
-    settings = reset_settings(algo_id)
+    active_mode = get_runtime_trading_mode()
+    settings = reset_settings(algo_id, mode=active_mode)
     strategy = STRATEGIES.get(algo_id)
     if strategy and hasattr(strategy, "reload_settings"):
-        strategy.reload_settings()
+        strategy.reload_settings(mode=active_mode)
     return settings
 
 
@@ -841,15 +844,15 @@ def set_algo_scan_enabled(algo_id: str, payload: dict, _user=Depends(require_aut
     strategy = get_strategy_or_raise(algo_id)
     active_mode = get_runtime_trading_mode()
     enabled = bool(payload.get("enabled", True))
-    current = get_settings(algo_id)
+    current = get_settings(algo_id, mode=active_mode)
     current["scan_enabled"] = enabled
     # update_settings returns None; the value we just set is what got saved
     # (modulo Supabase-side column filtering, which strategy_settings itself
     # handles). Read back via get_settings to be sure the DB round-trip agrees.
-    update_settings(algo_id, current)
-    saved = get_settings(algo_id)
+    update_settings(algo_id, current, mode=active_mode)
+    saved = get_settings(algo_id, mode=active_mode)
     if hasattr(strategy, "reload_settings"):
-        strategy.reload_settings()
+        strategy.reload_settings(mode=active_mode)
     audit_log("strategy", "scan_enabled toggled", algo_id=algo_id, enabled=enabled, trading_mode=active_mode)
     return {
         "algo_id": algo_id,
@@ -869,12 +872,12 @@ def set_algo_trading_enabled(algo_id: str, payload: dict, _user=Depends(require_
     strategy = get_strategy_or_raise(algo_id)
     active_mode = get_runtime_trading_mode()
     enabled = bool(payload.get("enabled", True))
-    current = get_settings(algo_id)
+    current = get_settings(algo_id, mode=active_mode)
     current["trading_enabled"] = enabled
-    update_settings(algo_id, current)
-    saved = get_settings(algo_id)
+    update_settings(algo_id, current, mode=active_mode)
+    saved = get_settings(algo_id, mode=active_mode)
     if hasattr(strategy, "reload_settings"):
-        strategy.reload_settings()
+        strategy.reload_settings(mode=active_mode)
     audit_log("strategy", "trading_enabled toggled", algo_id=algo_id, enabled=enabled, trading_mode=active_mode)
     return {
         "algo_id": algo_id,
