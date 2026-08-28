@@ -386,14 +386,32 @@ class LiveBroker(PaperBroker):
                 f"no market exit sent; cancelling residual protective orders"
             )
             snapshot = position.get("signal_snapshot") or {}
-            for order_id_key in ("fyers_sl_order_id", "fyers_target_order_id"):
-                oid = snapshot.get(order_id_key)
+            protective_ids = [
+                snapshot.get("fyers_sl_order_id"),
+                snapshot.get("fyers_target_order_id"),
+            ]
+            for oid in protective_ids:
                 if oid:
                     self._cancel_fyers_order(
                         oid,
                         reason=f"close_trade:already_flat:{exit_reason}",
                     )
-            super().close_trade(position, exit_price, exit_reason)
+            # Use the actual Fyers fill (price + time) if we can find it —
+            # otherwise the exit row shows the reconcile-loop moment, not
+            # when the SL/Target actually fired.
+            actual_price, actual_time = self._resolve_closed_fill_details(
+                position=position,
+                exit_side=exit_side,
+                qty=qty,
+                fallback_price=exit_price,
+                candidate_order_ids=protective_ids,
+            )
+            super().close_trade(
+                position,
+                actual_price,
+                exit_reason,
+                exit_time=self._safe_exit_time(position, actual_time),
+            )
             return
 
         # Cancel any pending protective orders BEFORE placing the manual
@@ -412,7 +430,22 @@ class LiveBroker(PaperBroker):
                     f"[live_broker] SKIP market exit: SL {sl_order_id} already "
                     "filled at Fyers"
                 )
-                super().close_trade(position, exit_price, exit_reason)
+                # -52 == SL already filled at Fyers. Look up its actual fill
+                # (price + time) from tradebook so the closed-trade row
+                # reflects when it really fired, not when we noticed.
+                actual_price, actual_time = self._resolve_closed_fill_details(
+                    position=position,
+                    exit_side=exit_side,
+                    qty=qty,
+                    fallback_price=exit_price,
+                    candidate_order_ids=[sl_order_id],
+                )
+                super().close_trade(
+                    position,
+                    actual_price,
+                    exit_reason,
+                    exit_time=self._safe_exit_time(position, actual_time),
+                )
                 return
 
         target_order_id = snapshot.get("fyers_target_order_id")
@@ -903,22 +936,36 @@ class LiveBroker(PaperBroker):
                 if oid:
                     self._cancel_fyers_order(oid, reason="manual_external_exit_cleanup")
 
-            # Use current LTP as the best available exit price. This won't
-            # match Fyers' actual manual-exit fill exactly but it's close
-            # enough for P&L bookkeeping — a wrong closed-position record
-            # is still much better than an orphaned open that triggers a
-            # reverse trade later.
-            try:
-                ltp_map = get_live_ltp_batch([symbol])
-                exit_price = float(ltp_map.get(symbol) or position.get("entry_price") or 0)
-            except Exception:
-                exit_price = float(position.get("entry_price") or 0)
+            # Prefer the actual Fyers fill (price + time) from tradebook so
+            # the closed-trade row reflects when the exit really happened.
+            # Fall back to current LTP + reconcile-now if the tradebook row
+            # isn't findable.
+            entry_side = str(position.get("side") or "").upper()
+            exit_side = "SELL" if entry_side == "BUY" else "BUY"
+            qty_val = int(position.get("qty") or 0)
+            actual_price, actual_time = self._resolve_closed_fill_details(
+                position=position,
+                exit_side=exit_side,
+                qty=qty_val,
+                fallback_price=None,
+                candidate_order_ids=[
+                    snapshot.get("fyers_sl_order_id"),
+                    snapshot.get("fyers_target_order_id"),
+                ],
+            )
+            if actual_price is None:
+                try:
+                    ltp_map = get_live_ltp_batch([symbol])
+                    actual_price = float(ltp_map.get(symbol) or position.get("entry_price") or 0)
+                except Exception:
+                    actual_price = float(position.get("entry_price") or 0)
 
             try:
                 super().close_trade(
                     position,
-                    exit_price,
+                    actual_price,
                     exit_reason="MANUAL_EXTERNAL_EXIT",
+                    exit_time=self._safe_exit_time(position, actual_time),
                 )
                 summary["externally_closed"] += 1
                 # Successful close — drop the confirmation counter so we start
@@ -1627,6 +1674,54 @@ class LiveBroker(PaperBroker):
             self._extract_fill_price(latest_match, fallback_price),
             self._extract_fill_time(latest_match),
         )
+
+    def _resolve_closed_fill_details(
+        self,
+        *,
+        position: dict,
+        exit_side: str,
+        qty: int,
+        fallback_price: float | None,
+        candidate_order_ids: list,
+    ) -> tuple[float | None, str | None]:
+        """Look up the actual Fyers fill for a position that was already
+        closed at the broker before we tried to exit.
+
+        Used by the three "we didn't fire the market exit" paths:
+        pre-flight flat guard, `-52 not pending` shortcut, and external-close
+        reconcile. Without this, `close_trade` stamps exit_time as the
+        moment we detected the closure — which can be seconds to minutes
+        after the SL/Target actually fired. That drift shows up on the
+        Closed Trades panel as wrong exit times.
+
+        Returns (price, iso_time) — either can be None if the tradebook
+        doesn't surface a matching fill; the caller must handle fallbacks.
+        """
+        try:
+            fyers = get_fyers_model("live")
+        except Exception as exc:
+            print(f"[live_broker] tradebook fetch failed for fill lookup: {exc}")
+            return fallback_price, None
+        symbol = str(position.get("symbol") or "").strip()
+        if not symbol:
+            return fallback_price, None
+        # Try each known protective order id first — Fyers matches by
+        # order_id are the strongest signal. Fall back to symbol/side/qty.
+        matched = None
+        for oid in candidate_order_ids or []:
+            oid_str = str(oid or "").strip()
+            if not oid_str:
+                continue
+            matched = self._find_latest_fill(fyers, symbol, exit_side, qty, oid_str)
+            if matched:
+                break
+        if matched is None:
+            matched = self._find_latest_fill(fyers, symbol, exit_side, qty, None)
+        if matched is None:
+            return fallback_price, None
+        price = self._extract_fill_price(matched, fallback_price if fallback_price is not None else 0.0)
+        iso_time = self._extract_fill_time(matched, allow_order_time=False)
+        return price, iso_time
 
     def _find_latest_fill(
         self,

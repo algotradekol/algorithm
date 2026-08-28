@@ -727,6 +727,80 @@ def test_close_trade_skips_market_when_sl_cancel_reports_already_filled():
         pb.PaperBroker.close_trade = orig_close
 
 
+def test_close_trade_after_neg52_uses_fyers_fill_time_not_now():
+    """When SL cancel returns -52 (already filled), the closed-trade row
+    must show the Fyers-side fill time, not the reconcile-detection time.
+
+    Regressed once when the -52 shortcut skipped tradebook lookup and
+    stamped exit_time as now(); users complained SL exit times were off
+    by seconds to minutes depending on how long the WS had been down.
+    """
+    print("\n8e3. Design B close_trade — -52 abort still records Fyers-side fill time")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+
+    broker._cancel_fyers_order = lambda order_id, reason="": (
+        {"code": -52, "message": "Not a pending order", "s": "error"}
+        if order_id == "SL-TIME"
+        else {"s": "ok", "id": order_id}
+    )
+
+    import app.fyers_client as fc
+    fc.get_broker_positions = lambda mode: {
+        "available": True, "cached": False,
+        "positions": [{"symbol": "MCX:SILVERMIC26AUGFUT", "net_qty": 1}],
+    }
+
+    fyers_fill_iso = "2026-08-27T07:30:57+05:30"
+    fake_tradebook_row = {
+        "symbol": "MCX:SILVERMIC26AUGFUT",
+        "side": "SELL",
+        "qty": 1,
+        "orderNumber": "SL-TIME",
+        "id": "SL-TIME",
+        "tradedPrice": 248779.0,
+        "tradeTime": fyers_fill_iso,
+    }
+
+    class _FakeFyers:
+        def tradebook(self):
+            return {"s": "ok", "tradeBook": [fake_tradebook_row]}
+        def tradehistory(self, _):
+            return {"s": "ok", "tradeHistory": []}
+
+    import app.live_broker as live_broker_module
+    orig_get_fyers = live_broker_module.get_fyers_model
+    live_broker_module.get_fyers_model = lambda *_args, **_kwargs: _FakeFyers()
+
+    persisted = []
+    import app.paper_broker as pb
+    orig_close = pb.PaperBroker.close_trade
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: (
+        persisted.append((pos["symbol"], exit_reason, price, exit_time))
+    )
+    try:
+        position = {
+            "symbol": "MCX:SILVERMIC26AUGFUT", "side": "BUY", "qty": 1,
+            "entry_time": "2026-08-27T01:30:00+00:00",
+            "entry_price": 246140.0, "sl_price": 245690.0, "target_price": 251140.0,
+            "signal_snapshot": {"fyers_sl_order_id": "SL-TIME", "fyers_target_order_id": "TP-TIME"},
+        }
+        broker.close_trade(position, 245813.0, "SL")
+        check("close_trade was recorded", len(persisted) == 1, f"persisted={persisted}")
+        recorded_exit_time = persisted[0][3]
+        # Fyers timestamp was 07:30:57 IST = 02:00:57 UTC. Whatever the
+        # tradebook said, exit_time must reflect Fyers-side fill, not now().
+        check("exit_time comes from tradebook, not now()",
+              recorded_exit_time is not None and "2026-08-27T02:00:57" in recorded_exit_time,
+              f"recorded_exit_time={recorded_exit_time}")
+        check("exit_price comes from tradebook fill",
+              persisted[0][2] == 248779.0,
+              f"persisted={persisted}")
+    finally:
+        pb.PaperBroker.close_trade = orig_close
+        live_broker_module.get_fyers_model = orig_get_fyers
+
+
 def test_bootstrap_fyers_app_position_and_land_in_closed_trades():
     """A user opens a position directly in the FYERS app. Our reconcile
     should bootstrap a DB row so that when they later flatten it in FYERS
@@ -6484,6 +6558,7 @@ def main():
     test_external_close_grace()
     test_close_trade_skips_market_when_fyers_already_flat()
     test_close_trade_skips_market_when_sl_cancel_reports_already_filled()
+    test_close_trade_after_neg52_uses_fyers_fill_time_not_now()
     test_bootstrap_fyers_app_position_and_land_in_closed_trades()
     test_close_trade_still_sends_market_when_fyers_still_holds()
     test_close_trade_falls_back_to_market_when_fyers_unavailable()
