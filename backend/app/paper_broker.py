@@ -10,6 +10,7 @@ import datetime
 
 from .charges import calculate_charges, get_charges_config
 from .storage_namespace import current_storage_values, namespaced_value
+from .timezone import IST
 from .supabase_client import run_with_supabase
 from .trailing_stop import (
     SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN,
@@ -211,7 +212,7 @@ class PaperBroker:
             # Persist every new trade time as an offset-aware UTC timestamp.
             # The UI renders this in IST, avoiding server/browser timezone
             # drift and impossible entry/exit ordering.
-            "entry_time": entry_time or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "entry_time": entry_time or datetime.datetime.now(IST).isoformat(),
         }
         try:
             run_with_supabase(
@@ -345,7 +346,7 @@ class PaperBroker:
         current_snapshot = dict(position.get("signal_snapshot") or {})
         trailing_meta = dict(current_snapshot.get("trailing") or {})
         trailing_events = list(trailing_meta.get("events") or [])
-        now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        now_iso = datetime.datetime.now(IST).isoformat()
 
         if active and not trailing_meta.get("first_activated_at"):
             trailing_meta["first_activated_at"] = now_iso
@@ -408,7 +409,7 @@ class PaperBroker:
         updates = {"highest_price": highest, "lowest_price": lowest}
 
         if reached_target and not already_armed:
-            now_iso = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            now_iso = datetime.datetime.now(IST).isoformat()
             updates.update({
                 "sl_price": entry,
                 "trailing_sl_active": True,
@@ -534,7 +535,7 @@ class PaperBroker:
             "entry_price": entry_price,
             "exit_price": exit_price,
             "entry_time": position["entry_time"],
-            "exit_time": exit_time or datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "exit_time": exit_time or datetime.datetime.now(IST).isoformat(),
             "entry_trigger": position.get("entry_trigger"),
             "signal_snapshot": position.get("signal_snapshot"),
             "exit_reason": exit_reason,
