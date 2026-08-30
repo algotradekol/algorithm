@@ -788,10 +788,15 @@ def test_close_trade_after_neg52_uses_fyers_fill_time_not_now():
         broker.close_trade(position, 245813.0, "SL")
         check("close_trade was recorded", len(persisted) == 1, f"persisted={persisted}")
         recorded_exit_time = persisted[0][3]
-        # Fyers timestamp was 07:30:57 IST = 02:00:57 UTC. Whatever the
-        # tradebook said, exit_time must reflect Fyers-side fill, not now().
+        # Fyers reported the fill at 07:30:57 IST. Whatever the tradebook
+        # said, exit_time must reflect the Fyers-side fill, not now(). We
+        # persist IST-tagged (+05:30) so the wall-clock reading is correct
+        # in the DB row itself.
         check("exit_time comes from tradebook, not now()",
-              recorded_exit_time is not None and "2026-08-27T02:00:57" in recorded_exit_time,
+              recorded_exit_time is not None and "2026-08-27T07:30:57" in recorded_exit_time,
+              f"recorded_exit_time={recorded_exit_time}")
+        check("exit_time is IST-tagged (+05:30)",
+              recorded_exit_time is not None and recorded_exit_time.endswith("+05:30"),
               f"recorded_exit_time={recorded_exit_time}")
         check("exit_price comes from tradebook fill",
               persisted[0][2] == 248779.0,

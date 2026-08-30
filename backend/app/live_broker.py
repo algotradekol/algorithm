@@ -1851,10 +1851,14 @@ class LiveBroker(PaperBroker):
         )
 
     def _extract_fill_time(self, row: dict | None, *, allow_order_time: bool = True) -> str:
+        # Return timestamps in IST — the app is Indian-markets-only and
+        # trades display clocks in IST. Storing UTC then formatting on
+        # the frontend has bitten us in the past; keep the wall-clock
+        # reading correct in the DB row itself.
         parsed = self._parse_fill_time(row, allow_order_time=allow_order_time)
         if parsed:
-            return parsed.astimezone(datetime.timezone.utc).isoformat()
-        return datetime.datetime.now(datetime.timezone.utc).isoformat()
+            return parsed.astimezone(IST).isoformat()
+        return datetime.datetime.now(IST).isoformat()
 
     @staticmethod
     def _is_trailing_stop(position: dict) -> bool:
@@ -1924,7 +1928,7 @@ class LiveBroker(PaperBroker):
 
     def _safe_entry_time(self, candidate: str | None, fallback: str | None) -> str:
         """Use a matched broker fill time, otherwise retain the strategy event."""
-        return candidate or fallback or datetime.datetime.now(datetime.timezone.utc).isoformat()
+        return candidate or fallback or datetime.datetime.now(IST).isoformat()
 
     def _safe_exit_time(self, position: dict, candidate: str | None) -> str:
         """Never persist an exit before the recorded entry.
@@ -1932,8 +1936,9 @@ class LiveBroker(PaperBroker):
         A broker orderbook can expose its creation time instead of execution
         time. If that value is stale, using the reconciliation timestamp is
         truthful enough for the audit row and avoids impossible intervals.
+        Output is IST-tagged for consistency with the paper broker.
         """
-        now = datetime.datetime.now(datetime.timezone.utc)
+        now = datetime.datetime.now(IST)
         exit_at = self._coerce_datetime(candidate) if candidate else now
         entry_at = self._coerce_datetime(position.get("entry_time"))
         if entry_at and exit_at <= entry_at:
@@ -1943,4 +1948,4 @@ class LiveBroker(PaperBroker):
                 f"candidate_exit={exit_at.isoformat()}"
             )
             exit_at = now
-        return exit_at.astimezone(datetime.timezone.utc).isoformat()
+        return exit_at.astimezone(IST).isoformat()
