@@ -253,15 +253,17 @@ def fyers_refresh_token(_user=Depends(require_auth)):
     return {"status": "ok", "message": "Fyers access token refreshed from refresh token."}
 
 
-@app.post("/api/algo/algo3/refresh-history")
-def refresh_silver_history(_user=Depends(require_auth)):
+@app.post("/api/algo/{algo_id}/refresh-history")
+def refresh_silver_history(algo_id: str, _user=Depends(require_auth)):
     """Request only the Silver history warm-up.
 
     This intentionally does not refresh tokens or restart the live feed. It
     gives the dashboard a safe recovery action when a transient FYERS history
     throttle left the 15-minute EMA/reference state empty after a deploy.
     """
-    strategy = get_strategy_or_raise("algo3")
+    if algo_id not in {"algo3", "algo5"}:
+        raise HTTPException(status_code=404, detail="History refresh is only available for Silver strategies.")
+    strategy = get_strategy_or_raise(algo_id)
     request_refresh = getattr(strategy, "request_manual_history_refresh", None)
     if not callable(request_refresh):
         raise HTTPException(status_code=404, detail="Silver history refresh is not available for this strategy.")
@@ -269,7 +271,7 @@ def refresh_silver_history(_user=Depends(require_auth)):
     started, message = request_refresh()
     feed_status = strategy.feed_status()
     audit_log(
-        "algo3",
+        algo_id,
         "manual Silver history refresh requested" if started else "manual Silver history refresh suppressed",
         symbol=feed_status.get("symbol"),
         started=started,
@@ -709,7 +711,7 @@ def manual_trade(algo_id: str, payload: dict, _user=Depends(require_auth)):
             raise HTTPException(status_code=409, detail="No live price is available for this symbol yet.")
 
         settings = getattr(strategy, "settings", {}) or {}
-        if algo_id == "algo3":
+        if algo_id in {"algo3", "algo5"}:
             # Silver Micro trades in whole lots. Do not reject using
             # capital//price math — MCX futures are margin-based, not
             # cash-equity "can I afford one share" based.

@@ -29,6 +29,9 @@ import {
 // tab name. Keep in sync with backend's _STRATEGY_TAB_MAP in engine.py.
 const TAB_ALIASES: Record<string, string> = {
   silver: 'silvermicro',
+  'silvermicro2.0': 'silvermicro20',
+  silver2: 'silvermicro20',
+  'silver-2': 'silvermicro20',
 };
 function normalizeTabKey(raw: string): string {
   const cleaned = raw.trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -429,6 +432,19 @@ function DashboardContent() {
                   algoId="algo3"
                   displayName="Silver Micro - 15m reference BUY / red-chain SELL"
                   description="Uses completed 15-minute candles. BUY carries the latest green close above EMA20 and enters at reference + n, including a carried prior-day gap at 09:00. SELL carries the latest red close below EMA20 through green candles and enters at reference - n during a later red move. Reversal, points-based SL/target, and trailing protection follow the active settings."
+                  tradingMode={tradingMode}
+                  fyersConnected={fyersConnectedForMode}
+                  onWebSocketStatus={setWsStatus}
+                />
+              </div>
+            )}
+            {!isTabHidden('Silver Micro 2.0') && (
+              <div className={tab === 'Silver Micro 2.0' ? '' : 'hidden'}>
+                <AlgoTab
+                  key={`algo5-${tradingMode}`}
+                  algoId="algo5"
+                  displayName="Silver Micro 2.0 - 15m reference BUY / red-chain SELL"
+                  description="Exact duplicate of Silver Micro on its own isolated strategy id, settings namespace, and setup history so you can test changes safely."
                   tradingMode={tradingMode}
                   fyersConnected={fyersConnectedForMode}
                   onWebSocketStatus={setWsStatus}

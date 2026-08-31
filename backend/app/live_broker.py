@@ -1607,7 +1607,7 @@ class LiveBroker(PaperBroker):
         # Silver Micro breakout entries must not remain pending while price
         # crosses a trigger. Enforce MARKET even if an older saved setting
         # still contains LIMIT from before Silver became market-only.
-        if self.algo_id == "algo3":
+        if self.algo_id in {"algo3", "algo5"}:
             return "MARKET", 0.0
         try:
             from .strategy_settings import get_settings

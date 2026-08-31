@@ -7,6 +7,7 @@ import { useWebSocket, WebSocketState } from '../lib/useWebSocket';
 import { PAGE_SIZE, PaginationControls } from './PaginationControls';
 
 const FALLBACK_POLL_MS = 5_000;
+const SILVER_ALGO_IDS = new Set(['algo3', 'algo5']);
 
 // ─── Debug logger (always on — remove later if too noisy) ──────────────────
 const _t = () => new Date().toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' });
@@ -87,7 +88,7 @@ export default function AlgoTab({
     // Polling logs removed - see backend debug report instead
     const [summaryResult, positionsResult, tradesResult, scanResult, feedResult] = await Promise.allSettled([
       api.summary(algoId), api.positions(algoId), api.trades(algoId), api.scanResults(algoId),
-      algoId === 'algo3' ? api.feedStatus(algoId) : Promise.resolve(null),
+      SILVER_ALGO_IDS.has(algoId) ? api.feedStatus(algoId) : Promise.resolve(null),
     ]);
     if (requestId !== dataRequestId.current) {
       log(`⚡ stale req#${requestId} discarded`);
@@ -417,7 +418,7 @@ export default function AlgoTab({
           </button>
         </div>
         <SettingsDrawer open={settingsOpen} algoId={algoId} tradingMode={tradingMode} onClose={() => setSettingsOpen(false)} />
-        {algoId !== 'algo3' && (
+        {!SILVER_ALGO_IDS.has(algoId) && (
           <div className="mt-4">
             <ScanResultsPanel
               algoId={algoId}
@@ -441,7 +442,7 @@ export default function AlgoTab({
   const walletSummary = walletStatus?.summary || {};
   const liveWalletBalance = optionalNumber(walletSummary.wallet_balance);
   const showLiveWallet = tradingMode === 'live';
-  const isSilverAlgo = algoId === 'algo3';
+  const isSilverAlgo = SILVER_ALGO_IDS.has(algoId);
   const openUnrealizedPnl = positions.reduce((total, position) => {
     const ltp = Number(position.ltp ?? position.last_ltp ?? position._last_ltp ?? position.entry_price);
     const entry = Number(position.entry_price || 0);
@@ -542,7 +543,7 @@ export default function AlgoTab({
           </p>
         ));
       })()}
-      {isSilverAlgo && <SilverFeedPanel status={feedStatus} />}
+      {isSilverAlgo && <SilverFeedPanel algoId={algoId} status={feedStatus} />}
 
       {isSilverAlgo ? (
         <div className="grid grid-cols-2 gap-1.5 sm:gap-2 lg:grid-cols-4">
@@ -617,7 +618,7 @@ export default function AlgoTab({
         />
       )}
 
-      {algoId !== 'algo3' && (
+      {!SILVER_ALGO_IDS.has(algoId) && (
         <ScanResultsPanel algoId={algoId} results={scanResults} openPositions={positions} onRefresh={loadData} />
       )}
 
@@ -637,7 +638,7 @@ export default function AlgoTab({
   );
 }
 
-function SilverFeedPanel({ status }: { status: any }) {
+function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
   const [historyOpenSide, setHistoryOpenSide] = useState<'BUY' | 'SELL' | null>(null);
   const [historyRows, setHistoryRows] = useState<any[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
@@ -676,7 +677,7 @@ function SilverFeedPanel({ status }: { status: any }) {
     setHistoryError('');
     setHistorySelectedDate(null);
     try {
-      const result = await api.setupHistory('algo3', side, 30, 100, {
+      const result = await api.setupHistory(algoId, side, 30, 100, {
         currentSessionOnly: true,
         liveOnly: true,
       });
@@ -761,7 +762,7 @@ function SilverFeedPanel({ status }: { status: any }) {
               <div>
                 <div className="text-sm font-semibold text-gray-100">{historyOpenSide} setup history</div>
                 <div className="text-xs text-gray-500">
-                  Saved qualifying 15m candles for Silver Micro
+                  Saved qualifying 15m candles for {algoId === 'algo5' ? 'Silver Micro 2.0' : 'Silver Micro'}
                 </div>
               </div>
               <button onClick={() => setHistoryOpenSide(null)} className="text-sm text-gray-500 hover:text-gray-100">X</button>

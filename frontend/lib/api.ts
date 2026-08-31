@@ -195,7 +195,7 @@ export const api = {
   updateTradingMode: (mode: 'paper' | 'live') =>
     authedFetch('/api/runtime/trading-mode', { method: 'PUT', body: JSON.stringify({ trading_mode: mode }) }),
   fyersRefreshToken: () => authedFetch('/api/fyers/refresh-token', { method: 'POST' }),
-  refreshSilverHistory: () => authedFetch('/api/algo/algo3/refresh-history', { method: 'POST' }),
+  refreshSilverHistory: (algoId: string) => authedFetch(`/api/algo/${encodeURIComponent(algoId)}/refresh-history`, { method: 'POST' }),
   fyersDisconnect: (force = false) =>
     authedFetch(`/api/fyers/disconnect${force ? '?force=true' : ''}`, { method: 'POST' }),
   fyersTokenStatus: () => authedFetch('/api/fyers/token-status'),

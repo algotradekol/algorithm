@@ -67,6 +67,20 @@ def _is_qualifying_setup_row(row: dict) -> bool:
         ema20 = float(row["ema20"])
     except (KeyError, TypeError, ValueError):
         return False
+    source = str(row.get("source") or "")
+    is_algo5 = str(row.get("algo_id") or "").split("__", 1)[0] == "algo5"
+    if is_algo5 and source.startswith("live:fallback_ema_wick:"):
+        try:
+            wick_distance = float(source.rsplit(":", 1)[1])
+            high = float(row["candle_high"])
+            low = float(row["candle_low"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if side == "BUY":
+            return open_price > close and close > ema20 and low <= ema20 + wick_distance
+        if side == "SELL":
+            return open_price < close and close < ema20 and high >= ema20 - wick_distance
+        return False
     if side == "BUY":
         return close > open_price and close > ema20
     if side == "SELL":
