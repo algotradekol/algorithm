@@ -1052,12 +1052,15 @@ class LiveBroker(PaperBroker):
                 sibling_id = snapshot.get(sibling_key)
                 if sibling_id:
                     self._cancel_fyers_order(sibling_id, reason=f"{exit_reason}_ws_push_sibling_cancel")
+                normalized_exit_time = self._safe_exit_time(
+                    matched_position, event.get("traded_at")
+                )
                 try:
                     super().close_trade(
                         matched_position,
                         fill_price,
                         exit_reason=exit_reason,
-                        exit_time=event.get("traded_at"),
+                        exit_time=normalized_exit_time,
                     )
                 except TypeError:
                     super().close_trade(matched_position, fill_price, exit_reason)
@@ -1919,7 +1922,12 @@ class LiveBroker(PaperBroker):
             return parsed.astimezone(datetime.timezone.utc)
         except ValueError:
             pass
-        for fmt in ("%d-%m-%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
+        for fmt in (
+            "%d-%m-%Y %H:%M:%S",
+            "%d-%b-%Y %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%d/%m/%Y %H:%M:%S",
+        ):
             try:
                 return datetime.datetime.strptime(text, fmt).replace(tzinfo=IST).astimezone(datetime.timezone.utc)
             except ValueError:
@@ -1940,6 +1948,8 @@ class LiveBroker(PaperBroker):
         """
         now = datetime.datetime.now(IST)
         exit_at = self._coerce_datetime(candidate) if candidate else now
+        if exit_at is None:
+            exit_at = now
         entry_at = self._coerce_datetime(position.get("entry_time"))
         if entry_at and exit_at <= entry_at:
             print(

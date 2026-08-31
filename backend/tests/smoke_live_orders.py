@@ -997,6 +997,51 @@ def test_ws_order_fill_closes_position_immediately():
         pb.PaperBroker.close_trade = orig_close
 
 
+def test_ws_order_fill_normalizes_fyers_naive_ist_string():
+    """Regression: Fyers WS pushes `traded_at` as a NAIVE IST wall-clock
+    string like "31-Aug-2026 11:51:34" (no offset). Previously we passed
+    it raw into close_trade; Postgres timestamptz then stamped +00,
+    frontend re-shifted +5:30, and users saw exit times 5.5h in the
+    future. Fix: normalize through _safe_exit_time so the value goes
+    to the DB IST-tagged (+05:30)."""
+    print("\n8i2. Order-WS push — Fyers naive IST `traded_at` is normalized to IST-tagged")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+    position = {
+        "symbol": "MCX:SILVERMIC26AUGFUT", "side": "BUY", "qty": 1,
+        "entry_time": "2026-08-31T11:34:00+05:30",
+        "entry_price": 246140.0, "sl_price": 245690.0, "target_price": 251140.0,
+        "signal_snapshot": {"fyers_sl_order_id": "SL-NAIVE", "fyers_target_order_id": "TP-NAIVE"},
+    }
+    broker.open_positions = lambda: [position]
+    closed = []
+    import app.paper_broker as pb
+    orig_close = pb.PaperBroker.close_trade
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: (
+        closed.append((exit_reason, price, exit_time))
+    )
+    try:
+        event = {
+            "kind": "order", "symbol": "MCX:SILVERMIC26AUGFUT",
+            "order_id": "SL-NAIVE", "status": 2, "side": "SELL",
+            "traded_price": 245813.0, "traded_qty": 1,
+            "traded_at": "31-Aug-2026 11:51:34",  # naive IST from Fyers
+        }
+        result = broker.handle_order_event(event)
+        check("SL fill event closed the position",
+              result.get("action") == "closed" and result.get("exit_reason") == "SL_FYERS",
+              f"result={result}")
+        exit_time = closed[0][2] if closed else None
+        check("exit_time is IST-tagged (+05:30), not naive",
+              exit_time is not None and exit_time.endswith("+05:30"),
+              f"exit_time={exit_time}")
+        check("exit_time preserves the Fyers wall-clock reading (11:51:34)",
+              exit_time is not None and "T11:51:34" in exit_time,
+              f"exit_time={exit_time}")
+    finally:
+        pb.PaperBroker.close_trade = orig_close
+
+
 def test_ws_position_flat_force_syncs_stale_db():
     print("\n8j. Order-WS push — position net_qty=0 force-syncs stale DB row (2026-08-26 stuck-entry regression)")
     rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
@@ -6568,6 +6613,7 @@ def main():
     test_close_trade_still_sends_market_when_fyers_still_holds()
     test_close_trade_falls_back_to_market_when_fyers_unavailable()
     test_ws_order_fill_closes_position_immediately()
+    test_ws_order_fill_normalizes_fyers_naive_ist_string()
     test_ws_position_flat_force_syncs_stale_db()
     test_ws_manual_external_entry_logged_not_persisted()
     test_ws_cancelled_protective_order_clears_snapshot()
