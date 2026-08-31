@@ -663,6 +663,9 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
   const n = status?.n_points ?? 150;
   const buyTrigger = buySetupClose != null ? Number(buySetupClose) + Number(n) : null;
   const sellTrigger = sellSetupClose != null ? Number(sellSetupClose) - Number(n) : null;
+  const isSilverMicro2 = algoId === 'algo5';
+  const referenceSlots = status?.reference_slots || {};
+  const wickDistance = status?.ema_wick_distance_points ?? 300;
   const historyGroups = useMemo(() => buildSetupHistoryGroups(historyRows), [historyRows]);
   const activeHistoryGroup = useMemo(() => {
     if (!historyGroups.length) return null;
@@ -712,6 +715,43 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
         <FeedStat label="15m bars stored" value={status?.bars_15m ?? 0} />
         <FeedStat label="EMA20" value={formatNumber(status?.ema20)} />
       </div>
+      {isSilverMicro2 ? (
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <SilverReferenceCard
+            title="BUY current reference"
+            tone="buy"
+            rule="Green 15m: close > open and close > EMA20"
+            reference={referenceSlots.buy_current}
+            n={n}
+          />
+          <SilverReferenceCard
+            title="BUY EMA-wick fallback"
+            tone="buy"
+            rule={`Red 15m: close > EMA20 and low <= EMA20 + ${wickDistance}`}
+            reference={referenceSlots.buy_fallback_ema_wick}
+            n={n}
+          />
+          <SilverReferenceCard
+            title="SELL current reference"
+            tone="sell"
+            rule="Red 15m: close < open and close < EMA20"
+            reference={referenceSlots.sell_current}
+            n={n}
+          />
+          <SilverReferenceCard
+            title="SELL EMA-wick fallback"
+            tone="sell"
+            rule={`Green 15m: close < EMA20 and high >= EMA20 - ${wickDistance}`}
+            reference={referenceSlots.sell_fallback_ema_wick}
+            n={n}
+          />
+          <div className="sm:col-span-2 xl:col-span-4 flex flex-wrap gap-2 text-[10px] text-gray-500">
+            <button onClick={() => openHistory('BUY')} className="rounded border border-[#22c55e]/40 px-2 py-0.5 font-semibold text-[#22c55e]">BUY history</button>
+            <button onClick={() => openHistory('SELL')} className="rounded border border-[#ef4444]/40 px-2 py-0.5 font-semibold text-[#ef4444]">SELL history</button>
+            <span>Each card keeps its own latest saved reference; the active trade reference is selected by the matching setup rule.</span>
+          </div>
+        </div>
+      ) : (
       <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
         <div className="rounded border border-[#22c55e]/30 bg-[#22c55e]/5 p-2">
           <div className="flex items-center justify-between gap-2">
@@ -750,6 +790,7 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
           </div>
         </div>
       </div>
+      )}
       <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-gray-500">
         <span>History load: {status?.history_error || status?.history_loading ? 'check logs' : 'ok'}</span>
         <span>Warmup 1m candles: {status?.warmup_minute_candles ?? 0}</span>
@@ -950,6 +991,42 @@ function FeedStat({ label, value }: { label: string; value: any }) {
     <div className="rounded border border-[#1f2937] bg-[#111827] p-2">
       <div className="label text-[10px]">{label}</div>
       <div className="num mt-1 truncate text-xs font-semibold text-gray-100">{String(value ?? '--')}</div>
+    </div>
+  );
+}
+
+function SilverReferenceCard({
+  title,
+  tone,
+  rule,
+  reference,
+  n,
+}: {
+  title: string;
+  tone: 'buy' | 'sell';
+  rule: string;
+  reference: any;
+  n: number;
+}) {
+  const isBuy = tone === 'buy';
+  const close = reference?.close;
+  const trigger = reference?.trigger_level;
+  const time = formatDateTimeWithDate(reference?.time);
+  const accent = isBuy ? 'border-[#22c55e]/30 bg-[#22c55e]/5' : 'border-[#ef4444]/30 bg-[#ef4444]/5';
+  const text = isBuy ? 'text-[#22c55e]' : 'text-[#ef4444]';
+  const direction = isBuy ? '>=' : '<=';
+  const formula = isBuy ? '+' : '-';
+  return (
+    <div className={`rounded border p-2 ${accent}`}>
+      <div className={`label text-[10px] ${text}`}>{title}</div>
+      <div className="mt-1 text-[10px] leading-4 text-gray-400">{rule}</div>
+      <div className="mt-2 num text-sm text-gray-100">
+        {close != null ? `Close ${formatNumber(close)}` : 'None captured yet'}
+      </div>
+      <div className="text-[10px] text-gray-500">
+        {trigger != null ? `Fires on tick ${direction} ${formatNumber(trigger)} (close ${formula} ${n})` : 'Waiting for this exact 15m rule'}
+        {time && <span className="ml-1">| set at {time}</span>}
+      </div>
     </div>
   );
 }

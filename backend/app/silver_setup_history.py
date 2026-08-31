@@ -174,7 +174,10 @@ def get_setup_history(
             if side in {"BUY", "SELL"}:
                 request = request.eq("setup_side", side)
             if live_only:
-                request = request.eq("source", "live")
+                # Algo5's EMA-wick references are stored as
+                # live:fallback_ema_wick:<distance>; include them in the
+                # same live history view as the standard live references.
+                request = request.like("source", "live%")
             result = request.execute()
             rows.extend(result.data or [])
             if rows:
@@ -229,6 +232,7 @@ def get_latest_setup_reference(
     *,
     side: str,
     live_only: bool = False,
+    setup_family: str | None = None,
 ) -> dict | None:
     normalized_side = str(side or "").upper()
     if normalized_side not in {"BUY", "SELL"}:
@@ -246,7 +250,7 @@ def get_latest_setup_reference(
                 .limit(25)
             )
             if live_only:
-                request = request.eq("source", "live")
+                request = request.like("source", "live%")
             result = request.execute()
             rows.extend(result.data or [])
             if rows:
@@ -265,7 +269,12 @@ def get_latest_setup_reference(
     for row in raw_rows:
         if not _is_qualifying_setup_row(row):
             continue
+        source = str(row.get("source") or "")
+        row_family = "fallback_ema_wick" if source.startswith("live:fallback_ema_wick:") else "current"
+        if setup_family and row_family != setup_family:
+            continue
         normalized = dict(row)
         normalized["algo_id"] = algo_id
+        normalized["setup_family"] = row_family
         return normalized
     return None

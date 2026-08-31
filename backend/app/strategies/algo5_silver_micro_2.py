@@ -1,5 +1,7 @@
+import datetime
+
 from .algo3_silver_micro import Algo3SilverMicro, _fmt
-from ..silver_setup_history import record_setup_event
+from ..silver_setup_history import get_latest_setup_reference, record_setup_event
 
 
 class Algo5SilverMicro2(Algo3SilverMicro):
@@ -16,12 +18,29 @@ class Algo5SilverMicro2(Algo3SilverMicro):
         # the Algo5-only metadata before it can replay a completed candle.
         self._buy_setup_family: str | None = None
         self._sell_setup_family: str | None = None
+        self._setup_references: dict[str, dict[str, dict | None]] = self._empty_setup_references()
         super().__init__(watchlist=watchlist)
+
+    @staticmethod
+    def _empty_setup_references() -> dict[str, dict[str, dict | None]]:
+        return {
+            "BUY": {"current": None, "fallback_ema_wick": None},
+            "SELL": {"current": None, "fallback_ema_wick": None},
+        }
 
     def _reset_aggregation_state(self):
         super()._reset_aggregation_state()
         self._buy_setup_family = None
         self._sell_setup_family = None
+        self._setup_references = self._empty_setup_references()
+
+    def _remember_reference(self, side: str, family: str, bar: dict) -> None:
+        self._setup_references[side][family] = {
+            "close": float(bar["close"]),
+            "time": bar["time"],
+            "ema20": float(self._ema20) if self._ema20 is not None else None,
+            "family": family,
+        }
 
     def _ema_wick_distance_points(self) -> float:
         return float(self.settings.get("ema_wick_distance_points", 300) or 300)
@@ -152,6 +171,7 @@ class Algo5SilverMicro2(Algo3SilverMicro):
             self._buy_setup_close = close
             self._buy_setup_bar_at = bar["time"]
             self._buy_setup_family = buy_family
+            self._remember_reference("BUY", buy_family, bar)
             self._buy_reentry_after_exit = None
             if log:
                 self._persist_setup_event("BUY", bar, source="live")
@@ -166,6 +186,7 @@ class Algo5SilverMicro2(Algo3SilverMicro):
             self._sell_setup_close = close
             self._sell_setup_bar_at = bar["time"]
             self._sell_setup_family = sell_family
+            self._remember_reference("SELL", sell_family, bar)
             self._sell_reentry_after_exit = None
             if log:
                 self._persist_setup_event("SELL", bar, source="live")
@@ -226,3 +247,41 @@ class Algo5SilverMicro2(Algo3SilverMicro):
         snapshot["setup_family"] = self._buy_setup_family if side == "BUY" else self._sell_setup_family
         snapshot["ema_wick_distance_points"] = self._ema_wick_distance_points()
         return snapshot
+
+    def feed_status(self) -> dict:
+        status = super().feed_status()
+        n = float(self.settings.get("silver_breakout_points", 200) or 0)
+        slots: dict[str, dict] = {}
+        for side in ("BUY", "SELL"):
+            for family in (self._CURRENT_REFERENCE, self._FALLBACK_EMA_WICK_REFERENCE):
+                reference = self._setup_references[side][family]
+                if reference is None:
+                    persisted = get_latest_setup_reference(
+                        self.algo_id,
+                        side=side,
+                        live_only=True,
+                        setup_family=family,
+                    )
+                    if persisted:
+                        raw_time = persisted.get("candle_time")
+                        try:
+                            reference_time = datetime.datetime.fromisoformat(str(raw_time).replace("Z", "+00:00"))
+                        except Exception:
+                            reference_time = None
+                        reference = {
+                            "close": float(persisted.get("candle_close") or 0),
+                            "time": reference_time,
+                            "ema20": float(persisted.get("ema20") or 0),
+                            "family": family,
+                        }
+                close = reference.get("close") if reference else None
+                slots[f"{side.lower()}_{family}"] = {
+                    "close": close,
+                    "time": reference["time"].isoformat() if reference and reference.get("time") else None,
+                    "ema20": reference.get("ema20") if reference else None,
+                    "trigger_level": (float(close) + n) if close is not None and side == "BUY" else ((float(close) - n) if close is not None else None),
+                    "family": family,
+                }
+        status["reference_slots"] = slots
+        status["ema_wick_distance_points"] = self._ema_wick_distance_points()
+        return status

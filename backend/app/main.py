@@ -1014,7 +1014,7 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
     start_date = str(payload.get("start_date") or payload.get("date") or "")
     end_date = str(payload.get("end_date") or start_date)
     try:
-        if algo_id == "algo3":
+        if algo_id in {"algo3", "algo5"}:
             # Resolve at request time so backtests always target the current
             # front-month contract, matching what live is trading.
             return start_backtest(

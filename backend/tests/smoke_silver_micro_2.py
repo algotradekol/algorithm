@@ -8,6 +8,8 @@ import datetime
 import threading
 from collections import deque
 
+from app.backtest import _simulate_silver_micro_range
+from app.charges import get_charges_config
 from app.strategies.algo5_silver_micro_2 import Algo5SilverMicro2
 
 
@@ -34,6 +36,7 @@ def make_strategy() -> Algo5SilverMicro2:
     strategy._sell_setup_bar_at = None
     strategy._buy_setup_family = None
     strategy._sell_setup_family = None
+    strategy._setup_references = strategy._empty_setup_references()
     strategy._buy_reentry_after_exit = None
     strategy._sell_reentry_after_exit = None
     strategy._last_fired_buy_bar_at = None
@@ -80,6 +83,20 @@ def test_selected_reference_uses_unchanged_trigger_formula() -> None:
     check("fallback SELL trigger is close minus n", strategy._sell_setup_close - 200 == 700)
 
 
+def test_each_reference_family_is_stored_independently() -> None:
+    strategy = make_strategy()
+    at = datetime.datetime(2026, 9, 1, 10, 0)
+    strategy._update_setups({"open": 900, "high": 1250, "low": 850, "close": 1200, "time": at})
+    strategy._update_setups({"open": 1250, "high": 1270, "low": 980, "close": 1100, "time": at})
+    strategy._update_setups({"open": 1100, "high": 1150, "low": 700, "close": 800, "time": at})
+    strategy._update_setups({"open": 750, "high": 1010, "low": 700, "close": 900, "time": at})
+    refs = strategy._setup_references
+    check("current BUY remains separately stored", refs["BUY"]["current"]["close"] == 1200)
+    check("fallback BUY remains separately stored", refs["BUY"]["fallback_ema_wick"]["close"] == 1100)
+    check("current SELL remains separately stored", refs["SELL"]["current"]["close"] == 800)
+    check("fallback SELL remains separately stored", refs["SELL"]["fallback_ema_wick"]["close"] == 900)
+
+
 def test_candle_close_trigger_uses_fallback_qualification() -> None:
     strategy = make_strategy()
     strategy._buy_setup_close = 1100
@@ -124,14 +141,86 @@ def test_audit_identifies_fallback_reference() -> None:
     check("audit names fallback family", "EMA-wick fallback" in audit, audit)
 
 
+def _replay_bar(at: datetime.datetime, open_price: float, high: float, low: float, close: float) -> dict:
+    return {
+        "time": at,
+        "open": open_price,
+        "high": high,
+        "low": low,
+        "close": close,
+        "volume": 1,
+    }
+
+
+def _micro_2_replay_history(target_day: datetime.date, setup: dict, trigger: dict) -> list[dict]:
+    warmup_day = target_day - datetime.timedelta(days=1)
+    history = []
+    for index in range(20):
+        at = datetime.datetime.combine(warmup_day, datetime.time(9, 0)) + datetime.timedelta(minutes=15 * index)
+        history.append(_replay_bar(at, 1000, 1000, 1000, 1000))
+    history.append(_replay_bar(datetime.datetime.combine(target_day, datetime.time(9, 0)), **setup))
+    history.append(_replay_bar(datetime.datetime.combine(target_day, datetime.time(9, 15)), **trigger))
+    history.append(_replay_bar(datetime.datetime.combine(target_day, datetime.time(9, 30)), 1000, 1000, 1000, 1000))
+    return history
+
+
+def _replay_micro_2(target_day: datetime.date, setup: dict, trigger: dict) -> dict:
+    settings = {
+        "silver_breakout_points": 200,
+        "ema_wick_distance_points": 300,
+        "sl_points": 200,
+        "tsl_activate_points": 500,
+        "target_points": 2000,
+        "exit_mode": "fixed_target_sl",
+        "silver_lots": 1,
+    }
+    results = _simulate_silver_micro_range(
+        "smoke-algo5",
+        "algo5",
+        target_day,
+        target_day,
+        "MCX:SILVERMIC26AUGFUT",
+        _micro_2_replay_history(target_day, setup, trigger),
+        [target_day],
+        settings,
+        get_charges_config(),
+    )
+    return results[0]
+
+
+def test_backtest_replays_ema_wick_fallback_references() -> None:
+    target_day = datetime.date(2026, 8, 25)
+    buy = _replay_micro_2(
+        target_day,
+        {"open_price": 1200, "high": 1220, "low": 980, "close": 1100},
+        {"open_price": 1200, "high": 1300, "low": 1200, "close": 1300},
+    )
+    buy_candidate = buy["candidates"][0]
+    check("backtest records fallback BUY family", buy_candidate["setup_family"] == "fallback_ema_wick")
+    check("backtest BUY uses close plus n", buy_candidate["trigger_level"] == 1300)
+    check("backtest BUY enters from fallback reference", buy_candidate["entry_price"] == 1300)
+
+    sell = _replay_micro_2(
+        target_day,
+        {"open_price": 800, "high": 1010, "low": 700, "close": 900},
+        {"open_price": 800, "high": 850, "low": 700, "close": 700},
+    )
+    sell_candidate = sell["candidates"][0]
+    check("backtest records fallback SELL family", sell_candidate["setup_family"] == "fallback_ema_wick")
+    check("backtest SELL uses close minus n", sell_candidate["trigger_level"] == 700)
+    check("backtest SELL enters from later-candle trigger", sell_candidate["entry_price"] == 700)
+
+
 def main() -> None:
     print("\nSILVER MICRO 2.0 EMA-WICK SMOKE TEST")
     test_current_rules_remain_first_choice()
     test_fallback_references_and_distance_gate()
     test_selected_reference_uses_unchanged_trigger_formula()
+    test_each_reference_family_is_stored_independently()
     test_candle_close_trigger_uses_fallback_qualification()
     test_fallback_sell_tick_cross_fires_from_green_candle()
     test_audit_identifies_fallback_reference()
+    test_backtest_replays_ema_wick_fallback_references()
     print("RESULT: ALL CHECKS PASSED")
 
 
