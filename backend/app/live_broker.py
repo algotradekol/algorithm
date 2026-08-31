@@ -341,6 +341,11 @@ class LiveBroker(PaperBroker):
             "sl_and_final_target_with_breakeven" if breakeven_mode else "sl_and_target"
         )
 
+        confirmed_entry_time = self._safe_entry_time(
+            actual_entry_time,
+            self._extract_fill_time(order_response),
+            entry_time,
+        )
         super().open_trade(
             symbol,
             side,
@@ -353,7 +358,7 @@ class LiveBroker(PaperBroker):
             # Fyers tradebook time is authoritative when available. The
             # strategy event time is a safe fallback for delayed tradebook
             # hydration and keeps paper/live audit rows aligned.
-            entry_time=self._safe_entry_time(actual_entry_time, entry_time),
+            entry_time=confirmed_entry_time,
         )
 
     def close_trade(self, position: dict, exit_price: float, exit_reason: str):
@@ -1934,9 +1939,19 @@ class LiveBroker(PaperBroker):
                 continue
         return None
 
-    def _safe_entry_time(self, candidate: str | None, fallback: str | None) -> str:
-        """Use a matched broker fill time, otherwise retain the strategy event."""
-        return candidate or fallback or datetime.datetime.now(IST).isoformat()
+    def _safe_entry_time(
+        self,
+        candidate: str | None,
+        broker_confirmed: str | None,
+        fallback: str | None,
+    ) -> str:
+        """Prefer the true FYERS fill time, then FYERS order confirmation.
+
+        The strategy event time is only a last resort. This keeps the UI and
+        persisted trade row aligned with the broker-confirmed market-order
+        moment even when the tradebook fill hydrates a few seconds later.
+        """
+        return candidate or broker_confirmed or fallback or datetime.datetime.now(IST).isoformat()
 
     def _safe_exit_time(self, position: dict, candidate: str | None) -> str:
         """Never persist an exit before the recorded entry.

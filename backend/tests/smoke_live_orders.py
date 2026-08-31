@@ -5989,6 +5989,16 @@ def test_live_fill_timestamp_integrity():
         datetime.datetime.fromisoformat(safe_exit) > datetime.datetime.fromisoformat(entry),
         f"entry={entry} exit={safe_exit}",
     )
+    safe_entry = broker._safe_entry_time(
+        None,
+        broker._extract_fill_time({"orderDateTime": "2026-08-31 09:00:04"}),
+        "2026-08-31T09:00:01+05:30",
+    )
+    check(
+        "entry timestamp falls back to FYERS order confirmation before strategy event time",
+        safe_entry == "2026-08-31T09:00:04+05:30",
+        f"safe_entry={safe_entry}",
+    )
 
 
 def test_algo3_warmup_end_date_is_today():
