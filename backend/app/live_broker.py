@@ -1196,8 +1196,8 @@ class LiveBroker(PaperBroker):
         """Insert a live_positions row for each FYERS-held position in this
         strategy's watchlist that our DB doesn't already know about.
 
-        The row is marked ``signal_snapshot.origin = "fyers_app_manual"``
-        and given unreachable SL / Target values so the algo's own
+        The row is marked as a broker-recovered position and given
+        unreachable SL / Target values so the algo's own
         ``check_exits`` loop can never fire a MARKET order against it.
         FYERS remains the sole exit path. When the user closes the
         position from the FYERS app the next reconcile pass sees
@@ -1271,9 +1271,9 @@ class LiveBroker(PaperBroker):
                 "target_price": target_price,
                 "status": "open",
                 "entry_time": entry_time,
-                "entry_trigger": "Opened directly in FYERS app",
+                "entry_trigger": "Recovered from FYERS broker position",
                 "signal_snapshot": {
-                    "origin": "fyers_app_manual",
+                    "origin": "fyers_recovered_position",
                     "fyers_app_managed": True,
                     "symbol": symbol,
                     "side": side,
@@ -1287,7 +1287,7 @@ class LiveBroker(PaperBroker):
                 )
                 inserted += 1
                 print(
-                    f"[live_broker] bootstrapped fyers-app position {symbol} "
+                    f"[live_broker] bootstrapped recovered FYERS position {symbol} "
                     f"{side} qty={int(abs(net_qty))} @ {entry_price:.2f} — will "
                     f"land in Closed Trades when FYERS reports flat"
                 )

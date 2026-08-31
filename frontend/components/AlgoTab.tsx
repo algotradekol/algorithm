@@ -485,9 +485,9 @@ export default function AlgoTab({
       .filter((position) => !managedPositionKeys.has(`${position.symbol}|${position.side}`))
       .map((position) => ({
         ...position,
-        position_source: 'fyers_app',
+        position_source: 'fyers_recovered',
         is_broker_position: true,
-        entry_trigger: 'Opened directly in FYERS app',
+        entry_trigger: 'Recovered from FYERS broker position',
       })),
   ];
 
@@ -1050,8 +1050,8 @@ function PositionsTable({
                 <MobileField label="Qty" value={row.qty} />
                 <MobileField label="Entry" value={formatNumber(row.entry_price)} />
                 <MobileField label="LTP" value={Number.isFinite(ltp) ? formatNumber(ltp) : '--'} />
-                <MobileField label="SL" value={formatNumber(row.sl_price)} />
-                <MobileField label="Target" value={formatNumber(row.target_price)} />
+                <MobileField label="SL" value={formatProtectionLevel(row, row.sl_price, 'sl')} />
+                <MobileField label="Target" value={formatProtectionLevel(row, row.target_price, 'target')} />
                 <MobileField label="Trailing SL" value={<TrailingBadge row={row} />} wide />
                 <MobileField label="Trigger" value={formatTrigger(row.entry_trigger)} wide />
                 <MobileField label="Signal Audit" value={<SignalAudit row={row} />} wide />
@@ -1099,8 +1099,8 @@ function PositionsTable({
                 <td className="table-cell num whitespace-nowrap text-gray-400">{formatDateTime(row.entry_time)}</td>
                 <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.entry_price)}</td>
                 <td className="table-cell num whitespace-nowrap text-gray-100">{Number.isFinite(ltp) ? formatNumber(ltp) : '--'}</td>
-                <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.sl_price)}</td>
-                <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.target_price)}</td>
+                <td className="table-cell num whitespace-nowrap text-gray-100">{formatProtectionLevel(row, row.sl_price, 'sl')}</td>
+                <td className="table-cell num whitespace-nowrap text-gray-100">{formatProtectionLevel(row, row.target_price, 'target')}</td>
                 <td className="table-cell w-[170px] whitespace-nowrap"><TrailingBadge row={row} /></td>
                 <td className="table-cell w-[260px] max-w-[320px] text-gray-400 align-top">
                   <div className="max-h-24 overflow-y-auto break-words whitespace-normal pr-1 leading-relaxed">
@@ -1442,15 +1442,15 @@ function EditProtectionDialog({
 
 function PositionSourceBadge({ row }: { row: any }) {
   const fromFyersOrder = row.is_broker_order || row.position_source === 'fyers_order';
-  const fromFyersApp = row.is_broker_position || row.position_source === 'fyers_app';
+  const fromRecoveredBroker = isRecoveredBrokerPosition(row);
   return (
     <span className={`inline-flex items-center whitespace-nowrap rounded border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${
-      fromFyersOrder || fromFyersApp
+      fromFyersOrder || fromRecoveredBroker
         ? 'border-[#60a5fa]/40 bg-[#3b82f6]/10 text-[#60a5fa]'
         : 'border-[#22c55e]/30 bg-[#22c55e]/10 text-[#22c55e]'
     }`}>
-      <i className={`${fromFyersOrder ? 'ri-time-fill' : fromFyersApp ? 'ri-smartphone-fill' : 'ri-robot-2-fill'} mr-1 text-xs`} />
-      {fromFyersOrder ? 'FYERS Order' : fromFyersApp ? 'FYERS App' : 'Algorithm'}
+      <i className={`${fromFyersOrder ? 'ri-time-fill' : fromRecoveredBroker ? 'ri-shield-check-fill' : 'ri-robot-2-fill'} mr-1 text-xs`} />
+      {fromFyersOrder ? 'FYERS Order' : fromRecoveredBroker ? 'Recovered Broker' : 'Algorithm'}
     </span>
   );
 }
@@ -1468,8 +1468,8 @@ function SignalAudit({ row }: { row: any }) {
   if (row.is_broker_order || row.position_source === 'fyers_order') {
     return <span className="text-xs text-[#60a5fa]">Pending or scheduled in FYERS ({row.status || 'waiting'})</span>;
   }
-  if (row.is_broker_position || row.position_source === 'fyers_app') {
-    return <span className="text-xs text-[#60a5fa]">Opened outside the algorithm in FYERS</span>;
+  if (isRecoveredBrokerPosition(row)) {
+    return <span className="text-xs text-[#60a5fa]">Recovered from FYERS after the dashboard lost local tracking; broker-side orders remain the source of truth.</span>;
   }
   const signal = row.signal_snapshot;
   if (!signal || typeof signal !== 'object') {
@@ -1688,6 +1688,29 @@ function TrailingBadge({ row }: { row: any }) {
   );
 }
 
+function isRecoveredBrokerPosition(row: any) {
+  if (!row || typeof row !== 'object') return false;
+  const source = String(row.position_source || '').trim().toLowerCase();
+  const signal = row.signal_snapshot;
+  const origin = signal && typeof signal === 'object'
+    ? String(signal.origin || '').trim().toLowerCase()
+    : '';
+  return !!row.is_broker_position
+    || source === 'fyers_recovered'
+    || source === 'fyers_app'
+    || origin === 'fyers_recovered_position'
+    || origin === 'fyers_app_manual'
+    || !!(signal && typeof signal === 'object' && signal.fyers_app_managed);
+}
+
+function isSentinelProtectionLevel(row: any, value: unknown, kind: 'sl' | 'target') {
+  if (!isRecoveredBrokerPosition(row)) return false;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return false;
+  if (kind === 'sl') return number >= 1_000_000_000;
+  return number <= 0;
+}
+
 export function Table({ rows, columns }: { rows: any[]; columns: string[] }) {
   const [page, setPage] = useState(0);
   const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
@@ -1883,6 +1906,13 @@ function formatNumber(value: unknown) {
   return number.toLocaleString('en-IN', { maximumFractionDigits: 2 });
 }
 
+function formatProtectionLevel(row: any, value: unknown, kind: 'sl' | 'target') {
+  if (isSentinelProtectionLevel(row, value, kind)) {
+    return 'Broker-managed';
+  }
+  return formatNumber(value);
+}
+
 function pnlColor(value?: number | null) {
   if (value === undefined || value === null) return 'text-gray-100';
   if (value > 0) return 'text-[#22c55e]';
@@ -1918,5 +1948,8 @@ function formatReason(reason: string) {
 
 function formatTrigger(trigger: unknown) {
   const value = String(trigger || '').trim();
+  if (value === 'Opened directly in FYERS app') {
+    return 'Recovered from FYERS broker position';
+  }
   return value || 'Legacy row: trigger was not stored when this trade opened.';
 }

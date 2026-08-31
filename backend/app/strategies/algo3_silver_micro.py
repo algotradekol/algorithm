@@ -538,13 +538,15 @@ class Algo3SilverMicro(Strategy):
         position = self._open_position()
         if not position:
             return
-        # FYERS-app-managed positions are exit-managed entirely by FYERS
-        # (the user opened them directly there). Never let this loop fire
-        # a MARKET order against one — the external-close reconcile will
-        # write MANUAL_EXTERNAL_EXIT into live_trades when the user
-        # flattens it from FYERS.
+        # Broker-recovered positions are exit-managed entirely by FYERS.
+        # Never let this loop fire a MARKET order against one — the
+        # external-close reconcile will write MANUAL_EXTERNAL_EXIT into
+        # live_trades when FYERS later reports the position as flat.
         snapshot = position.get("signal_snapshot") or {}
-        if isinstance(snapshot, dict) and snapshot.get("origin") == "fyers_app_manual":
+        if isinstance(snapshot, dict) and (
+            snapshot.get("fyers_app_managed")
+            or snapshot.get("origin") in {"fyers_app_manual", "fyers_recovered_position"}
+        ):
             return
         ltp = position.get("_last_ltp") or self._last_tick_ltp
         if not ltp:

@@ -852,8 +852,8 @@ def test_bootstrap_fyers_app_position_and_land_in_closed_trades():
         check("one fyers-app position was bootstrapped", inserted == 1,
               f"inserted={inserted}, rows={inserted_rows}")
         row = inserted_rows[0]
-        check("bootstrapped row has fyers_app_manual origin",
-              (row.get("signal_snapshot") or {}).get("origin") == "fyers_app_manual",
+        check("bootstrapped row has recovered-position origin",
+              (row.get("signal_snapshot") or {}).get("origin") == "fyers_recovered_position",
               f"row={row}")
         check("bootstrapped row uses unreachable protective levels for SELL",
               row.get("sl_price") >= 1_000_000_000 and row.get("target_price") == 0.0,
@@ -861,8 +861,8 @@ def test_bootstrap_fyers_app_position_and_land_in_closed_trades():
         check("bootstrapped row carries the FYERS entry price and side",
               row.get("side") == "SELL" and row.get("entry_price") == 248500.0,
               f"row={row}")
-        check("bootstrapped row is labeled as opened in the FYERS app",
-              row.get("entry_trigger") == "Opened directly in FYERS app",
+        check("bootstrapped row is labeled as recovered from FYERS",
+              row.get("entry_trigger") == "Recovered from FYERS broker position",
               f"row={row}")
 
         # A symbol outside the strategy's watchlist must never be bootstrapped.
