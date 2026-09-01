@@ -762,9 +762,17 @@ def manual_trade(algo_id: str, payload: dict, _user=Depends(require_auth)):
 
 
 @app.get("/api/algo/{algo_id}/trades")
-def algo_trades(algo_id: str, _user=Depends(require_auth)):
+def algo_trades(
+    algo_id: str,
+    limit: int = Query(default=200, ge=1, le=10_000),
+    today_only: bool = Query(default=True),
+    _user=Depends(require_auth),
+):
     strategy = get_strategy_or_raise(algo_id)
-    return attach_entry_triggers(algo_id, strategy.broker.recent_trades())
+    return attach_entry_triggers(
+        algo_id,
+        strategy.broker.recent_trades(limit=limit, today_only=today_only),
+    )
 
 
 @app.get("/api/algo/{algo_id}/history")

@@ -47,6 +47,7 @@ export default function AlgoTab({
   const [exitingPositionId, setExitingPositionId] = useState<string | null>(null);
   const [editingProtection, setEditingProtection] = useState<any | null>(null);
   const [savingProtection, setSavingProtection] = useState(false);
+  const [csvBusy, setCsvBusy] = useState<'open' | 'closed' | null>(null);
   const walletRequestId = useRef(0);
   const brokerPositionsRequestId = useRef(0);
   const brokerOrdersRequestId = useRef(0);
@@ -82,6 +83,24 @@ export default function AlgoTab({
       // Keep the current trade list if the lightweight refresh fails.
     }
   }, [algoId]);
+
+  const downloadCsv = useCallback(async (kind: 'open' | 'closed') => {
+    if (csvBusy) return;
+    setCsvBusy(kind);
+    try {
+      const rows = kind === 'open'
+        ? await api.positions(algoId)
+        : await api.trades(algoId, 10_000, false);
+      downloadCsvFile(
+        rows,
+        `${algoId}-${tradingMode || 'paper'}-${kind}-${new Date().toISOString().slice(0, 10)}.csv`,
+      );
+    } catch (err: any) {
+      setError(err?.message || `Could not download ${kind} CSV.`);
+    } finally {
+      setCsvBusy(null);
+    }
+  }, [algoId, csvBusy, tradingMode]);
 
   const loadData = useCallback(async () => {
     const requestId = ++dataRequestId.current;
@@ -624,12 +643,18 @@ export default function AlgoTab({
 
       <div className="grid min-w-0 gap-4">
         <section className="min-w-0">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Open Positions</h3>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Open Positions</h3>
+            <CsvButton label="Download open CSV" busy={csvBusy === 'open'} onClick={() => downloadCsv('open')} />
+          </div>
           <PositionsTable rows={openPositionRows} onExit={exitPosition} onEditProtection={openEditProtection} exitingPositionId={exitingPositionId} tradingMode={tradingMode} />
         </section>
 
         <section className="min-w-0">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Closed Trades Today</h3>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Closed Trades Today</h3>
+            <CsvButton label="Download closed CSV" busy={csvBusy === 'closed'} onClick={() => downloadCsv('closed')} />
+          </div>
           <TradesTable rows={trades} />
         </section>
       </div>
@@ -1004,6 +1029,45 @@ function FeedStat({ label, value }: { label: string; value: any }) {
       <div className="num mt-1 truncate text-xs font-semibold text-gray-100">{String(value ?? '--')}</div>
     </div>
   );
+}
+
+function CsvButton({ label, busy, onClick }: { label: string; busy: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded border border-[#22c55e]/70 bg-[#22c55e]/10 px-2.5 py-1 text-xs font-semibold text-[#4ade80] disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <i className="ri-file-download-line text-sm" />
+      {busy ? 'Preparing...' : label}
+    </button>
+  );
+}
+
+function csvValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function csvCell(value: unknown): string {
+  return `"${csvValue(value).replace(/"/g, '""')}"`;
+}
+
+function downloadCsvFile(rows: any[], fileName: string) {
+  const normalizedRows = Array.isArray(rows) ? rows : [];
+  const columns = Array.from(new Set(normalizedRows.flatMap((row) => Object.keys(row || {}))));
+  const content = [
+    columns.map(csvCell).join(','),
+    ...normalizedRows.map((row) => columns.map((column) => csvCell(row?.[column])).join(',')),
+  ].join('\r\n');
+  const url = URL.createObjectURL(new Blob([`\ufeff${content}`], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
 }
 
 function SilverReferenceCard({
