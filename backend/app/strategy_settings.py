@@ -137,6 +137,10 @@ STRATEGY_DEFAULT_OVERRIDES = {
         "target_points": 2000,
         "exit_mode": "fixed_target_sl",
         "manual_exit_reentry_enabled": False,
+        # Paper/backtest can carry this experimental strategy across sessions.
+        # Live carry stays blocked until durable FYERS overnight protection is
+        # available, rather than leaving a real position naked after close.
+        "overnight_carry_enabled": False,
         "silver_lots": 1,
         "order_type": "MARKET",
     },
@@ -174,6 +178,7 @@ BOOL_FIELDS = {
     "filter_price_range",
     "trailing_sl_enabled",
     "manual_exit_reentry_enabled",
+    "overnight_carry_enabled",
     "test_schedule_enabled",
 }
 
@@ -361,6 +366,7 @@ _NEW_COLUMNS_TOLERATE_MISSING = {
     "silver_lots",
     "silver_buy_plan",
     "manual_exit_reentry_enabled",
+    "overnight_carry_enabled",
 }
 
 

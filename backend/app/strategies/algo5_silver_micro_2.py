@@ -247,7 +247,19 @@ class Algo5SilverMicro2(Algo3SilverMicro):
         snapshot = super()._signal_snapshot(side, entry_price, trigger_level)
         snapshot["setup_family"] = self._buy_setup_family if side == "BUY" else self._sell_setup_family
         snapshot["ema_wick_distance_points"] = self._ema_wick_distance_points()
+        # Capture policy at entry so turning the settings toggle off later
+        # cannot unexpectedly square off an already carried paper position.
+        snapshot["overnight_carry_enabled"] = bool(self.settings.get("overnight_carry_enabled"))
         return snapshot
+
+    def square_off_all(self):
+        """Keep opted-in 2.0 paper positions open across the session boundary."""
+        for position in self.broker.open_positions():
+            snapshot = position.get("signal_snapshot") or {}
+            if bool(snapshot.get("overnight_carry_enabled")):
+                continue
+            ltp = position.get("_last_ltp", position["entry_price"])
+            self.broker.close_trade(position, ltp, "EOD_SQUAREOFF")
 
     def _latest_candle_pair(self, side: str) -> tuple[dict, dict] | None:
         """Find the latest completed reversal pair, including pre-arm bars."""

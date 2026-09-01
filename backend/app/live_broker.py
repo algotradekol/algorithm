@@ -235,6 +235,14 @@ class LiveBroker(PaperBroker):
         signal_snapshot: dict | None,
         entry_time: str | None,
     ):
+        # Do not create a live carry-forward position until the broker-side
+        # GTT/OCO protection path is implemented and verified for MCX. The
+        # paper/backtest path intentionally supports this setting already.
+        if bool((signal_snapshot or {}).get("overnight_carry_enabled")):
+            raise RuntimeError(
+                "Silver Micro 2.0 overnight carry is available in paper and backtest only. "
+                "Live entry was blocked because FYERS overnight GTT/OCO protection is not configured yet."
+            )
         # Design B pre-flight — Fyers is the single source of truth for
         # whether we already hold this symbol. Refuse to double up on a
         # duplicate signal, restart race, or reconciliation lag.

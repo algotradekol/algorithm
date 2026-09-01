@@ -262,6 +262,45 @@ def test_pair_already_crossed_exits_immediately() -> None:
     check("already-crossed pair SL closes BUY immediately", result is None and len(closed) == 1 and closed[0][2] == "TRAILING_SL", str(closed))
 
 
+def test_overnight_paper_carry_skips_eod_and_live_is_blocked() -> None:
+    strategy = make_strategy()
+    carried = {
+        "symbol": strategy.symbol,
+        "entry_price": 1000.0,
+        "_last_ltp": 1010.0,
+        "signal_snapshot": {"overnight_carry_enabled": True},
+    }
+    intraday = {
+        "symbol": strategy.symbol,
+        "entry_price": 1000.0,
+        "_last_ltp": 990.0,
+        "signal_snapshot": {"overnight_carry_enabled": False},
+    }
+    closes: list[tuple] = []
+    strategy.broker = SimpleNamespace(
+        open_positions=lambda: [carried, intraday],
+        close_trade=lambda *args: closes.append(args),
+    )
+    strategy.square_off_all()
+    check(
+        "overnight 2.0 paper position survives EOD square-off",
+        len(closes) == 1 and closes[0][0] is intraday and closes[0][2] == "EOD_SQUAREOFF",
+        str(closes),
+    )
+
+    live = object.__new__(LiveBroker)
+    try:
+        live._open_trade_locked(
+            strategy.symbol, "BUY", 1, 1000, 800, 1200,
+            None, {"overnight_carry_enabled": True}, None,
+        )
+    except RuntimeError as exc:
+        blocked = "paper and backtest only" in str(exc)
+    else:
+        blocked = False
+    check("live overnight entry is blocked without FYERS GTT/OCO", blocked)
+
+
 def _replay_bar(
     at: datetime.datetime,
     open_price: float,
@@ -353,6 +392,7 @@ def main() -> None:
     test_candle_pair_tsl_candidates_support_latest_pair_replacement()
     test_candle_pair_move_is_audited_and_sent_to_live_broker()
     test_pair_already_crossed_exits_immediately()
+    test_overnight_paper_carry_skips_eod_and_live_is_blocked()
     test_backtest_replays_ema_wick_fallback_references()
     print("RESULT: ALL CHECKS PASSED")
 

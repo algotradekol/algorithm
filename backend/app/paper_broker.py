@@ -99,15 +99,23 @@ class PaperBroker:
 
         def query_candidate(supabase, candidate: str):
             request = supabase.table(self.positions_table_name()).select("*").eq("algo_id", candidate).eq("status", "open")
-            if not include_stale:
-                request = request.gte("entry_time", query_date)
             return request.execute()
 
         rows_by_candidate = [
             run_with_supabase(lambda supabase, key=candidate: query_candidate(supabase, key)).data
             for candidate in self.storage_algo_candidates()
         ]
-        return self._merge_storage_rows(rows_by_candidate, order_key="entry_time", reverse=True)
+        rows = self._merge_storage_rows(rows_by_candidate, order_key="entry_time", reverse=True)
+        if include_stale:
+            return rows
+        # Silver Micro 2.0 can opt into carry-forward paper positions. Keep
+        # those visible and exit-managed after midnight; ordinary stale paper
+        # rows retain the existing intraday filter.
+        return [
+            row for row in rows
+            if str(row.get("entry_time") or "")[:10] >= query_date
+            or bool((row.get("signal_snapshot") or {}).get("overnight_carry_enabled"))
+        ]
 
     def close_stale_open_positions(self) -> int:
         """Close previous-day open paper positions so they never appear as live positions."""
@@ -115,6 +123,7 @@ class PaperBroker:
         stale_positions = [
             position for position in self.open_positions(include_stale=True)
             if str(position.get("entry_time") or "")[:10] < today
+            and not bool((position.get("signal_snapshot") or {}).get("overnight_carry_enabled"))
         ]
         for position in stale_positions:
             self.close_trade(position, float(position.get("entry_price") or 0), "MISSED_EOD_STALE")

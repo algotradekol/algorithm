@@ -66,6 +66,35 @@ function SilverManualExitReentryToggle({
   );
 }
 
+function SilverMicro2OvernightCarryToggle({
+  settings,
+  setSettings,
+}: {
+  settings: Record<string, any>;
+  setSettings: (settings: Record<string, any>) => void;
+}) {
+  const enabled = Boolean(settings.overnight_carry_enabled);
+  return (
+    <div className="mt-5 rounded border border-[#f59e0b]/50 bg-[#f59e0b]/10 p-3">
+      <label className="flex gap-3">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => setSettings({ ...settings, overnight_carry_enabled: e.target.checked })}
+          className="peer sr-only"
+        />
+        <span className="mt-1 h-5 w-9 shrink-0 rounded-full border border-[#1f2937] bg-gray-700 after:block after:h-4 after:w-4 after:translate-x-0.5 after:translate-y-0.5 after:rounded-full after:bg-gray-400 after:transition peer-checked:bg-[#f59e0b] peer-checked:after:translate-x-4 peer-checked:after:bg-white" />
+        <span>
+          <span className="text-sm font-semibold text-gray-100">Carry paper trades overnight</span>
+          <span className="mt-1 block text-xs text-gray-400">
+            Silver Micro 2.0 paper and backtest positions stay open after 23:25 and continue next session until SL/TSL, final target, reversal, or manual exit. Live carry is blocked until FYERS overnight protection is verified.
+          </span>
+        </span>
+      </label>
+    </div>
+  );
+}
+
 const INDICATOR_FIELDS: Field[] = [
   ['rsi_buy_threshold', 'RSI Buy Threshold', 'Filter strategy buy confirmation threshold'],
   ['rsi_sell_threshold', 'RSI Sell Threshold', 'Filter strategy sell confirmation threshold'],
@@ -305,6 +334,7 @@ export default function StrategySettingsPanel({
           <>
             <SilverRiskSettings algoId={algoId} settings={settings} setSettings={setSettings} />
             <SilverManualExitReentryToggle settings={settings} setSettings={setSettings} />
+            {algoId === 'algo5' && <SilverMicro2OvernightCarryToggle settings={settings} setSettings={setSettings} />}
           </>
         ) : (
           <FieldGroup

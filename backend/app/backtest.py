@@ -1572,6 +1572,7 @@ def _simulate_silver_micro_range(
     silver_micro_2 = algo_id == "algo5"
     ema_wick_distance = float(settings.get("ema_wick_distance_points", 300) or 300)
     candle_pair_tsl = bool(silver_micro_2 and breakeven_mode)
+    overnight_carry = bool(silver_micro_2 and settings.get("overnight_carry_enabled"))
     candle_pair_buffer = float(settings.get("tsl_lock_step_points", 100) or 100)
 
     # Pre-count 1m bars per day so the UI can show how much data existed.
@@ -2315,7 +2316,7 @@ def _simulate_silver_micro_range(
             if current_day is None:
                 current_day = day
             if day != current_day:
-                if position and last_bar_processed:
+                if position and last_bar_processed and not overnight_carry:
                     close_position(float(last_bar_processed["close"]), last_bar_processed["time"], "EOD_SQUAREOFF", current_day)
                 current_day = day
 
@@ -2479,7 +2480,12 @@ def _simulate_silver_micro_range(
     # open position.
     finalize_15m_bar(allow_signals=True)
     if current_day and position and last_bar_processed:
-        close_position(float(last_bar_processed["close"]), last_bar_processed["time"], "EOD_SQUAREOFF", current_day)
+        close_position(
+            float(last_bar_processed["close"]),
+            last_bar_processed["time"],
+            "BACKTEST_END" if overnight_carry else "EOD_SQUAREOFF",
+            current_day,
+        )
 
     for day in trading_days:
         _raise_if_cancelled(job_id)
