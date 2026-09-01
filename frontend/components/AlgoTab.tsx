@@ -88,11 +88,19 @@ export default function AlgoTab({
     if (csvBusy) return;
     setCsvBusy(kind);
     try {
-      const rows = kind === 'open'
-        ? await api.positions(algoId)
-        : await api.trades(algoId, 10_000, false);
+      const [rows, settings] = await Promise.all([
+        kind === 'open'
+          ? api.positions(algoId)
+          : api.trades(algoId, 10_000, false),
+        api.getSettings(algoId),
+      ]);
       downloadCsvFile(
-        rows,
+        withReportSettings(rows, {
+          algoId,
+          tradingMode: settings?.trading_mode || tradingMode || 'paper',
+          kind,
+          settings,
+        }),
         `${algoId}-${tradingMode || 'paper'}-${kind}-${new Date().toISOString().slice(0, 10)}.csv`,
       );
     } catch (err: any) {
@@ -1053,6 +1061,29 @@ function csvValue(value: unknown): string {
 
 function csvCell(value: unknown): string {
   return `"${csvValue(value).replace(/"/g, '""')}"`;
+}
+
+function withReportSettings(
+  rows: any[],
+  report: { algoId: string; tradingMode: string; kind: 'open' | 'closed'; settings: any },
+) {
+  const generatedAt = new Date().toLocaleString('sv-SE', {
+    timeZone: 'Asia/Kolkata',
+    hour12: false,
+  }).replace(' ', 'T') + '+05:30';
+  const settings = report.settings && typeof report.settings === 'object' ? report.settings : {};
+  const settingColumns = Object.fromEntries(
+    Object.entries(settings).map(([key, value]) => [`settings_${key}`, value]),
+  );
+  const reportColumns = {
+    report_generated_at_ist: generatedAt,
+    report_algo_id: report.algoId,
+    report_trading_mode: report.tradingMode,
+    report_kind: report.kind,
+    report_settings_json: settings,
+    ...settingColumns,
+  };
+  return (Array.isArray(rows) ? rows : []).map((row) => ({ ...row, ...reportColumns }));
 }
 
 function downloadCsvFile(rows: any[], fileName: string) {
