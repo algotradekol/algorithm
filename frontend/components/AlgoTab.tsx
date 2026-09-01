@@ -1130,6 +1130,7 @@ function PositionsTable({
                 <MobileField label="LTP" value={Number.isFinite(ltp) ? formatNumber(ltp) : '--'} />
                 <MobileField label="SL" value={formatProtectionLevel(row, row.sl_price, 'sl')} />
                 <MobileField label="Target" value={formatProtectionLevel(row, row.target_price, 'target')} />
+                <MobileField label="Logic" value={<LogicCodeBadge row={row} />} />
                 <MobileField label="Trailing SL" value={<TrailingBadge row={row} />} wide />
                 <MobileField label="Trigger" value={formatTrigger(row.entry_trigger)} wide />
                 <MobileField label="Signal Audit" value={<SignalAudit row={row} />} wide />
@@ -1142,10 +1143,10 @@ function PositionsTable({
         })}
       </div>
       <div className="hidden w-full max-w-full overflow-x-auto overscroll-x-contain rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1550px] table-auto border-collapse text-xs">
+        <table className="w-full min-w-[1640px] table-auto border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'SL', 'Target', 'Trailing SL', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
+            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'SL', 'Target', 'Logic', 'Trailing SL', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
               <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
@@ -1153,7 +1154,7 @@ function PositionsTable({
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={15} className="table-cell text-gray-500">No open positions</td>
+              <td colSpan={16} className="table-cell text-gray-500">No open positions</td>
             </tr>
           ) : visibleRows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
@@ -1179,6 +1180,7 @@ function PositionsTable({
                 <td className="table-cell num whitespace-nowrap text-gray-100">{Number.isFinite(ltp) ? formatNumber(ltp) : '--'}</td>
                 <td className="table-cell num whitespace-nowrap text-gray-100">{formatProtectionLevel(row, row.sl_price, 'sl')}</td>
                 <td className="table-cell num whitespace-nowrap text-gray-100">{formatProtectionLevel(row, row.target_price, 'target')}</td>
+                <td className="table-cell whitespace-nowrap"><LogicCodeBadge row={row} /></td>
                 <td className="table-cell w-[170px] whitespace-nowrap"><TrailingBadge row={row} /></td>
                 <td className="table-cell w-[260px] max-w-[320px] text-gray-400 align-top">
                   <div className="max-h-24 overflow-y-auto break-words whitespace-normal pr-1 leading-relaxed">
@@ -1252,6 +1254,7 @@ function TradesTable({ rows }: { rows: any[] }) {
               <MobileField label="Exit Time" value={row.exit_time ? formatTradeTime(row.exit_time, row.entry_time) : "--"} />
               <MobileField label="Exit" value={formatNumber(row.exit_price)} />
               <MobileField label="Reason" value={formatReason(row.exit_reason)} />
+              <MobileField label="Logic" value={<LogicCodeBadge row={row} />} />
               <MobileField label="Trailing SL" value={<TrailingBadge row={row} />} wide />
               <MobileField label="Gross" value={formatMoney(row.gross_pnl)} />
               <MobileField label="Charges" value={formatMoney(row.total_charges)} />
@@ -1260,10 +1263,10 @@ function TradesTable({ rows }: { rows: any[] }) {
         ))}
       </div>
       <div className="hidden w-full max-w-full overflow-x-auto overscroll-x-contain rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1680px] table-auto border-collapse text-xs">
+        <table className="w-full min-w-[1760px] table-auto border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {["Symbol", "Side", "Qty / Lots", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Trailing SL", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
+            {["Symbol", "Side", "Qty / Lots", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Logic", "Trailing SL", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
               <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
@@ -1271,7 +1274,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={14} className="table-cell text-gray-500">No closed trades yet</td>
+              <td colSpan={15} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
           ) : visibleRows.map((row, index) => (
             <tr key={row.id || index} className={`align-top ${index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}`}>
@@ -1289,6 +1292,7 @@ function TradesTable({ rows }: { rows: any[] }) {
                 {reasonIcon(row.exit_reason)}
                 {formatReason(row.exit_reason)}
               </td>
+              <td className="table-cell whitespace-nowrap"><LogicCodeBadge row={row} /></td>
               <td className="table-cell w-[170px] whitespace-nowrap"><TrailingBadge row={row} /></td>
               <td className="table-cell w-[260px] max-w-[320px] text-gray-400 align-top"><div className="max-h-24 overflow-y-auto break-words whitespace-normal leading-relaxed"><SignalAudit row={row} /></div></td>
               <td className="table-cell w-[340px] max-w-[420px] break-words whitespace-normal text-gray-400 align-top leading-relaxed">{formatTrigger(row.entry_trigger)}</td>
@@ -1589,6 +1593,31 @@ function SignalAudit({ row }: { row: any }) {
         <div>Entry LTP {formatNumber(signal.entry_ltp)}</div>
       </div>
     </details>
+  );
+}
+
+function LogicCodeBadge({ row }: { row: any }) {
+  const snapshot = row?.signal_snapshot && typeof row.signal_snapshot === 'object'
+    ? row.signal_snapshot
+    : {};
+  const side = String(row?.side || snapshot?.side || '').toUpperCase();
+  const fallback = snapshot?.setup_family === 'fallback_ema_wick';
+  const entryCode = side === 'BUY' ? (fallback ? 'B2' : 'B1') : (side === 'SELL' ? (fallback ? 'S2' : 'S1') : '--');
+  const candlePair = !!(snapshot?.silver_candle_pair_tsl && typeof snapshot.silver_candle_pair_tsl === 'object');
+  const policyCode = candlePair
+    ? 'CP'
+    : snapshot?.silver_exit_policy === 'target_to_breakeven_sl'
+    ? 'BE'
+    : 'FIX';
+  const title = [
+    `${entryCode}: ${entryCode === 'B1' ? 'standard green-above-EMA BUY reference' : entryCode === 'B2' ? 'EMA-wick red-above-EMA BUY reference' : entryCode === 'S1' ? 'standard red-below-EMA SELL reference' : entryCode === 'S2' ? 'EMA-wick green-below-EMA SELL reference' : 'entry reference unavailable'}`,
+    `${policyCode}: ${policyCode === 'CP' ? 'breakeven then candle-pair TSL' : policyCode === 'BE' ? 'breakeven TSL' : 'fixed target and fixed stop loss'}`,
+  ].join('\n');
+  const tone = candlePair ? 'border-[#a855f7]/70 text-[#d8b4fe]' : policyCode === 'BE' ? 'border-[#f59e0b]/70 text-[#fcd34d]' : 'border-[#475569] text-[#cbd5e1]';
+  return (
+    <span title={title} className={`inline-flex rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold ${tone}`}>
+      {entryCode}/{policyCode}
+    </span>
   );
 }
 
