@@ -665,6 +665,7 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
   const sellTrigger = sellSetupClose != null ? Number(sellSetupClose) - Number(n) : null;
   const isSilverMicro2 = algoId === 'algo5';
   const referenceSlots = status?.reference_slots || {};
+  const candlePairSlots = status?.candle_pair_slots || {};
   const wickDistance = status?.ema_wick_distance_points ?? 300;
   const historyGroups = useMemo(() => buildSetupHistoryGroups(historyRows), [historyRows]);
   const activeHistoryGroup = useMemo(() => {
@@ -744,6 +745,16 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
             rule={`Green 15m: close < EMA20 and high >= EMA20 - ${wickDistance}`}
             reference={referenceSlots.sell_fallback_ema_wick}
             n={n}
+          />
+          <SilverCandlePairCard
+            title="BUY TSL pair (red -> green)"
+            tone="buy"
+            pair={candlePairSlots.buy_red_green}
+          />
+          <SilverCandlePairCard
+            title="SELL TSL pair (green -> red)"
+            tone="sell"
+            pair={candlePairSlots.sell_green_red}
           />
           <div className="sm:col-span-2 xl:col-span-4 flex flex-wrap gap-2 text-[10px] text-gray-500">
             <button onClick={() => openHistory('BUY')} className="rounded border border-[#22c55e]/40 px-2 py-0.5 font-semibold text-[#22c55e]">BUY history</button>
@@ -1027,6 +1038,50 @@ function SilverReferenceCard({
         {trigger != null ? `Fires on tick ${direction} ${formatNumber(trigger)} (close ${formula} ${n})` : 'Waiting for this exact 15m rule'}
         {time && <span className="ml-1">| set at {time}</span>}
       </div>
+    </div>
+  );
+}
+
+function SilverCandlePairCard({
+  title,
+  tone,
+  pair,
+}: {
+  title: string;
+  tone: 'buy' | 'sell';
+  pair: any;
+}) {
+  const isBuy = tone === 'buy';
+  const firstTime = formatDateTimeWithDate(pair?.first_bar?.time);
+  const secondTime = formatDateTimeWithDate(pair?.second_bar?.time);
+  const reference = Number(pair?.reference_price);
+  const buffer = Number(pair?.buffer_points);
+  const candidate = Number(pair?.candidate_sl);
+  const valid = Number.isFinite(reference) && Number.isFinite(buffer) && Number.isFinite(candidate);
+  const letter = isBuy ? 'A' : 'B';
+  const operation = isBuy ? '-' : '+';
+  const definition = isBuy ? 'A = lower low of the two bars' : 'B = higher high of the two bars';
+  const accent = isBuy ? 'border-[#a855f7]/40 bg-[#a855f7]/5' : 'border-[#f97316]/40 bg-[#f97316]/5';
+  const text = isBuy ? 'text-[#d8b4fe]' : 'text-[#fdba74]';
+  return (
+    <div className={`rounded border p-2 ${accent}`}>
+      <div className={`label text-[10px] ${text}`}>{title}</div>
+      {valid ? (
+        <>
+          <div className="mt-1 num text-sm text-gray-100">{letter} {formatNumber(reference)} {'->'} SL {formatNumber(candidate)}</div>
+          <div className="mt-1 text-[10px] leading-4 text-gray-400">
+            {definition} | {letter} {operation} buffer {formatNumber(buffer)}
+          </div>
+          <div className="text-[10px] leading-4 text-gray-500">
+            15m pair: {firstTime || '--'} {'->'} {secondTime || '--'}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="mt-1 num text-sm text-gray-100">No completed pair yet</div>
+          <div className="text-[10px] text-gray-500">Waiting for this exact consecutive 15m candle pattern.</div>
+        </>
+      )}
     </div>
   );
 }

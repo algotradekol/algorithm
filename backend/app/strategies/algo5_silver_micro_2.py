@@ -397,4 +397,20 @@ class Algo5SilverMicro2(Algo3SilverMicro):
                 }
         status["reference_slots"] = slots
         status["ema_wick_distance_points"] = self._ema_wick_distance_points()
+        # Expose the latest completed pair even before a position is open, so
+        # the dashboard can show exactly which 15-minute bars a future pair
+        # TSL move would use after breakeven arms.
+        pair_slots: dict[str, dict | None] = {}
+        for side, key in (("BUY", "buy_red_green"), ("SELL", "sell_green_red")):
+            pair = self._latest_candle_pair(side)
+            if pair is None:
+                pair_slots[key] = None
+                continue
+            pair_slots[key] = calculate_candle_pair_trailing(
+                side=side,
+                first_bar=pair[0],
+                second_bar=pair[1],
+                buffer_points=self._candle_pair_buffer_points(),
+            )
+        status["candle_pair_slots"] = pair_slots
         return status
