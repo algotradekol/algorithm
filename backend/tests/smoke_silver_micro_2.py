@@ -8,9 +8,13 @@ import datetime
 import threading
 from collections import deque
 
+import app.live_broker as live_broker_module
+import app.paper_broker as paper_broker_module
 from app.backtest import _simulate_silver_micro_range
 from app.charges import get_charges_config
+from app.live_broker import LiveBroker
 from app.strategies.algo5_silver_micro_2 import Algo5SilverMicro2
+from app.trailing_stop import calculate_candle_pair_trailing
 
 
 def check(name: str, passed: bool, detail: str = "") -> None:
@@ -141,6 +145,74 @@ def test_audit_identifies_fallback_reference() -> None:
     check("audit names fallback family", "EMA-wick fallback" in audit, audit)
 
 
+def test_candle_pair_tsl_is_directional_and_never_loosens() -> None:
+    red = _replay_bar(datetime.datetime(2026, 9, 1, 10, 0), 1100, 1120, 900, 1000)
+    green = _replay_bar(datetime.datetime(2026, 9, 1, 10, 15), 1000, 1080, 940, 1050)
+    buy = calculate_candle_pair_trailing(
+        side="BUY", first_bar=red, second_bar=green, buffer_points=100
+    )
+    check("BUY red-green pair uses lower low minus buffer", buy is not None and buy["candidate_sl"] == 800, str(buy))
+    weaker_buy = calculate_candle_pair_trailing(
+        side="BUY",
+        first_bar=_replay_bar(datetime.datetime(2026, 9, 1, 10, 30), 1100, 1110, 760, 900),
+        second_bar=_replay_bar(datetime.datetime(2026, 9, 1, 10, 45), 900, 940, 780, 930),
+        buffer_points=100,
+    )
+    check("BUY weaker pair cannot loosen protected stop", weaker_buy is not None and weaker_buy["candidate_sl"] < buy["candidate_sl"], str(weaker_buy))
+
+    sell_green = _replay_bar(datetime.datetime(2026, 9, 1, 11, 0), 900, 1100, 850, 1000)
+    sell_red = _replay_bar(datetime.datetime(2026, 9, 1, 11, 15), 1000, 1080, 820, 900)
+    sell = calculate_candle_pair_trailing(
+        side="SELL", first_bar=sell_green, second_bar=sell_red, buffer_points=100
+    )
+    check("SELL green-red pair uses higher high plus buffer", sell is not None and sell["candidate_sl"] == 1200, str(sell))
+    weaker_sell = calculate_candle_pair_trailing(
+        side="SELL",
+        first_bar=_replay_bar(datetime.datetime(2026, 9, 1, 11, 30), 900, 1150, 850, 1000),
+        second_bar=_replay_bar(datetime.datetime(2026, 9, 1, 11, 45), 1000, 1130, 820, 900),
+        buffer_points=100,
+    )
+    check("SELL weaker pair cannot loosen protected stop", weaker_sell is not None and weaker_sell["candidate_sl"] > sell["candidate_sl"], str(weaker_sell))
+
+    doji = _replay_bar(datetime.datetime(2026, 9, 1, 12, 0), 1000, 1050, 950, 1000)
+    check("doji pair is ignored", calculate_candle_pair_trailing(side="BUY", first_bar=doji, second_bar=green, buffer_points=100) is None)
+
+
+def test_candle_pair_move_is_audited_and_sent_to_live_broker() -> None:
+    first = _replay_bar(datetime.datetime(2026, 9, 1, 10, 0), 1100, 1120, 900, 1000)
+    second = _replay_bar(datetime.datetime(2026, 9, 1, 10, 15), 1000, 1080, 940, 1050)
+    position = {
+        "id": "pair-1",
+        "symbol": "MCX:SILVERMIC26AUGFUT",
+        "side": "BUY",
+        "qty": 1,
+        "sl_price": 750.0,
+        "trailing_sl_active": True,
+        "signal_snapshot": {
+            "fyers_sl_order_id": "SL-PAIR-1",
+            "silver_candle_pair_tsl": {"policy": "candle_pair_tsl_v1", "buffer_points": 100, "armed": True},
+            "trailing": {"activated": True, "events": [], "update_count": 1},
+        },
+    }
+    broker = object.__new__(LiveBroker)
+    broker.positions_table_name = lambda: "positions"
+    amendments: list[tuple] = []
+    broker._modify_slm_order = lambda *args, **kwargs: amendments.append((args, kwargs)) or {"s": "ok"}
+    original_paper_run = paper_broker_module.run_with_supabase
+    original_live_run = live_broker_module.run_with_supabase
+    paper_broker_module.run_with_supabase = lambda _fn: None
+    live_broker_module.run_with_supabase = lambda _fn: None
+    try:
+        updated = broker.apply_candle_pair_trailing_stop(position, 1100, first, second, 100)
+    finally:
+        paper_broker_module.run_with_supabase = original_paper_run
+        live_broker_module.run_with_supabase = original_live_run
+    event = updated["signal_snapshot"]["trailing"]["events"][-1]
+    check("pair trail raises BUY SL", updated["sl_price"] == 800.0, str(updated))
+    check("pair trail records both source candles", event["first_bar"]["time"] and event["second_bar"]["time"], str(event))
+    check("pair trail sends one FYERS SL amendment", len(amendments) == 1 and amendments[0][0][1] == 800.0, str(amendments))
+
+
 def _replay_bar(at: datetime.datetime, open_price: float, high: float, low: float, close: float) -> dict:
     return {
         "time": at,
@@ -220,6 +292,8 @@ def main() -> None:
     test_candle_close_trigger_uses_fallback_qualification()
     test_fallback_sell_tick_cross_fires_from_green_candle()
     test_audit_identifies_fallback_reference()
+    test_candle_pair_tsl_is_directional_and_never_loosens()
+    test_candle_pair_move_is_audited_and_sent_to_live_broker()
     test_backtest_replays_ema_wick_fallback_references()
     print("RESULT: ALL CHECKS PASSED")
 

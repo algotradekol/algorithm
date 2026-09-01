@@ -1398,6 +1398,15 @@ class Algo3SilverMicro(Strategy):
                 "final_target_enabled": True,
                 "initial_sl_price": sl_price,
             }
+            # Silver Micro 2.0 extends breakeven with a 15m candle-pair
+            # trail. The marker is captured at entry so older open rows keep
+            # their original one-time breakeven behavior after deployment.
+            if self.algo_id == "algo5":
+                snapshot["silver_candle_pair_tsl"] = {
+                    "policy": "candle_pair_tsl_v1",
+                    "buffer_points": float(self.settings.get("tsl_lock_step_points", 100)),
+                    "armed": False,
+                }
         try:
             open_trade_args = (
                 self.symbol, side, qty, float(entry_price),

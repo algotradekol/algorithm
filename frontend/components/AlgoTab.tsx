@@ -1602,6 +1602,7 @@ function TrailingBadge({ row }: { row: any }) {
   }
   const trailing = snap.trailing;
   const breakevenPolicy = snap.silver_exit_policy === 'target_to_breakeven_sl';
+  const candlePairPolicy = !!(snap.silver_candle_pair_tsl && typeof snap.silver_candle_pair_tsl === 'object');
   const breakeven = snap.silver_breakeven && typeof snap.silver_breakeven === 'object'
     ? snap.silver_breakeven
     : {};
@@ -1655,11 +1656,11 @@ function TrailingBadge({ row }: { row: any }) {
     <div className="text-xs text-gray-300">
       <div className="flex items-center gap-1 font-semibold text-[#22c55e]">
         <span className="h-1.5 w-1.5 rounded-full bg-[#22c55e]" />
-        {breakevenPolicy ? 'BE' : arrow} {currentSlIsFinite ? currentSl!.toFixed(2) : '--'}
+        {candlePairPolicy ? 'PAIR' : (breakevenPolicy ? 'BE' : arrow)} {currentSlIsFinite ? currentSl!.toFixed(2) : '--'}
         <span className="text-gray-400">{deltaLabel}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-gray-500">
-        <span>{breakevenPolicy ? `breakeven armed${firstAt ? ` ${firstAt}` : ''}` : (firstAt ? `active ${firstAt}` : 'active')} · {bumps}x{Number.isFinite(initialSl) ? ` · init ${initialSl.toFixed(2)}` : ''}</span>
+        <span>{candlePairPolicy ? `pair TSL armed${firstAt ? ` ${firstAt}` : ''}` : (breakevenPolicy ? `breakeven armed${firstAt ? ` ${firstAt}` : ''}` : (firstAt ? `active ${firstAt}` : 'active'))} · {bumps}x{Number.isFinite(initialSl) ? ` · init ${initialSl.toFixed(2)}` : ''}</span>
         <button
           type="button"
           onClick={() => setHistoryOpen(true)}
@@ -1680,7 +1681,7 @@ function TrailingBadge({ row }: { row: any }) {
         >
           <div className="flex items-start justify-between gap-4 border-b border-[#1f2937] px-4 py-3 sm:px-5">
             <div>
-              <h4 className="text-lg font-semibold text-gray-100">{breakevenPolicy ? 'Breakeven stop history' : 'Trailing SL history'}</h4>
+              <h4 className="text-lg font-semibold text-gray-100">{candlePairPolicy ? 'Candle-pair TSL history' : (breakevenPolicy ? 'Breakeven stop history' : 'Trailing SL history')}</h4>
               <p className="mt-1 text-sm text-gray-400">
                 {row?.symbol || 'Position'} · {side || '--'} · {bumps} saved trail {bumps === 1 ? 'move' : 'moves'}
               </p>
@@ -1728,10 +1729,10 @@ function TrailingBadge({ row }: { row: any }) {
               </div>
             ) : (
               <div className="overflow-x-auto rounded border border-[#1f2937]">
-                <table className="w-full min-w-[640px] border-collapse text-xs">
+                <table className="w-full min-w-[780px] border-collapse text-xs">
                   <thead className="bg-[#111827]">
                     <tr>
-                      {['#', 'Time', 'LTP', 'Previous SL', 'New SL', 'Delta'].map((column) => (
+                      {['#', 'Time', 'Rule', 'Pair', 'LTP', 'Previous SL', 'New SL', 'Delta'].map((column) => (
                         <th key={column} className="table-cell label">{column}</th>
                       ))}
                     </tr>
@@ -1741,10 +1742,15 @@ function TrailingBadge({ row }: { row: any }) {
                       const previous = Number(event?.previous_sl);
                       const next = Number(event?.new_sl);
                       const eventDelta = Number(event?.delta);
+                      const pair = event?.first_bar && event?.second_bar
+                        ? `${formatDateTimeWithDate(event.first_bar.time)} → ${formatDateTimeWithDate(event.second_bar.time)}`
+                        : '--';
                       return (
                         <tr key={`${event?.at || 'trail'}-${index}`} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
                           <td className="table-cell num text-gray-500">{index + 1}</td>
                           <td className="table-cell num text-gray-300">{formatDateTimeWithDate(event?.at)}</td>
+                          <td className="table-cell text-gray-300">{event?.reason === 'candle_pair' ? 'Candle pair' : (event?.reason === 'target_to_breakeven' ? 'Breakeven' : 'Trail')}</td>
+                          <td className="table-cell num text-gray-400">{pair}</td>
                           <td className="table-cell num text-gray-100">{formatNumber(event?.ltp)}</td>
                           <td className="table-cell num text-gray-100">{formatNumber(previous)}</td>
                           <td className="table-cell num font-semibold text-[#22c55e]">{formatNumber(next)}</td>

@@ -12,6 +12,7 @@ import math
 
 SILVER_EXIT_MODE_FIXED_TARGET_SL = "fixed_target_sl"
 SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN = "target_to_breakeven_sl"
+SILVER_CANDLE_PAIR_TSL = "candle_pair_tsl_v1"
 
 
 def normalize_silver_exit_mode(value: object) -> str:
@@ -37,6 +38,80 @@ def silver_position_exit_mode(position: dict | None, settings: dict) -> str:
 
 def uses_silver_breakeven_stop(position: dict | None, settings: dict) -> bool:
     return silver_position_exit_mode(position, settings) == SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN
+
+
+def uses_silver_candle_pair_tsl(position: dict | None) -> bool:
+    """Whether a newly-opened Silver Micro 2.0 position uses pair trailing."""
+    snapshot = (position or {}).get("signal_snapshot") or {}
+    pair_tsl = snapshot.get("silver_candle_pair_tsl") if isinstance(snapshot, dict) else None
+    return isinstance(pair_tsl, dict) and pair_tsl.get("policy") == SILVER_CANDLE_PAIR_TSL
+
+
+def calculate_candle_pair_trailing(
+    *,
+    side: str,
+    first_bar: dict,
+    second_bar: dict,
+    buffer_points: float,
+) -> dict | None:
+    """Return the 2.0 candle-pair trailing candidate, or ``None``.
+
+    BUY accepts a consecutive red then green pair and follows the lower low.
+    SELL mirrors that with green then red and follows the higher high. Dojis
+    are intentionally excluded from both patterns.
+    """
+    side = str(side or "").upper()
+    first_open = float(first_bar["open"])
+    first_close = float(first_bar["close"])
+    second_open = float(second_bar["open"])
+    second_close = float(second_bar["close"])
+    buffer_points = float(buffer_points)
+    first_time = first_bar.get("time")
+    second_time = second_bar.get("time")
+    if hasattr(first_time, "__sub__") and hasattr(second_time, "__sub__"):
+        try:
+            if (second_time - first_time).total_seconds() != 15 * 60:
+                return None
+        except (TypeError, ValueError):
+            return None
+
+    if side == "BUY":
+        if not (first_open > first_close and second_open < second_close):
+            return None
+        reference_price = min(float(first_bar["low"]), float(second_bar["low"]))
+        candidate_sl = reference_price - buffer_points
+        pattern = "red_green"
+    elif side == "SELL":
+        if not (first_open < first_close and second_open > second_close):
+            return None
+        reference_price = max(float(first_bar["high"]), float(second_bar["high"]))
+        candidate_sl = reference_price + buffer_points
+        pattern = "green_red"
+    else:
+        return None
+
+    return {
+        "pattern": pattern,
+        "reference_price": reference_price,
+        "buffer_points": buffer_points,
+        "candidate_sl": candidate_sl,
+        "first_bar": {
+            key: (
+                first_bar.get(key).isoformat()
+                if key == "time" and hasattr(first_bar.get(key), "isoformat")
+                else first_bar.get(key)
+            )
+            for key in ("time", "open", "high", "low", "close")
+        },
+        "second_bar": {
+            key: (
+                second_bar.get(key).isoformat()
+                if key == "time" and hasattr(second_bar.get(key), "isoformat")
+                else second_bar.get(key)
+            )
+            for key in ("time", "open", "high", "low", "close")
+        },
+    }
 
 
 def silver_tsl_points(settings: dict) -> tuple[float, float, float]:

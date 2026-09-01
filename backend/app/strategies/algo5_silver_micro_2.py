@@ -2,6 +2,7 @@ import datetime
 
 from .algo3_silver_micro import Algo3SilverMicro, _fmt
 from ..silver_setup_history import get_latest_setup_reference, record_setup_event
+from ..trailing_stop import calculate_candle_pair_trailing, uses_silver_candle_pair_tsl
 
 
 class Algo5SilverMicro2(Algo3SilverMicro):
@@ -247,6 +248,118 @@ class Algo5SilverMicro2(Algo3SilverMicro):
         snapshot["setup_family"] = self._buy_setup_family if side == "BUY" else self._sell_setup_family
         snapshot["ema_wick_distance_points"] = self._ema_wick_distance_points()
         return snapshot
+
+    def _latest_candle_pair(self, side: str) -> tuple[dict, dict] | None:
+        """Find the latest completed reversal pair, including pre-arm bars."""
+        bars = list(self._bars)
+        for index in range(len(bars) - 1, 0, -1):
+            first_bar, second_bar = bars[index - 1], bars[index]
+            if calculate_candle_pair_trailing(
+                side=side,
+                first_bar=first_bar,
+                second_bar=second_bar,
+                buffer_points=self._candle_pair_buffer_points(),
+            ) is not None:
+                return first_bar, second_bar
+        return None
+
+    def _candle_pair_buffer_points(self) -> float:
+        return float(self.settings.get("tsl_lock_step_points", 100) or 100)
+
+    def _apply_candle_pair_trailing(self, position: dict, ltp: float) -> dict | None:
+        """Apply a tighter completed-15m pair stop once breakeven is armed."""
+        if not uses_silver_candle_pair_tsl(position) or not position.get("trailing_sl_active"):
+            return position
+        pair = self._latest_candle_pair(str(position.get("side") or ""))
+        if pair is None:
+            return position
+        first_bar, second_bar = pair
+        candidate = calculate_candle_pair_trailing(
+            side=position.get("side"),
+            first_bar=first_bar,
+            second_bar=second_bar,
+            buffer_points=self._candle_pair_buffer_points(),
+        )
+        if candidate is None:
+            return position
+        candidate_sl = float(candidate["candidate_sl"])
+        side = str(position.get("side") or "").upper()
+        # A protective stop must remain on the safe side of the executable
+        # price. If the historic pair level is already breached, flatten now
+        # rather than send FYERS an invalid stop amendment.
+        already_breached = candidate_sl >= ltp if side == "BUY" else candidate_sl <= ltp
+        if already_breached:
+            print(
+                f"[algo5] candle-pair SL already crossed for {side}: "
+                f"candidate={candidate_sl:.2f}, LTP={ltp:.2f}; closing safely"
+            )
+            self.broker.close_trade(position, ltp, "TRAILING_SL")
+            if side == "BUY":
+                self._arm_buy_reentry_after_exit("TRAILING_SL")
+            else:
+                self._arm_sell_reentry_after_exit("TRAILING_SL")
+            return None
+        return self.broker.apply_candle_pair_trailing_stop(
+            position,
+            ltp,
+            first_bar,
+            second_bar,
+            self._candle_pair_buffer_points(),
+        )
+
+    def check_exits(self):
+        """Keep parent exits, with Algo5's pair trail after breakeven arms."""
+        position = self._open_position()
+        if not position:
+            return
+        snapshot = position.get("signal_snapshot") or {}
+        if isinstance(snapshot, dict) and (
+            snapshot.get("fyers_app_managed")
+            or snapshot.get("origin") in {"fyers_app_manual", "fyers_recovered_position"}
+        ):
+            return
+        ltp = position.get("_last_ltp") or self._last_tick_ltp
+        if not ltp:
+            return
+        ltp = float(ltp)
+        effective_settings = self._trailing_settings_for(position)
+        position = self.broker.apply_trailing_stop(position, ltp, effective_settings)
+        position = self._apply_candle_pair_trailing(position, ltp)
+        if not position:
+            return
+        side = position["side"]
+        sl = float(position["sl_price"])
+        target = float(position["target_price"])
+        try:
+            use_target = self.broker.should_exit_at_target(effective_settings, position)
+        except TypeError:
+            use_target = self.broker.should_exit_at_target(effective_settings)
+        if side == "BUY":
+            if ltp <= sl:
+                exit_reason = self._stop_exit_reason(position)
+                self.broker.close_trade(position, ltp, exit_reason)
+                self._arm_buy_reentry_after_exit(exit_reason)
+            elif use_target and ltp >= target:
+                self.broker.close_trade(position, ltp, "TARGET")
+                self._arm_buy_reentry_after_exit("TARGET")
+        else:
+            if ltp >= sl:
+                exit_reason = self._stop_exit_reason(position)
+                self.broker.close_trade(position, ltp, exit_reason)
+                self._arm_sell_reentry_after_exit(exit_reason)
+            elif use_target and ltp <= target:
+                self.broker.close_trade(position, ltp, "TARGET")
+                self._arm_sell_reentry_after_exit("TARGET")
+
+    def _finalize_bar(self, allow_signals: bool, require_closed: bool = True):
+        bars_before = len(self._bars)
+        super()._finalize_bar(allow_signals=allow_signals, require_closed=require_closed)
+        if len(self._bars) == bars_before:
+            return
+        position = self._open_position()
+        ltp = (position or {}).get("_last_ltp") or self._last_tick_ltp
+        if position and ltp:
+            self._apply_candle_pair_trailing(position, float(ltp))
 
     def feed_status(self) -> dict:
         status = super().feed_status()

@@ -22,6 +22,7 @@ from .supabase_client import run_with_supabase
 from .symbols import get_nse500_sector_map
 from .trailing_stop import (
     SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN,
+    calculate_candle_pair_trailing,
     normalize_silver_exit_mode,
 )
 
@@ -1132,8 +1133,13 @@ def _silver_micro_execution_assumption(
     target_pts = int(settings.get("target_points", 300))
     exit_mode = normalize_silver_exit_mode(settings.get("exit_mode"))
     trailing_clause = (
-        f" TSL activates at {float(settings.get('tsl_activate_points', 500))} points: reaching it moves the stop once to the actual entry price; "
-        f"the final target remains {target_pts} points from entry."
+        f" TSL activates at {float(settings.get('tsl_activate_points', 500))} points: reaching it moves the stop to the actual entry price; "
+        + (
+            f"Silver Micro 2.0 then trails from completed 15m reversal pairs using a {float(settings.get('tsl_lock_step_points', 100))} point buffer; "
+            if bool(settings.get('_silver_micro_2_backtest'))
+            else ""
+        )
+        + f"the final target remains {target_pts} points from entry."
         if exit_mode == SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN
         else " Target closes the position and the initial stop remains fixed."
     )
@@ -1565,6 +1571,8 @@ def _simulate_silver_micro_range(
     breakeven_mode = exit_mode == SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN
     silver_micro_2 = algo_id == "algo5"
     ema_wick_distance = float(settings.get("ema_wick_distance_points", 300) or 300)
+    candle_pair_tsl = bool(silver_micro_2 and breakeven_mode)
+    candle_pair_buffer = float(settings.get("tsl_lock_step_points", 100) or 100)
 
     # Pre-count 1m bars per day so the UI can show how much data existed.
     minute_bars_by_day: dict[datetime.date, int] = defaultdict(int)
@@ -1611,6 +1619,7 @@ def _simulate_silver_micro_range(
     last_fired_buy_setup_at: datetime.datetime | None = None
     last_fired_sell_setup_at: datetime.datetime | None = None
     minute_buffer: list[dict] = []
+    finalized_15m_bars: list[dict] = []
     current_bucket: datetime.datetime | None = None
     prev_ltp: float | None = None
     bars_finalized = 0
@@ -1642,6 +1651,7 @@ def _simulate_silver_micro_range(
             "volume": sum(c["volume"] for c in minute_buffer),
         }
         ema20 = _ema_step(ema20, bar["close"])
+        finalized_15m_bars.append(bar)
         bars_finalized += 1
 
         is_green = bar["close"] > bar["open"]
@@ -1713,6 +1723,12 @@ def _simulate_silver_micro_range(
                 "current_qualifying_red_close": bar["close"],
                 "setup_family": sell_family,
             }
+
+        # The second completed 15m candle makes a pair eligible. This runs
+        # after the bar's 1m target/SL checks, matching the live strategy's
+        # closed-candle trail update order.
+        if position and position.get("trailing_sl_active") and candle_pair_tsl:
+            maybe_apply_candle_pair_trailing(float(bar["close"]), bar["time"])
             # A finalized red bar becomes the new reference. Any handoff
             # tied to the older reference must not leak into this candle.
             sell_reentry_after_exit = None
@@ -1952,6 +1968,11 @@ def _simulate_silver_micro_range(
             "trailing_distance_points": 0.0,
             "breakeven_activation_price": float(activation_price) if breakeven_mode else None,
             "trailing_moves": [],
+            "candle_pair_tsl": {
+                "policy": "candle_pair_tsl_v1",
+                "buffer_points": candle_pair_buffer,
+                "armed": False,
+            } if candle_pair_tsl else None,
             "entry_mode": entry_metadata.get("entry_mode") or (
                 "THRESHOLD_TRIGGER"
             ),
@@ -2015,8 +2036,8 @@ def _simulate_silver_micro_range(
         position["entry_window_adverse_points"] = 0.0
         position_candidate = source_candidate
 
-    def maybe_apply_trailing(entry: float, side: str):
-        """Arm one fixed breakeven stop after the separate TSL milestone."""
+    def maybe_apply_trailing(entry: float, side: str, ltp: float | None = None):
+        """Arm breakeven, then immediately evaluate the latest pair for 2.0."""
         nonlocal position
         if not position or not breakeven_mode or position.get("trailing_sl_active"):
             return
@@ -2037,6 +2058,50 @@ def _simulate_silver_micro_range(
             "previous_sl": previous_sl,
             "new_sl": float(entry),
             "reason": "target_to_breakeven",
+        })
+        if candle_pair_tsl:
+            position["candle_pair_tsl"]["armed"] = True
+            position["candle_pair_tsl"]["armed_at"] = position.get("_last_trail_time")
+            maybe_apply_candle_pair_trailing(float(ltp if ltp is not None else entry), position.get("_last_trail_time"))
+
+    def maybe_apply_candle_pair_trailing(ltp: float, at) -> None:
+        """Use the latest valid completed reversal pair to tighten 2.0's SL."""
+        nonlocal position
+        if not position or not candle_pair_tsl or not position.get("trailing_sl_active"):
+            return
+        side = str(position.get("side") or "").upper()
+        pair_result = None
+        for index in range(len(finalized_15m_bars) - 1, 0, -1):
+            candidate = calculate_candle_pair_trailing(
+                side=side,
+                first_bar=finalized_15m_bars[index - 1],
+                second_bar=finalized_15m_bars[index],
+                buffer_points=candle_pair_buffer,
+            )
+            if candidate is not None:
+                pair_result = candidate
+                break
+        if pair_result is None:
+            return
+        previous_sl = float(position["sl_price"])
+        candidate_sl = float(pair_result["candidate_sl"])
+        tighter = candidate_sl > previous_sl if side == "BUY" else candidate_sl < previous_sl
+        if not tighter:
+            return
+        position["sl_price"] = candidate_sl
+        position["candle_pair_tsl"].update({
+            "last_pair": pair_result,
+            "last_updated_at": at.isoformat() if hasattr(at, "isoformat") else at,
+            "current_sl": candidate_sl,
+        })
+        position.setdefault("trailing_moves", []).append({
+            "time": at.isoformat() if hasattr(at, "isoformat") else at,
+            "side": side,
+            "previous_sl": previous_sl,
+            "new_sl": candidate_sl,
+            "delta": candidate_sl - previous_sl,
+            "reason": "candle_pair",
+            **pair_result,
         })
 
     def check_buy_reference_intrabar(candle: dict, day: datetime.date, in_scope: bool):
@@ -2372,7 +2437,7 @@ def _simulate_silver_micro_range(
                 # Mirror the live broker: update the trailing stop from this
                 # bar's favorable extreme before checking whether its
                 # reversal hits the newly tightened stop.
-                maybe_apply_trailing(entry, side)
+                maybe_apply_trailing(entry, side, float(candle["close"]))
                 sl = float(position["sl_price"])
                 stop_hit = candle["low"] <= sl if side == "BUY" else candle["high"] >= sl
                 target_hit = candle["high"] >= target if side == "BUY" else candle["low"] <= target
@@ -2493,6 +2558,7 @@ def _close_silver_micro_position(
         "trailing_distance_points": round(float(position.get("trailing_distance_points") or 0), 2),
         "trailing_move_count": len(trailing_moves),
         "trailing_moves": trailing_moves,
+        "candle_pair_tsl": position.get("candle_pair_tsl"),
         "max_protected_points": round(max_protected_points, 2),
         "entry_trigger": position.get("entry_trigger") or f"Historical {position['entry_time'].date().isoformat()} Silver Micro trigger replay.",
         **charges,

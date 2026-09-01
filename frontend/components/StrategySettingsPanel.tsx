@@ -101,6 +101,11 @@ const SILVER_EXIT_MODES = [
   ['target_to_breakeven_sl', 'Target + Breakeven Stop Loss', 'At the earlier TSL activation milestone, move the stop once to the actual entry price. The final target remains active.'],
 ];
 
+const SILVER_MICRO_2_EXIT_MODES = [
+  ['fixed_target_sl', 'Fixed Target + Fixed Stop Loss', 'Close at the fixed target or the initial stop loss. Neither level moves.'],
+  ['target_to_breakeven_sl', 'Target + Candle-Pair TSL', 'At TSL activation, move the stop to entry. It then tightens from completed 15-minute candle pairs; the final target remains active.'],
+];
+
 export default function StrategySettingsPanel({
   algoId,
   tradingMode,
@@ -154,11 +159,11 @@ export default function StrategySettingsPanel({
   async function save() {
     if (!settings || saving) return;
     if (SILVER_ALGO_IDS.has(algoId)) {
-      const values = ['silver_breakout_points', 'sl_points', 'tsl_activate_points', 'target_points', ...(algoId === 'algo5' ? ['ema_wick_distance_points'] : [])]
+      const values = ['silver_breakout_points', 'sl_points', 'tsl_activate_points', 'target_points', ...(algoId === 'algo5' ? ['ema_wick_distance_points', 'tsl_lock_step_points'] : [])]
         .map((key) => Number(settings[key]));
       if (values.some((value) => !Number.isFinite(value) || value <= 0)) {
         setError(algoId === 'algo5'
-          ? 'Breakout Offset, EMA wick distance, Initial Stop Loss, TSL Activates At, and Final Target must all be greater than zero.'
+          ? 'Breakout Offset, EMA wick distance, Initial Stop Loss, TSL Activates At, Final Target, and TSL buffer must all be greater than zero.'
           : 'Breakout Offset, Initial Stop Loss, TSL Activates At, and Final Target must all be greater than zero.');
         return;
       }
@@ -464,7 +469,7 @@ function ExitModeSelect({
     <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3">
       <div className="label mb-3">Exit Mode</div>
       <div className="grid gap-2">
-        {(SILVER_ALGO_IDS.has(algoId) ? SILVER_EXIT_MODES : EXIT_MODES).map(([value, label, helper]) => (
+        {(SILVER_ALGO_IDS.has(algoId) ? (algoId === 'algo5' ? SILVER_MICRO_2_EXIT_MODES : SILVER_EXIT_MODES) : EXIT_MODES).map(([value, label, helper]) => (
           <label key={value} className={`rounded border p-3 ${
             settings.exit_mode === value ? 'border-[#3b82f6] bg-[#3b82f6]/10' : 'border-[#1f2937] bg-[#0d1117]'
           }`}>
@@ -586,11 +591,20 @@ function SilverRiskSettings({
               setSettings={setSettings}
             />
           )}
+          {isSilverMicro2 && breakevenMode && (
+            <NumberField
+              fieldKey="tsl_lock_step_points"
+              label="TSL candle-pair buffer (points)"
+              helper="After breakeven arms, BUY uses the lower low of a red → green 15m pair minus this buffer; SELL mirrors it with the higher high of a green → red pair plus this buffer. Default 100."
+              settings={settings}
+              setSettings={setSettings}
+            />
+          )}
         </div>
       </div>
       {breakevenMode && (
         <div className="mt-5 rounded border border-[#3b82f6]/50 bg-[#3b82f6]/5 p-3 text-xs text-[#bfdbfe]">
-          FYERS keeps both the initial stop and the final target active. When TSL Activates At is reached, it amends only the existing stop to the actual entry price once; there are no further trailing steps.
+          FYERS keeps both the initial stop and final target active. When TSL Activates At is reached, the stop moves to entry. Silver Micro 2.0 then tightens it only from completed 15-minute reversal pairs; it never loosens the stop.
         </div>
       )}
     </>

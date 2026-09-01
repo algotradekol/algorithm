@@ -659,6 +659,62 @@ class LiveBroker(PaperBroker):
             return {**position, **rollback}
         return updated
 
+    def apply_candle_pair_trailing_stop(
+        self,
+        position: dict,
+        ltp: float,
+        first_bar: dict,
+        second_bar: dict,
+        buffer_points: float,
+    ) -> dict:
+        """Persist and broker-confirm a Silver Micro 2.0 pair trail move."""
+        previous_sl = float(position.get("sl_price") or 0)
+        updated = super().apply_candle_pair_trailing_stop(
+            position, ltp, first_bar, second_bar, buffer_points
+        )
+        new_sl = float(updated.get("sl_price") or 0)
+        if new_sl == previous_sl or new_sl <= 0:
+            return updated
+
+        snapshot = updated.get("signal_snapshot") or position.get("signal_snapshot") or {}
+        sl_order_id = snapshot.get("fyers_sl_order_id")
+        if not sl_order_id:
+            return updated
+        entry_side = str(updated.get("side") or position.get("side") or "").upper()
+        exit_side = "SELL" if entry_side == "BUY" else "BUY"
+        try:
+            response = self._modify_slm_order(
+                sl_order_id,
+                new_sl,
+                exit_side,
+                qty=int(position.get("qty") or 0),
+                symbol=position.get("symbol"),
+            )
+            if self._looks_successful(response):
+                print(
+                    f"[live_broker] candle-pair hard SL {position.get('symbol')} "
+                    f"order {sl_order_id} -> {new_sl:.2f}"
+                )
+                return updated
+            error = str(response)
+        except Exception as exc:
+            error = str(exc)
+
+        rollback = {
+            "sl_price": previous_sl,
+            "trailing_sl_active": bool(position.get("trailing_sl_active")),
+            "signal_snapshot": position.get("signal_snapshot") or {},
+        }
+        run_with_supabase(
+            lambda supabase: supabase.table(self.positions_table_name())
+            .update(rollback).eq("id", position["id"]).execute()
+        )
+        print(
+            f"[live_broker] LIVE PROTECTION FAILURE: retained SL {previous_sl:.2f} "
+            f"for {position.get('symbol')} after candle-pair amend failure: {error}"
+        )
+        return {**position, **rollback}
+
     def _modify_slm_order(
         self,
         order_id: str,

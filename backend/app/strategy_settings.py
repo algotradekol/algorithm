@@ -128,6 +128,9 @@ STRATEGY_DEFAULT_OVERRIDES = {
         "scan_enabled": False,
         "silver_breakout_points": 200,
         "ema_wick_distance_points": 300,
+        # Reuses the existing persisted trailing lock column for the 2.0
+        # candle-pair buffer, avoiding a new Supabase migration.
+        "tsl_lock_step_points": 100,
         "silver_buy_plan": "reference_breakout",
         "sl_points": 200,
         "tsl_activate_points": 500,
@@ -281,6 +284,8 @@ def validate_settings(settings: dict, algo_id: str) -> None:
             raise ValueError(f"{label} must be greater than zero.")
     if algo_id == "algo5" and float(settings.get("ema_wick_distance_points") or 0) <= 0:
         raise ValueError("EMA wick distance must be greater than zero.")
+    if algo_id == "algo5" and float(settings.get("tsl_lock_step_points") or 0) <= 0:
+        raise ValueError("TSL candle-pair buffer must be greater than zero.")
     if (
         str(settings.get("exit_mode") or "") == "target_to_breakeven_sl"
         and float(settings["tsl_activate_points"]) >= float(settings["target_points"])
