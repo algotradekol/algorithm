@@ -467,7 +467,7 @@ class PaperBroker:
         second_bar: dict,
         buffer_points: float,
     ) -> dict:
-        """Tighten a Silver Micro 2.0 stop from a completed 15m pair."""
+        """Replace Silver Micro 2.0's stop from the newest completed 15m pair."""
         if not uses_silver_candle_pair_tsl(position) or not position.get("trailing_sl_active"):
             return position
         result = calculate_candle_pair_trailing(
@@ -481,13 +481,17 @@ class PaperBroker:
 
         previous_sl = float(position.get("sl_price") or 0)
         candidate_sl = float(result["candidate_sl"])
-        side = str(position.get("side") or "").upper()
-        tighter = candidate_sl > previous_sl if side == "BUY" else candidate_sl < previous_sl
-        if not tighter:
-            return position
-
         snapshot = dict(position.get("signal_snapshot") or {})
         pair_state = dict(snapshot.get("silver_candle_pair_tsl") or {})
+        previous_pair = dict(pair_state.get("last_pair") or {})
+        # This method runs on every tick. A completed pair must be applied
+        # once, not repeatedly amended until the next 15-minute bar closes.
+        if (
+            previous_pair.get("first_bar", {}).get("time") == result["first_bar"].get("time")
+            and previous_pair.get("second_bar", {}).get("time") == result["second_bar"].get("time")
+        ):
+            return position
+
         trailing = dict(snapshot.get("trailing") or {})
         events = list(trailing.get("events") or [])
         now_iso = datetime.datetime.now(IST).isoformat()

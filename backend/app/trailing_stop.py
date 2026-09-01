@@ -56,15 +56,18 @@ def calculate_candle_pair_trailing(
 ) -> dict | None:
     """Return the 2.0 candle-pair trailing candidate, or ``None``.
 
-    BUY accepts a consecutive red then green pair and follows the lower low.
-    SELL mirrors that with green then red and follows the higher high. Dojis
-    are intentionally excluded from both patterns.
+    BUY accepts a consecutive red then green pair only when both closes are
+    above their own finalized EMA20, then follows the lower low. SELL mirrors
+    that with green then red below their own EMA20. Dojis and EMA-touching
+    candles are intentionally excluded from both patterns.
     """
     side = str(side or "").upper()
     first_open = float(first_bar["open"])
     first_close = float(first_bar["close"])
     second_open = float(second_bar["open"])
     second_close = float(second_bar["close"])
+    first_ema20 = first_bar.get("ema20")
+    second_ema20 = second_bar.get("ema20")
     buffer_points = float(buffer_points)
     first_time = first_bar.get("time")
     second_time = second_bar.get("time")
@@ -75,14 +78,32 @@ def calculate_candle_pair_trailing(
         except (TypeError, ValueError):
             return None
 
+    # Pair trailing is deliberately stricter than the color-only pattern:
+    # both completed bars must confirm the open position's EMA direction.
+    try:
+        first_ema20 = float(first_ema20)
+        second_ema20 = float(second_ema20)
+    except (TypeError, ValueError):
+        return None
+
     if side == "BUY":
-        if not (first_open > first_close and second_open < second_close):
+        if not (
+            first_open > first_close
+            and second_open < second_close
+            and first_close > first_ema20
+            and second_close > second_ema20
+        ):
             return None
         reference_price = min(float(first_bar["low"]), float(second_bar["low"]))
         candidate_sl = reference_price - buffer_points
         pattern = "red_green"
     elif side == "SELL":
-        if not (first_open < first_close and second_open > second_close):
+        if not (
+            first_open < first_close
+            and second_open > second_close
+            and first_close < first_ema20
+            and second_close < second_ema20
+        ):
             return None
         reference_price = max(float(first_bar["high"]), float(second_bar["high"]))
         candidate_sl = reference_price + buffer_points
@@ -95,6 +116,8 @@ def calculate_candle_pair_trailing(
         "reference_price": reference_price,
         "buffer_points": buffer_points,
         "candidate_sl": candidate_sl,
+        "first_ema20": first_ema20,
+        "second_ema20": second_ema20,
         "first_bar": {
             key: (
                 first_bar.get(key).isoformat()

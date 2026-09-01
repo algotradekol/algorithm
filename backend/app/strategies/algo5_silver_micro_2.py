@@ -267,7 +267,7 @@ class Algo5SilverMicro2(Algo3SilverMicro):
         return float(self.settings.get("tsl_lock_step_points", 100) or 100)
 
     def _apply_candle_pair_trailing(self, position: dict, ltp: float) -> dict | None:
-        """Apply a tighter completed-15m pair stop once breakeven is armed."""
+        """Replace the stop from the newest completed pair once breakeven is armed."""
         if not uses_silver_candle_pair_tsl(position) or not position.get("trailing_sl_active"):
             return position
         pair = self._latest_candle_pair(str(position.get("side") or ""))

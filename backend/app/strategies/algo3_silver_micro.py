@@ -713,6 +713,9 @@ class Algo3SilverMicro(Strategy):
             return
         self._bars.append(bar)
         self._ema20 = _ema_step(self._ema20, bar["close"])
+        # Preserve the finalized EMA alongside the bar for Silver Micro 2.0's
+        # candle-pair TSL filter. This metadata does not affect Algo3 logic.
+        bar["ema20"] = float(self._ema20) if self._ema20 is not None else None
         self._last_bar_at = bar["time"].isoformat()
         self._minute_buffer = []
         # Only log LIVE bars (allow_signals=True). Warmup replays thousands

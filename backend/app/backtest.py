@@ -1651,6 +1651,9 @@ def _simulate_silver_micro_range(
             "volume": sum(c["volume"] for c in minute_buffer),
         }
         ema20 = _ema_step(ema20, bar["close"])
+        # Pair TSL uses each completed candle's own finalized EMA20, matching
+        # the live Silver Micro 2.0 aggregation path.
+        bar["ema20"] = float(ema20) if ema20 is not None else None
         finalized_15m_bars.append(bar)
         bars_finalized += 1
 
@@ -2065,7 +2068,7 @@ def _simulate_silver_micro_range(
             maybe_apply_candle_pair_trailing(float(ltp if ltp is not None else entry), position.get("_last_trail_time"))
 
     def maybe_apply_candle_pair_trailing(ltp: float, at) -> None:
-        """Use the latest valid completed reversal pair to tighten 2.0's SL."""
+        """Replace 2.0's stop from the latest completed valid reversal pair."""
         nonlocal position
         if not position or not candle_pair_tsl or not position.get("trailing_sl_active"):
             return
@@ -2085,8 +2088,12 @@ def _simulate_silver_micro_range(
             return
         previous_sl = float(position["sl_price"])
         candidate_sl = float(pair_result["candidate_sl"])
-        tighter = candidate_sl > previous_sl if side == "BUY" else candidate_sl < previous_sl
-        if not tighter:
+        pair_state = position.get("candle_pair_tsl") or {}
+        previous_pair = pair_state.get("last_pair") or {}
+        if (
+            (previous_pair.get("first_bar") or {}).get("time") == (pair_result.get("first_bar") or {}).get("time")
+            and (previous_pair.get("second_bar") or {}).get("time") == (pair_result.get("second_bar") or {}).get("time")
+        ):
             return
         position["sl_price"] = candidate_sl
         position["candle_pair_tsl"].update({
@@ -2103,6 +2110,11 @@ def _simulate_silver_micro_range(
             "reason": "candle_pair",
             **pair_result,
         })
+        already_breached = candidate_sl >= ltp if side == "BUY" else candidate_sl <= ltp
+        if already_breached:
+            exit_time = at if isinstance(at, datetime.datetime) else None
+            if exit_time is not None:
+                close_position(float(ltp), exit_time, "TRAILING_SL", exit_time.date())
 
     def check_buy_reference_intrabar(candle: dict, day: datetime.date, in_scope: bool):
         """Enter BUY at the live 1m crossing of the carried 15m reference."""
@@ -2438,6 +2450,14 @@ def _simulate_silver_micro_range(
                 # bar's favorable extreme before checking whether its
                 # reversal hits the newly tightened stop.
                 maybe_apply_trailing(entry, side, float(candle["close"]))
+                # A newly finalized candle pair can be invalid at the current
+                # price. In that case the pair helper closes immediately,
+                # matching live/paper behavior; do not keep reading a closed
+                # position during this replay minute.
+                if position is None:
+                    prev_ltp = candle["close"]
+                    last_bar_processed = candle
+                    continue
                 sl = float(position["sl_price"])
                 stop_hit = candle["low"] <= sl if side == "BUY" else candle["high"] >= sl
                 target_hit = candle["high"] >= target if side == "BUY" else candle["low"] <= target
