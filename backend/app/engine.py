@@ -23,6 +23,7 @@ from .fyers_client import connect_live_feed
 from .fyers_auth import get_stored_access_token, refresh_access_token_from_refresh_token
 from .strategies.algo1_opening_range import Algo1OpeningRange
 from .strategies.algo3_silver_micro import Algo3SilverMicro
+from .strategies.algo5_silver_micro_2 import Algo5SilverMicro2
 from .strategies.un1_915_filtered import UN1915Filtered
 from .config import ENTRY_CHECK_TIME, HIDDEN_TABS, SQUARE_OFF_TIME
 
@@ -34,6 +35,10 @@ _STRATEGY_TAB_MAP = {
     "filter": "algo2",
     "silvermicro": "algo3",
     "silver": "algo3",
+    "silvermicro20": "algo5",
+    "silvermicro2": "algo5",
+    "silver2": "algo5",
+    "silver20": "algo5",
 }
 _HIDDEN_ALGO_IDS = {
     _STRATEGY_TAB_MAP[key]
@@ -414,21 +419,22 @@ def _build_live_feed_plans(hhmm: str | None = None) -> list[dict]:
     plans: list[dict] = []
     dedicated_symbols: set[str] = set()
 
-    silver_strategy = STRATEGIES.get("algo3")
-    if silver_strategy and _strategy_feed_permitted(silver_strategy, current_hhmm):
-        silver_symbols = sorted({
-            symbol
-            for symbol in (getattr(silver_strategy, "watchlist", []) or [])
-            if symbol
+    silver_symbols = sorted({
+        symbol
+        for algo_id in ("algo3", "algo5")
+        for strategy in [STRATEGIES.get(algo_id)]
+        if strategy and _strategy_feed_permitted(strategy, current_hhmm)
+        for symbol in (getattr(strategy, "watchlist", []) or [])
+        if symbol
+    })
+    if silver_symbols:
+        plans.append({
+            "name": "silver",
+            "symbols": silver_symbols,
+            "litemode": True,
+            "description": "Dedicated Silver execution feed",
         })
-        if silver_symbols:
-            plans.append({
-                "name": "silver",
-                "symbols": silver_symbols,
-                "litemode": True,
-                "description": "Dedicated Silver execution feed",
-            })
-            dedicated_symbols.update(silver_symbols)
+        dedicated_symbols.update(silver_symbols)
 
     general_symbols = sorted({
         symbol
@@ -2036,6 +2042,7 @@ def start_engine():
             "algo1": lambda: Algo1OpeningRange(watchlist),
             "algo2": lambda: UN1915Filtered(watchlist),
             "algo3": lambda: Algo3SilverMicro(),
+            "algo5": lambda: Algo5SilverMicro2(),
         }
         strategies = {
             algo_id: ctor()

@@ -7,6 +7,7 @@ import { useWebSocket, WebSocketState } from '../lib/useWebSocket';
 import { PAGE_SIZE, PaginationControls } from './PaginationControls';
 
 const FALLBACK_POLL_MS = 5_000;
+const SILVER_ALGO_IDS = new Set(['algo3', 'algo5']);
 
 // ─── Debug logger (always on — remove later if too noisy) ──────────────────
 const _t = () => new Date().toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' });
@@ -46,6 +47,7 @@ export default function AlgoTab({
   const [exitingPositionId, setExitingPositionId] = useState<string | null>(null);
   const [editingProtection, setEditingProtection] = useState<any | null>(null);
   const [savingProtection, setSavingProtection] = useState(false);
+  const [csvBusy, setCsvBusy] = useState<'open' | 'closed' | null>(null);
   const walletRequestId = useRef(0);
   const brokerPositionsRequestId = useRef(0);
   const brokerOrdersRequestId = useRef(0);
@@ -82,12 +84,38 @@ export default function AlgoTab({
     }
   }, [algoId]);
 
+  const downloadCsv = useCallback(async (kind: 'open' | 'closed') => {
+    if (csvBusy) return;
+    setCsvBusy(kind);
+    try {
+      const [rows, settings] = await Promise.all([
+        kind === 'open'
+          ? api.positions(algoId)
+          : api.trades(algoId, 10_000, false),
+        api.getSettings(algoId),
+      ]);
+      downloadCsvFile(
+        withReportSettings(rows, {
+          algoId,
+          tradingMode: settings?.trading_mode || tradingMode || 'paper',
+          kind,
+          settings,
+        }),
+        `${algoId}-${tradingMode || 'paper'}-${kind}-${new Date().toISOString().slice(0, 10)}.csv`,
+      );
+    } catch (err: any) {
+      setError(err?.message || `Could not download ${kind} CSV.`);
+    } finally {
+      setCsvBusy(null);
+    }
+  }, [algoId, csvBusy, tradingMode]);
+
   const loadData = useCallback(async () => {
     const requestId = ++dataRequestId.current;
     // Polling logs removed - see backend debug report instead
     const [summaryResult, positionsResult, tradesResult, scanResult, feedResult] = await Promise.allSettled([
       api.summary(algoId), api.positions(algoId), api.trades(algoId), api.scanResults(algoId),
-      algoId === 'algo3' ? api.feedStatus(algoId) : Promise.resolve(null),
+      SILVER_ALGO_IDS.has(algoId) ? api.feedStatus(algoId) : Promise.resolve(null),
     ]);
     if (requestId !== dataRequestId.current) {
       log(`⚡ stale req#${requestId} discarded`);
@@ -417,7 +445,7 @@ export default function AlgoTab({
           </button>
         </div>
         <SettingsDrawer open={settingsOpen} algoId={algoId} tradingMode={tradingMode} onClose={() => setSettingsOpen(false)} />
-        {algoId !== 'algo3' && (
+        {!SILVER_ALGO_IDS.has(algoId) && (
           <div className="mt-4">
             <ScanResultsPanel
               algoId={algoId}
@@ -441,7 +469,7 @@ export default function AlgoTab({
   const walletSummary = walletStatus?.summary || {};
   const liveWalletBalance = optionalNumber(walletSummary.wallet_balance);
   const showLiveWallet = tradingMode === 'live';
-  const isSilverAlgo = algoId === 'algo3';
+  const isSilverAlgo = SILVER_ALGO_IDS.has(algoId);
   const openUnrealizedPnl = positions.reduce((total, position) => {
     const ltp = Number(position.ltp ?? position.last_ltp ?? position._last_ltp ?? position.entry_price);
     const entry = Number(position.entry_price || 0);
@@ -485,9 +513,9 @@ export default function AlgoTab({
       .filter((position) => !managedPositionKeys.has(`${position.symbol}|${position.side}`))
       .map((position) => ({
         ...position,
-        position_source: 'fyers_app',
+        position_source: 'fyers_recovered',
         is_broker_position: true,
-        entry_trigger: 'Opened directly in FYERS app',
+        entry_trigger: 'Recovered from FYERS broker position',
       })),
   ];
 
@@ -542,7 +570,7 @@ export default function AlgoTab({
           </p>
         ));
       })()}
-      {isSilverAlgo && <SilverFeedPanel status={feedStatus} />}
+      {isSilverAlgo && <SilverFeedPanel algoId={algoId} status={feedStatus} />}
 
       {isSilverAlgo ? (
         <div className="grid grid-cols-2 gap-1.5 sm:gap-2 lg:grid-cols-4">
@@ -617,18 +645,24 @@ export default function AlgoTab({
         />
       )}
 
-      {algoId !== 'algo3' && (
+      {!SILVER_ALGO_IDS.has(algoId) && (
         <ScanResultsPanel algoId={algoId} results={scanResults} openPositions={positions} onRefresh={loadData} />
       )}
 
       <div className="grid min-w-0 gap-4">
         <section className="min-w-0">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Open Positions</h3>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Open Positions</h3>
+            <CsvButton label="Download open CSV" busy={csvBusy === 'open'} onClick={() => downloadCsv('open')} />
+          </div>
           <PositionsTable rows={openPositionRows} onExit={exitPosition} onEditProtection={openEditProtection} exitingPositionId={exitingPositionId} tradingMode={tradingMode} />
         </section>
 
         <section className="min-w-0">
-          <h3 className="mb-2 text-xs font-semibold uppercase tracking-wider text-gray-500">Closed Trades Today</h3>
+          <div className="mb-2 flex items-center justify-between gap-3">
+            <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Closed Trades Today</h3>
+            <CsvButton label="Download closed CSV" busy={csvBusy === 'closed'} onClick={() => downloadCsv('closed')} />
+          </div>
           <TradesTable rows={trades} />
         </section>
       </div>
@@ -637,7 +671,7 @@ export default function AlgoTab({
   );
 }
 
-function SilverFeedPanel({ status }: { status: any }) {
+function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
   const [historyOpenSide, setHistoryOpenSide] = useState<'BUY' | 'SELL' | null>(null);
   const [historyRows, setHistoryRows] = useState<any[]>([]);
   const [historyBusy, setHistoryBusy] = useState(false);
@@ -662,6 +696,10 @@ function SilverFeedPanel({ status }: { status: any }) {
   const n = status?.n_points ?? 150;
   const buyTrigger = buySetupClose != null ? Number(buySetupClose) + Number(n) : null;
   const sellTrigger = sellSetupClose != null ? Number(sellSetupClose) - Number(n) : null;
+  const isSilverMicro2 = algoId === 'algo5';
+  const referenceSlots = status?.reference_slots || {};
+  const candlePairSlots = status?.candle_pair_slots || {};
+  const wickDistance = status?.ema_wick_distance_points ?? 300;
   const historyGroups = useMemo(() => buildSetupHistoryGroups(historyRows), [historyRows]);
   const activeHistoryGroup = useMemo(() => {
     if (!historyGroups.length) return null;
@@ -676,7 +714,7 @@ function SilverFeedPanel({ status }: { status: any }) {
     setHistoryError('');
     setHistorySelectedDate(null);
     try {
-      const result = await api.setupHistory('algo3', side, 30, 100, {
+      const result = await api.setupHistory(algoId, side, 30, 100, {
         currentSessionOnly: true,
         liveOnly: true,
       });
@@ -711,6 +749,53 @@ function SilverFeedPanel({ status }: { status: any }) {
         <FeedStat label="15m bars stored" value={status?.bars_15m ?? 0} />
         <FeedStat label="EMA20" value={formatNumber(status?.ema20)} />
       </div>
+      {isSilverMicro2 ? (
+        <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
+          <SilverReferenceCard
+            title="BUY current reference"
+            tone="buy"
+            rule="Green 15m: close > open and close > EMA20"
+            reference={referenceSlots.buy_current}
+            n={n}
+          />
+          <SilverReferenceCard
+            title="BUY EMA-wick fallback"
+            tone="buy"
+            rule={`Red 15m: close > EMA20 and low <= EMA20 + ${wickDistance}`}
+            reference={referenceSlots.buy_fallback_ema_wick}
+            n={n}
+          />
+          <SilverReferenceCard
+            title="SELL current reference"
+            tone="sell"
+            rule="Red 15m: close < open and close < EMA20"
+            reference={referenceSlots.sell_current}
+            n={n}
+          />
+          <SilverReferenceCard
+            title="SELL EMA-wick fallback"
+            tone="sell"
+            rule={`Green 15m: close < EMA20 and high >= EMA20 - ${wickDistance}`}
+            reference={referenceSlots.sell_fallback_ema_wick}
+            n={n}
+          />
+          <SilverCandlePairCard
+            title="BUY TSL pair (red -> green)"
+            tone="buy"
+            pair={candlePairSlots.buy_red_green}
+          />
+          <SilverCandlePairCard
+            title="SELL TSL pair (green -> red)"
+            tone="sell"
+            pair={candlePairSlots.sell_green_red}
+          />
+          <div className="sm:col-span-2 xl:col-span-4 flex flex-wrap gap-2 text-[10px] text-gray-500">
+            <button onClick={() => openHistory('BUY')} className="rounded border border-[#22c55e]/40 px-2 py-0.5 font-semibold text-[#22c55e]">BUY history</button>
+            <button onClick={() => openHistory('SELL')} className="rounded border border-[#ef4444]/40 px-2 py-0.5 font-semibold text-[#ef4444]">SELL history</button>
+            <span>Each card keeps its own latest saved reference; the active trade reference is selected by the matching setup rule.</span>
+          </div>
+        </div>
+      ) : (
       <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
         <div className="rounded border border-[#22c55e]/30 bg-[#22c55e]/5 p-2">
           <div className="flex items-center justify-between gap-2">
@@ -749,6 +834,7 @@ function SilverFeedPanel({ status }: { status: any }) {
           </div>
         </div>
       </div>
+      )}
       <div className="mt-2 flex flex-wrap gap-2 text-[10px] text-gray-500">
         <span>History load: {status?.history_error || status?.history_loading ? 'check logs' : 'ok'}</span>
         <span>Warmup 1m candles: {status?.warmup_minute_candles ?? 0}</span>
@@ -761,7 +847,7 @@ function SilverFeedPanel({ status }: { status: any }) {
               <div>
                 <div className="text-sm font-semibold text-gray-100">{historyOpenSide} setup history</div>
                 <div className="text-xs text-gray-500">
-                  Saved qualifying 15m candles for Silver Micro
+                  Saved qualifying 15m candles for {algoId === 'algo5' ? 'Silver Micro 2.0' : 'Silver Micro'}
                 </div>
               </div>
               <button onClick={() => setHistoryOpenSide(null)} className="text-sm text-gray-500 hover:text-gray-100">X</button>
@@ -953,6 +1039,148 @@ function FeedStat({ label, value }: { label: string; value: any }) {
   );
 }
 
+function CsvButton({ label, busy, onClick }: { label: string; busy: boolean; onClick: () => void }) {
+  return (
+    <button
+      type="button"
+      onClick={onClick}
+      disabled={busy}
+      className="inline-flex min-h-8 shrink-0 items-center gap-1.5 rounded border border-[#22c55e]/70 bg-[#22c55e]/10 px-2.5 py-1 text-xs font-semibold text-[#4ade80] disabled:cursor-not-allowed disabled:opacity-60"
+    >
+      <i className="ri-file-download-line text-sm" />
+      {busy ? 'Preparing...' : label}
+    </button>
+  );
+}
+
+function csvValue(value: unknown): string {
+  if (value === null || value === undefined) return '';
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+}
+
+function csvCell(value: unknown): string {
+  return `"${csvValue(value).replace(/"/g, '""')}"`;
+}
+
+function withReportSettings(
+  rows: any[],
+  report: { algoId: string; tradingMode: string; kind: 'open' | 'closed'; settings: any },
+) {
+  const generatedAt = new Date().toLocaleString('sv-SE', {
+    timeZone: 'Asia/Kolkata',
+    hour12: false,
+  }).replace(' ', 'T') + '+05:30';
+  const settings = report.settings && typeof report.settings === 'object' ? report.settings : {};
+  const settingColumns = Object.fromEntries(
+    Object.entries(settings).map(([key, value]) => [`settings_${key}`, value]),
+  );
+  const reportColumns = {
+    report_generated_at_ist: generatedAt,
+    report_algo_id: report.algoId,
+    report_trading_mode: report.tradingMode,
+    report_kind: report.kind,
+    report_settings_json: settings,
+    ...settingColumns,
+  };
+  return (Array.isArray(rows) ? rows : []).map((row) => ({ ...row, ...reportColumns }));
+}
+
+function downloadCsvFile(rows: any[], fileName: string) {
+  const normalizedRows = Array.isArray(rows) ? rows : [];
+  const columns = Array.from(new Set(normalizedRows.flatMap((row) => Object.keys(row || {}))));
+  const content = [
+    columns.map(csvCell).join(','),
+    ...normalizedRows.map((row) => columns.map((column) => csvCell(row?.[column])).join(',')),
+  ].join('\r\n');
+  const url = URL.createObjectURL(new Blob([`\ufeff${content}`], { type: 'text/csv;charset=utf-8' }));
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = fileName;
+  link.click();
+  URL.revokeObjectURL(url);
+}
+
+function SilverReferenceCard({
+  title,
+  tone,
+  rule,
+  reference,
+  n,
+}: {
+  title: string;
+  tone: 'buy' | 'sell';
+  rule: string;
+  reference: any;
+  n: number;
+}) {
+  const isBuy = tone === 'buy';
+  const close = reference?.close;
+  const trigger = reference?.trigger_level;
+  const time = formatDateTimeWithDate(reference?.time);
+  const accent = isBuy ? 'border-[#22c55e]/30 bg-[#22c55e]/5' : 'border-[#ef4444]/30 bg-[#ef4444]/5';
+  const text = isBuy ? 'text-[#22c55e]' : 'text-[#ef4444]';
+  const direction = isBuy ? '>=' : '<=';
+  const formula = isBuy ? '+' : '-';
+  return (
+    <div className={`rounded border p-2 ${accent}`}>
+      <div className={`label text-[10px] ${text}`}>{title}</div>
+      <div className="mt-1 text-[10px] leading-4 text-gray-400">{rule}</div>
+      <div className="mt-2 num text-sm text-gray-100">
+        {close != null ? `Close ${formatNumber(close)}` : 'None captured yet'}
+      </div>
+      <div className="text-[10px] text-gray-500">
+        {trigger != null ? `Fires on tick ${direction} ${formatNumber(trigger)} (close ${formula} ${n})` : 'Waiting for this exact 15m rule'}
+        {time && <span className="ml-1">| set at {time}</span>}
+      </div>
+    </div>
+  );
+}
+
+function SilverCandlePairCard({
+  title,
+  tone,
+  pair,
+}: {
+  title: string;
+  tone: 'buy' | 'sell';
+  pair: any;
+}) {
+  const isBuy = tone === 'buy';
+  const firstTime = formatDateTimeWithDate(pair?.first_bar?.time);
+  const secondTime = formatDateTimeWithDate(pair?.second_bar?.time);
+  const reference = Number(pair?.reference_price);
+  const buffer = Number(pair?.buffer_points);
+  const candidate = Number(pair?.candidate_sl);
+  const valid = Number.isFinite(reference) && Number.isFinite(buffer) && Number.isFinite(candidate);
+  const letter = isBuy ? 'A' : 'B';
+  const operation = isBuy ? '-' : '+';
+  const definition = isBuy ? 'A = lower low of the two bars' : 'B = higher high of the two bars';
+  const accent = isBuy ? 'border-[#a855f7]/40 bg-[#a855f7]/5' : 'border-[#f97316]/40 bg-[#f97316]/5';
+  const text = isBuy ? 'text-[#d8b4fe]' : 'text-[#fdba74]';
+  return (
+    <div className={`rounded border p-2 ${accent}`}>
+      <div className={`label text-[10px] ${text}`}>{title}</div>
+      {valid ? (
+        <>
+          <div className="mt-1 num text-sm text-gray-100">{letter} {formatNumber(reference)} {'->'} SL {formatNumber(candidate)}</div>
+          <div className="mt-1 text-[10px] leading-4 text-gray-400">
+            {definition} | {letter} {operation} buffer {formatNumber(buffer)}
+          </div>
+          <div className="text-[10px] leading-4 text-gray-500">
+            15m pair: {firstTime || '--'} {'->'} {secondTime || '--'}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="mt-1 num text-sm text-gray-100">No completed pair yet</div>
+          <div className="text-[10px] text-gray-500">Waiting for this exact consecutive 15m candle pattern.</div>
+        </>
+      )}
+    </div>
+  );
+}
+
 function SettingsDrawer({
   open,
   algoId,
@@ -1050,8 +1278,9 @@ function PositionsTable({
                 <MobileField label="Qty" value={row.qty} />
                 <MobileField label="Entry" value={formatNumber(row.entry_price)} />
                 <MobileField label="LTP" value={Number.isFinite(ltp) ? formatNumber(ltp) : '--'} />
-                <MobileField label="SL" value={formatNumber(row.sl_price)} />
-                <MobileField label="Target" value={formatNumber(row.target_price)} />
+                <MobileField label="SL" value={formatProtectionLevel(row, row.sl_price, 'sl')} />
+                <MobileField label="Target" value={formatProtectionLevel(row, row.target_price, 'target')} />
+                <MobileField label="Logic" value={<LogicCodeBadge row={row} />} />
                 <MobileField label="Trailing SL" value={<TrailingBadge row={row} />} wide />
                 <MobileField label="Trigger" value={formatTrigger(row.entry_trigger)} wide />
                 <MobileField label="Signal Audit" value={<SignalAudit row={row} />} wide />
@@ -1064,10 +1293,10 @@ function PositionsTable({
         })}
       </div>
       <div className="hidden w-full max-w-full overflow-x-auto overscroll-x-contain rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1550px] table-auto border-collapse text-xs">
+        <table className="w-full min-w-[1640px] table-auto border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'SL', 'Target', 'Trailing SL', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
+            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'SL', 'Target', 'Logic', 'Trailing SL', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
               <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
@@ -1075,7 +1304,7 @@ function PositionsTable({
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={15} className="table-cell text-gray-500">No open positions</td>
+              <td colSpan={16} className="table-cell text-gray-500">No open positions</td>
             </tr>
           ) : visibleRows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
@@ -1099,8 +1328,9 @@ function PositionsTable({
                 <td className="table-cell num whitespace-nowrap text-gray-400">{formatDateTime(row.entry_time)}</td>
                 <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.entry_price)}</td>
                 <td className="table-cell num whitespace-nowrap text-gray-100">{Number.isFinite(ltp) ? formatNumber(ltp) : '--'}</td>
-                <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.sl_price)}</td>
-                <td className="table-cell num whitespace-nowrap text-gray-100">{formatNumber(row.target_price)}</td>
+                <td className="table-cell num whitespace-nowrap text-gray-100">{formatProtectionLevel(row, row.sl_price, 'sl')}</td>
+                <td className="table-cell num whitespace-nowrap text-gray-100">{formatProtectionLevel(row, row.target_price, 'target')}</td>
+                <td className="table-cell whitespace-nowrap"><LogicCodeBadge row={row} /></td>
                 <td className="table-cell w-[170px] whitespace-nowrap"><TrailingBadge row={row} /></td>
                 <td className="table-cell w-[260px] max-w-[320px] text-gray-400 align-top">
                   <div className="max-h-24 overflow-y-auto break-words whitespace-normal pr-1 leading-relaxed">
@@ -1174,6 +1404,7 @@ function TradesTable({ rows }: { rows: any[] }) {
               <MobileField label="Exit Time" value={row.exit_time ? formatTradeTime(row.exit_time, row.entry_time) : "--"} />
               <MobileField label="Exit" value={formatNumber(row.exit_price)} />
               <MobileField label="Reason" value={formatReason(row.exit_reason)} />
+              <MobileField label="Logic" value={<LogicCodeBadge row={row} />} />
               <MobileField label="Trailing SL" value={<TrailingBadge row={row} />} wide />
               <MobileField label="Gross" value={formatMoney(row.gross_pnl)} />
               <MobileField label="Charges" value={formatMoney(row.total_charges)} />
@@ -1182,10 +1413,10 @@ function TradesTable({ rows }: { rows: any[] }) {
         ))}
       </div>
       <div className="hidden w-full max-w-full overflow-x-auto overscroll-x-contain rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1680px] table-auto border-collapse text-xs">
+        <table className="w-full min-w-[1760px] table-auto border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {["Symbol", "Side", "Qty / Lots", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Trailing SL", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
+            {["Symbol", "Side", "Qty / Lots", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Logic", "Trailing SL", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
               <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
@@ -1193,7 +1424,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={14} className="table-cell text-gray-500">No closed trades yet</td>
+              <td colSpan={15} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
           ) : visibleRows.map((row, index) => (
             <tr key={row.id || index} className={`align-top ${index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}`}>
@@ -1211,6 +1442,7 @@ function TradesTable({ rows }: { rows: any[] }) {
                 {reasonIcon(row.exit_reason)}
                 {formatReason(row.exit_reason)}
               </td>
+              <td className="table-cell whitespace-nowrap"><LogicCodeBadge row={row} /></td>
               <td className="table-cell w-[170px] whitespace-nowrap"><TrailingBadge row={row} /></td>
               <td className="table-cell w-[260px] max-w-[320px] text-gray-400 align-top"><div className="max-h-24 overflow-y-auto break-words whitespace-normal leading-relaxed"><SignalAudit row={row} /></div></td>
               <td className="table-cell w-[340px] max-w-[420px] break-words whitespace-normal text-gray-400 align-top leading-relaxed">{formatTrigger(row.entry_trigger)}</td>
@@ -1442,15 +1674,15 @@ function EditProtectionDialog({
 
 function PositionSourceBadge({ row }: { row: any }) {
   const fromFyersOrder = row.is_broker_order || row.position_source === 'fyers_order';
-  const fromFyersApp = row.is_broker_position || row.position_source === 'fyers_app';
+  const fromRecoveredBroker = isRecoveredBrokerPosition(row);
   return (
     <span className={`inline-flex items-center whitespace-nowrap rounded border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${
-      fromFyersOrder || fromFyersApp
+      fromFyersOrder || fromRecoveredBroker
         ? 'border-[#60a5fa]/40 bg-[#3b82f6]/10 text-[#60a5fa]'
         : 'border-[#22c55e]/30 bg-[#22c55e]/10 text-[#22c55e]'
     }`}>
-      <i className={`${fromFyersOrder ? 'ri-time-fill' : fromFyersApp ? 'ri-smartphone-fill' : 'ri-robot-2-fill'} mr-1 text-xs`} />
-      {fromFyersOrder ? 'FYERS Order' : fromFyersApp ? 'FYERS App' : 'Algorithm'}
+      <i className={`${fromFyersOrder ? 'ri-time-fill' : fromRecoveredBroker ? 'ri-shield-check-fill' : 'ri-robot-2-fill'} mr-1 text-xs`} />
+      {fromFyersOrder ? 'FYERS Order' : fromRecoveredBroker ? 'Recovered Broker' : 'Algorithm'}
     </span>
   );
 }
@@ -1468,8 +1700,8 @@ function SignalAudit({ row }: { row: any }) {
   if (row.is_broker_order || row.position_source === 'fyers_order') {
     return <span className="text-xs text-[#60a5fa]">Pending or scheduled in FYERS ({row.status || 'waiting'})</span>;
   }
-  if (row.is_broker_position || row.position_source === 'fyers_app') {
-    return <span className="text-xs text-[#60a5fa]">Opened outside the algorithm in FYERS</span>;
+  if (isRecoveredBrokerPosition(row)) {
+    return <span className="text-xs text-[#60a5fa]">Recovered from FYERS after the dashboard lost local tracking; broker-side orders remain the source of truth.</span>;
   }
   const signal = row.signal_snapshot;
   if (!signal || typeof signal !== 'object') {
@@ -1514,6 +1746,31 @@ function SignalAudit({ row }: { row: any }) {
   );
 }
 
+function LogicCodeBadge({ row }: { row: any }) {
+  const snapshot = row?.signal_snapshot && typeof row.signal_snapshot === 'object'
+    ? row.signal_snapshot
+    : {};
+  const side = String(row?.side || snapshot?.side || '').toUpperCase();
+  const fallback = snapshot?.setup_family === 'fallback_ema_wick';
+  const entryCode = side === 'BUY' ? (fallback ? 'B2' : 'B1') : (side === 'SELL' ? (fallback ? 'S2' : 'S1') : '--');
+  const candlePair = !!(snapshot?.silver_candle_pair_tsl && typeof snapshot.silver_candle_pair_tsl === 'object');
+  const policyCode = candlePair
+    ? 'CP'
+    : snapshot?.silver_exit_policy === 'target_to_breakeven_sl'
+    ? 'BE'
+    : 'FIX';
+  const title = [
+    `${entryCode}: ${entryCode === 'B1' ? 'standard green-above-EMA BUY reference' : entryCode === 'B2' ? 'EMA-wick red-above-EMA BUY reference' : entryCode === 'S1' ? 'standard red-below-EMA SELL reference' : entryCode === 'S2' ? 'EMA-wick green-below-EMA SELL reference' : 'entry reference unavailable'}`,
+    `${policyCode}: ${policyCode === 'CP' ? 'breakeven then candle-pair TSL' : policyCode === 'BE' ? 'breakeven TSL' : 'fixed target and fixed stop loss'}`,
+  ].join('\n');
+  const tone = candlePair ? 'border-[#a855f7]/70 text-[#d8b4fe]' : policyCode === 'BE' ? 'border-[#f59e0b]/70 text-[#fcd34d]' : 'border-[#475569] text-[#cbd5e1]';
+  return (
+    <span title={title} className={`inline-flex rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold ${tone}`}>
+      {entryCode}/{policyCode}
+    </span>
+  );
+}
+
 // Compact per-row indicator of trailing-SL activity. Reads the metadata
 // stamped into signal_snapshot by paper_broker.apply_trailing_stop.
 function TrailingBadge({ row }: { row: any }) {
@@ -1524,6 +1781,7 @@ function TrailingBadge({ row }: { row: any }) {
   }
   const trailing = snap.trailing;
   const breakevenPolicy = snap.silver_exit_policy === 'target_to_breakeven_sl';
+  const candlePairPolicy = !!(snap.silver_candle_pair_tsl && typeof snap.silver_candle_pair_tsl === 'object');
   const breakeven = snap.silver_breakeven && typeof snap.silver_breakeven === 'object'
     ? snap.silver_breakeven
     : {};
@@ -1577,11 +1835,11 @@ function TrailingBadge({ row }: { row: any }) {
     <div className="text-xs text-gray-300">
       <div className="flex items-center gap-1 font-semibold text-[#22c55e]">
         <span className="h-1.5 w-1.5 rounded-full bg-[#22c55e]" />
-        {breakevenPolicy ? 'BE' : arrow} {currentSlIsFinite ? currentSl!.toFixed(2) : '--'}
+        {candlePairPolicy ? 'PAIR' : (breakevenPolicy ? 'BE' : arrow)} {currentSlIsFinite ? currentSl!.toFixed(2) : '--'}
         <span className="text-gray-400">{deltaLabel}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-gray-500">
-        <span>{breakevenPolicy ? `breakeven armed${firstAt ? ` ${firstAt}` : ''}` : (firstAt ? `active ${firstAt}` : 'active')} · {bumps}x{Number.isFinite(initialSl) ? ` · init ${initialSl.toFixed(2)}` : ''}</span>
+        <span>{candlePairPolicy ? `pair TSL armed${firstAt ? ` ${firstAt}` : ''}` : (breakevenPolicy ? `breakeven armed${firstAt ? ` ${firstAt}` : ''}` : (firstAt ? `active ${firstAt}` : 'active'))} · {bumps}x{Number.isFinite(initialSl) ? ` · init ${initialSl.toFixed(2)}` : ''}</span>
         <button
           type="button"
           onClick={() => setHistoryOpen(true)}
@@ -1602,7 +1860,7 @@ function TrailingBadge({ row }: { row: any }) {
         >
           <div className="flex items-start justify-between gap-4 border-b border-[#1f2937] px-4 py-3 sm:px-5">
             <div>
-              <h4 className="text-lg font-semibold text-gray-100">{breakevenPolicy ? 'Breakeven stop history' : 'Trailing SL history'}</h4>
+              <h4 className="text-lg font-semibold text-gray-100">{candlePairPolicy ? 'Candle-pair TSL history' : (breakevenPolicy ? 'Breakeven stop history' : 'Trailing SL history')}</h4>
               <p className="mt-1 text-sm text-gray-400">
                 {row?.symbol || 'Position'} · {side || '--'} · {bumps} saved trail {bumps === 1 ? 'move' : 'moves'}
               </p>
@@ -1650,10 +1908,10 @@ function TrailingBadge({ row }: { row: any }) {
               </div>
             ) : (
               <div className="overflow-x-auto rounded border border-[#1f2937]">
-                <table className="w-full min-w-[640px] border-collapse text-xs">
+                <table className="w-full min-w-[780px] border-collapse text-xs">
                   <thead className="bg-[#111827]">
                     <tr>
-                      {['#', 'Time', 'LTP', 'Previous SL', 'New SL', 'Delta'].map((column) => (
+                      {['#', 'Time', 'Rule', 'Pair', 'LTP', 'Previous SL', 'New SL', 'Delta'].map((column) => (
                         <th key={column} className="table-cell label">{column}</th>
                       ))}
                     </tr>
@@ -1663,10 +1921,15 @@ function TrailingBadge({ row }: { row: any }) {
                       const previous = Number(event?.previous_sl);
                       const next = Number(event?.new_sl);
                       const eventDelta = Number(event?.delta);
+                      const pair = event?.first_bar && event?.second_bar
+                        ? `${formatDateTimeWithDate(event.first_bar.time)} → ${formatDateTimeWithDate(event.second_bar.time)}`
+                        : '--';
                       return (
                         <tr key={`${event?.at || 'trail'}-${index}`} className={index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}>
                           <td className="table-cell num text-gray-500">{index + 1}</td>
                           <td className="table-cell num text-gray-300">{formatDateTimeWithDate(event?.at)}</td>
+                          <td className="table-cell text-gray-300">{event?.reason === 'candle_pair' ? 'Candle pair' : (event?.reason === 'target_to_breakeven' ? 'Breakeven' : 'Trail')}</td>
+                          <td className="table-cell num text-gray-400">{pair}</td>
                           <td className="table-cell num text-gray-100">{formatNumber(event?.ltp)}</td>
                           <td className="table-cell num text-gray-100">{formatNumber(previous)}</td>
                           <td className="table-cell num font-semibold text-[#22c55e]">{formatNumber(next)}</td>
@@ -1686,6 +1949,29 @@ function TrailingBadge({ row }: { row: any }) {
     )}
     </>
   );
+}
+
+function isRecoveredBrokerPosition(row: any) {
+  if (!row || typeof row !== 'object') return false;
+  const source = String(row.position_source || '').trim().toLowerCase();
+  const signal = row.signal_snapshot;
+  const origin = signal && typeof signal === 'object'
+    ? String(signal.origin || '').trim().toLowerCase()
+    : '';
+  return !!row.is_broker_position
+    || source === 'fyers_recovered'
+    || source === 'fyers_app'
+    || origin === 'fyers_recovered_position'
+    || origin === 'fyers_app_manual'
+    || !!(signal && typeof signal === 'object' && signal.fyers_app_managed);
+}
+
+function isSentinelProtectionLevel(row: any, value: unknown, kind: 'sl' | 'target') {
+  if (!isRecoveredBrokerPosition(row)) return false;
+  const number = Number(value);
+  if (!Number.isFinite(number)) return false;
+  if (kind === 'sl') return number >= 1_000_000_000;
+  return number <= 0;
 }
 
 export function Table({ rows, columns }: { rows: any[]; columns: string[] }) {
@@ -1883,6 +2169,13 @@ function formatNumber(value: unknown) {
   return number.toLocaleString('en-IN', { maximumFractionDigits: 2 });
 }
 
+function formatProtectionLevel(row: any, value: unknown, kind: 'sl' | 'target') {
+  if (isSentinelProtectionLevel(row, value, kind)) {
+    return 'Broker-managed';
+  }
+  return formatNumber(value);
+}
+
 function pnlColor(value?: number | null) {
   if (value === undefined || value === null) return 'text-gray-100';
   if (value > 0) return 'text-[#22c55e]';
@@ -1918,5 +2211,8 @@ function formatReason(reason: string) {
 
 function formatTrigger(trigger: unknown) {
   const value = String(trigger || '').trim();
+  if (value === 'Opened directly in FYERS app') {
+    return 'Recovered from FYERS broker position';
+  }
   return value || 'Legacy row: trigger was not stored when this trade opened.';
 }

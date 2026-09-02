@@ -538,13 +538,15 @@ class Algo3SilverMicro(Strategy):
         position = self._open_position()
         if not position:
             return
-        # FYERS-app-managed positions are exit-managed entirely by FYERS
-        # (the user opened them directly there). Never let this loop fire
-        # a MARKET order against one — the external-close reconcile will
-        # write MANUAL_EXTERNAL_EXIT into live_trades when the user
-        # flattens it from FYERS.
+        # Broker-recovered positions are exit-managed entirely by FYERS.
+        # Never let this loop fire a MARKET order against one — the
+        # external-close reconcile will write MANUAL_EXTERNAL_EXIT into
+        # live_trades when FYERS later reports the position as flat.
         snapshot = position.get("signal_snapshot") or {}
-        if isinstance(snapshot, dict) and snapshot.get("origin") == "fyers_app_manual":
+        if isinstance(snapshot, dict) and (
+            snapshot.get("fyers_app_managed")
+            or snapshot.get("origin") in {"fyers_app_manual", "fyers_recovered_position"}
+        ):
             return
         ltp = position.get("_last_ltp") or self._last_tick_ltp
         if not ltp:
@@ -711,6 +713,9 @@ class Algo3SilverMicro(Strategy):
             return
         self._bars.append(bar)
         self._ema20 = _ema_step(self._ema20, bar["close"])
+        # Preserve the finalized EMA alongside the bar for Silver Micro 2.0's
+        # candle-pair TSL filter. This metadata does not affect Algo3 logic.
+        bar["ema20"] = float(self._ema20) if self._ema20 is not None else None
         self._last_bar_at = bar["time"].isoformat()
         self._minute_buffer = []
         # Only log LIVE bars (allow_signals=True). Warmup replays thousands
@@ -1396,6 +1401,15 @@ class Algo3SilverMicro(Strategy):
                 "final_target_enabled": True,
                 "initial_sl_price": sl_price,
             }
+            # Silver Micro 2.0 extends breakeven with a 15m candle-pair
+            # trail. The marker is captured at entry so older open rows keep
+            # their original one-time breakeven behavior after deployment.
+            if self.algo_id == "algo5":
+                snapshot["silver_candle_pair_tsl"] = {
+                    "policy": "candle_pair_tsl_v1",
+                    "buffer_points": float(self.settings.get("tsl_lock_step_points", 100)),
+                    "armed": False,
+                }
         try:
             open_trade_args = (
                 self.symbol, side, qty, float(entry_price),

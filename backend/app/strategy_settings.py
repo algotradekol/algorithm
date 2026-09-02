@@ -124,6 +124,26 @@ STRATEGY_DEFAULT_OVERRIDES = {
         # candle-close triggers actually fill instead of chasing LIMIT.
         "order_type": "MARKET",
     },
+    "algo5": {
+        "scan_enabled": False,
+        "silver_breakout_points": 200,
+        "ema_wick_distance_points": 300,
+        # Reuses the existing persisted trailing lock column for the 2.0
+        # candle-pair buffer, avoiding a new Supabase migration.
+        "tsl_lock_step_points": 100,
+        "silver_buy_plan": "reference_breakout",
+        "sl_points": 200,
+        "tsl_activate_points": 500,
+        "target_points": 2000,
+        "exit_mode": "fixed_target_sl",
+        "manual_exit_reentry_enabled": False,
+        # Paper/backtest can carry this experimental strategy across sessions.
+        # Live carry stays blocked until durable FYERS overnight protection is
+        # available, rather than leaving a real position naked after close.
+        "overnight_carry_enabled": False,
+        "silver_lots": 1,
+        "order_type": "MARKET",
+    },
 }
 
 INT_FIELDS = {
@@ -132,6 +152,7 @@ INT_FIELDS = {
     "max_sell_trades",
     "supertrend_period",
     "silver_breakout_points",
+    "ema_wick_distance_points",
     "sl_points",
     "target_points",
     "tsl_activate_points",
@@ -157,6 +178,7 @@ BOOL_FIELDS = {
     "filter_price_range",
     "trailing_sl_enabled",
     "manual_exit_reentry_enabled",
+    "overnight_carry_enabled",
     "test_schedule_enabled",
 }
 
@@ -206,7 +228,8 @@ def get_settings_storage_key(algo_id: str, mode: str | None = None) -> str:
 def _normalize(settings: dict, algo_id: str) -> dict:
     defaults = default_settings_for(algo_id)
     normalized = {**defaults, **settings}
-    if algo_id == "algo3":
+    is_silver = algo_id in {"algo3", "algo5"}
+    if is_silver:
         legacy_exit_mode = str(settings.get("exit_mode") or "")
         # A pre-upgrade open position has no immutable policy snapshot. Keep
         # its old policy available only to the position runtime; new entries
@@ -224,7 +247,7 @@ def _normalize(settings: dict, algo_id: str) -> dict:
         normalized["trailing_sl_enabled"] = False
     # Silver has one canonical BUY model. Old values are compatibility aliases
     # and must not reactivate the removed 5m confirmation path.
-    if algo_id == "algo3":
+    if is_silver:
         normalized["silver_buy_plan"] = "reference_breakout"
     for key in defaults:
         value = normalized.get(key)
@@ -253,7 +276,7 @@ def _normalize(settings: dict, algo_id: str) -> dict:
 
 def validate_settings(settings: dict, algo_id: str) -> None:
     """Reject invalid new-entry settings before they reach a live strategy."""
-    if algo_id != "algo3":
+    if algo_id not in {"algo3", "algo5"}:
         return
     required = {
         "silver_breakout_points": "Breakout Offset",
@@ -264,6 +287,10 @@ def validate_settings(settings: dict, algo_id: str) -> None:
     for key, label in required.items():
         if float(settings.get(key) or 0) <= 0:
             raise ValueError(f"{label} must be greater than zero.")
+    if algo_id == "algo5" and float(settings.get("ema_wick_distance_points") or 0) <= 0:
+        raise ValueError("EMA wick distance must be greater than zero.")
+    if algo_id == "algo5" and float(settings.get("tsl_lock_step_points") or 0) <= 0:
+        raise ValueError("TSL candle-pair buffer must be greater than zero.")
     if (
         str(settings.get("exit_mode") or "") == "target_to_breakeven_sl"
         and float(settings["tsl_activate_points"]) >= float(settings["target_points"])
@@ -328,6 +355,7 @@ _NEW_COLUMNS_TOLERATE_MISSING = {
     # algo3 spec-doc rewrite (2026-08-19). Points-based risk fields
     # replace percent fields for Silver Micro only.
     "silver_breakout_points",
+    "ema_wick_distance_points",
     "sl_points",
     "target_points",
     "tsl_activate_points",
@@ -338,6 +366,7 @@ _NEW_COLUMNS_TOLERATE_MISSING = {
     "silver_lots",
     "silver_buy_plan",
     "manual_exit_reentry_enabled",
+    "overnight_carry_enabled",
 }
 
 

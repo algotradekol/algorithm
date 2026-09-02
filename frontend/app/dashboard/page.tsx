@@ -29,6 +29,9 @@ import {
 // tab name. Keep in sync with backend's _STRATEGY_TAB_MAP in engine.py.
 const TAB_ALIASES: Record<string, string> = {
   silver: 'silvermicro',
+  'silvermicro2.0': 'silvermicro20',
+  silver2: 'silvermicro20',
+  'silver-2': 'silvermicro20',
 };
 function normalizeTabKey(raw: string): string {
   const cleaned = raw.trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -47,6 +50,7 @@ function isTabHidden(name: string): boolean {
   return HIDDEN_TABS.has(tabKey(name));
 }
 const TABS = ALL_DASHBOARD_TABS.filter((t) => !isTabHidden(t)) as readonly DashboardTabName[];
+const PAPER_ONLY_TABS = new Set<DashboardTabName>(['Silver Micro 2.0']);
 
 function formatIstTime() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -136,8 +140,13 @@ function DashboardContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const tab = resolveDashboardTab(pathname, TABS);
   const tradingMode = (engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper';
+  // Silver Micro 2.0 is an experiment. It is intentionally unavailable in
+  // Live mode so no dashboard action can ever route it toward real orders.
+  const visibleTabs = TABS.filter((candidate) => (
+    tradingMode === 'paper' || !PAPER_ONLY_TABS.has(candidate)
+  ));
+  const tab = resolveDashboardTab(pathname, visibleTabs);
   const sessionState = fyersStatus?.session_state || engineStatus?.fyers_session_state || 'token_missing';
   const fyersConnectedForMode = Boolean(
     fyersStatus?.verified
@@ -352,7 +361,7 @@ function DashboardContent() {
         </header>
 
         <nav className="mb-4 flex gap-6 overflow-x-auto whitespace-nowrap border-b border-[#1f2937] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {TABS.map((t) => (
+          {visibleTabs.map((t) => (
             <button
               key={t}
               onClick={() => router.push(DASHBOARD_TAB_ROUTES[t])}
@@ -429,6 +438,19 @@ function DashboardContent() {
                   algoId="algo3"
                   displayName="Silver Micro - 15m reference BUY / red-chain SELL"
                   description="Uses completed 15-minute candles. BUY carries the latest green close above EMA20 and enters at reference + n, including a carried prior-day gap at 09:00. SELL carries the latest red close below EMA20 through green candles and enters at reference - n during a later red move. Reversal, points-based SL/target, and trailing protection follow the active settings."
+                  tradingMode={tradingMode}
+                  fyersConnected={fyersConnectedForMode}
+                  onWebSocketStatus={setWsStatus}
+                />
+              </div>
+            )}
+            {tradingMode === 'paper' && !isTabHidden('Silver Micro 2.0') && (
+              <div className={tab === 'Silver Micro 2.0' ? '' : 'hidden'}>
+                <AlgoTab
+                  key={`algo5-${tradingMode}`}
+                  algoId="algo5"
+                  displayName="Silver Micro 2.0 - 15m reference BUY / red-chain SELL"
+                  description="Exact duplicate of Silver Micro on its own isolated strategy id, settings namespace, and setup history so you can test changes safely."
                   tradingMode={tradingMode}
                   fyersConnected={fyersConnectedForMode}
                   onWebSocketStatus={setWsStatus}

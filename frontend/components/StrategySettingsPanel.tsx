@@ -2,6 +2,8 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 
+const SILVER_ALGO_IDS = new Set(['algo3', 'algo5']);
+
 type Field = [string, string, string];
 
 const CAPITAL_FIELDS: Field[] = [
@@ -64,6 +66,35 @@ function SilverManualExitReentryToggle({
   );
 }
 
+function SilverMicro2OvernightCarryToggle({
+  settings,
+  setSettings,
+}: {
+  settings: Record<string, any>;
+  setSettings: (settings: Record<string, any>) => void;
+}) {
+  const enabled = Boolean(settings.overnight_carry_enabled);
+  return (
+    <div className="mt-5 rounded border border-[#f59e0b]/50 bg-[#f59e0b]/10 p-3">
+      <label className="flex gap-3">
+        <input
+          type="checkbox"
+          checked={enabled}
+          onChange={(e) => setSettings({ ...settings, overnight_carry_enabled: e.target.checked })}
+          className="peer sr-only"
+        />
+        <span className="mt-1 h-5 w-9 shrink-0 rounded-full border border-[#1f2937] bg-gray-700 after:block after:h-4 after:w-4 after:translate-x-0.5 after:translate-y-0.5 after:rounded-full after:bg-gray-400 after:transition peer-checked:bg-[#f59e0b] peer-checked:after:translate-x-4 peer-checked:after:bg-white" />
+        <span>
+          <span className="text-sm font-semibold text-gray-100">Carry paper trades overnight</span>
+          <span className="mt-1 block text-xs text-gray-400">
+            Silver Micro 2.0 paper and backtest positions stay open after 23:25 and continue next session until SL/TSL, final target, reversal, or manual exit. Live carry is blocked until FYERS overnight protection is verified.
+          </span>
+        </span>
+      </label>
+    </div>
+  );
+}
+
 const INDICATOR_FIELDS: Field[] = [
   ['rsi_buy_threshold', 'RSI Buy Threshold', 'Filter strategy buy confirmation threshold'],
   ['rsi_sell_threshold', 'RSI Sell Threshold', 'Filter strategy sell confirmation threshold'],
@@ -97,6 +128,11 @@ const EXIT_MODES = [
 const SILVER_EXIT_MODES = [
   ['fixed_target_sl', 'Fixed Target + Fixed Stop Loss', 'Close at the fixed target or the initial stop loss. Neither level moves.'],
   ['target_to_breakeven_sl', 'Target + Breakeven Stop Loss', 'At the earlier TSL activation milestone, move the stop once to the actual entry price. The final target remains active.'],
+];
+
+const SILVER_MICRO_2_EXIT_MODES = [
+  ['fixed_target_sl', 'Fixed Target + Fixed Stop Loss', 'Close at the fixed target or the initial stop loss. Neither level moves.'],
+  ['target_to_breakeven_sl', 'Target + Candle-Pair TSL', 'At TSL activation, move the stop to entry. It then tightens from completed 15-minute candle pairs; the final target remains active.'],
 ];
 
 export default function StrategySettingsPanel({
@@ -151,11 +187,13 @@ export default function StrategySettingsPanel({
 
   async function save() {
     if (!settings || saving) return;
-    if (algoId === 'algo3') {
-      const values = ['silver_breakout_points', 'sl_points', 'tsl_activate_points', 'target_points']
+    if (SILVER_ALGO_IDS.has(algoId)) {
+      const values = ['silver_breakout_points', 'sl_points', 'tsl_activate_points', 'target_points', ...(algoId === 'algo5' ? ['ema_wick_distance_points', 'tsl_lock_step_points'] : [])]
         .map((key) => Number(settings[key]));
       if (values.some((value) => !Number.isFinite(value) || value <= 0)) {
-        setError('Breakout Offset, Initial Stop Loss, TSL Activates At, and Final Target must all be greater than zero.');
+        setError(algoId === 'algo5'
+          ? 'Breakout Offset, EMA wick distance, Initial Stop Loss, TSL Activates At, Final Target, and TSL buffer must all be greater than zero.'
+          : 'Breakout Offset, Initial Stop Loss, TSL Activates At, and Final Target must all be greater than zero.');
         return;
       }
       if (settings.exit_mode === 'target_to_breakeven_sl' && Number(settings.tsl_activate_points) >= Number(settings.target_points)) {
@@ -239,7 +277,7 @@ export default function StrategySettingsPanel({
   if (!settings) return <p className="text-sm text-gray-500">Loading strategy settings...</p>;
 
   const preview = calculatePreview(settings);
-  const isSilver = algoId === 'algo3';
+  const isSilver = SILVER_ALGO_IDS.has(algoId);
 
   return (
     <section className={isSilver ? 'grid gap-4' : 'grid gap-4 lg:grid-cols-[minmax(0,1fr)_minmax(340px,0.8fr)]'}>
@@ -272,9 +310,9 @@ export default function StrategySettingsPanel({
 
         {!isLive && !overrideMode && <CashControl value={availableCash} setValue={setAvailableCash} onSave={saveAvailableCash} saving={cashSaving} />}
         <FieldGroup
-          title={algoId === 'algo3' ? 'Position Settings' : 'Capital Settings'}
+          title={isSilver ? 'Position Settings' : 'Capital Settings'}
           fields={(() => {
-            const base = algoId === 'algo3' ? SILVER_CAPITAL_FIELDS : CAPITAL_FIELDS;
+            const base = isSilver ? SILVER_CAPITAL_FIELDS : CAPITAL_FIELDS;
             return isLive ? base.filter(([key]) => key !== 'starting_capital') : base;
           })()}
           settings={settings}
@@ -294,8 +332,9 @@ export default function StrategySettingsPanel({
         {!isSilver && <TrailingStopToggle settings={settings} setSettings={setSettings} />}
         {isSilver ? (
           <>
-            <SilverRiskSettings settings={settings} setSettings={setSettings} />
+            <SilverRiskSettings algoId={algoId} settings={settings} setSettings={setSettings} />
             <SilverManualExitReentryToggle settings={settings} setSettings={setSettings} />
+            {algoId === 'algo5' && <SilverMicro2OvernightCarryToggle settings={settings} setSettings={setSettings} />}
           </>
         ) : (
           <FieldGroup
@@ -305,9 +344,11 @@ export default function StrategySettingsPanel({
             setSettings={setSettings}
           />
         )}
-          {algoId === 'algo3' && (
+          {isSilver && (
             <div className="mt-5 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
-            {isLive ? 'Live Silver uses completed 15-minute reference candles. BUY carries the latest green close above EMA20 and enters at reference + n, including a prior-day gap at 09:00. SELL carries the latest red close below EMA20 through intervening green candles and enters at reference - n during a later red move, including a prior-day 09:00 gap.' : 'Silver backtests replay the same 15-minute reference BUY and selected SELL logic used by the live engine.'} Position size is in LOTS (1 lot = 1 kg). Entry price is always the actual market fill; SL and target values are POINTS from that fill. Default order type is MARKET.
+            {algoId === 'algo5'
+              ? 'Silver Micro 2.0 keeps the standard 15-minute references first, then adds the EMA-wick fallback: a red close above EMA can seed BUY and a green close below EMA can seed SELL when its wick reaches or comes within the configured EMA distance. Both use the same reference +/- n trigger.'
+              : (isLive ? 'Live Silver uses completed 15-minute reference candles. BUY carries the latest green close above EMA20 and enters at reference + n, including a prior-day gap at 09:00. SELL carries the latest red close below EMA20 through intervening green candles and enters at reference - n during a later red move, including a prior-day 09:00 gap.' : 'Silver backtests replay the same 15-minute reference BUY and selected SELL logic used by the live engine.')} Position size is in LOTS (1 lot = 1 kg). Entry price is always the actual market fill; SL and target values are POINTS from that fill. Default order type is MARKET.
             </div>
           )}
         {(algoId === 'algo1' || algoId === 'algo4') && <TestSchedule settings={settings} setSettings={setSettings} />}
@@ -408,7 +449,7 @@ function OrderTypeSelect({
   settings: Record<string, any>;
   setSettings: (settings: Record<string, any>) => void;
 }) {
-  const isSilver = algoId === 'algo3';
+  const isSilver = SILVER_ALGO_IDS.has(algoId);
   const current = isSilver ? 'MARKET' : String(settings.order_type || 'LIMIT').toUpperCase();
   const options: [string, string, string][] = [
     ['MARKET', 'Market', 'Entry order is placed as MARKET. Guaranteed fill, but slippage on fast-moving stocks.'],
@@ -458,7 +499,7 @@ function ExitModeSelect({
     <div className="mt-5 rounded border border-[#1f2937] bg-[#111827] p-3">
       <div className="label mb-3">Exit Mode</div>
       <div className="grid gap-2">
-        {(algoId === 'algo3' ? SILVER_EXIT_MODES : EXIT_MODES).map(([value, label, helper]) => (
+        {(SILVER_ALGO_IDS.has(algoId) ? (algoId === 'algo5' ? SILVER_MICRO_2_EXIT_MODES : SILVER_EXIT_MODES) : EXIT_MODES).map(([value, label, helper]) => (
           <label key={value} className={`rounded border p-3 ${
             settings.exit_mode === value ? 'border-[#3b82f6] bg-[#3b82f6]/10' : 'border-[#1f2937] bg-[#0d1117]'
           }`}>
@@ -542,13 +583,16 @@ function TrailingStopToggle({
 }
 
 function SilverRiskSettings({
+  algoId,
   settings,
   setSettings,
 }: {
+  algoId: string;
   settings: Record<string, any>;
   setSettings: (settings: Record<string, any>) => void;
 }) {
   const breakevenMode = settings.exit_mode === 'target_to_breakeven_sl';
+  const isSilverMicro2 = algoId === 'algo5';
   const fields = breakevenMode
     ? [SILVER_RISK_FIELDS[0], SILVER_RISK_FIELDS[1], ['tsl_activate_points', 'TSL Activates At (points)', 'When this profit is reached, the initial SL moves once to the actual entry price. Default 500.'] as Field, SILVER_RISK_FIELDS[2]]
     : SILVER_RISK_FIELDS;
@@ -568,11 +612,29 @@ function SilverRiskSettings({
               setSettings={setSettings}
             />
           ))}
+          {isSilverMicro2 && (
+            <NumberField
+              fieldKey="ema_wick_distance_points"
+              label="EMA wick distance (points)"
+              helper="Fallback references qualify when their wick reaches EMA20 or comes within this many points. Default 300."
+              settings={settings}
+              setSettings={setSettings}
+            />
+          )}
+          {isSilverMicro2 && breakevenMode && (
+            <NumberField
+              fieldKey="tsl_lock_step_points"
+              label="TSL candle-pair buffer (points)"
+              helper="After breakeven arms, BUY uses the lower low of a red → green 15m pair minus this buffer; SELL mirrors it with the higher high of a green → red pair plus this buffer. Default 100."
+              settings={settings}
+              setSettings={setSettings}
+            />
+          )}
         </div>
       </div>
       {breakevenMode && (
         <div className="mt-5 rounded border border-[#3b82f6]/50 bg-[#3b82f6]/5 p-3 text-xs text-[#bfdbfe]">
-          FYERS keeps both the initial stop and the final target active. When TSL Activates At is reached, it amends only the existing stop to the actual entry price once; there are no further trailing steps.
+          FYERS keeps both the initial stop and final target active. When TSL Activates At is reached, the stop moves to entry. Silver Micro 2.0 then tightens it only from completed 15-minute reversal pairs; it never loosens the stop.
         </div>
       )}
     </>
@@ -680,7 +742,7 @@ function FieldGroup({
 }
 
 function NumberField({ fieldKey, label, helper, settings, setSettings, disabled = false }: { fieldKey: string; label: string; helper: string; settings: Record<string, any>; setSettings: (settings: Record<string, any>) => void; disabled?: boolean }) {
-  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume', 'silver_lots', 'silver_breakout_points', 'sl_points', 'target_points', 'tsl_activate_points', 'tsl_profit_step_points', 'tsl_lock_step_points', 'tsl_trigger_points', 'tsl_distance_points']);
+  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume', 'silver_lots', 'silver_breakout_points', 'ema_wick_distance_points', 'sl_points', 'target_points', 'tsl_activate_points', 'tsl_profit_step_points', 'tsl_lock_step_points', 'tsl_trigger_points', 'tsl_distance_points']);
   const rupeeFields = new Set(['starting_capital', 'capital_per_trade', 'min_total_value', 'ltp_min', 'ltp_max']);
   const signedFields = new Set(['sl_pct', 'target_pct']);
   const step = integerFields.has(fieldKey) ? '1' : rupeeFields.has(fieldKey) ? '0.01' : '0.0001';
@@ -724,7 +786,7 @@ function formatInputMoney(value: unknown) {
 }
 
 function roundForField(key: string, value: number) {
-  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume', 'silver_lots', 'silver_breakout_points', 'sl_points', 'target_points', 'tsl_activate_points', 'tsl_profit_step_points', 'tsl_lock_step_points', 'tsl_trigger_points', 'tsl_distance_points']);
+  const integerFields = new Set(['max_trades_per_day', 'max_buy_trades', 'max_sell_trades', 'supertrend_period', 'min_volume', 'silver_lots', 'silver_breakout_points', 'ema_wick_distance_points', 'sl_points', 'target_points', 'tsl_activate_points', 'tsl_profit_step_points', 'tsl_lock_step_points', 'tsl_trigger_points', 'tsl_distance_points']);
   const rupeeFields = new Set(['starting_capital', 'capital_per_trade', 'min_total_value', 'ltp_min', 'ltp_max']);
   if (integerFields.has(key)) return Math.round(value);
   if (rupeeFields.has(key)) return roundMoney(value);

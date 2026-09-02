@@ -67,6 +67,20 @@ def _is_qualifying_setup_row(row: dict) -> bool:
         ema20 = float(row["ema20"])
     except (KeyError, TypeError, ValueError):
         return False
+    source = str(row.get("source") or "")
+    is_algo5 = str(row.get("algo_id") or "").split("__", 1)[0] == "algo5"
+    if is_algo5 and source.startswith("live:fallback_ema_wick:"):
+        try:
+            wick_distance = float(source.rsplit(":", 1)[1])
+            high = float(row["candle_high"])
+            low = float(row["candle_low"])
+        except (KeyError, TypeError, ValueError):
+            return False
+        if side == "BUY":
+            return open_price > close and close > ema20 and low <= ema20 + wick_distance
+        if side == "SELL":
+            return open_price < close and close < ema20 and high >= ema20 - wick_distance
+        return False
     if side == "BUY":
         return close > open_price and close > ema20
     if side == "SELL":
@@ -160,7 +174,10 @@ def get_setup_history(
             if side in {"BUY", "SELL"}:
                 request = request.eq("setup_side", side)
             if live_only:
-                request = request.eq("source", "live")
+                # Algo5's EMA-wick references are stored as
+                # live:fallback_ema_wick:<distance>; include them in the
+                # same live history view as the standard live references.
+                request = request.like("source", "live%")
             result = request.execute()
             rows.extend(result.data or [])
             if rows:
@@ -215,6 +232,7 @@ def get_latest_setup_reference(
     *,
     side: str,
     live_only: bool = False,
+    setup_family: str | None = None,
 ) -> dict | None:
     normalized_side = str(side or "").upper()
     if normalized_side not in {"BUY", "SELL"}:
@@ -232,7 +250,7 @@ def get_latest_setup_reference(
                 .limit(25)
             )
             if live_only:
-                request = request.eq("source", "live")
+                request = request.like("source", "live%")
             result = request.execute()
             rows.extend(result.data or [])
             if rows:
@@ -251,7 +269,12 @@ def get_latest_setup_reference(
     for row in raw_rows:
         if not _is_qualifying_setup_row(row):
             continue
+        source = str(row.get("source") or "")
+        row_family = "fallback_ema_wick" if source.startswith("live:fallback_ema_wick:") else "current"
+        if setup_family and row_family != setup_family:
+            continue
         normalized = dict(row)
         normalized["algo_id"] = algo_id
+        normalized["setup_family"] = row_family
         return normalized
     return None

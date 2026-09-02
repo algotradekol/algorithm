@@ -235,6 +235,14 @@ class LiveBroker(PaperBroker):
         signal_snapshot: dict | None,
         entry_time: str | None,
     ):
+        # Do not create a live carry-forward position until the broker-side
+        # GTT/OCO protection path is implemented and verified for MCX. The
+        # paper/backtest path intentionally supports this setting already.
+        if bool((signal_snapshot or {}).get("overnight_carry_enabled")):
+            raise RuntimeError(
+                "Silver Micro 2.0 overnight carry is available in paper and backtest only. "
+                "Live entry was blocked because FYERS overnight GTT/OCO protection is not configured yet."
+            )
         # Design B pre-flight — Fyers is the single source of truth for
         # whether we already hold this symbol. Refuse to double up on a
         # duplicate signal, restart race, or reconciliation lag.
@@ -341,6 +349,11 @@ class LiveBroker(PaperBroker):
             "sl_and_final_target_with_breakeven" if breakeven_mode else "sl_and_target"
         )
 
+        confirmed_entry_time = self._safe_entry_time(
+            actual_entry_time,
+            self._extract_fill_time(order_response),
+            entry_time,
+        )
         super().open_trade(
             symbol,
             side,
@@ -353,7 +366,7 @@ class LiveBroker(PaperBroker):
             # Fyers tradebook time is authoritative when available. The
             # strategy event time is a safe fallback for delayed tradebook
             # hydration and keeps paper/live audit rows aligned.
-            entry_time=self._safe_entry_time(actual_entry_time, entry_time),
+            entry_time=confirmed_entry_time,
         )
 
     def close_trade(self, position: dict, exit_price: float, exit_reason: str):
@@ -653,6 +666,62 @@ class LiveBroker(PaperBroker):
             )
             return {**position, **rollback}
         return updated
+
+    def apply_candle_pair_trailing_stop(
+        self,
+        position: dict,
+        ltp: float,
+        first_bar: dict,
+        second_bar: dict,
+        buffer_points: float,
+    ) -> dict:
+        """Persist and broker-confirm a Silver Micro 2.0 pair trail move."""
+        previous_sl = float(position.get("sl_price") or 0)
+        updated = super().apply_candle_pair_trailing_stop(
+            position, ltp, first_bar, second_bar, buffer_points
+        )
+        new_sl = float(updated.get("sl_price") or 0)
+        if new_sl == previous_sl or new_sl <= 0:
+            return updated
+
+        snapshot = updated.get("signal_snapshot") or position.get("signal_snapshot") or {}
+        sl_order_id = snapshot.get("fyers_sl_order_id")
+        if not sl_order_id:
+            return updated
+        entry_side = str(updated.get("side") or position.get("side") or "").upper()
+        exit_side = "SELL" if entry_side == "BUY" else "BUY"
+        try:
+            response = self._modify_slm_order(
+                sl_order_id,
+                new_sl,
+                exit_side,
+                qty=int(position.get("qty") or 0),
+                symbol=position.get("symbol"),
+            )
+            if self._looks_successful(response):
+                print(
+                    f"[live_broker] candle-pair hard SL {position.get('symbol')} "
+                    f"order {sl_order_id} -> {new_sl:.2f}"
+                )
+                return updated
+            error = str(response)
+        except Exception as exc:
+            error = str(exc)
+
+        rollback = {
+            "sl_price": previous_sl,
+            "trailing_sl_active": bool(position.get("trailing_sl_active")),
+            "signal_snapshot": position.get("signal_snapshot") or {},
+        }
+        run_with_supabase(
+            lambda supabase: supabase.table(self.positions_table_name())
+            .update(rollback).eq("id", position["id"]).execute()
+        )
+        print(
+            f"[live_broker] LIVE PROTECTION FAILURE: retained SL {previous_sl:.2f} "
+            f"for {position.get('symbol')} after candle-pair amend failure: {error}"
+        )
+        return {**position, **rollback}
 
     def _modify_slm_order(
         self,
@@ -1052,12 +1121,15 @@ class LiveBroker(PaperBroker):
                 sibling_id = snapshot.get(sibling_key)
                 if sibling_id:
                     self._cancel_fyers_order(sibling_id, reason=f"{exit_reason}_ws_push_sibling_cancel")
+                normalized_exit_time = self._safe_exit_time(
+                    matched_position, event.get("traded_at")
+                )
                 try:
                     super().close_trade(
                         matched_position,
                         fill_price,
                         exit_reason=exit_reason,
-                        exit_time=event.get("traded_at"),
+                        exit_time=normalized_exit_time,
                     )
                 except TypeError:
                     super().close_trade(matched_position, fill_price, exit_reason)
@@ -1193,8 +1265,8 @@ class LiveBroker(PaperBroker):
         """Insert a live_positions row for each FYERS-held position in this
         strategy's watchlist that our DB doesn't already know about.
 
-        The row is marked ``signal_snapshot.origin = "fyers_app_manual"``
-        and given unreachable SL / Target values so the algo's own
+        The row is marked as a broker-recovered position and given
+        unreachable SL / Target values so the algo's own
         ``check_exits`` loop can never fire a MARKET order against it.
         FYERS remains the sole exit path. When the user closes the
         position from the FYERS app the next reconcile pass sees
@@ -1268,9 +1340,9 @@ class LiveBroker(PaperBroker):
                 "target_price": target_price,
                 "status": "open",
                 "entry_time": entry_time,
-                "entry_trigger": "Opened directly in FYERS app",
+                "entry_trigger": "Recovered from FYERS broker position",
                 "signal_snapshot": {
-                    "origin": "fyers_app_manual",
+                    "origin": "fyers_recovered_position",
                     "fyers_app_managed": True,
                     "symbol": symbol,
                     "side": side,
@@ -1284,7 +1356,7 @@ class LiveBroker(PaperBroker):
                 )
                 inserted += 1
                 print(
-                    f"[live_broker] bootstrapped fyers-app position {symbol} "
+                    f"[live_broker] bootstrapped recovered FYERS position {symbol} "
                     f"{side} qty={int(abs(net_qty))} @ {entry_price:.2f} — will "
                     f"land in Closed Trades when FYERS reports flat"
                 )
@@ -1599,7 +1671,7 @@ class LiveBroker(PaperBroker):
         # Silver Micro breakout entries must not remain pending while price
         # crosses a trigger. Enforce MARKET even if an older saved setting
         # still contains LIMIT from before Silver became market-only.
-        if self.algo_id == "algo3":
+        if self.algo_id in {"algo3", "algo5"}:
             return "MARKET", 0.0
         try:
             from .strategy_settings import get_settings
@@ -1919,16 +1991,31 @@ class LiveBroker(PaperBroker):
             return parsed.astimezone(datetime.timezone.utc)
         except ValueError:
             pass
-        for fmt in ("%d-%m-%Y %H:%M:%S", "%Y-%m-%d %H:%M:%S", "%d/%m/%Y %H:%M:%S"):
+        for fmt in (
+            "%d-%m-%Y %H:%M:%S",
+            "%d-%b-%Y %H:%M:%S",
+            "%Y-%m-%d %H:%M:%S",
+            "%d/%m/%Y %H:%M:%S",
+        ):
             try:
                 return datetime.datetime.strptime(text, fmt).replace(tzinfo=IST).astimezone(datetime.timezone.utc)
             except ValueError:
                 continue
         return None
 
-    def _safe_entry_time(self, candidate: str | None, fallback: str | None) -> str:
-        """Use a matched broker fill time, otherwise retain the strategy event."""
-        return candidate or fallback or datetime.datetime.now(IST).isoformat()
+    def _safe_entry_time(
+        self,
+        candidate: str | None,
+        broker_confirmed: str | None,
+        fallback: str | None,
+    ) -> str:
+        """Prefer the true FYERS fill time, then FYERS order confirmation.
+
+        The strategy event time is only a last resort. This keeps the UI and
+        persisted trade row aligned with the broker-confirmed market-order
+        moment even when the tradebook fill hydrates a few seconds later.
+        """
+        return candidate or broker_confirmed or fallback or datetime.datetime.now(IST).isoformat()
 
     def _safe_exit_time(self, position: dict, candidate: str | None) -> str:
         """Never persist an exit before the recorded entry.
@@ -1940,6 +2027,8 @@ class LiveBroker(PaperBroker):
         """
         now = datetime.datetime.now(IST)
         exit_at = self._coerce_datetime(candidate) if candidate else now
+        if exit_at is None:
+            exit_at = now
         entry_at = self._coerce_datetime(position.get("entry_time"))
         if entry_at and exit_at <= entry_at:
             print(

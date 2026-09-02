@@ -182,7 +182,7 @@ export default function HistoryTab({
     }
     try {
       setRefreshingSilverHistory(true);
-      const result = await api.refreshSilverHistory();
+      const result = await api.refreshSilverHistory(algoId);
       setSilverHistoryRefreshNotice(result?.message || 'Silver history refresh requested.');
     } catch (e: any) {
       setSilverHistoryRefreshNotice(e?.message || 'Could not request Silver history refresh.');

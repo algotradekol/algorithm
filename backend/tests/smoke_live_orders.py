@@ -852,8 +852,8 @@ def test_bootstrap_fyers_app_position_and_land_in_closed_trades():
         check("one fyers-app position was bootstrapped", inserted == 1,
               f"inserted={inserted}, rows={inserted_rows}")
         row = inserted_rows[0]
-        check("bootstrapped row has fyers_app_manual origin",
-              (row.get("signal_snapshot") or {}).get("origin") == "fyers_app_manual",
+        check("bootstrapped row has recovered-position origin",
+              (row.get("signal_snapshot") or {}).get("origin") == "fyers_recovered_position",
               f"row={row}")
         check("bootstrapped row uses unreachable protective levels for SELL",
               row.get("sl_price") >= 1_000_000_000 and row.get("target_price") == 0.0,
@@ -861,8 +861,8 @@ def test_bootstrap_fyers_app_position_and_land_in_closed_trades():
         check("bootstrapped row carries the FYERS entry price and side",
               row.get("side") == "SELL" and row.get("entry_price") == 248500.0,
               f"row={row}")
-        check("bootstrapped row is labeled as opened in the FYERS app",
-              row.get("entry_trigger") == "Opened directly in FYERS app",
+        check("bootstrapped row is labeled as recovered from FYERS",
+              row.get("entry_trigger") == "Recovered from FYERS broker position",
               f"row={row}")
 
         # A symbol outside the strategy's watchlist must never be bootstrapped.
@@ -993,6 +993,51 @@ def test_ws_order_fill_closes_position_immediately():
         check("sibling Target LIMIT was cancelled on WS push",
               any(c.get("id") == "TP-42" for c in rec["cancelled"]),
               f"cancelled={rec['cancelled']}")
+    finally:
+        pb.PaperBroker.close_trade = orig_close
+
+
+def test_ws_order_fill_normalizes_fyers_naive_ist_string():
+    """Regression: Fyers WS pushes `traded_at` as a NAIVE IST wall-clock
+    string like "31-Aug-2026 11:51:34" (no offset). Previously we passed
+    it raw into close_trade; Postgres timestamptz then stamped +00,
+    frontend re-shifted +5:30, and users saw exit times 5.5h in the
+    future. Fix: normalize through _safe_exit_time so the value goes
+    to the DB IST-tagged (+05:30)."""
+    print("\n8i2. Order-WS push — Fyers naive IST `traded_at` is normalized to IST-tagged")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+    position = {
+        "symbol": "MCX:SILVERMIC26AUGFUT", "side": "BUY", "qty": 1,
+        "entry_time": "2026-08-31T11:34:00+05:30",
+        "entry_price": 246140.0, "sl_price": 245690.0, "target_price": 251140.0,
+        "signal_snapshot": {"fyers_sl_order_id": "SL-NAIVE", "fyers_target_order_id": "TP-NAIVE"},
+    }
+    broker.open_positions = lambda: [position]
+    closed = []
+    import app.paper_broker as pb
+    orig_close = pb.PaperBroker.close_trade
+    pb.PaperBroker.close_trade = lambda self, pos, price, exit_reason, exit_time=None: (
+        closed.append((exit_reason, price, exit_time))
+    )
+    try:
+        event = {
+            "kind": "order", "symbol": "MCX:SILVERMIC26AUGFUT",
+            "order_id": "SL-NAIVE", "status": 2, "side": "SELL",
+            "traded_price": 245813.0, "traded_qty": 1,
+            "traded_at": "31-Aug-2026 11:51:34",  # naive IST from Fyers
+        }
+        result = broker.handle_order_event(event)
+        check("SL fill event closed the position",
+              result.get("action") == "closed" and result.get("exit_reason") == "SL_FYERS",
+              f"result={result}")
+        exit_time = closed[0][2] if closed else None
+        check("exit_time is IST-tagged (+05:30), not naive",
+              exit_time is not None and exit_time.endswith("+05:30"),
+              f"exit_time={exit_time}")
+        check("exit_time preserves the Fyers wall-clock reading (11:51:34)",
+              exit_time is not None and "T11:51:34" in exit_time,
+              f"exit_time={exit_time}")
     finally:
         pb.PaperBroker.close_trade = orig_close
 
@@ -5944,6 +5989,16 @@ def test_live_fill_timestamp_integrity():
         datetime.datetime.fromisoformat(safe_exit) > datetime.datetime.fromisoformat(entry),
         f"entry={entry} exit={safe_exit}",
     )
+    safe_entry = broker._safe_entry_time(
+        None,
+        broker._extract_fill_time({"orderDateTime": "2026-08-31 09:00:04"}),
+        "2026-08-31T09:00:01+05:30",
+    )
+    check(
+        "entry timestamp falls back to FYERS order confirmation before strategy event time",
+        safe_entry == "2026-08-31T09:00:04+05:30",
+        f"safe_entry={safe_entry}",
+    )
 
 
 def test_algo3_warmup_end_date_is_today():
@@ -6568,6 +6623,7 @@ def main():
     test_close_trade_still_sends_market_when_fyers_still_holds()
     test_close_trade_falls_back_to_market_when_fyers_unavailable()
     test_ws_order_fill_closes_position_immediately()
+    test_ws_order_fill_normalizes_fyers_naive_ist_string()
     test_ws_position_flat_force_syncs_stale_db()
     test_ws_manual_external_entry_logged_not_persisted()
     test_ws_cancelled_protective_order_clears_snapshot()

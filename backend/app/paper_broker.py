@@ -7,6 +7,7 @@ log (keyed by algo_id).
 from __future__ import annotations
 
 import datetime
+import threading
 
 from .charges import calculate_charges, get_charges_config
 from .storage_namespace import current_storage_values, namespaced_value
@@ -15,7 +16,9 @@ from .supabase_client import run_with_supabase
 from .trailing_stop import (
     SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN,
     calculate_point_trailing,
+    calculate_candle_pair_trailing,
     silver_tsl_points,
+    uses_silver_candle_pair_tsl,
     uses_silver_breakeven_stop,
 )
 
@@ -24,6 +27,7 @@ class PaperBroker:
     def __init__(self, algo_id: str, starting_capital: float):
         self.algo_id = algo_id
         self.starting_capital = starting_capital
+        self._trade_write_lock = threading.RLock()
         self._ensure_state_row()
 
     def state_table_name(self) -> str:
@@ -97,15 +101,23 @@ class PaperBroker:
 
         def query_candidate(supabase, candidate: str):
             request = supabase.table(self.positions_table_name()).select("*").eq("algo_id", candidate).eq("status", "open")
-            if not include_stale:
-                request = request.gte("entry_time", query_date)
             return request.execute()
 
         rows_by_candidate = [
             run_with_supabase(lambda supabase, key=candidate: query_candidate(supabase, key)).data
             for candidate in self.storage_algo_candidates()
         ]
-        return self._merge_storage_rows(rows_by_candidate, order_key="entry_time", reverse=True)
+        rows = self._merge_storage_rows(rows_by_candidate, order_key="entry_time", reverse=True)
+        if include_stale:
+            return rows
+        # Silver Micro 2.0 can opt into carry-forward paper positions. Keep
+        # those visible and exit-managed after midnight; ordinary stale paper
+        # rows retain the existing intraday filter.
+        return [
+            row for row in rows
+            if str(row.get("entry_time") or "")[:10] >= query_date
+            or bool((row.get("signal_snapshot") or {}).get("overnight_carry_enabled"))
+        ]
 
     def close_stale_open_positions(self) -> int:
         """Close previous-day open paper positions so they never appear as live positions."""
@@ -113,6 +125,7 @@ class PaperBroker:
         stale_positions = [
             position for position in self.open_positions(include_stale=True)
             if str(position.get("entry_time") or "")[:10] < today
+            and not bool((position.get("signal_snapshot") or {}).get("overnight_carry_enabled"))
         ]
         for position in stale_positions:
             self.close_trade(position, float(position.get("entry_price") or 0), "MISSED_EOD_STALE")
@@ -156,6 +169,39 @@ class PaperBroker:
         return counts["trade_count_today"] < max_total
 
     def open_trade(
+        self,
+        symbol: str,
+        side: str,
+        qty: int,
+        entry_price: float,
+        sl_price: float,
+        target_price: float,
+        entry_trigger: str | None = None,
+        signal_snapshot: dict | None = None,
+        entry_time: str | None = None,
+    ):
+        """Open exactly one paper position per algo/symbol at a time."""
+        lock = getattr(self, "_trade_write_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._trade_write_lock = lock
+        with lock:
+            existing = [
+                row for row in self.open_positions(include_stale=True)
+                if str(row.get("symbol") or "").upper() == str(symbol or "").upper()
+                and str(row.get("status") or "open").lower() == "open"
+            ]
+            if existing:
+                raise RuntimeError(
+                    f"Paper entry refused: {symbol} already has an open position "
+                    f"(id={existing[0].get('id')})."
+                )
+            return self._open_trade_locked(
+                symbol, side, qty, entry_price, sl_price, target_price,
+                entry_trigger, signal_snapshot, entry_time,
+            )
+
+    def _open_trade_locked(
         self,
         symbol: str,
         side: str,
@@ -425,6 +471,14 @@ class PaperBroker:
                 "model": "target_to_breakeven",
             })
             snapshot["silver_breakeven"] = breakeven
+            pair_tsl = dict(snapshot.get("silver_candle_pair_tsl") or {})
+            if pair_tsl:
+                pair_tsl.update({
+                    "armed": True,
+                    "armed_at": now_iso,
+                    "breakeven_sl": entry,
+                })
+                snapshot["silver_candle_pair_tsl"] = pair_tsl
             snapshot["trailing"] = {
                 "activated": True,
                 "first_activated_at": now_iso,
@@ -448,6 +502,74 @@ class PaperBroker:
                 lambda supabase: supabase.table(self.positions_table_name()).update(updates).eq("id", position["id"]).execute()
             )
         return {**position, **updates, "sl_price": float(updates.get("sl_price", current_sl))}
+
+    def apply_candle_pair_trailing_stop(
+        self,
+        position: dict,
+        ltp: float,
+        first_bar: dict,
+        second_bar: dict,
+        buffer_points: float,
+    ) -> dict:
+        """Replace Silver Micro 2.0's stop from the newest completed 15m pair."""
+        if not uses_silver_candle_pair_tsl(position) or not position.get("trailing_sl_active"):
+            return position
+        result = calculate_candle_pair_trailing(
+            side=position.get("side"),
+            first_bar=first_bar,
+            second_bar=second_bar,
+            buffer_points=buffer_points,
+        )
+        if result is None:
+            return position
+
+        previous_sl = float(position.get("sl_price") or 0)
+        candidate_sl = float(result["candidate_sl"])
+        snapshot = dict(position.get("signal_snapshot") or {})
+        pair_state = dict(snapshot.get("silver_candle_pair_tsl") or {})
+        previous_pair = dict(pair_state.get("last_pair") or {})
+        # This method runs on every tick. A completed pair must be applied
+        # once, not repeatedly amended until the next 15-minute bar closes.
+        if (
+            previous_pair.get("first_bar", {}).get("time") == result["first_bar"].get("time")
+            and previous_pair.get("second_bar", {}).get("time") == result["second_bar"].get("time")
+        ):
+            return position
+
+        trailing = dict(snapshot.get("trailing") or {})
+        events = list(trailing.get("events") or [])
+        now_iso = datetime.datetime.now(IST).isoformat()
+        event = {
+            "at": now_iso,
+            "ltp": float(ltp),
+            "previous_sl": previous_sl,
+            "new_sl": candidate_sl,
+            "delta": candidate_sl - previous_sl,
+            "reason": "candle_pair",
+            **result,
+        }
+        events.append(event)
+        pair_state.update({
+            "last_pair": result,
+            "last_updated_at": now_iso,
+            "current_sl": candidate_sl,
+        })
+        trailing.update({
+            "activated": True,
+            "model": "candle_pair",
+            "last_updated_at": now_iso,
+            "update_count": int(trailing.get("update_count") or 0) + 1,
+            "current_sl": candidate_sl,
+            "events": events,
+        })
+        snapshot["silver_candle_pair_tsl"] = pair_state
+        snapshot["trailing"] = trailing
+        updates = {"sl_price": candidate_sl, "signal_snapshot": snapshot}
+        run_with_supabase(
+            lambda supabase: supabase.table(self.positions_table_name())
+            .update(updates).eq("id", position["id"]).execute()
+        )
+        return {**position, **updates}
 
     def _legacy_silver_position_settings(self, position: dict | None, settings: dict) -> dict:
         """Keep pre-simplification open Silver positions on their old rules.

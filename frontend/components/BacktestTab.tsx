@@ -23,6 +23,7 @@ const SILVER_SELL_PLANS = {
     description: 'Replace the reference on every qualifying red candle, then wait for a later 1-minute break below it.',
   },
 };
+const SILVER_BACKTEST_ALGO_IDS = new Set(['algo3', 'algo5']);
 
 export default function BacktestTab() {
   const [algoId, setAlgoId] = useState('algo1');
@@ -181,6 +182,12 @@ export default function BacktestTab() {
         body: 'Replays MCX:SILVERMIC26AUGFUT on 15-minute candles with EMA20 breakout logic. Read-only; does not touch the live engine.',
         note: 'Uses the 15m reference BUY with the selected SELL logic: each finalized green candle closing above EMA20 becomes the reference, and price buys at reference + n with same-reference re-entry after a BUY target or stop loss on renewed upward movement.',
       }
+    : algoId === 'algo5'
+      ? {
+        title: 'Historical Silver Micro 2.0 Backtest',
+        body: 'Replays MCX:SILVERMIC26AUGFUT using the isolated Silver Micro 2.0 EMA-wick fallback references. Read-only; it never touches the original Silver Micro engine.',
+        note: 'Current green-above-EMA BUY and red-below-EMA SELL references remain first choice. 2.0 additionally accepts the configured EMA-wick fallback references, then uses the same reference +/- n trigger formulas.',
+      }
     : {
         title: 'Historical Backtest',
         body: 'Downloads each NSE 500 symbol once, then replays every weekday in your chosen range. It cannot create live paper trades or alter the live engine.',
@@ -205,9 +212,10 @@ export default function BacktestTab() {
           </button>
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-          <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option><option value="algo3">Silver Micro (MCX:SILVERMIC26AUGFUT)</option></select></label>
+          <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option><option value="algo3">Silver Micro (MCX:SILVERMIC26AUGFUT)</option><option value="algo5">Silver Micro 2.0 (EMA-wick experiment)</option></select></label>
           {algoId === 'algo3' && <div><span className="label">Silver BUY logic</span><div className="control mt-1 flex items-center text-sm text-gray-200">15m EMA reference breakout</div><span className="mt-1 block text-[11px] leading-4 text-gray-500">A finalized green 15m close above EMA20 becomes the reference; BUY fires at reference + n and can re-enter after BUY target/SL while upward movement resumes.</span></div>}
           {algoId === 'algo3' && <label><span className="label">Silver SELL logic</span><select value={silverSellPlan} onChange={(e) => setSilverSellPlan(e.target.value)} className="control mt-1"><option value="red_chain">{SILVER_SELL_PLANS.red_chain.label}</option><option value="latest_reference">{SILVER_SELL_PLANS.latest_reference.label}</option></select><span className="mt-1 block text-[11px] leading-4 text-gray-500">{SILVER_SELL_PLANS[silverSellPlan as keyof typeof SILVER_SELL_PLANS].description}</span></label>}
+          {algoId === 'algo5' && <div><span className="label">Silver Micro 2.0 logic</span><div className="control mt-1 flex items-center text-sm text-gray-200">Current references + EMA-wick fallback</div><span className="mt-1 block text-[11px] leading-4 text-gray-500">The fallback rules are isolated to 2.0. Tune only its settings before running this separate replay.</span></div>}
           <label><span className="label">Start date</span><input value={startDate} onChange={(e) => setStartDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <label><span className="label">End date</span><input value={endDate} onChange={(e) => setEndDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <div className="flex items-end">
@@ -298,7 +306,7 @@ function BacktestResult({ result }: { result: any }) {
     [daily],
   );
   const silverChartDays = useMemo(
-    () => result.algo_id === 'algo3'
+    () => SILVER_BACKTEST_ALGO_IDS.has(result.algo_id)
       ? daily.filter((day: any) => Array.isArray(day?.chart?.candles) && day.chart.candles.length > 0)
       : [],
     [daily, result.algo_id],
@@ -314,7 +322,7 @@ function BacktestResult({ result }: { result: any }) {
   });
   const [uiStorageReady, setUiStorageReady] = useState(false);
   const sectorBreakdown = Array.isArray(result.sector_breakdown) ? result.sector_breakdown : [];
-  const visibleTrades = result.algo_id === 'algo3' && selectedChartDate
+  const visibleTrades = SILVER_BACKTEST_ALGO_IDS.has(result.algo_id) && selectedChartDate
     ? allTrades.filter((trade: any) => trade.session_date === selectedChartDate)
     : allTrades;
   const resultStorageId = `${result.algo_id}:${result.start_date}:${result.end_date}:${result.silver_buy_plan || ''}:${result.silver_sell_plan || ''}`;
@@ -382,7 +390,7 @@ function BacktestResult({ result }: { result: any }) {
 
   return <>
     <section className="panel p-4">
-       <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-semibold text-gray-100">{result.start_date} to {result.end_date}</h3><p className="mt-1 max-w-3xl text-xs text-gray-500">{result.execution_assumption}</p>{result.algo_id === 'algo3' && <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[#bfdbfe]"><span className="rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1"><span className="font-semibold">BUY:</span> {result.silver_buy_plan_label || result.silver_buy_plan || '15m EMA reference breakout'}</span><span className="rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1"><span className="font-semibold">SELL:</span> {result.silver_sell_plan_label || result.silver_sell_plan || 'Red-chain comparison (current)'}</span></div>}</div><div className="flex items-center gap-3"><div className="text-xs text-gray-500">History coverage: <span className="num text-gray-100">{coverage.symbols_with_history} / {coverage.requested_symbols}</span></div><button onClick={() => downloadBacktestCsv(result)} className="inline-flex min-h-10 items-center gap-2 rounded border border-[#22c55e] bg-[#22c55e]/10 px-3 py-2 text-xs font-semibold text-[#22c55e]"><i className="ri-file-download-fill text-sm" />Download CSV</button></div></div>
+       <div className="flex flex-wrap items-start justify-between gap-3"><div><h3 className="text-sm font-semibold text-gray-100">{result.start_date} to {result.end_date}</h3><p className="mt-1 max-w-3xl text-xs text-gray-500">{result.execution_assumption}</p>{SILVER_BACKTEST_ALGO_IDS.has(result.algo_id) && <div className="mt-2 flex flex-wrap items-center gap-2 text-xs text-[#bfdbfe]"><span className="rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1"><span className="font-semibold">BUY:</span> {result.silver_buy_plan_label || result.silver_buy_plan || '15m EMA reference breakout'}</span><span className="rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-2 py-1"><span className="font-semibold">SELL:</span> {result.silver_sell_plan_label || result.silver_sell_plan || 'Red-chain comparison (current)'}</span>{result.algo_id === 'algo5' && <span className="rounded border border-[#a855f7]/40 bg-[#a855f7]/10 px-2 py-1 text-[#e9d5ff]">EMA-wick fallback enabled</span>}</div>}</div><div className="flex items-center gap-3"><div className="text-xs text-gray-500">History coverage: <span className="num text-gray-100">{coverage.symbols_with_history} / {coverage.requested_symbols}</span></div><button onClick={() => downloadBacktestCsv(result)} className="inline-flex min-h-10 items-center gap-2 rounded border border-[#22c55e] bg-[#22c55e]/10 px-3 py-2 text-xs font-semibold text-[#22c55e]"><i className="ri-file-download-fill text-sm" />Download CSV</button></div></div>
       <div className="mt-4 grid grid-cols-2 gap-2 sm:grid-cols-3 lg:grid-cols-6">
         <Card label="Trading days" value={summary.trading_days_replayed || 0} />
         <Card label="Trades" value={summary.trade_count || 0} />
@@ -436,8 +444,8 @@ function BacktestResult({ result }: { result: any }) {
           rows={visibleTrades}
           selectedTradeId={selectedTradeId}
           onViewChart={focusTrade}
-          selectedDate={result.algo_id === 'algo3' ? selectedChartDate : null}
-          isSilver={result.algo_id === 'algo3'}
+          selectedDate={SILVER_BACKTEST_ALGO_IDS.has(result.algo_id) ? selectedChartDate : null}
+          isSilver={SILVER_BACKTEST_ALGO_IDS.has(result.algo_id)}
           compact
         />
       </section>
@@ -446,8 +454,8 @@ function BacktestResult({ result }: { result: any }) {
         rows={visibleTrades}
         selectedTradeId={selectedTradeId}
         onViewChart={focusTrade}
-        selectedDate={result.algo_id === 'algo3' ? selectedChartDate : null}
-        isSilver={result.algo_id === 'algo3'}
+        selectedDate={SILVER_BACKTEST_ALGO_IDS.has(result.algo_id) ? selectedChartDate : null}
+        isSilver={SILVER_BACKTEST_ALGO_IDS.has(result.algo_id)}
       />
     )}
     <DailyResults rows={daily} />
@@ -458,7 +466,7 @@ function DailyResults({ rows }: { rows: any[] }) {
   const [page, setPage] = useState(0);
   const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
   const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
-  const isSilver = rows[0]?.algo_id === 'algo3';
+  const isSilver = SILVER_BACKTEST_ALGO_IDS.has(rows[0]?.algo_id);
 
   if (isSilver) {
     return (

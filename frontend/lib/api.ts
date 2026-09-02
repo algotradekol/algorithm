@@ -147,7 +147,8 @@ export const api = {
     ),
   manualTrade: (algoId: string, payload: { symbol: string; side: 'BUY' | 'SELL'; price?: number; trigger?: string }) =>
     authedFetch(`/api/algo/${algoId}/manual-trade`, { method: 'POST', body: JSON.stringify(payload) }),
-  trades: (algoId: string) => authedFetch(`/api/algo/${algoId}/trades`),
+  trades: (algoId: string, limit = 200, todayOnly = true) =>
+    authedFetch(`/api/algo/${algoId}/trades?limit=${limit}&today_only=${todayOnly}`),
   history: (algoId: string, days = 30) => authedFetch(`/api/algo/${algoId}/history?days=${days}`),
   setupHistory: (
     algoId: string,
@@ -195,7 +196,7 @@ export const api = {
   updateTradingMode: (mode: 'paper' | 'live') =>
     authedFetch('/api/runtime/trading-mode', { method: 'PUT', body: JSON.stringify({ trading_mode: mode }) }),
   fyersRefreshToken: () => authedFetch('/api/fyers/refresh-token', { method: 'POST' }),
-  refreshSilverHistory: () => authedFetch('/api/algo/algo3/refresh-history', { method: 'POST' }),
+  refreshSilverHistory: (algoId: string) => authedFetch(`/api/algo/${encodeURIComponent(algoId)}/refresh-history`, { method: 'POST' }),
   fyersDisconnect: (force = false) =>
     authedFetch(`/api/fyers/disconnect${force ? '?force=true' : ''}`, { method: 'POST' }),
   fyersTokenStatus: () => authedFetch('/api/fyers/token-status'),

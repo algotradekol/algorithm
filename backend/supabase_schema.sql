@@ -224,6 +224,7 @@ ALTER TABLE strategy_settings
     ADD COLUMN IF NOT EXISTS tsl_trigger_points numeric default 100,
     ADD COLUMN IF NOT EXISTS tsl_distance_points numeric default 50,
     ADD COLUMN IF NOT EXISTS silver_breakout_points numeric default 150,
+    ADD COLUMN IF NOT EXISTS ema_wick_distance_points numeric default 300,
     ADD COLUMN IF NOT EXISTS sl_points numeric default 100,
     ADD COLUMN IF NOT EXISTS target_points numeric default 300,
     ADD COLUMN IF NOT EXISTS silver_lots int default 1,
