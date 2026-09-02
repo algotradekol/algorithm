@@ -131,6 +131,11 @@ def engine_status(_user=Depends(require_auth)):
 
 
 def get_strategy_or_raise(algo_id: str):
+    # Silver Micro 2.0 is deliberately a paper/backtest experiment.  Keep the
+    # server boundary closed as well as hiding its tab, so a stale URL or
+    # direct API request can never route it into the live dashboard.
+    if algo_id == "algo5" and get_runtime_trading_mode() != "paper":
+        raise HTTPException(403, "Silver Micro 2.0 is available in Paper mode only.")
     strategy = STRATEGIES.get(algo_id)
     if strategy:
         return strategy

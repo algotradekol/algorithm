@@ -50,6 +50,7 @@ function isTabHidden(name: string): boolean {
   return HIDDEN_TABS.has(tabKey(name));
 }
 const TABS = ALL_DASHBOARD_TABS.filter((t) => !isTabHidden(t)) as readonly DashboardTabName[];
+const PAPER_ONLY_TABS = new Set<DashboardTabName>(['Silver Micro 2.0']);
 
 function formatIstTime() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -139,8 +140,13 @@ function DashboardContent() {
   const router = useRouter();
   const pathname = usePathname();
   const searchParams = useSearchParams();
-  const tab = resolveDashboardTab(pathname, TABS);
   const tradingMode = (engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper';
+  // Silver Micro 2.0 is an experiment. It is intentionally unavailable in
+  // Live mode so no dashboard action can ever route it toward real orders.
+  const visibleTabs = TABS.filter((candidate) => (
+    tradingMode === 'paper' || !PAPER_ONLY_TABS.has(candidate)
+  ));
+  const tab = resolveDashboardTab(pathname, visibleTabs);
   const sessionState = fyersStatus?.session_state || engineStatus?.fyers_session_state || 'token_missing';
   const fyersConnectedForMode = Boolean(
     fyersStatus?.verified
@@ -355,7 +361,7 @@ function DashboardContent() {
         </header>
 
         <nav className="mb-4 flex gap-6 overflow-x-auto whitespace-nowrap border-b border-[#1f2937] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-          {TABS.map((t) => (
+          {visibleTabs.map((t) => (
             <button
               key={t}
               onClick={() => router.push(DASHBOARD_TAB_ROUTES[t])}
@@ -438,7 +444,7 @@ function DashboardContent() {
                 />
               </div>
             )}
-            {!isTabHidden('Silver Micro 2.0') && (
+            {tradingMode === 'paper' && !isTabHidden('Silver Micro 2.0') && (
               <div className={tab === 'Silver Micro 2.0' ? '' : 'hidden'}>
                 <AlgoTab
                   key={`algo5-${tradingMode}`}

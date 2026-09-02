@@ -1731,7 +1731,7 @@ def _simulate_silver_micro_range(
         # The second completed 15m candle makes a pair eligible. This runs
         # after the bar's 1m target/SL checks, matching the live strategy's
         # closed-candle trail update order.
-        if position and position.get("trailing_sl_active") and candle_pair_tsl:
+        if allow_signals and position and position.get("trailing_sl_active") and candle_pair_tsl:
             maybe_apply_candle_pair_trailing(float(bar["close"]), bar["time"])
             # A finalized red bar becomes the new reference. Any handoff
             # tied to the older reference must not leak into this candle.
@@ -1976,6 +1976,12 @@ def _simulate_silver_micro_range(
                 "policy": "candle_pair_tsl_v1",
                 "buffer_points": candle_pair_buffer,
                 "armed": False,
+                # A pair must start after entry. Warmup bars and completed
+                # bars from before the trade cannot retroactively trail it.
+                "first_bar_not_before": (
+                    entry_time.replace(minute=(entry_time.minute // 15) * 15, second=0, microsecond=0)
+                    + datetime.timedelta(minutes=15)
+                ).isoformat(),
             } if candle_pair_tsl else None,
             "entry_mode": entry_metadata.get("entry_mode") or (
                 "THRESHOLD_TRIGGER"
@@ -2075,7 +2081,15 @@ def _simulate_silver_micro_range(
             return
         side = str(position.get("side") or "").upper()
         pair_result = None
+        pair_state = position.get("candle_pair_tsl") or {}
+        not_before_raw = pair_state.get("first_bar_not_before")
+        try:
+            not_before = datetime.datetime.fromisoformat(str(not_before_raw)) if not_before_raw else None
+        except (TypeError, ValueError):
+            not_before = None
         for index in range(len(finalized_15m_bars) - 1, 0, -1):
+            if not_before and finalized_15m_bars[index - 1].get("time") < not_before:
+                continue
             candidate = calculate_candle_pair_trailing(
                 side=side,
                 first_bar=finalized_15m_bars[index - 1],
@@ -2089,7 +2103,6 @@ def _simulate_silver_micro_range(
             return
         previous_sl = float(position["sl_price"])
         candidate_sl = float(pair_result["candidate_sl"])
-        pair_state = position.get("candle_pair_tsl") or {}
         previous_pair = pair_state.get("last_pair") or {}
         if (
             (previous_pair.get("first_bar") or {}).get("time") == (pair_result.get("first_bar") or {}).get("time")

@@ -14,6 +14,7 @@ import app.paper_broker as paper_broker_module
 from app.backtest import _simulate_silver_micro_range
 from app.charges import get_charges_config
 from app.live_broker import LiveBroker
+from app.paper_broker import PaperBroker
 from app.strategies.algo5_silver_micro_2 import Algo5SilverMicro2
 from app.trailing_stop import calculate_candle_pair_trailing
 
@@ -120,6 +121,26 @@ def test_candle_close_trigger_uses_fallback_qualification() -> None:
     }
     strategy._check_candle_close_trigger(bar)
     check("fallback BUY fires at close plus n", calls == [("BUY", 1300.0, 1300.0)], str(calls))
+
+
+def test_opening_bar_does_not_trigger_from_its_own_reference() -> None:
+    """The 09:00 bar can become a reference only after it has closed."""
+    strategy = make_strategy()
+    opening = datetime.datetime(2026, 9, 2, 9, 0)
+    previous_reference = {"open": 900, "high": 1250, "low": 850, "close": 1100, "time": opening - datetime.timedelta(minutes=15)}
+    strategy._update_setups(previous_reference)
+    calls: list[tuple[str, float, float]] = []
+    strategy._fire_entry = lambda side, ltp, trigger_level, **_: calls.append((side, ltp, trigger_level)) or True
+    strategy._mark_fired = lambda *_, **__: None
+
+    # This candle itself closes at 1,300 and qualifies as a new BUY reference.
+    # The trigger check must still use the previously closed 1,100 reference,
+    # not incorrectly use this bar's own 1,300 close (which would mean 1,500).
+    opening_bar = {"open": 1100, "high": 1300, "low": 1050, "close": 1300, "time": opening}
+    strategy._check_candle_close_trigger(opening_bar)
+    strategy._update_setups(opening_bar)
+    check("opening bar uses the prior closed reference", calls == [("BUY", 1300.0, 1300.0)], str(calls))
+    check("opening bar becomes the next reference after trigger evaluation", strategy._buy_setup_close == 1300)
 
 
 def test_fallback_sell_tick_cross_fires_from_green_candle() -> None:
@@ -262,6 +283,39 @@ def test_pair_already_crossed_exits_immediately() -> None:
     check("already-crossed pair SL closes BUY immediately", result is None and len(closed) == 1 and closed[0][2] == "TRAILING_SL", str(closed))
 
 
+def test_pair_tsl_ignores_pairs_completed_before_entry() -> None:
+    strategy = make_strategy()
+    old_red = _replay_bar(datetime.datetime(2026, 9, 2, 9, 0), 1100, 1120, 900, 1000, ema20=950)
+    old_green = _replay_bar(datetime.datetime(2026, 9, 2, 9, 15), 1000, 1080, 940, 1050, ema20=1000)
+    strategy._bars = deque([old_red, old_green], maxlen=500)
+    position = {"entry_time": "2026-09-02T09:20:00+05:30"}
+    check("pair TSL ignores history before entry", strategy._latest_candle_pair("BUY", position) is None)
+
+    new_red = _replay_bar(datetime.datetime(2026, 9, 2, 9, 30), 1100, 1120, 920, 1000, ema20=950)
+    new_green = _replay_bar(datetime.datetime(2026, 9, 2, 9, 45), 1000, 1080, 960, 1050, ema20=1000)
+    strategy._bars.extend([new_red, new_green])
+    pair = strategy._latest_candle_pair("BUY", position)
+    check("pair TSL uses the first pair completed after entry", pair == (new_red, new_green), str(pair))
+
+
+def test_paper_broker_refuses_duplicate_open_symbol() -> None:
+    broker = object.__new__(PaperBroker)
+    broker.algo_id = "algo5"
+    broker._trade_write_lock = threading.RLock()
+    broker.open_positions = lambda include_stale=False: [{
+        "id": "already-open",
+        "symbol": "MCX:SILVERMIC26AUGFUT",
+        "status": "open",
+    }]
+    try:
+        broker.open_trade("MCX:SILVERMIC26AUGFUT", "BUY", 1, 1000, 800, 1200)
+    except RuntimeError as exc:
+        refused = "already has an open position" in str(exc)
+    else:
+        refused = False
+    check("paper broker refuses a duplicate open position", refused)
+
+
 def test_overnight_paper_carry_skips_eod_and_live_is_blocked() -> None:
     strategy = make_strategy()
     carried = {
@@ -387,11 +441,14 @@ def main() -> None:
     test_selected_reference_uses_unchanged_trigger_formula()
     test_each_reference_family_is_stored_independently()
     test_candle_close_trigger_uses_fallback_qualification()
+    test_opening_bar_does_not_trigger_from_its_own_reference()
     test_fallback_sell_tick_cross_fires_from_green_candle()
     test_audit_identifies_fallback_reference()
     test_candle_pair_tsl_candidates_support_latest_pair_replacement()
     test_candle_pair_move_is_audited_and_sent_to_live_broker()
     test_pair_already_crossed_exits_immediately()
+    test_pair_tsl_ignores_pairs_completed_before_entry()
+    test_paper_broker_refuses_duplicate_open_symbol()
     test_overnight_paper_carry_skips_eod_and_live_is_blocked()
     test_backtest_replays_ema_wick_fallback_references()
     print("RESULT: ALL CHECKS PASSED")

@@ -1,6 +1,7 @@
 import datetime
 
 from .algo3_silver_micro import Algo3SilverMicro, _fmt
+from ..runtime_mode import get_runtime_trading_mode
 from ..silver_setup_history import get_latest_setup_reference, record_setup_event
 from ..trailing_stop import calculate_candle_pair_trailing, uses_silver_candle_pair_tsl
 
@@ -21,6 +22,9 @@ class Algo5SilverMicro2(Algo3SilverMicro):
         self._sell_setup_family: str | None = None
         self._setup_references: dict[str, dict[str, dict | None]] = self._empty_setup_references()
         super().__init__(watchlist=watchlist)
+        # Algo5 never reads live-mode settings because it is deliberately a
+        # paper-only experiment, even while the rest of the dashboard is live.
+        self.reload_settings(mode="paper")
 
     @staticmethod
     def _empty_setup_references() -> dict[str, dict[str, dict | None]]:
@@ -37,11 +41,45 @@ class Algo5SilverMicro2(Algo3SilverMicro):
 
     def _remember_reference(self, side: str, family: str, bar: dict) -> None:
         self._setup_references[side][family] = {
+            "open": float(bar["open"]),
+            "high": float(bar["high"]),
+            "low": float(bar["low"]),
             "close": float(bar["close"]),
             "time": bar["time"],
             "ema20": float(self._ema20) if self._ema20 is not None else None,
             "family": family,
         }
+
+    @staticmethod
+    def _is_paper_mode_active() -> bool:
+        return get_runtime_trading_mode() == "paper"
+
+    def reload_settings(self, mode: str | None = None):
+        # Never bind Algo5 to the live settings namespace.  This keeps both
+        # its configuration and its paper broker isolated from real trading.
+        return super().reload_settings(mode="paper")
+
+    def refresh_market_data(self):
+        if self._is_paper_mode_active():
+            return super().refresh_market_data()
+
+    def on_trading_mode_switched(self, new_mode: str, previous_mode: str | None = None) -> None:
+        if new_mode != "paper":
+            self._buy_reentry_after_exit = None
+            self._sell_reentry_after_exit = None
+            self._entry_attempt_in_flight = False
+            return
+        super().on_trading_mode_switched(new_mode, previous_mode)
+
+    def on_tick(self, symbol: str, ltp: float, timestamp):
+        if not self._is_paper_mode_active():
+            return
+        super().on_tick(symbol, ltp, timestamp)
+
+    def on_candle_close(self, symbol: str, candle: dict, indicators: dict):
+        if not self._is_paper_mode_active():
+            return
+        super().on_candle_close(symbol, candle, indicators)
 
     def _ema_wick_distance_points(self) -> float:
         return float(self.settings.get("ema_wick_distance_points", 300) or 300)
@@ -157,6 +195,9 @@ class Algo5SilverMicro2(Algo3SilverMicro):
             ):
                 self._sell_reentry_after_exit = None
                 self._mark_fired("SELL", setup_bar_at=self._sell_setup_bar_at)
+                # The parent also evaluates the standard sell path.  Do not
+                # let the same tick submit the fallback trade a second time.
+                return
 
         return super()._check_triggers(ltp, event_time=event_time)
 
@@ -245,7 +286,16 @@ class Algo5SilverMicro2(Algo3SilverMicro):
 
     def _signal_snapshot(self, side: str, entry_price: float, trigger_level: float) -> dict:
         snapshot = super()._signal_snapshot(side, entry_price, trigger_level)
-        snapshot["setup_family"] = self._buy_setup_family if side == "BUY" else self._sell_setup_family
+        family = self._buy_setup_family if side == "BUY" else self._sell_setup_family
+        snapshot["setup_family"] = family
+        reference = self._setup_references[side].get(family) if family else None
+        if reference:
+            # Preserve the exact closed 15m candle that qualified. This makes
+            # every opening reference independently auditable in the CSV.
+            snapshot["setup_reference_bar"] = {
+                key: (value.isoformat() if key == "time" and hasattr(value, "isoformat") else value)
+                for key, value in reference.items()
+            }
         snapshot["ema_wick_distance_points"] = self._ema_wick_distance_points()
         # Capture policy at entry so turning the settings toggle off later
         # cannot unexpectedly square off an already carried paper position.
@@ -261,11 +311,29 @@ class Algo5SilverMicro2(Algo3SilverMicro):
             ltp = position.get("_last_ltp", position["entry_price"])
             self.broker.close_trade(position, ltp, "EOD_SQUAREOFF")
 
-    def _latest_candle_pair(self, side: str) -> tuple[dict, dict] | None:
-        """Find the latest completed reversal pair, including pre-arm bars."""
+    def _pair_first_bar_after_entry(self, position: dict | None) -> datetime.datetime | None:
+        """Return the first full 15m bar eligible to trail this position."""
+        if not position:
+            return None
+        raw_entry_time = position.get("entry_time")
+        if not raw_entry_time:
+            return None
+        try:
+            entry_time = datetime.datetime.fromisoformat(str(raw_entry_time).replace("Z", "+00:00"))
+            if entry_time.tzinfo is not None:
+                entry_time = entry_time.astimezone(datetime.timezone(datetime.timedelta(hours=5, minutes=30))).replace(tzinfo=None)
+            return entry_time.replace(minute=(entry_time.minute // 15) * 15, second=0, microsecond=0) + datetime.timedelta(minutes=15)
+        except (TypeError, ValueError):
+            return None
+
+    def _latest_candle_pair(self, side: str, position: dict | None = None) -> tuple[dict, dict] | None:
+        """Find the latest valid pair formed after this position opened."""
         bars = list(self._bars)
+        first_bar_after_entry = self._pair_first_bar_after_entry(position)
         for index in range(len(bars) - 1, 0, -1):
             first_bar, second_bar = bars[index - 1], bars[index]
+            if first_bar_after_entry and first_bar.get("time") < first_bar_after_entry:
+                continue
             if calculate_candle_pair_trailing(
                 side=side,
                 first_bar=first_bar,
@@ -282,7 +350,7 @@ class Algo5SilverMicro2(Algo3SilverMicro):
         """Replace the stop from the newest completed pair once breakeven is armed."""
         if not uses_silver_candle_pair_tsl(position) or not position.get("trailing_sl_active"):
             return position
-        pair = self._latest_candle_pair(str(position.get("side") or ""))
+        pair = self._latest_candle_pair(str(position.get("side") or ""), position)
         if pair is None:
             return position
         first_bar, second_bar = pair
@@ -321,6 +389,8 @@ class Algo5SilverMicro2(Algo3SilverMicro):
 
     def check_exits(self):
         """Keep parent exits, with Algo5's pair trail after breakeven arms."""
+        if not self._is_paper_mode_active():
+            return
         position = self._open_position()
         if not position:
             return
@@ -336,9 +406,6 @@ class Algo5SilverMicro2(Algo3SilverMicro):
         ltp = float(ltp)
         effective_settings = self._trailing_settings_for(position)
         position = self.broker.apply_trailing_stop(position, ltp, effective_settings)
-        position = self._apply_candle_pair_trailing(position, ltp)
-        if not position:
-            return
         side = position["side"]
         sl = float(position["sl_price"])
         target = float(position["target_price"])
@@ -346,27 +413,42 @@ class Algo5SilverMicro2(Algo3SilverMicro):
             use_target = self.broker.should_exit_at_target(effective_settings, position)
         except TypeError:
             use_target = self.broker.should_exit_at_target(effective_settings)
+        # Existing protection and the final target take priority over a newly
+        # available pair. This prevents an activation tick from being closed
+        # as a trailing stop before it can remain open beyond breakeven.
         if side == "BUY":
             if ltp <= sl:
                 exit_reason = self._stop_exit_reason(position)
                 self.broker.close_trade(position, ltp, exit_reason)
                 self._arm_buy_reentry_after_exit(exit_reason)
+                return
             elif use_target and ltp >= target:
                 self.broker.close_trade(position, ltp, "TARGET")
                 self._arm_buy_reentry_after_exit("TARGET")
+                return
         else:
             if ltp >= sl:
                 exit_reason = self._stop_exit_reason(position)
                 self.broker.close_trade(position, ltp, exit_reason)
                 self._arm_sell_reentry_after_exit(exit_reason)
+                return
             elif use_target and ltp <= target:
                 self.broker.close_trade(position, ltp, "TARGET")
                 self._arm_sell_reentry_after_exit("TARGET")
+                return
+
+        position = self._apply_candle_pair_trailing(position, ltp)
+        if not position:
+            return
 
     def _finalize_bar(self, allow_signals: bool, require_closed: bool = True):
         bars_before = len(self._bars)
         super()._finalize_bar(allow_signals=allow_signals, require_closed=require_closed)
         if len(self._bars) == bars_before:
+            return
+        # Warmup replays old market history. It rebuilds references only;
+        # it must never mutate an already-open position's current pair TSL.
+        if not allow_signals:
             return
         position = self._open_position()
         ltp = (position or {}).get("_last_ltp") or self._last_tick_ltp

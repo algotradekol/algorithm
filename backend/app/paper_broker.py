@@ -7,6 +7,7 @@ log (keyed by algo_id).
 from __future__ import annotations
 
 import datetime
+import threading
 
 from .charges import calculate_charges, get_charges_config
 from .storage_namespace import current_storage_values, namespaced_value
@@ -26,6 +27,7 @@ class PaperBroker:
     def __init__(self, algo_id: str, starting_capital: float):
         self.algo_id = algo_id
         self.starting_capital = starting_capital
+        self._trade_write_lock = threading.RLock()
         self._ensure_state_row()
 
     def state_table_name(self) -> str:
@@ -167,6 +169,39 @@ class PaperBroker:
         return counts["trade_count_today"] < max_total
 
     def open_trade(
+        self,
+        symbol: str,
+        side: str,
+        qty: int,
+        entry_price: float,
+        sl_price: float,
+        target_price: float,
+        entry_trigger: str | None = None,
+        signal_snapshot: dict | None = None,
+        entry_time: str | None = None,
+    ):
+        """Open exactly one paper position per algo/symbol at a time."""
+        lock = getattr(self, "_trade_write_lock", None)
+        if lock is None:
+            lock = threading.RLock()
+            self._trade_write_lock = lock
+        with lock:
+            existing = [
+                row for row in self.open_positions(include_stale=True)
+                if str(row.get("symbol") or "").upper() == str(symbol or "").upper()
+                and str(row.get("status") or "open").lower() == "open"
+            ]
+            if existing:
+                raise RuntimeError(
+                    f"Paper entry refused: {symbol} already has an open position "
+                    f"(id={existing[0].get('id')})."
+                )
+            return self._open_trade_locked(
+                symbol, side, qty, entry_price, sl_price, target_price,
+                entry_trigger, signal_snapshot, entry_time,
+            )
+
+    def _open_trade_locked(
         self,
         symbol: str,
         side: str,
