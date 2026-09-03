@@ -355,6 +355,59 @@ def test_overnight_paper_carry_skips_eod_and_live_is_blocked() -> None:
     check("live overnight entry is blocked without FYERS GTT/OCO", blocked)
 
 
+def test_rest_candle_protects_carried_paper_position_without_creating_entry() -> None:
+    strategy = make_strategy()
+    position = {
+        "side": "BUY",
+        "entry_price": 1000.0,
+        "sl_price": 900.0,
+        "target_price": 1100.0,
+        "signal_snapshot": {"overnight_carry_enabled": True},
+    }
+    closed: list[tuple] = []
+    ranges: list[float] = []
+    marks: list[tuple] = []
+    strategy.broker = SimpleNamespace(
+        update_position_range=lambda _position, ltp: ranges.append(ltp),
+        record_rest_fallback_mark=lambda _position, ltp, marked_at: marks.append((ltp, marked_at)) or _position,
+        close_trade=lambda *args, **kwargs: closed.append((args, kwargs)),
+    )
+    strategy._open_position = lambda: position
+    strategy._stop_exit_reason = lambda _position: "SL"
+
+    strategy._protect_carried_paper_position_from_completed_minute({
+        "time": datetime.datetime(2026, 9, 3, 9, 0),
+        "low": 980.0,
+        "high": 1120.0,
+        "close": 1080.0,
+    })
+    check(
+        "REST candle updates carried paper LTP",
+        ranges == [1080.0] and marks == [(1080.0, "2026-09-03T09:00:00")] and strategy._last_tick_ltp == 1080.0,
+        f"ranges={ranges}, marks={marks}",
+    )
+    check(
+        "REST candle exits carried BUY at touched target",
+        len(closed) == 1 and closed[0][0][1:3] == (1100.0, "TARGET"),
+        str(closed),
+    )
+
+    # A one-minute candle that touches both levels follows the same
+    # conservative ordering as the backtest: stop first.
+    closed.clear()
+    strategy._protect_carried_paper_position_from_completed_minute({
+        "time": datetime.datetime(2026, 9, 3, 9, 1),
+        "low": 890.0,
+        "high": 1110.0,
+        "close": 1000.0,
+    })
+    check(
+        "REST candle resolves target/stop conflict as stop",
+        len(closed) == 1 and closed[0][0][1:3] == (900.0, "SL"),
+        str(closed),
+    )
+
+
 def _replay_bar(
     at: datetime.datetime,
     open_price: float,
@@ -450,6 +503,7 @@ def main() -> None:
     test_pair_tsl_ignores_pairs_completed_before_entry()
     test_paper_broker_refuses_duplicate_open_symbol()
     test_overnight_paper_carry_skips_eod_and_live_is_blocked()
+    test_rest_candle_protects_carried_paper_position_without_creating_entry()
     test_backtest_replays_ema_wick_fallback_references()
     print("RESULT: ALL CHECKS PASSED")
 

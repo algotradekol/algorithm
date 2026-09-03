@@ -80,6 +80,68 @@ class Algo5SilverMicro2(Algo3SilverMicro):
         if not self._is_paper_mode_active():
             return
         super().on_candle_close(symbol, candle, indicators)
+        if candle.get("_source") == "rest_fallback":
+            self._protect_carried_paper_position_from_completed_minute(candle)
+
+    def _protect_carried_paper_position_from_completed_minute(self, candle: dict) -> None:
+        """Protect an overnight paper position when FYERS WS quotes are down.
+
+        This intentionally never creates an entry. It only lets a completed
+        REST-sourced minute candle close an already-carried paper position
+        whose fixed SL or final target was touched. If both levels were
+        touched in one minute, the stop wins just like the backtest.
+        """
+        position = self._open_position()
+        if not position:
+            return
+        snapshot = position.get("signal_snapshot") or {}
+        if not bool(snapshot.get("overnight_carry_enabled")):
+            return
+        try:
+            low = float(candle["low"])
+            high = float(candle["high"])
+            close = float(candle["close"])
+            sl = float(position["sl_price"])
+            target = float(position["target_price"])
+        except (KeyError, TypeError, ValueError):
+            return
+
+        # The latest completed candle is the best available paper mark while
+        # the live quote endpoint is also unavailable.
+        position["_last_ltp"] = close
+        self._last_tick_ltp = close
+        self.broker.update_position_range(position, close)
+        mark_position = getattr(self.broker, "record_rest_fallback_mark", None)
+        if callable(mark_position):
+            candle_time = candle.get("time")
+            marked_at = candle_time.isoformat() if hasattr(candle_time, "isoformat") else None
+            position = mark_position(position, close, marked_at)
+
+        side = str(position.get("side") or "").upper()
+        if side == "BUY":
+            stop_touched = low <= sl
+            target_touched = high >= target
+        elif side == "SELL":
+            stop_touched = high >= sl
+            target_touched = low <= target
+        else:
+            return
+
+        candle_time = candle.get("time")
+        exit_time = candle_time.isoformat() if hasattr(candle_time, "isoformat") else None
+        if stop_touched:
+            reason = self._stop_exit_reason(position)
+            print(
+                f"[algo5] REST-candle protection closed carried {side}: "
+                f"SL={sl:.2f}, 1m low/high={low:.2f}/{high:.2f}"
+            )
+            self.broker.close_trade(position, sl, reason, exit_time=exit_time)
+        elif target_touched:
+            print(
+                f"[algo5] REST-candle protection closed carried {side}: "
+                f"target={target:.2f}, 1m low/high={low:.2f}/{high:.2f}"
+            )
+            self.broker.close_trade(position, target, "TARGET", exit_time=exit_time)
 
     def _ema_wick_distance_points(self) -> float:
         return float(self.settings.get("ema_wick_distance_points", 300) or 300)

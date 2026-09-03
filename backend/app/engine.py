@@ -923,13 +923,16 @@ def _critical_symbol_rest_fallback_loop():
                 fetched = ", ".join(f"{s}={v}" for s, v in ltps.items()) or "(empty)"
                 print(f"[engine] REST burst poll @ {hhmmss}: {fetched}")
 
-            for symbol, ltp in ltps.items():
-                if not ltp:
-                    continue
-                _inject_rest_tick(symbol, ltp)
+            for symbol in critical_symbols:
+                ltp = ltps.get(symbol)
+                if ltp:
+                    _inject_rest_tick(symbol, ltp)
 
-                # Rebuild the just-completed 1-minute candle from history so
-                # algo3 can keep forming 15m bars even while WS is dead.
+                # Rebuild the just-completed 1-minute candle even when the
+                # Quotes response is empty. A carried paper position can use
+                # this verified OHLC as an exit-only safety backstop; waiting
+                # for a quote first would leave it unprotected in the exact
+                # "WS and Quotes both silent" outage we observed at open.
                 previous_minute = (now_ist.replace(second=0, microsecond=0) - datetime.timedelta(minutes=1))
                 candle_hhmm = previous_minute.strftime("%H:%M")
                 candle_key = f"{symbol}|{previous_minute.isoformat()}"
@@ -942,7 +945,10 @@ def _critical_symbol_rest_fallback_loop():
                     continue
                 if not candles:
                     continue
-                candle = candles[-1]
+                # Mark the source so paper-only strategies can use completed
+                # OHLC as an exit backstop without treating it as a live entry
+                # quote.
+                candle = {**candles[-1], "_source": "rest_fallback"}
                 if candle.get("time") and candle["time"].date() == previous_minute.date():
                     _on_candle_close(symbol, candle, {})
                     last_candle_seen[symbol] = candle_key
@@ -1844,6 +1850,17 @@ def enrich_positions_with_ltp(positions: list[dict]) -> list[dict]:
     for position in positions:
         row = dict(position)
         ltp = last_ltp.get(row["symbol"])
+        if ltp is None:
+            snapshot = row.get("signal_snapshot") or {}
+            if isinstance(snapshot, dict):
+                fallback_mark = snapshot.get("paper_rest_fallback_mark") or {}
+                try:
+                    fallback_ltp = float(fallback_mark.get("ltp"))
+                except (TypeError, ValueError):
+                    fallback_ltp = 0.0
+                if fallback_ltp > 0:
+                    ltp = fallback_ltp
+                    row["ltp_source"] = "rest_1m_close"
         if ltp is not None:
             entry = float(row.get("entry_price") or 0)
             qty = int(row.get("qty") or 0)

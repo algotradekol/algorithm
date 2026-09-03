@@ -790,12 +790,12 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
             n={n}
           />
           <SilverCandlePairCard
-            title="BUY TSL pair (red -> green)"
+            title="BUY latest pair candidate (red -> green)"
             tone="buy"
             pair={candlePairSlots.buy_red_green}
           />
           <SilverCandlePairCard
-            title="SELL TSL pair (green -> red)"
+            title="SELL latest pair candidate (green -> red)"
             tone="sell"
             pair={candlePairSlots.sell_green_red}
           />
@@ -1179,6 +1179,9 @@ function SilverCandlePairCard({
           </div>
           <div className="text-[10px] leading-4 text-gray-500">
             15m pair: {firstTime || '--'} {'->'} {secondTime || '--'}
+          </div>
+          <div className="text-[10px] leading-4 text-gray-500">
+            Candidate only. It becomes an active stop only after a same-side open trade arms candle-pair TSL.
           </div>
         </>
       ) : (

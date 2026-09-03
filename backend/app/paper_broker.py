@@ -352,6 +352,25 @@ class PaperBroker:
             )
         return {**position, **updates}
 
+    def record_rest_fallback_mark(self, position: dict, ltp: float, marked_at: str | None = None) -> dict:
+        """Persist a paper-only completed-candle mark for an offline feed.
+
+        This is intentionally separate from a market tick. It lets a browser
+        refresh display the last verified one-minute close during a Quotes/WS
+        outage, while manual exits and new entries still require `last_ltp`.
+        """
+        snapshot = dict(position.get("signal_snapshot") or {})
+        snapshot["paper_rest_fallback_mark"] = {
+            "ltp": float(ltp),
+            "at": marked_at or datetime.datetime.now(IST).isoformat(),
+            "source": "rest_1m_close",
+        }
+        run_with_supabase(
+            lambda supabase: supabase.table(self.positions_table_name())
+            .update({"signal_snapshot": snapshot}).eq("id", position["id"]).execute()
+        )
+        return {**position, "signal_snapshot": snapshot}
+
     def apply_trailing_stop(self, position: dict, ltp: float, settings: dict) -> dict:
         if uses_silver_breakeven_stop(position, settings):
             return self._apply_silver_breakeven_stop(position, ltp)
@@ -660,6 +679,23 @@ class PaperBroker:
                 .eq("status", "open").gte("entry_time", today).execute()
             ).data
             for candidate in self.storage_algo_candidates()
+        ])
+        # Silver Micro 2.0 may intentionally carry a paper position through
+        # midnight. It was active during this session despite yesterday's
+        # entry timestamp, so include only explicitly opted-in carry rows.
+        carried_positions = self._merge_storage_rows([
+            run_with_supabase(
+                lambda supabase, key=candidate: supabase.table(self.positions_table_name())
+                .select("id,side,signal_snapshot").eq("algo_id", key).eq("status", "open").execute()
+            ).data
+            for candidate in self.storage_algo_candidates()
+        ])
+        positions = self._merge_storage_rows([
+            positions,
+            [
+                row for row in carried_positions
+                if bool((row.get("signal_snapshot") or {}).get("overnight_carry_enabled"))
+            ],
         ])
         rows = self._dedupe_fyers_closed_rows(trades) + positions
         buy_count = len([row for row in rows if row.get("side") == "BUY"])
