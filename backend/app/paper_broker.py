@@ -7,6 +7,7 @@ log (keyed by algo_id).
 from __future__ import annotations
 
 import datetime
+import json
 import threading
 
 from .charges import calculate_charges, get_charges_config
@@ -61,6 +62,43 @@ class PaperBroker:
         if limit is not None:
             return merged[:limit]
         return merged
+
+    @staticmethod
+    def _fyers_entry_order_id(row: dict) -> str | None:
+        snapshot = row.get("signal_snapshot") or {}
+        if isinstance(snapshot, str):
+            try:
+                snapshot = json.loads(snapshot)
+            except (TypeError, ValueError):
+                return None
+        if not isinstance(snapshot, dict):
+            return None
+        order_id = snapshot.get("fyers_entry_order_id")
+        return str(order_id).strip() if order_id else None
+
+    @classmethod
+    def _dedupe_fyers_closed_rows(cls, rows: list[dict]) -> list[dict]:
+        """Keep the authoritative FYERS closure when old races wrote two rows.
+
+        Historical rows may contain both the immediate broker fill (for
+        example ``SL_FYERS``) and a concurrent local/tick closure for the
+        same FYERS entry order. They represent one real trade, not two.
+        """
+        selected: dict[str, dict] = {}
+        passthrough: list[dict] = []
+        for row in rows or []:
+            order_id = cls._fyers_entry_order_id(row)
+            if not order_id:
+                passthrough.append(row)
+                continue
+            existing = selected.get(order_id)
+            reason = str(row.get("exit_reason") or "").upper()
+            existing_reason = str((existing or {}).get("exit_reason") or "").upper()
+            # Prefer the FYERS-confirmed exit detail over a simultaneous
+            # local estimate. Preserve the first row for equal authority.
+            if existing is None or (reason.endswith("_FYERS") and not existing_reason.endswith("_FYERS")):
+                selected[order_id] = row
+        return passthrough + list(selected.values())
 
     def _ensure_state_row(self):
         existing = run_with_supabase(
@@ -144,7 +182,10 @@ class PaperBroker:
             run_with_supabase(lambda supabase, key=candidate: query_candidate(supabase, key)).data
             for candidate in self.storage_algo_candidates()
         ]
-        return self._merge_storage_rows(rows_by_candidate, limit=limit, order_key="exit_time", reverse=True)
+        merged = self._merge_storage_rows(rows_by_candidate, order_key="exit_time", reverse=True)
+        deduped = self._dedupe_fyers_closed_rows(merged)
+        deduped.sort(key=lambda row: str(row.get("exit_time") or ""), reverse=True)
+        return deduped[:limit]
 
     def already_traded_today(self, symbol: str) -> bool:
         today = datetime.date.today().isoformat()
@@ -620,7 +661,7 @@ class PaperBroker:
             ).data
             for candidate in self.storage_algo_candidates()
         ])
-        rows = trades + positions
+        rows = self._dedupe_fyers_closed_rows(trades) + positions
         buy_count = len([row for row in rows if row.get("side") == "BUY"])
         sell_count = len([row for row in rows if row.get("side") == "SELL"])
         return {
@@ -636,77 +677,91 @@ class PaperBroker:
         exit_reason: str,
         exit_time: str | None = None,
     ):
-        side = position["side"]
-        qty = position["qty"]
-        entry_price = position["entry_price"]
-
-        buy_value = entry_price * qty if side == "BUY" else exit_price * qty
-        sell_value = exit_price * qty if side == "BUY" else entry_price * qty
-
-        config = get_charges_config()
-        charges = calculate_charges(buy_value, sell_value, config)
-
-        run_with_supabase(
-            lambda supabase: supabase.table(self.positions_table_name()).update({"status": "closed"}).eq("id", position["id"]).execute()
-        )
-        trade_row = {
-            "algo_id": self.storage_algo_id(),
-            "symbol": position["symbol"],
-            "side": side,
-            "qty": qty,
-            "entry_price": entry_price,
-            "exit_price": exit_price,
-            "entry_time": position["entry_time"],
-            "exit_time": exit_time or datetime.datetime.now(IST).isoformat(),
-            "entry_trigger": position.get("entry_trigger"),
-            "signal_snapshot": position.get("signal_snapshot"),
-            "exit_reason": exit_reason,
-            **charges,
-        }
-        try:
-            run_with_supabase(
-                lambda supabase: supabase.table(self.trades_table_name()).insert(trade_row).execute()
+        # WS fills, the tick exit loop, and the reconcile loop can all see
+        # the same exit. Claim the still-open row atomically before creating
+        # the immutable trade record; only one path may win this transition.
+        with self._trade_write_lock:
+            close_result = run_with_supabase(
+                lambda supabase: supabase.table(self.positions_table_name())
+                .update({"status": "closed"}).eq("id", position["id"])
+                .eq("status", "open").select("id").execute()
             )
-        except Exception as exc:
-            if "entry_trigger" not in str(exc) and "signal_snapshot" not in str(exc):
-                raise
-            trade_row.pop("entry_trigger", None)
-            trade_row.pop("signal_snapshot", None)
-            run_with_supabase(
-                lambda supabase: supabase.table(self.trades_table_name()).insert(trade_row).execute()
-            )
+            if not getattr(close_result, "data", None):
+                print(
+                    f"[paper_broker] duplicate close ignored for position "
+                    f"{position.get('id')} ({position.get('symbol')})"
+                )
+                return False
 
-        state = self._get_state()
-        run_with_supabase(
-            lambda supabase: supabase.table(self.state_table_name()).update({"cash": state["cash"] + charges["net_pnl"]}).eq("algo_id", self.storage_algo_id()).execute()
-        )
-        from .broadcaster import broadcast_sync
-        broadcast_sync({
-            "event": "position_closed",
-            "algo_id": self.algo_id,
-            "symbol": position["symbol"],
-            "side": side,
-            "qty": qty,
-            "entry_price": entry_price,
-            "exit_price": exit_price,
-            "exit_reason": exit_reason,
-            "entry_trigger": position.get("entry_trigger"),
-            "signal_snapshot": position.get("signal_snapshot"),
-            "net_pnl": charges["net_pnl"],
-            "gross_pnl": charges["gross_pnl"],
-            "total_charges": charges["total_charges"],
-        })
-        on_position_closed = getattr(self, "on_position_closed", None)
-        if callable(on_position_closed):
+            side = position["side"]
+            qty = position["qty"]
+            entry_price = position["entry_price"]
+
+            buy_value = entry_price * qty if side == "BUY" else exit_price * qty
+            sell_value = exit_price * qty if side == "BUY" else entry_price * qty
+
+            config = get_charges_config()
+            charges = calculate_charges(buy_value, sell_value, config)
+
+            trade_row = {
+                "algo_id": self.storage_algo_id(),
+                "symbol": position["symbol"],
+                "side": side,
+                "qty": qty,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "entry_time": position["entry_time"],
+                "exit_time": exit_time or datetime.datetime.now(IST).isoformat(),
+                "entry_trigger": position.get("entry_trigger"),
+                "signal_snapshot": position.get("signal_snapshot"),
+                "exit_reason": exit_reason,
+                **charges,
+            }
             try:
-                on_position_closed(
-                    position=position,
-                    exit_price=exit_price,
-                    exit_reason=exit_reason,
-                    exit_time=trade_row["exit_time"],
+                run_with_supabase(
+                    lambda supabase: supabase.table(self.trades_table_name()).insert(trade_row).execute()
                 )
             except Exception as exc:
-                print(f"[paper_broker] on_position_closed callback failed: {exc}")
+                if "entry_trigger" not in str(exc) and "signal_snapshot" not in str(exc):
+                    raise
+                trade_row.pop("entry_trigger", None)
+                trade_row.pop("signal_snapshot", None)
+                run_with_supabase(
+                    lambda supabase: supabase.table(self.trades_table_name()).insert(trade_row).execute()
+                )
+
+            state = self._get_state()
+            run_with_supabase(
+                lambda supabase: supabase.table(self.state_table_name()).update({"cash": state["cash"] + charges["net_pnl"]}).eq("algo_id", self.storage_algo_id()).execute()
+            )
+            from .broadcaster import broadcast_sync
+            broadcast_sync({
+                "event": "position_closed",
+                "algo_id": self.algo_id,
+                "symbol": position["symbol"],
+                "side": side,
+                "qty": qty,
+                "entry_price": entry_price,
+                "exit_price": exit_price,
+                "exit_reason": exit_reason,
+                "entry_trigger": position.get("entry_trigger"),
+                "signal_snapshot": position.get("signal_snapshot"),
+                "net_pnl": charges["net_pnl"],
+                "gross_pnl": charges["gross_pnl"],
+                "total_charges": charges["total_charges"],
+            })
+            on_position_closed = getattr(self, "on_position_closed", None)
+            if callable(on_position_closed):
+                try:
+                    on_position_closed(
+                        position=position,
+                        exit_price=exit_price,
+                        exit_reason=exit_reason,
+                        exit_time=trade_row["exit_time"],
+                    )
+                except Exception as exc:
+                    print(f"[paper_broker] on_position_closed callback failed: {exc}")
+            return True
 
     def summary(self) -> dict:
         state = self._get_state()

@@ -36,6 +36,58 @@ from .trailing_stop import SILVER_EXIT_MODE_TARGET_TO_BREAKEVEN, uses_silver_bre
 _symbol_locks: dict[str, threading.RLock] = {}
 _symbol_locks_lock = threading.Lock()
 
+# A Fyers MARKET entry can fill and be delivered over the Order Update WS
+# before the protective orders and local live_positions row are persisted.
+# Keep this small, process-local handoff record so that transient state is
+# recognised as algo-owned rather than being bootstrapped as a Fyers-app
+# position. It expires deliberately: a process that truly fails before it
+# persists the row must still be recoverable on the next reconciliation pass.
+_LIVE_ENTRY_HANDOFF_SECONDS = 90.0
+_live_entry_handoffs: dict[str, dict[str, object]] = {}
+_live_entry_handoffs_lock = threading.Lock()
+
+
+def _handoff_key(symbol: str) -> str:
+    return str(symbol or "").strip().upper()
+
+
+def _mark_live_entry_handoff(symbol: str, order_id: str, side: str, qty: int) -> None:
+    key = _handoff_key(symbol)
+    if not key or not order_id:
+        return
+    with _live_entry_handoffs_lock:
+        _live_entry_handoffs[key] = {
+            "order_id": str(order_id).strip(),
+            "side": str(side or "").upper(),
+            "qty": int(qty),
+            "expires_at": time.monotonic() + _LIVE_ENTRY_HANDOFF_SECONDS,
+        }
+
+
+def _live_entry_handoff(symbol: str) -> dict[str, object] | None:
+    key = _handoff_key(symbol)
+    if not key:
+        return None
+    with _live_entry_handoffs_lock:
+        handoff = _live_entry_handoffs.get(key)
+        if handoff and float(handoff.get("expires_at") or 0) > time.monotonic():
+            return dict(handoff)
+        _live_entry_handoffs.pop(key, None)
+    return None
+
+
+def _clear_live_entry_handoff(symbol: str, order_id: str | None = None) -> None:
+    key = _handoff_key(symbol)
+    if not key:
+        return
+    with _live_entry_handoffs_lock:
+        current = _live_entry_handoffs.get(key)
+        if current is None:
+            return
+        if order_id and str(current.get("order_id") or "") != str(order_id).strip():
+            return
+        _live_entry_handoffs.pop(key, None)
+
 
 def _symbol_lock(symbol: str) -> threading.RLock:
     """Return the per-symbol RLock, creating it on first use. RLock so a
@@ -243,6 +295,15 @@ class LiveBroker(PaperBroker):
                 "Silver Micro 2.0 overnight carry is available in paper and backtest only. "
                 "Live entry was blocked because FYERS overnight GTT/OCO protection is not configured yet."
             )
+        # Do not let a second caller submit while the first accepted Fyers
+        # entry is still being protected and persisted locally.
+        pending_entry = _live_entry_handoff(symbol)
+        if pending_entry:
+            raise RuntimeError(
+                f"Fyers live entry refused: {symbol} is awaiting local tracking "
+                f"for entry order {pending_entry.get('order_id')}."
+            )
+
         # Design B pre-flight — Fyers is the single source of truth for
         # whether we already hold this symbol. Refuse to double up on a
         # duplicate signal, restart race, or reconciliation lag.
@@ -297,6 +358,7 @@ class LiveBroker(PaperBroker):
         # Both orders are on the reverse side and MIS/INTRADAY so they're
         # linked to the same intraday position.
         entry_order_id = self._extract_order_id(order_response)
+        _mark_live_entry_handoff(symbol, entry_order_id, side, qty)
         merged_snapshot = dict(signal_snapshot or {})
         breakeven_mode = (
             merged_snapshot.get("silver_exit_policy")
@@ -329,6 +391,7 @@ class LiveBroker(PaperBroker):
             # and refuse to persist the position in our database.
             exit_side = "SELL" if side.upper() == "BUY" else "BUY"
             flatten_response = self._place_live_order(symbol, exit_side, qty)
+            _clear_live_entry_handoff(symbol, entry_order_id)
             raise RuntimeError(
                 "Fyers live protection arming failed: "
                 f"sl_order_id={protective.get('sl_order_id')!r} "
@@ -354,20 +417,26 @@ class LiveBroker(PaperBroker):
             self._extract_fill_time(order_response),
             entry_time,
         )
-        super().open_trade(
-            symbol,
-            side,
-            qty,
-            actual_entry_price,
-            sl_price,
-            target_price,
-            entry_trigger,
-            merged_snapshot,
-            # Fyers tradebook time is authoritative when available. The
-            # strategy event time is a safe fallback for delayed tradebook
-            # hydration and keeps paper/live audit rows aligned.
-            entry_time=confirmed_entry_time,
-        )
+        try:
+            super().open_trade(
+                symbol,
+                side,
+                qty,
+                actual_entry_price,
+                sl_price,
+                target_price,
+                entry_trigger,
+                merged_snapshot,
+                # Fyers tradebook time is authoritative when available. The
+                # strategy event time is a safe fallback for delayed tradebook
+                # hydration and keeps paper/live audit rows aligned.
+                entry_time=confirmed_entry_time,
+            )
+        finally:
+            # If persistence itself fails, leave no stale local ownership
+            # marker behind. Reconciliation can then safely recover the real
+            # Fyers position on its next pass.
+            _clear_live_entry_handoff(symbol, entry_order_id)
 
     def close_trade(self, position: dict, exit_price: float, exit_reason: str):
         symbol = position["symbol"]
@@ -1106,6 +1175,13 @@ class LiveBroker(PaperBroker):
         matched_position, matched_role = self._find_position_by_order_id(order_id)
 
         if status_int == self._ORDER_STATUS_FILLED:
+            handoff = _live_entry_handoff(symbol)
+            if handoff and str(handoff.get("order_id") or "") == order_id:
+                print(
+                    f"[live_broker] WS push entry {symbol} order {order_id} is awaiting "
+                    "local persistence — deferring external-order classification"
+                )
+                return {"action": "entry_pending_persist", "symbol": symbol, "order_id": order_id}
             if matched_position and matched_role in ("sl", "target"):
                 # Fyers-side SL or Target fired. Close DB immediately —
                 # no waiting on the 30s reconciliation poll. Also cancels
@@ -1202,6 +1278,13 @@ class LiveBroker(PaperBroker):
             return {"action": "closed", "symbol": symbol, "exit_reason": "MANUAL_EXTERNAL_EXIT"}
 
         if not matched and abs(net_qty) >= 1:
+            handoff = _live_entry_handoff(symbol)
+            if handoff:
+                print(
+                    f"[live_broker] WS push position {symbol} net_qty={net_qty} is awaiting "
+                    "local entry persistence — deferring external-entry classification"
+                )
+                return {"action": "entry_pending_persist", "symbol": symbol, "net_qty": net_qty}
             # Manual entry at Fyers we didn't place. Don't insert a fake
             # tracking row (the algo's guards would then think it owns
             # this position). Just log so audit sees it.
@@ -1306,6 +1389,12 @@ class LiveBroker(PaperBroker):
                 continue
             if symbol_upper in known_symbols:
                 continue  # DB already tracks this — algo-owned or already bootstrapped.
+            if _live_entry_handoff(symbol):
+                print(
+                    f"[live_broker] bootstrap deferred for {symbol}: accepted algo entry "
+                    "is awaiting local persistence"
+                )
+                continue
             try:
                 net_qty = float(row.get("net_qty", 0) or 0)
             except (TypeError, ValueError):

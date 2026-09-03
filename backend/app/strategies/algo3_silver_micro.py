@@ -1214,11 +1214,13 @@ class Algo3SilverMicro(Strategy):
 
     @staticmethod
     def _is_opening_gap_from_prior_session(event_time, setup_bar_at: datetime.datetime) -> bool:
-        """Allow the first 09:00-09:14 IST market window to use a carried setup.
+        """Allow only the first 90 seconds after 09:00 IST to use a carried setup.
 
-        Restarting a feed later in the day must not convert a stale first tick
-        into a fake gap entry. This exception is intentionally limited to a
-        prior-session setup during the real opening 15-minute window.
+        Restarting a feed later in the opening candle must not convert its
+        first delayed tick into a fake gap entry. The engine's REST opening
+        backup polls at one-second cadence for this same 90-second window,
+        so a genuine open gap is still captured promptly. After that window,
+        the normal tick-cross or verified 15-minute candle-close paths apply.
         ``None`` remains accepted for lightweight legacy smoke doubles.
         """
         if event_time is None:
@@ -1227,7 +1229,7 @@ class Algo3SilverMicro(Strategy):
             return False
         local = event_time.astimezone(IST).replace(tzinfo=None) if event_time.tzinfo else event_time
         start = local.replace(hour=9, minute=0, second=0, microsecond=0)
-        return setup_bar_at.date() < local.date() and start <= local < start + datetime.timedelta(minutes=15)
+        return setup_bar_at.date() < local.date() and start <= local < start + datetime.timedelta(seconds=90)
     def _check_candle_close_trigger(self, bar: dict):
         """Fallback trigger check on every completed 15m bar.
 

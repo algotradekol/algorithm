@@ -481,6 +481,15 @@ export default function AlgoTab({
   // Cash already includes closed-trade P&L. Add open mark-to-market movement
   // once so Total Capital represents the live paper-account value.
   const totalCapital = cash + openUnrealizedPnl;
+  // Live capital belongs to the Fyers account, not the local broker mirror.
+  // Do not fall back to local cash here: an unavailable Fyers funds request is
+  // safer and clearer as "--" than displaying a stale paper-style balance.
+  const displayedTotalCapital = showLiveWallet ? liveWalletBalance : totalCapital;
+  const totalCapitalHelper = showLiveWallet
+    ? (walletSummary.wallet_balance_source
+      ? `source: FYERS ${walletSummary.wallet_balance_source}`
+      : walletStatusError || 'Waiting for FYERS funds')
+    : undefined;
   const fyersTotalPnl = optionalNumber(brokerPnlSummary?.total_pnl);
   const useFyersLivePnl = tradingMode === 'live'
     && fyersConnected === true
@@ -576,9 +585,10 @@ export default function AlgoTab({
         <div className="grid grid-cols-2 gap-1.5 sm:gap-2 lg:grid-cols-4">
           <MetricCard
             label="Total Capital"
-            value={formatMoney(totalCapital)}
-            delta={formatSignedMoney(totalCapital - startingCapital)}
-            pnl={totalCapital - startingCapital}
+            value={displayedTotalCapital === null ? '--' : formatMoney(displayedTotalCapital)}
+            delta={showLiveWallet ? undefined : formatSignedMoney(totalCapital - startingCapital)}
+            pnl={showLiveWallet ? undefined : totalCapital - startingCapital}
+            helper={totalCapitalHelper}
           />
           <MetricCard
             label="Trades Today"

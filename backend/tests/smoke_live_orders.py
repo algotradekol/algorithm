@@ -35,6 +35,7 @@ from app.margin_lookup import effective_multiplier
 # monkey-patch it, so tests that need the real logic (e.g. trailing metadata
 # tracking) can restore it.
 _REAL_APPLY_TRAILING_STOP = _pb_module.PaperBroker.apply_trailing_stop
+_REAL_CLOSE_TRADE = _pb_module.PaperBroker.close_trade
 
 
 # ── fakes ──────────────────────────────────────────────────────────────
@@ -884,6 +885,174 @@ def test_bootstrap_fyers_app_position_and_land_in_closed_trades():
         check("no watchlist = no bootstrap", inserted_empty == 0, "")
     finally:
         live_broker_module.run_with_supabase = original_run_with_supabase
+
+
+def test_live_entry_handoff_defers_recovery_until_local_persistence():
+    """A just-accepted algo entry must not be mistaken for a manual Fyers
+    position before its live_positions row has been written."""
+    print("\n8p2. live entry handoff — WS/reconcile wait for local persistence")
+    rec = {"placed": [], "cancelled": [], "modified": [], "orderbook": []}
+    broker = make_broker(rec)
+
+    import app.fyers_client as fc
+    import app.live_broker as live_broker_module
+
+    symbol = "MCX:SILVERMIC26AUGFUT"
+    order_id = "OWNED-ENTRY-42"
+    original_get_broker_positions = fc.get_broker_positions
+    live_broker_module._mark_live_entry_handoff(symbol, order_id, "BUY", 2)
+    try:
+        # An entry-fill WS event can arrive before the DB insert. It must be
+        # recognised as the in-flight algo entry, not logged as manual.
+        broker.open_positions = lambda: []
+        fill_result = broker.handle_order_event({
+            "kind": "order", "symbol": symbol, "order_id": order_id,
+            "status": 2, "side": "BUY", "traded_price": 240479.5, "traded_qty": 2,
+        })
+        check("owned entry fill waits for local persistence",
+              fill_result.get("action") == "entry_pending_persist", f"result={fill_result}")
+
+        position_result = broker.handle_order_event({
+            "kind": "position", "symbol": symbol, "net_qty": 2,
+        })
+        check("owned position WS update waits for local persistence",
+              position_result.get("action") == "entry_pending_persist", f"result={position_result}")
+
+        # Reconciliation must also defer its recovered-position placeholder.
+        fc.get_broker_positions = lambda mode: {
+            "available": True, "cached": False,
+            "positions": [{"symbol": symbol, "net_qty": 2, "entry_price": 240479.5}],
+        }
+        inserted_rows: list[dict] = []
+        original_run_with_supabase = live_broker_module.run_with_supabase
+
+        class _StubTable:
+            def insert(self, payload):
+                inserted_rows.append(payload)
+                return self
+            def execute(self):
+                return {"data": inserted_rows[-1:]}
+        class _StubClient:
+            def table(self, _name):
+                return _StubTable()
+
+        live_broker_module.run_with_supabase = lambda fn: fn(_StubClient())
+        try:
+            inserted = broker._bootstrap_broker_only_positions([symbol], {"errors": 0})
+        finally:
+            live_broker_module.run_with_supabase = original_run_with_supabase
+        check("reconcile does not create a recovered placeholder during handoff",
+              inserted == 0 and not inserted_rows, f"inserted={inserted}, rows={inserted_rows}")
+    finally:
+        fc.get_broker_positions = original_get_broker_positions
+        live_broker_module._clear_live_entry_handoff(symbol, order_id)
+
+
+def test_close_trade_claim_is_idempotent():
+    """A WS fill and a local exit must not write two trades for one row."""
+    print("\n8p3. close claim — duplicate broker/local close creates one trade only")
+    import threading
+    from types import SimpleNamespace
+    import app.broadcaster as broadcaster
+    import app.paper_broker as paper_broker_module
+
+    broker = object.__new__(paper_broker_module.PaperBroker)
+    broker.algo_id = "algo3"
+    broker.starting_capital = 100000.0
+    broker._trade_write_lock = threading.RLock()
+    broker.storage_algo_id = lambda: "algo3__client"
+    broker._get_state = lambda: {"cash": 100000.0}
+
+    db = {"position_status": "open", "trades": [], "cash_updates": [], "callbacks": []}
+
+    class _Table:
+        def __init__(self, name):
+            self.name = name
+            self.payload = None
+            self.filters = []
+            self.is_insert = False
+        def update(self, payload):
+            self.payload = payload
+            return self
+        def insert(self, payload):
+            self.payload = payload
+            self.is_insert = True
+            return self
+        def eq(self, key, value):
+            self.filters.append((key, value))
+            return self
+        def select(self, _fields):
+            return self
+        def execute(self):
+            if self.name == "positions" and self.payload == {"status": "closed"}:
+                if db["position_status"] != "open":
+                    return SimpleNamespace(data=[])
+                db["position_status"] = "closed"
+                return SimpleNamespace(data=[{"id": "position-1"}])
+            if self.name == "trades" and self.is_insert:
+                db["trades"].append(dict(self.payload))
+                return SimpleNamespace(data=[dict(self.payload)])
+            if self.name == "algo_state":
+                db["cash_updates"].append(dict(self.payload or {}))
+            return SimpleNamespace(data=[])
+
+    class _Client:
+        def table(self, name):
+            return _Table(name)
+
+    original_run_with_supabase = paper_broker_module.run_with_supabase
+    original_charges = paper_broker_module.calculate_charges
+    original_broadcast = broadcaster.broadcast_sync
+    paper_broker_module.run_with_supabase = lambda operation: operation(_Client())
+    paper_broker_module.calculate_charges = lambda *_args: {
+        "brokerage": 0.0, "stt": 0.0, "exchange_charges": 0.0,
+        "sebi_charges": 0.0, "gst": 0.0, "stamp_duty": 0.0,
+        "total_charges": 0.0, "gross_pnl": 250.0, "net_pnl": 250.0,
+    }
+    broadcaster.broadcast_sync = lambda event: db["callbacks"].append(event)
+    try:
+        position = {
+            "id": "position-1", "symbol": "MCX:SILVERMIC26NOVFUT", "side": "BUY", "qty": 2,
+            "entry_price": 240000.0, "entry_time": "2026-09-03T09:00:00+05:30",
+            "entry_trigger": "smoke", "signal_snapshot": {"fyers_entry_order_id": "ENTRY-1"},
+        }
+        first = _REAL_CLOSE_TRADE(broker, position, 240125.0, "SL_FYERS")
+        second = _REAL_CLOSE_TRADE(broker, position, 240125.0, "SL")
+        check("first close wins the open-row claim", first is True and db["position_status"] == "closed")
+        check("second close is ignored after the row is closed", second is False)
+        check("only one immutable closed-trade row is written", len(db["trades"]) == 1, f"trades={db['trades']}")
+        check("cash and UI close event update once", len(db["cash_updates"]) == 1 and len(db["callbacks"]) == 1,
+              f"cash_updates={db['cash_updates']} callbacks={db['callbacks']}")
+    finally:
+        paper_broker_module.run_with_supabase = original_run_with_supabase
+        paper_broker_module.calculate_charges = original_charges
+        broadcaster.broadcast_sync = original_broadcast
+
+
+def test_closed_trade_read_dedupes_old_fyers_exit_races():
+    print("\n8p4. closed-trade read dedupes historical FYERS/local exit pairs")
+    rows = [
+        {
+            "id": "local-close", "symbol": "MCX:SILVERMIC26NOVFUT", "side": "SELL",
+            "exit_reason": "SL", "signal_snapshot": {"fyers_entry_order_id": "ENTRY-42"},
+        },
+        {
+            "id": "fyers-close", "symbol": "MCX:SILVERMIC26NOVFUT", "side": "SELL",
+            "exit_reason": "SL_FYERS", "signal_snapshot": {"fyers_entry_order_id": "ENTRY-42"},
+        },
+        {
+            "id": "manual", "symbol": "MCX:SILVERMIC26NOVFUT", "side": "BUY",
+            "exit_reason": "MANUAL_EXTERNAL_EXIT", "signal_snapshot": {"origin": "fyers_app_manual"},
+        },
+    ]
+    deduped = _pb_module.PaperBroker._dedupe_fyers_closed_rows(rows)
+    check("one FYERS entry has one visible closed row",
+          len(deduped) == 2, f"deduped={deduped}")
+    check("FYERS-confirmed exit wins over local duplicate",
+          any(row.get("id") == "fyers-close" for row in deduped) and not any(row.get("id") == "local-close" for row in deduped),
+          f"deduped={deduped}")
+    check("manual FYERS activity remains visible as a separate row",
+          any(row.get("id") == "manual" for row in deduped), f"deduped={deduped}")
 
 
 def test_close_trade_still_sends_market_when_fyers_still_holds():
@@ -4759,6 +4928,30 @@ def test_algo3_gap_through_fires_immediately():
           f"opens={strat2.broker.opens}")
 
 
+def test_algo3_delayed_opening_gap_is_ignored():
+    """A recovery tick after the opening grace window is not an open gap."""
+    print("\n49aa. algo3 delayed opening recovery tick cannot fire carried setup")
+    import datetime as _dt
+
+    delayed = _make_bare_algo3()
+    delayed._buy_setup_close = 238000.0
+    delayed._buy_setup_bar_at = _dt.datetime(2026, 8, 19, 23, 45)
+    delayed._prev_ltp = None
+    delayed.on_tick("MCX:SILVERMIC26AUGFUT", 240300, _dt.datetime(2026, 8, 20, 9, 8, 37))
+    check("09:08 recovery tick does not fire a prior-session BUY gap",
+          len(delayed.broker.opens) == 0,
+          f"opens={delayed.broker.opens}")
+
+    prompt = _make_bare_algo3()
+    prompt._buy_setup_close = 238000.0
+    prompt._buy_setup_bar_at = _dt.datetime(2026, 8, 19, 23, 45)
+    prompt._prev_ltp = None
+    prompt.on_tick("MCX:SILVERMIC26AUGFUT", 240300, _dt.datetime(2026, 8, 20, 9, 0, 45))
+    check("09:00 first tick still fires a genuine prior-session BUY gap",
+          len(prompt.broker.opens) == 1 and prompt.broker.opens[0]["side"] == "BUY",
+          f"opens={prompt.broker.opens}")
+
+
 def test_algo3_previous_day_buy_setup_gap_open_fires_immediately():
     print("\n49b. algo3 previous-day BUY setup fires immediately on the next day's first gap-open tick")
     import datetime as _dt
@@ -6550,6 +6743,53 @@ def test_live_feed_status_aggregates_named_feeds():
         eng._live_feed_started = old_started
 
 
+def test_live_feed_subscription_waits_for_market_tick():
+    print("\n58ff. feed subscription remains pending until an actual market tick arrives")
+    import app.engine as eng
+
+    old_status = dict(eng._engine_status)
+    old_plans = dict(eng._live_feed_plans)
+    old_started = eng._live_feed_started
+    try:
+        eng._live_feed_started = True
+        eng._live_feed_plans = {
+            "silver": {"name": "silver", "symbols": ["MCX:SILVERMIC26AUGFUT"], "litemode": True},
+        }
+        eng._engine_status.update({
+            "fyers_feed_statuses": {},
+            "fyers_ws_connected": False,
+            "fyers_ws_error": None,
+            "fyers_session_state": "token_present_settling",
+            "live_feed_started": True,
+            "fyers_ws_subscribed_symbols": 0,
+            "fyers_ws_first_tick_at": None,
+        })
+
+        eng._on_live_feed_status({
+            "connected": True,
+            "subscribed_symbols": 1,
+            "message": "subscribed; waiting for first tick",
+        }, feed_name="silver")
+        waiting = (eng._engine_status.get("fyers_feed_statuses") or {}).get("silver") or {}
+        check("subscribed socket is pending rather than market-data connected",
+              eng._engine_status.get("fyers_ws_connected") is False and waiting.get("pending") is True,
+              f"status={waiting}")
+
+        eng._on_live_feed_status({
+            "connected": True,
+            "subscribed_symbols": 1,
+            "first_tick_received": True,
+        }, feed_name="silver")
+        check("first market tick marks the feed connected",
+              eng._engine_status.get("fyers_ws_connected") is True,
+              f"status={eng._engine_status.get('fyers_feed_statuses')}")
+    finally:
+        eng._engine_status.clear()
+        eng._engine_status.update(old_status)
+        eng._live_feed_plans = old_plans
+        eng._live_feed_started = old_started
+
+
 def test_stop_live_feed_closes_all_named_sockets():
     print("\n58g. stop_live_feed closes every named socket and clears per-feed status")
     import app.engine as eng
@@ -6620,6 +6860,9 @@ def main():
     test_close_trade_skips_market_when_sl_cancel_reports_already_filled()
     test_close_trade_after_neg52_uses_fyers_fill_time_not_now()
     test_bootstrap_fyers_app_position_and_land_in_closed_trades()
+    test_live_entry_handoff_defers_recovery_until_local_persistence()
+    test_close_trade_claim_is_idempotent()
+    test_closed_trade_read_dedupes_old_fyers_exit_races()
     test_close_trade_still_sends_market_when_fyers_still_holds()
     test_close_trade_falls_back_to_market_when_fyers_unavailable()
     test_ws_order_fill_closes_position_immediately()
@@ -6719,6 +6962,7 @@ def main():
     test_algo3_backtest_buy_reenters_after_target_in_same_15m_candle()
     test_algo3_live_buy_reference_reentry_and_rollover()
     test_algo3_gap_through_fires_immediately()
+    test_algo3_delayed_opening_gap_is_ignored()
     test_algo3_previous_day_buy_setup_gap_open_fires_immediately()
     test_algo3_previous_day_sell_setup_gap_open_fires_immediately()
     test_algo3_trading_enabled_kill_switch_blocks_new_entries_but_keeps_exits()
@@ -6744,6 +6988,7 @@ def main():
     test_start_live_feed_if_ready_starts_named_feeds()
     test_start_live_feed_if_ready_reconfigures_when_plan_changes()
     test_live_feed_status_aggregates_named_feeds()
+    test_live_feed_subscription_waits_for_market_tick()
     test_stop_live_feed_closes_all_named_sockets()
     print("\n" + "=" * 66)
     if _failures:

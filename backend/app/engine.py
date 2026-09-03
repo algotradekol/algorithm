@@ -521,19 +521,26 @@ def _on_live_feed_status(status: dict, feed_name: str | None = None):
         feed_statuses = dict(_engine_status.get("fyers_feed_statuses") or {})
         existing = dict(feed_statuses.get(effective_feed_name) or {})
         plan = dict(_live_feed_plans.get(effective_feed_name) or {})
+        # A subscribed socket is not usable market data. FYERS can report a
+        # successful subscription and then deliver zero ticks for minutes;
+        # treating that as connected cleared the recovery owner and restarted
+        # the watchdog loop repeatedly. A feed becomes connected only after
+        # at least one actual market tick has arrived on this socket.
+        first_tick_received = bool(existing.get("first_tick_received")) or bool(status.get("first_tick_received"))
+        market_data_connected = connected and first_tick_received
         next_feed_status = {
             **existing,
             "name": effective_feed_name,
-            "connected": connected,
-            "pending": False,
-            "error": None if connected else error,
+            "connected": market_data_connected,
+            "pending": bool(connected and not first_tick_received),
+            "error": None if market_data_connected else error,
             "message": status.get("message"),
             "last_event_at": _utc_now(),
             "litemode": bool(status.get("litemode", plan.get("litemode"))),
             "symbols": list(plan.get("symbols") or existing.get("symbols") or []),
             "symbol_count": len(plan.get("symbols") or existing.get("symbols") or []),
             "subscribed_symbols": int(status.get("subscribed_symbols") or existing.get("subscribed_symbols") or 0),
-            "first_tick_received": bool(existing.get("first_tick_received")) or bool(status.get("first_tick_received")),
+            "first_tick_received": first_tick_received,
             "first_tick_at": existing.get("first_tick_at"),
         }
         if status.get("first_tick_received") and not next_feed_status.get("first_tick_at"):
