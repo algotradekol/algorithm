@@ -1295,8 +1295,7 @@ function PositionsTable({
                 <MobileField label="Target" value={formatProtectionLevel(row, row.target_price, 'target')} />
                 <MobileField label="Logic" value={<LogicCodeBadge row={row} />} />
                 <MobileField label="Trailing SL" value={<TrailingBadge row={row} />} wide />
-                <MobileField label="Trigger" value={formatTrigger(row.entry_trigger)} wide />
-                <MobileField label="Signal Audit" value={<SignalAudit row={row} />} wide />
+                <MobileField label="Trade Setup" value={<TradeSetup row={row} />} wide />
               </div>
               <div className="mt-3 flex w-full gap-2">
                 <EditProtectionButton row={row} onEdit={onEditProtection} tradingMode={tradingMode} mobile />
@@ -1309,7 +1308,7 @@ function PositionsTable({
         <table className="w-full min-w-[1640px] table-auto border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'SL', 'Target', 'Logic', 'Trailing SL', 'Signal Audit', 'Trigger', 'Unreal P&L', 'Exit'].map((column) => (
+            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'SL', 'Target', 'Logic', 'Trailing SL', 'Trade Setup', 'Unreal P&L', 'Exit'].map((column) => (
               <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
@@ -1317,7 +1316,7 @@ function PositionsTable({
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={16} className="table-cell text-gray-500">No open positions</td>
+              <td colSpan={15} className="table-cell text-gray-500">No open positions</td>
             </tr>
           ) : visibleRows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
@@ -1345,16 +1344,7 @@ function PositionsTable({
                 <td className="table-cell num whitespace-nowrap text-gray-100">{formatProtectionLevel(row, row.target_price, 'target')}</td>
                 <td className="table-cell whitespace-nowrap"><LogicCodeBadge row={row} /></td>
                 <td className="table-cell w-[170px] whitespace-nowrap"><TrailingBadge row={row} /></td>
-                <td className="table-cell w-[260px] max-w-[320px] text-gray-400 align-top">
-                  <div className="max-h-24 overflow-y-auto break-words whitespace-normal pr-1 leading-relaxed">
-                    <SignalAudit row={row} />
-                  </div>
-                </td>
-                <td className="table-cell w-[340px] max-w-[420px] text-gray-400 align-top">
-                  <div className="max-h-24 overflow-y-auto break-words whitespace-normal pr-1 leading-relaxed">
-                    {formatTrigger(row.entry_trigger)}
-                  </div>
-                </td>
+                <td className="table-cell w-[360px] max-w-[440px] align-top"><TradeSetup row={row} /></td>
                 <td className={`table-cell w-[120px] num whitespace-nowrap font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
                 <td className="table-cell w-[150px] whitespace-nowrap">
                   <div className="flex items-center gap-1.5">
@@ -1418,7 +1408,7 @@ function TradesTable({ rows }: { rows: any[] }) {
               <MobileField label="Exit" value={formatNumber(row.exit_price)} />
               <MobileField label="Reason" value={formatReason(row.exit_reason)} />
               <MobileField label="Logic" value={<LogicCodeBadge row={row} />} />
-              <MobileField label="Trailing SL" value={<TrailingBadge row={row} />} wide />
+                <MobileField label="Trailing SL" value={<TrailingBadge row={row} />} wide />
               <MobileField label="Gross" value={formatMoney(row.gross_pnl)} />
               <MobileField label="Charges" value={formatMoney(row.total_charges)} />
             </div>
@@ -1429,7 +1419,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <table className="w-full min-w-[1760px] table-auto border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {["Symbol", "Side", "Qty / Lots", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Logic", "Trailing SL", "Signal Audit", "Trigger", "Gross", "Charges", "Net"].map((column) => (
+            {["Symbol", "Side", "Qty / Lots", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Logic", "Trailing SL", "Trade Setup", "Gross", "Charges", "Net"].map((column) => (
               <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
@@ -1437,7 +1427,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={15} className="table-cell text-gray-500">No closed trades yet</td>
+              <td colSpan={14} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
           ) : visibleRows.map((row, index) => (
             <tr key={row.id || index} className={`align-top ${index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}`}>
@@ -1457,8 +1447,7 @@ function TradesTable({ rows }: { rows: any[] }) {
               </td>
               <td className="table-cell whitespace-nowrap"><LogicCodeBadge row={row} /></td>
               <td className="table-cell w-[170px] whitespace-nowrap"><TrailingBadge row={row} /></td>
-              <td className="table-cell w-[260px] max-w-[320px] text-gray-400 align-top"><div className="max-h-24 overflow-y-auto break-words whitespace-normal leading-relaxed"><SignalAudit row={row} /></div></td>
-              <td className="table-cell w-[340px] max-w-[420px] break-words whitespace-normal text-gray-400 align-top leading-relaxed">{formatTrigger(row.entry_trigger)}</td>
+              <td className="table-cell w-[360px] max-w-[440px] align-top"><TradeSetup row={row} /></td>
               <td className={`table-cell w-[110px] num whitespace-nowrap ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
               <td className="table-cell w-[110px] num whitespace-nowrap text-gray-100">{formatMoney(row.total_charges)}</td>
               <td className={`table-cell w-[120px] num whitespace-nowrap font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>{formatMoney(row.net_pnl)}</td>
@@ -1709,7 +1698,38 @@ function MobileField({ label, value, wide = false }: { label: string; value: any
   );
 }
 
-function SignalAudit({ row }: { row: any }) {
+function TradeSetup({ row }: { row: any }) {
+  const snapshot = row?.signal_snapshot && typeof row.signal_snapshot === 'object'
+    ? row.signal_snapshot
+    : {};
+  const side = String(row?.side || snapshot?.side || '').toUpperCase();
+  const isBuy = side === 'BUY';
+  const accent = isBuy ? 'border-[#22c55e]/35 bg-[#22c55e]/5 text-[#86efac]' : 'border-[#ef4444]/35 bg-[#ef4444]/5 text-[#fca5a5]';
+  const trigger = snapshot?.trigger_level ?? snapshot?.trigger_level_used;
+  const triggerText = formatTrigger(row.entry_trigger);
+  const hasNumericTrigger = Number.isFinite(Number(trigger));
+
+  return (
+    <details className="group max-w-full rounded border border-[#334155] bg-[#0b1220] text-xs">
+      <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 marker:hidden">
+        <span className={`inline-flex shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold ${accent}`}>
+          {side || 'SETUP'}
+        </span>
+        <span className="min-w-0 flex-1 truncate font-medium text-[#93c5fd]">{hasNumericTrigger ? `Trigger ${formatNumber(trigger)}` : 'View trade setup'}</span>
+        <i className="ri-arrow-down-s-line shrink-0 text-base text-slate-500 transition-transform group-open:rotate-180" />
+      </summary>
+      <div className="border-t border-[#334155] px-2 py-2">
+        <div className="rounded border border-[#1e3a5f] bg-[#0f1b2d] px-2 py-1.5 text-[11px] leading-relaxed text-slate-300">
+          <span className="mr-1 font-semibold uppercase tracking-wide text-[#60a5fa]">Trigger</span>
+          {triggerText}
+        </div>
+        <div className="mt-2 text-[11px] leading-relaxed text-gray-400"><SignalAuditFacts row={row} /></div>
+      </div>
+    </details>
+  );
+}
+
+function SignalAuditFacts({ row }: { row: any }) {
   if (row.is_broker_order || row.position_source === 'fyers_order') {
     return <span className="text-xs text-[#60a5fa]">Pending or scheduled in FYERS ({row.status || 'waiting'})</span>;
   }
@@ -1730,16 +1750,12 @@ function SignalAudit({ row }: { row: any }) {
     const triggerLabel = signal.side === 'SELL' ? 'Sell trigger' : 'Buy trigger';
     const activeSetup = signal.side === 'SELL' ? signal.sell_setup_close : signal.buy_setup_close;
     return (
-      <details className="max-w-full text-xs">
-        <summary className="cursor-pointer text-[#60a5fa]">View signal OHLC</summary>
-        <div className="mt-1 space-y-0.5 break-words whitespace-normal text-gray-400">
-          <div className="font-semibold text-gray-200">15m EMA breakout audit</div>
-          <div>Symbol {signal.symbol || row.symbol || '--'} | Side {signal.side || row.side || '--'}</div>
-          <div>Setup close {formatNumber(activeSetup)} | {triggerLabel} {formatNumber(signal.trigger_level)}</div>
-          <div>Entry LTP {formatNumber(signal.entry_ltp)} | EMA20 {formatNumber(signal.ema20)}</div>
-          <div>Buy setup {formatNumber(signal.buy_setup_close)} | Sell setup {formatNumber(signal.sell_setup_close)}</div>
-        </div>
-      </details>
+      <div className="space-y-1 break-words whitespace-normal">
+        <div className="font-semibold text-gray-200">15m EMA breakout audit</div>
+        <div><span className="text-gray-500">Setup</span> {formatNumber(activeSetup)} <span className="text-gray-600">|</span> <span className="text-gray-500">{triggerLabel}</span> <span className="font-semibold text-[#fbbf24]">{formatNumber(signal.trigger_level)}</span></div>
+        <div><span className="text-gray-500">Entry LTP</span> {formatNumber(signal.entry_ltp)} <span className="text-gray-600">|</span> <span className="text-gray-500">EMA20</span> {formatNumber(signal.ema20)}</div>
+        <div className="text-[10px] text-gray-500">BUY ref {formatNumber(signal.buy_setup_close)} | SELL ref {formatNumber(signal.sell_setup_close)}</div>
+      </div>
     );
   }
   const shape = signal.shape === 'open_equals_low' ? 'BUY: signal open ≈ low (tick tolerance)'
@@ -1747,15 +1763,12 @@ function SignalAudit({ row }: { row: any }) {
       : signal.shape === 'flat_ambiguous' ? 'Rejected: flat/ambiguous signal'
         : 'Signal window audit';
   return (
-    <details className="max-w-full text-xs">
-      <summary className="cursor-pointer text-[#60a5fa]">View signal OHLC</summary>
-      <div className="mt-1 space-y-0.5 break-words whitespace-normal text-gray-400">
-        <div className="font-semibold text-gray-200">{shape}</div>
-        <div>{signal.window || 'Opening window'}: O {formatNumber(signal.open)} / H {formatNumber(signal.high)} / L {formatNumber(signal.low)} / C {formatNumber(signal.close)}</div>
-        <div>Prev close {formatNumber(signal.previous_close)} | Gap {Number.isFinite(Number(signal.gap_pct)) ? `${Number(signal.gap_pct).toFixed(2)}%` : '--'}</div>
-        <div>Entry LTP {formatNumber(signal.entry_ltp)}</div>
-      </div>
-    </details>
+    <div className="space-y-1 break-words whitespace-normal">
+      <div className="font-semibold text-gray-200">{shape}</div>
+      <div>{signal.window || 'Opening window'}: O {formatNumber(signal.open)} / H {formatNumber(signal.high)} / L {formatNumber(signal.low)} / C {formatNumber(signal.close)}</div>
+      <div>Prev close {formatNumber(signal.previous_close)} | Gap {Number.isFinite(Number(signal.gap_pct)) ? `${Number(signal.gap_pct).toFixed(2)}%` : '--'}</div>
+      <div>Entry LTP {formatNumber(signal.entry_ltp)}</div>
+    </div>
   );
 }
 
@@ -1825,15 +1838,6 @@ function TrailingBadge({ row }: { row: any }) {
     );
   }
 
-  // Delta relative to the initial SL. For BUY exits the trailed SL rises
-  // (positive delta = protection tightened). For SELL exits it falls
-  // (delta shown as negative movement in absolute terms).
-  const delta = Number.isFinite(initialSl) && currentSlIsFinite
-    ? (side === 'SELL' ? initialSl - currentSl! : currentSl! - initialSl)
-    : null;
-  const deltaLabel = delta === null
-    ? ''
-    : ` (${delta >= 0 ? '+' : ''}${delta.toFixed(2)})`;
   const arrow = side === 'SELL' ? '↓' : '↑';
   const firstAt = trailing?.first_activated_at
     ? new Date(trailing.first_activated_at).toLocaleTimeString('en-IN', {
@@ -1849,7 +1853,6 @@ function TrailingBadge({ row }: { row: any }) {
       <div className="flex items-center gap-1 font-semibold text-[#22c55e]">
         <span className="h-1.5 w-1.5 rounded-full bg-[#22c55e]" />
         {candlePairPolicy ? 'PAIR' : (breakevenPolicy ? 'BE' : arrow)} {currentSlIsFinite ? currentSl!.toFixed(2) : '--'}
-        <span className="text-gray-400">{deltaLabel}</span>
       </div>
       <div className="mt-1 flex flex-wrap items-center gap-2 text-[10px] text-gray-500">
         <span>{candlePairPolicy ? `pair TSL armed${firstAt ? ` ${firstAt}` : ''}` : (breakevenPolicy ? `breakeven armed${firstAt ? ` ${firstAt}` : ''}` : (firstAt ? `active ${firstAt}` : 'active'))} · {bumps}x{Number.isFinite(initialSl) ? ` · init ${initialSl.toFixed(2)}` : ''}</span>
@@ -1887,7 +1890,7 @@ function TrailingBadge({ row }: { row: any }) {
               <i className="ri-close-line text-xl" />
             </button>
           </div>
-          <div className="grid gap-3 border-b border-[#1f2937] px-4 py-3 text-sm sm:grid-cols-4 sm:px-5">
+          <div className="grid gap-3 border-b border-[#1f2937] px-4 py-3 text-sm sm:grid-cols-3 sm:px-5">
             <div>
               <div className="label text-[10px]">Activated</div>
               <div className="mt-1 font-medium text-gray-100">{firstAt || '--'}</div>
@@ -1899,10 +1902,6 @@ function TrailingBadge({ row }: { row: any }) {
             <div>
               <div className="label text-[10px]">Current SL</div>
               <div className="mt-1 font-medium text-gray-100">{formatNumber(currentSl)}</div>
-            </div>
-            <div>
-              <div className="label text-[10px]">Protected</div>
-              <div className="mt-1 font-medium text-[#22c55e]">{deltaLabel || '--'}</div>
             </div>
           </div>
           <div className="max-h-[60vh] overflow-auto px-4 py-3 sm:px-5">
@@ -1921,10 +1920,10 @@ function TrailingBadge({ row }: { row: any }) {
               </div>
             ) : (
               <div className="overflow-x-auto rounded border border-[#1f2937]">
-                <table className="w-full min-w-[780px] border-collapse text-xs">
+                <table className="w-full min-w-[620px] border-collapse text-xs">
                   <thead className="bg-[#111827]">
                     <tr>
-                      {['#', 'Time', 'Rule', 'Pair', 'LTP', 'Previous SL', 'New SL', 'Delta'].map((column) => (
+                      {['#', 'Time', 'Rule', 'Pair', 'Previous SL', 'New SL'].map((column) => (
                         <th key={column} className="table-cell label">{column}</th>
                       ))}
                     </tr>
@@ -1933,7 +1932,6 @@ function TrailingBadge({ row }: { row: any }) {
                     {events.map((event: any, index: number) => {
                       const previous = Number(event?.previous_sl);
                       const next = Number(event?.new_sl);
-                      const eventDelta = Number(event?.delta);
                       const pair = event?.first_bar && event?.second_bar
                         ? `${formatDateTimeWithDate(event.first_bar.time)} → ${formatDateTimeWithDate(event.second_bar.time)}`
                         : '--';
@@ -1943,12 +1941,8 @@ function TrailingBadge({ row }: { row: any }) {
                           <td className="table-cell num text-gray-300">{formatDateTimeWithDate(event?.at)}</td>
                           <td className="table-cell text-gray-300">{event?.reason === 'candle_pair' ? 'Candle pair' : (event?.reason === 'target_to_breakeven' ? 'Breakeven' : 'Trail')}</td>
                           <td className="table-cell num text-gray-400">{pair}</td>
-                          <td className="table-cell num text-gray-100">{formatNumber(event?.ltp)}</td>
                           <td className="table-cell num text-gray-100">{formatNumber(previous)}</td>
                           <td className="table-cell num font-semibold text-[#22c55e]">{formatNumber(next)}</td>
-                          <td className="table-cell num font-semibold text-[#22c55e]">
-                            {Number.isFinite(eventDelta) ? `${eventDelta >= 0 ? '+' : ''}${formatNumber(eventDelta)}` : '--'}
-                          </td>
                         </tr>
                       );
                     })}
