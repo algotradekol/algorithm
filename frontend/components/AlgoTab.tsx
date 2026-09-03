@@ -1275,10 +1275,7 @@ function PositionsTable({
           return (
             <div key={row.id || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
               <div className="flex items-center justify-between gap-3">
-                <div>
-                  <div className="label text-[10px]">#{safePage * PAGE_SIZE + index + 1}</div>
-                  <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
-                </div>
+                <div className="label text-[10px]">Position #{safePage * PAGE_SIZE + index + 1}</div>
                 <div className={`num flex items-center gap-1 text-base font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</div>
               </div>
               <div className={`mt-1 inline-flex items-center gap-1 text-sm font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
@@ -1308,7 +1305,7 @@ function PositionsTable({
         <table className="w-full min-w-[1640px] table-auto border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'SL', 'Target', 'Logic', 'Trailing SL', 'Trade Setup', 'Unreal P&L', 'Exit'].map((column) => (
+            {['#', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'SL', 'Target', 'Logic', 'Trailing SL', 'Trade Setup', 'Unreal P&L', 'Exit'].map((column) => (
               <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
@@ -1316,7 +1313,7 @@ function PositionsTable({
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={15} className="table-cell text-gray-500">No open positions</td>
+              <td colSpan={14} className="table-cell text-gray-500">No open positions</td>
             </tr>
           ) : visibleRows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
@@ -1330,7 +1327,6 @@ function PositionsTable({
             return (
               <tr key={row.id || index} className={`align-top ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
                 <td className="table-cell num whitespace-nowrap text-gray-500">{safePage * PAGE_SIZE + index + 1}</td>
-                <td className="table-cell w-[180px] whitespace-nowrap font-mono text-gray-100">{row.symbol}</td>
                 <td className="table-cell w-[120px] whitespace-nowrap"><PositionSourceBadge row={row} /></td>
                 <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
                   <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} mr-1 text-sm`} />
@@ -1389,7 +1385,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         ) : visibleRows.map((row, index) => (
           <div key={row.id || index} className={`rounded border border-[#1f2937] p-3 ${index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}`}>
             <div className="flex items-center justify-between gap-3">
-              <div className="font-mono text-sm text-gray-100">{row.symbol}</div>
+              <div className="label text-[10px]">Closed trade #{safePage * PAGE_SIZE + index + 1}</div>
               <div className={`num flex items-center gap-1 text-base font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>
                 {Number(row.net_pnl || 0) > 0 && <i className="ri-arrow-up-circle-fill text-sm text-[#22c55e]" />}
                 {Number(row.net_pnl || 0) < 0 && <i className="ri-arrow-down-circle-fill text-sm text-[#ef4444]" />}
@@ -1419,7 +1415,7 @@ function TradesTable({ rows }: { rows: any[] }) {
         <table className="w-full min-w-[1760px] table-auto border-collapse text-xs">
         <thead className="bg-[#111827]">
           <tr>
-            {["Symbol", "Side", "Qty / Lots", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Logic", "Trailing SL", "Trade Setup", "Gross", "Charges", "Net"].map((column) => (
+            {["Side", "Qty / Lots", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Logic", "Trailing SL", "Trade Setup", "Gross", "Charges", "Net"].map((column) => (
               <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
@@ -1427,11 +1423,10 @@ function TradesTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={14} className="table-cell text-gray-500">No closed trades yet</td>
+              <td colSpan={13} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
           ) : visibleRows.map((row, index) => (
             <tr key={row.id || index} className={`align-top ${index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}`}>
-              <td className="table-cell w-[180px] whitespace-nowrap font-mono text-gray-100">{row.symbol}</td>
               <td className={`table-cell font-semibold ${row.side === "SELL" ? "text-[#ef4444]" : "text-[#22c55e]"}`}>
                 <i className={`${row.side === "SELL" ? "ri-indeterminate-circle-fill" : "ri-add-circle-fill"} mr-1 text-sm`} />
                 {row.side === "SELL" ? "S" : "B"}
@@ -1677,14 +1672,21 @@ function EditProtectionDialog({
 function PositionSourceBadge({ row }: { row: any }) {
   const fromFyersOrder = row.is_broker_order || row.position_source === 'fyers_order';
   const fromRecoveredBroker = isRecoveredBrokerPosition(row);
+  const openedOutside = fromFyersOrder || fromRecoveredBroker;
+  const sourceTitle = fromFyersOrder
+    ? 'Opened or scheduled outside the algorithm in FYERS'
+    : fromRecoveredBroker
+    ? 'Opened outside the algorithm and recovered from FYERS'
+    : 'Opened by the algorithm';
   return (
-    <span className={`inline-flex items-center whitespace-nowrap rounded border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${
-      fromFyersOrder || fromRecoveredBroker
+    <span title={sourceTitle} className={`inline-flex items-center whitespace-nowrap rounded border px-2 py-1 text-[10px] font-semibold uppercase tracking-wide ${
+      openedOutside
         ? 'border-[#60a5fa]/40 bg-[#3b82f6]/10 text-[#60a5fa]'
         : 'border-[#22c55e]/30 bg-[#22c55e]/10 text-[#22c55e]'
     }`}>
-      <i className={`${fromFyersOrder ? 'ri-time-fill' : fromRecoveredBroker ? 'ri-shield-check-fill' : 'ri-robot-2-fill'} mr-1 text-xs`} />
-      {fromFyersOrder ? 'FYERS Order' : fromRecoveredBroker ? 'Recovered Broker' : 'Algorithm'}
+      {openedOutside
+        ? <i className="ri-external-link-line text-xs" aria-label="Opened outside algorithm" />
+        : 'A'}
     </span>
   );
 }
