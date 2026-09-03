@@ -1702,28 +1702,17 @@ function TradeSetup({ row }: { row: any }) {
   const snapshot = row?.signal_snapshot && typeof row.signal_snapshot === 'object'
     ? row.signal_snapshot
     : {};
-  const side = String(row?.side || snapshot?.side || '').toUpperCase();
-  const isBuy = side === 'BUY';
-  const accent = isBuy ? 'border-[#22c55e]/35 bg-[#22c55e]/5 text-[#86efac]' : 'border-[#ef4444]/35 bg-[#ef4444]/5 text-[#fca5a5]';
   const trigger = snapshot?.trigger_level ?? snapshot?.trigger_level_used;
-  const triggerText = formatTrigger(row.entry_trigger);
   const hasNumericTrigger = Number.isFinite(Number(trigger));
 
   return (
     <details className="group max-w-full rounded border border-[#334155] bg-[#0b1220] text-xs">
       <summary className="flex cursor-pointer list-none items-center gap-2 px-2 py-1.5 marker:hidden">
-        <span className={`inline-flex shrink-0 rounded border px-1.5 py-0.5 font-mono text-[10px] font-semibold ${accent}`}>
-          {side || 'SETUP'}
-        </span>
-        <span className="min-w-0 flex-1 truncate font-medium text-[#93c5fd]">{hasNumericTrigger ? `Trigger ${formatNumber(trigger)}` : 'View trade setup'}</span>
+        <span className="min-w-0 flex-1 truncate font-medium text-[#93c5fd]">{hasNumericTrigger ? `Reference trigger ${formatNumber(trigger)}` : 'View trade setup'}</span>
         <i className="ri-arrow-down-s-line shrink-0 text-base text-slate-500 transition-transform group-open:rotate-180" />
       </summary>
       <div className="border-t border-[#334155] px-2 py-2">
-        <div className="rounded border border-[#1e3a5f] bg-[#0f1b2d] px-2 py-1.5 text-[11px] leading-relaxed text-slate-300">
-          <span className="mr-1 font-semibold uppercase tracking-wide text-[#60a5fa]">Trigger</span>
-          {triggerText}
-        </div>
-        <div className="mt-2 text-[11px] leading-relaxed text-gray-400"><SignalAuditFacts row={row} /></div>
+        <div className="text-[11px] leading-relaxed text-gray-400"><SignalAuditFacts row={row} /></div>
       </div>
     </details>
   );
@@ -1749,11 +1738,14 @@ function SignalAuditFacts({ row }: { row: any }) {
   if (algo3Snapshot) {
     const triggerLabel = signal.side === 'SELL' ? 'Sell trigger' : 'Buy trigger';
     const activeSetup = signal.side === 'SELL' ? signal.sell_setup_close : signal.buy_setup_close;
+    const referenceTime = signal?.setup_reference_bar?.time
+      || (signal.side === 'SELL' ? signal.sell_setup_time : signal.buy_setup_time);
     return (
       <div className="space-y-1 break-words whitespace-normal">
-        <div className="font-semibold text-gray-200">15m EMA breakout audit</div>
+        <div className="font-semibold text-gray-200">15m reference details</div>
         <div><span className="text-gray-500">Setup</span> {formatNumber(activeSetup)} <span className="text-gray-600">|</span> <span className="text-gray-500">{triggerLabel}</span> <span className="font-semibold text-[#fbbf24]">{formatNumber(signal.trigger_level)}</span></div>
         <div><span className="text-gray-500">Entry LTP</span> {formatNumber(signal.entry_ltp)} <span className="text-gray-600">|</span> <span className="text-gray-500">EMA20</span> {formatNumber(signal.ema20)}</div>
+        <div><span className="text-gray-500">Reference candle</span> <span className="font-medium text-[#a5b4fc]">{formatDateTimeWithDate(referenceTime)}</span></div>
         <div className="text-[10px] text-gray-500">BUY ref {formatNumber(signal.buy_setup_close)} | SELL ref {formatNumber(signal.sell_setup_close)}</div>
       </div>
     );
@@ -2214,12 +2206,4 @@ function formatReason(reason: string) {
   if (normalized === 'TRAILING_SL' || normalized === 'TRAILING_SL_FYERS') return 'Trailing SL';
   if (normalized === 'SL_FYERS') return 'SL';
   return reason || '--';
-}
-
-function formatTrigger(trigger: unknown) {
-  const value = String(trigger || '').trim();
-  if (value === 'Opened directly in FYERS app') {
-    return 'Recovered from FYERS broker position';
-  }
-  return value || 'Legacy row: trigger was not stored when this trade opened.';
 }
