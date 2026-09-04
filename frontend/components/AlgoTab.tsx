@@ -1340,7 +1340,7 @@ function PositionsTable({
                 <td className="table-cell num whitespace-nowrap text-gray-100">{formatProtectionLevel(row, row.target_price, 'target')}</td>
                 <td className="table-cell whitespace-nowrap"><LogicCodeBadge row={row} /></td>
                 <td className="table-cell w-[170px] whitespace-nowrap"><TrailingBadge row={row} /></td>
-                <td className="table-cell w-[360px] max-w-[440px] align-top"><TradeSetup row={row} /></td>
+                <td className="table-cell w-[270px] max-w-[310px] align-top"><TradeSetup row={row} /></td>
                 <td className={`table-cell w-[120px] num whitespace-nowrap font-semibold ${pnlColor(unreal)}`}>{unreal === null ? '--' : formatMoney(unreal)}</td>
                 <td className="table-cell w-[150px] whitespace-nowrap">
                   <div className="flex items-center gap-1.5">
@@ -1442,7 +1442,7 @@ function TradesTable({ rows }: { rows: any[] }) {
               </td>
               <td className="table-cell whitespace-nowrap"><LogicCodeBadge row={row} /></td>
               <td className="table-cell w-[170px] whitespace-nowrap"><TrailingBadge row={row} /></td>
-              <td className="table-cell w-[360px] max-w-[440px] align-top"><TradeSetup row={row} /></td>
+              <td className="table-cell w-[270px] max-w-[310px] align-top"><TradeSetup row={row} /></td>
               <td className={`table-cell w-[110px] num whitespace-nowrap ${pnlColor(Number(row.gross_pnl || 0))}`}>{formatMoney(row.gross_pnl)}</td>
               <td className="table-cell w-[110px] num whitespace-nowrap text-gray-100">{formatMoney(row.total_charges)}</td>
               <td className={`table-cell w-[120px] num whitespace-nowrap font-semibold ${pnlColor(Number(row.net_pnl || 0))}`}>{formatMoney(row.net_pnl)}</td>
