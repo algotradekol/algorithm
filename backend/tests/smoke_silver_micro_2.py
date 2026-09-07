@@ -67,14 +67,26 @@ def test_current_rules_remain_first_choice() -> None:
 
 def test_fallback_references_and_distance_gate() -> None:
     strategy = make_strategy()
-    fallback_buy = {"open": 1250, "high": 1270, "low": 980, "close": 1100}
-    fallback_sell = {"open": 750, "high": 1010, "low": 700, "close": 900}
-    too_far_buy = {"open": 1450, "high": 1460, "low": 1301, "close": 1200}
-    too_far_sell = {"open": 700, "high": 699, "low": 500, "close": 800}
-    check("red-above EMA wick BUY qualifies", strategy._buy_setup_family_for(fallback_buy) == "fallback_ema_wick")
-    check("green-below EMA wick SELL qualifies", strategy._sell_setup_family_for(fallback_sell) == "fallback_ema_wick")
-    check("BUY wick beyond configured distance is rejected", strategy._buy_setup_family_for(too_far_buy) is None)
-    check("SELL wick beyond configured distance is rejected", strategy._sell_setup_family_for(too_far_sell) is None)
+    buy_low_102 = {"open": 1250, "high": 1270, "low": 1002, "close": 1100}
+    buy_low_100 = {"open": 1250, "high": 1270, "low": 1000, "close": 1100}
+    buy_low_95 = {"open": 1250, "high": 1270, "low": 995, "close": 1100}
+    buy_low_400 = {"open": 1500, "high": 1520, "low": 1300, "close": 1200}
+    buy_low_500 = {"open": 1600, "high": 1620, "low": 1400, "close": 1200}
+    sell_high_95 = {"open": 750, "high": 995, "low": 700, "close": 900}
+    sell_high_100 = {"open": 750, "high": 1000, "low": 700, "close": 900}
+    sell_high_105 = {"open": 750, "high": 1005, "low": 700, "close": 900}
+    sell_high_400 = {"open": 750, "high": 1300, "low": 700, "close": 900}
+    sell_high_500 = {"open": 750, "high": 1400, "low": 700, "close": 900}
+    check("BUY low - EMA = 2 qualifies", strategy._buy_setup_family_for(buy_low_102) == "fallback_ema_wick")
+    check("BUY low - EMA = 0 qualifies", strategy._buy_setup_family_for(buy_low_100) == "fallback_ema_wick")
+    check("BUY low - EMA = -5 qualifies", strategy._buy_setup_family_for(buy_low_95) == "fallback_ema_wick")
+    check("BUY low - EMA = 300 is rejected", strategy._buy_setup_family_for(buy_low_400) is None)
+    check("BUY low - EMA = 400 is rejected", strategy._buy_setup_family_for(buy_low_500) is None)
+    check("SELL high - EMA = -5 qualifies", strategy._sell_setup_family_for(sell_high_95) == "fallback_ema_wick")
+    check("SELL high - EMA = 0 qualifies", strategy._sell_setup_family_for(sell_high_100) == "fallback_ema_wick")
+    check("SELL high - EMA = 5 qualifies", strategy._sell_setup_family_for(sell_high_105) == "fallback_ema_wick")
+    check("SELL high - EMA = 300 is rejected", strategy._sell_setup_family_for(sell_high_400) is None)
+    check("SELL high - EMA = 400 is rejected", strategy._sell_setup_family_for(sell_high_500) is None)
 
 
 def test_selected_reference_uses_unchanged_trigger_formula() -> None:

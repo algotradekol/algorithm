@@ -771,7 +771,7 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
           <SilverReferenceCard
             title="BUY EMA-wick fallback"
             tone="buy"
-            rule={`Red 15m: close > EMA20 and low <= EMA20 + ${wickDistance}`}
+            rule={`Red 15m: close > EMA20 and low - EMA20 < ${wickDistance}`}
             reference={referenceSlots.buy_fallback_ema_wick}
             n={n}
           />
@@ -785,7 +785,7 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
           <SilverReferenceCard
             title="SELL EMA-wick fallback"
             tone="sell"
-            rule={`Green 15m: close < EMA20 and high >= EMA20 - ${wickDistance}`}
+            rule={`Green 15m: close < EMA20 and high - EMA20 < ${wickDistance}`}
             reference={referenceSlots.sell_fallback_ema_wick}
             n={n}
           />

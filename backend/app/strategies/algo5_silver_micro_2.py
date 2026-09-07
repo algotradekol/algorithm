@@ -156,12 +156,12 @@ class Algo5SilverMicro2(Algo3SilverMicro):
         # Existing Silver BUY is always preferred.
         if close > open_price and close > self._ema20:
             return self._CURRENT_REFERENCE
-        # Fallback BUY: a red candle closes above EMA and its wick touches
-        # EMA or comes within the configured distance above it.
+        # Fallback BUY: a red candle closes above EMA and its low minus EMA
+        # stays strictly below the configured distance.
         if (
             open_price > close
             and close > self._ema20
-            and low <= self._ema20 + self._ema_wick_distance_points()
+            and low - self._ema20 < self._ema_wick_distance_points()
         ):
             return self._FALLBACK_EMA_WICK_REFERENCE
         return None
@@ -176,12 +176,12 @@ class Algo5SilverMicro2(Algo3SilverMicro):
         # Existing Silver SELL is always preferred.
         if close < open_price and close < self._ema20:
             return self._CURRENT_REFERENCE
-        # Fallback SELL: a green candle closes below EMA and its wick touches
-        # EMA or comes within the configured distance below it.
+        # Fallback SELL: a green candle closes below EMA and its high minus
+        # EMA stays strictly below the configured distance.
         if (
             open_price < close
             and close < self._ema20
-            and high >= self._ema20 - self._ema_wick_distance_points()
+            and high - self._ema20 < self._ema_wick_distance_points()
         ):
             return self._FALLBACK_EMA_WICK_REFERENCE
         return None

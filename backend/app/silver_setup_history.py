@@ -77,9 +77,9 @@ def _is_qualifying_setup_row(row: dict) -> bool:
         except (KeyError, TypeError, ValueError):
             return False
         if side == "BUY":
-            return open_price > close and close > ema20 and low <= ema20 + wick_distance
+            return open_price > close and close > ema20 and low - ema20 < wick_distance
         if side == "SELL":
-            return open_price < close and close < ema20 and high >= ema20 - wick_distance
+            return open_price < close and close < ema20 and high - ema20 < wick_distance
         return False
     if side == "BUY":
         return close > open_price and close > ema20

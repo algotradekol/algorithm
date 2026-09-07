@@ -347,7 +347,7 @@ export default function StrategySettingsPanel({
           {isSilver && (
             <div className="mt-5 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
             {algoId === 'algo5'
-              ? 'Silver Micro 2.0 keeps the standard 15-minute references first, then adds the EMA-wick fallback: a red close above EMA can seed BUY and a green close below EMA can seed SELL when its wick reaches or comes within the configured EMA distance. Both use the same reference +/- n trigger.'
+              ? 'Silver Micro 2.0 keeps the standard 15-minute references first, then adds the EMA-wick fallback: a red close above EMA can seed BUY when low - EMA20 is below the configured distance, and a green close below EMA can seed SELL when high - EMA20 is below it. Both use the same reference +/- n trigger.'
               : (isLive ? 'Live Silver uses completed 15-minute reference candles. BUY carries the latest green close above EMA20 and enters at reference + n, including a prior-day gap at 09:00. SELL carries the latest red close below EMA20 through intervening green candles and enters at reference - n during a later red move, including a prior-day 09:00 gap.' : 'Silver backtests replay the same 15-minute reference BUY and selected SELL logic used by the live engine.')} Position size is in LOTS (1 lot = 1 kg). Entry price is always the actual market fill; SL and target values are POINTS from that fill. Default order type is MARKET.
             </div>
           )}

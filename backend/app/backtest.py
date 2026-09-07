@@ -1147,7 +1147,7 @@ def _silver_micro_execution_assumption(
     wick_distance = float(settings.get("ema_wick_distance_points", 300) or 300)
     buy_plan_text = "BUY stores each finalized green 15m close above EMA20 as the reference and enters when price crosses reference + n; after a BUY target/SL, renewed upward movement can re-enter against the same reference until a newer green 15m close replaces it."
     if is_micro_2:
-        buy_plan_text += f" Silver Micro 2.0 also accepts a red 15m close above EMA20 when its low is within {wick_distance:g} points of EMA20."
+        buy_plan_text += f" Silver Micro 2.0 also accepts a red 15m close above EMA20 when low - EMA20 is strictly below {wick_distance:g} points."
     sell_plan_text = (
         "SELL compares each later qualifying red 15m close with the previous red reference; "
         "green candles do not reset that reference."
@@ -1160,7 +1160,7 @@ def _silver_micro_execution_assumption(
         else "SELL latest-reference entries enter at the 1-minute trigger level."
     )
     if is_micro_2:
-        sell_plan_text += f" Silver Micro 2.0 also accepts a green 15m close below EMA20 when its high is within {wick_distance:g} points of EMA20; that fallback may trigger on any later candle."
+        sell_plan_text += f" Silver Micro 2.0 also accepts a green 15m close below EMA20 when high - EMA20 is strictly below {wick_distance:g} points; that fallback may trigger on any later candle."
     strategy_label = "Silver Micro 2.0" if is_micro_2 else "Silver Micro"
     return (
         f"{strategy_label} replays 15-minute bars aggregated from 1-minute history "
@@ -1675,7 +1675,7 @@ def _simulate_silver_micro_range(
             and is_red
             and ema20 is not None
             and bar["close"] > ema20
-            and bar["low"] <= ema20 + ema_wick_distance
+            and bar["low"] - ema20 < ema_wick_distance
         ):
             buy_family = "fallback_ema_wick"
         if is_red and ema20 is not None and bar["close"] < ema20:
@@ -1685,7 +1685,7 @@ def _simulate_silver_micro_range(
             and is_green
             and ema20 is not None
             and bar["close"] < ema20
-            and bar["high"] >= ema20 - ema_wick_distance
+            and bar["high"] - ema20 < ema_wick_distance
         ):
             sell_family = "fallback_ema_wick"
 
