@@ -68,7 +68,9 @@ def _is_qualifying_setup_row(row: dict) -> bool:
     except (KeyError, TypeError, ValueError):
         return False
     source = str(row.get("source") or "")
-    is_algo5 = str(row.get("algo_id") or "").split("__", 1)[0] == "algo5"
+    algo_root = str(row.get("algo_id") or "").split("__", 1)[0]
+    is_algo5 = algo_root == "algo5"
+    is_algo6 = algo_root == "algo6"
     if is_algo5 and source.startswith("live:fallback_ema_wick:"):
         try:
             wick_distance = float(source.rsplit(":", 1)[1])
@@ -80,6 +82,21 @@ def _is_qualifying_setup_row(row: dict) -> bool:
             return open_price > close and close > ema20 and low - ema20 < wick_distance
         if side == "SELL":
             return open_price < close and close < ema20 and high - ema20 < wick_distance
+        return False
+    if is_algo6:
+        source = str(row.get("source") or "")
+        marker = "9m_volume_ema:"
+        if marker not in source:
+            return False
+        try:
+            volume_ema20 = float(source.rsplit(marker, 1)[1].split(":", 1)[0])
+            volume = float(row.get("candle_volume") or 0)
+        except (TypeError, ValueError):
+            return False
+        if side == "BUY":
+            return close > open_price and close > ema20 and volume > volume_ema20
+        if side == "SELL":
+            return close < open_price and close < ema20 and volume > volume_ema20
         return False
     if side == "BUY":
         return close > open_price and close > ema20

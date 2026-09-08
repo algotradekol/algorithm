@@ -8,7 +8,7 @@ from .paper_broker import PaperBroker
 # Silver Micro 2.0 is an isolated paper/backtest experiment.  Keep this
 # guard in the broker factory as the final protection even if a caller bypasses
 # the dashboard and switches the global runtime mode to live.
-PAPER_ONLY_ALGO_IDS = frozenset({"algo5"})
+PAPER_ONLY_ALGO_IDS = frozenset({"algo5", "algo6"})
 
 
 def create_broker(algo_id: str, starting_capital: float):

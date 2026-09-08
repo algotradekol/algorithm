@@ -24,6 +24,7 @@ from .fyers_auth import get_stored_access_token, refresh_access_token_from_refre
 from .strategies.algo1_opening_range import Algo1OpeningRange
 from .strategies.algo3_silver_micro import Algo3SilverMicro
 from .strategies.algo5_silver_micro_2 import Algo5SilverMicro2
+from .strategies.algo6_silver_v_micro import Algo6SilverVMicro
 from .strategies.un1_915_filtered import UN1915Filtered
 from .config import ENTRY_CHECK_TIME, HIDDEN_TABS, SQUARE_OFF_TIME
 
@@ -39,6 +40,9 @@ _STRATEGY_TAB_MAP = {
     "silvermicro2": "algo5",
     "silver2": "algo5",
     "silver20": "algo5",
+    "silvervmicro": "algo6",
+    "silverv": "algo6",
+    "silver-v": "algo6",
 }
 _HIDDEN_ALGO_IDS = {
     _STRATEGY_TAB_MAP[key]
@@ -421,7 +425,7 @@ def _build_live_feed_plans(hhmm: str | None = None) -> list[dict]:
 
     silver_symbols = sorted({
         symbol
-        for algo_id in ("algo3", "algo5")
+        for algo_id in ("algo3", "algo5", "algo6")
         for strategy in [STRATEGIES.get(algo_id)]
         if strategy and _strategy_feed_permitted(strategy, current_hhmm)
         for symbol in (getattr(strategy, "watchlist", []) or [])
@@ -2067,6 +2071,7 @@ def start_engine():
             "algo2": lambda: UN1915Filtered(watchlist),
             "algo3": lambda: Algo3SilverMicro(),
             "algo5": lambda: Algo5SilverMicro2(),
+            "algo6": lambda: Algo6SilverVMicro(),
         }
         strategies = {
             algo_id: ctor()

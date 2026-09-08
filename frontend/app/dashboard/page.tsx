@@ -32,6 +32,8 @@ const TAB_ALIASES: Record<string, string> = {
   'silvermicro2.0': 'silvermicro20',
   silver2: 'silvermicro20',
   'silver-2': 'silvermicro20',
+  silverv: 'silvervmicro',
+  'silver-v': 'silvervmicro',
 };
 function normalizeTabKey(raw: string): string {
   const cleaned = raw.trim().toLowerCase().replace(/[\s_-]+/g, '');
@@ -50,7 +52,7 @@ function isTabHidden(name: string): boolean {
   return HIDDEN_TABS.has(tabKey(name));
 }
 const TABS = ALL_DASHBOARD_TABS.filter((t) => !isTabHidden(t)) as readonly DashboardTabName[];
-const PAPER_ONLY_TABS = new Set<DashboardTabName>(['Silver Micro 2.0']);
+const PAPER_ONLY_TABS = new Set<DashboardTabName>(['Silver Micro 2.0', 'Silver V Micro']);
 
 function formatIstTime() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -451,6 +453,19 @@ function DashboardContent() {
                   algoId="algo5"
                   displayName="Silver Micro 2.0 - 15m reference BUY / red-chain SELL"
                   description="Paper-only Silver Micro 2.0 experiment with isolated strategy id, settings namespace, and setup history so you can test changes safely."
+                  tradingMode={tradingMode}
+                  fyersConnected={fyersConnectedForMode}
+                  onWebSocketStatus={setWsStatus}
+                />
+              </div>
+            )}
+            {tradingMode === 'paper' && !isTabHidden('Silver V Micro') && (
+              <div className={tab === 'Silver V Micro' ? '' : 'hidden'}>
+                <AlgoTab
+                  key={`algo6-${tradingMode}`}
+                  algoId="algo6"
+                  displayName="Silver V Micro - 9m EMA volume breakout"
+                  description="Paper-only Silver V Micro experiment with 9-minute EMA20 + volume EMA20 references, isolated settings/history/trades, and overnight carry testing."
                   tradingMode={tradingMode}
                   fyersConnected={fyersConnectedForMode}
                   onWebSocketStatus={setWsStatus}

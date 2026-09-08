@@ -23,7 +23,7 @@ const SILVER_SELL_PLANS = {
     description: 'Replace the reference on every qualifying red candle, then wait for a later 1-minute break below it.',
   },
 };
-const SILVER_BACKTEST_ALGO_IDS = new Set(['algo3', 'algo5']);
+const SILVER_BACKTEST_ALGO_IDS = new Set(['algo3', 'algo5', 'algo6']);
 
 export default function BacktestTab() {
   const [algoId, setAlgoId] = useState('algo1');
@@ -179,7 +179,7 @@ export default function BacktestTab() {
   const introCopy = algoId === 'algo3'
     ? {
         title: 'Historical Silver Micro Backtest',
-        body: 'Replays MCX:SILVERMIC26AUGFUT on 15-minute candles with EMA20 breakout logic. Read-only; does not touch the live engine.',
+        body: 'Replays MCX:SILVERMIC26AUGFUT on 15-minute candles with EMA20 breakout logic for Silver Micro. Read-only; does not touch the live engine.',
         note: 'Uses the 15m reference BUY with the selected SELL logic: each finalized green candle closing above EMA20 becomes the reference, and price buys at reference + n with same-reference re-entry after a BUY target or stop loss on renewed upward movement.',
       }
     : algoId === 'algo5'
@@ -187,6 +187,12 @@ export default function BacktestTab() {
         title: 'Historical Silver Micro 2.0 Backtest',
         body: 'Replays MCX:SILVERMIC26AUGFUT using the isolated Silver Micro 2.0 EMA-wick fallback references. Read-only; it never touches the original Silver Micro engine.',
         note: 'Current green-above-EMA BUY and red-below-EMA SELL references remain first choice. 2.0 additionally accepts the configured EMA-wick fallback references, then uses the same reference +/- n trigger formulas.',
+      }
+    : algoId === 'algo6'
+      ? {
+        title: 'Historical Silver V Micro Backtest',
+        body: 'Replays MCX:SILVERMIC26AUGFUT with 9-minute candles anchored from 09:00 IST, EMA20 on price, and EMA20 on volume. Paper/backtest only.',
+        note: 'BUY saves green 9m closes above EMA20 only when volume is above volume EMA20; SELL saves red 9m closes below EMA20 only when volume is above volume EMA20. Entries fire only on fresh reference +/- n crossings.',
       }
     : {
         title: 'Historical Backtest',
@@ -212,9 +218,10 @@ export default function BacktestTab() {
           </button>
         </div>
         <div className="mt-4 grid gap-3 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-6">
-          <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option><option value="algo3">Silver Micro (MCX:SILVERMIC26AUGFUT)</option><option value="algo5">Silver Micro 2.0 (EMA-wick experiment)</option></select></label>
+          <label><span className="label">Strategy</span><select value={algoId} onChange={(e) => setAlgoId(e.target.value)} className="control mt-1"><option value="algo1">Simple 9:15</option><option value="algo2">Filter 9:15</option><option value="algo3">Silver Micro (MCX:SILVERMIC26AUGFUT)</option><option value="algo5">Silver Micro 2.0 (EMA-wick experiment)</option><option value="algo6">Silver V Micro (9m EMA volume)</option></select></label>
           {algoId === 'algo3' && <div><span className="label">Silver BUY logic</span><div className="control mt-1 flex items-center text-sm text-gray-200">15m EMA reference breakout</div><span className="mt-1 block text-[11px] leading-4 text-gray-500">A finalized green 15m close above EMA20 becomes the reference; BUY fires at reference + n and can re-enter after BUY target/SL while upward movement resumes.</span></div>}
           {algoId === 'algo3' && <label><span className="label">Silver SELL logic</span><select value={silverSellPlan} onChange={(e) => setSilverSellPlan(e.target.value)} className="control mt-1"><option value="red_chain">{SILVER_SELL_PLANS.red_chain.label}</option><option value="latest_reference">{SILVER_SELL_PLANS.latest_reference.label}</option></select><span className="mt-1 block text-[11px] leading-4 text-gray-500">{SILVER_SELL_PLANS[silverSellPlan as keyof typeof SILVER_SELL_PLANS].description}</span></label>}
+          {algoId === 'algo6' && <div><span className="label">Silver V logic</span><div className="control mt-1 flex items-center text-sm text-gray-200">9m EMA20 + volume EMA20 breakout</div><span className="mt-1 block text-[11px] leading-4 text-gray-500">Completed 9m references must satisfy candle color, close vs EMA20, and volume &gt; volume EMA20. BUY/SELL fire on fresh reference +/- n crossings.</span></div>}
           {algoId === 'algo5' && <div><span className="label">Silver Micro 2.0 logic</span><div className="control mt-1 flex items-center text-sm text-gray-200">Current references + EMA-wick fallback</div><span className="mt-1 block text-[11px] leading-4 text-gray-500">The fallback rules are isolated to 2.0. Tune only its settings before running this separate replay.</span></div>}
           <label><span className="label">Start date</span><input value={startDate} onChange={(e) => setStartDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>
           <label><span className="label">End date</span><input value={endDate} onChange={(e) => setEndDate(e.target.value)} max={today} type="date" className="control mt-1" /></label>

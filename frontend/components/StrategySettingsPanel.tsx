@@ -2,7 +2,7 @@
 import { useEffect, useState } from 'react';
 import { api } from '../lib/api';
 
-const SILVER_ALGO_IDS = new Set(['algo3', 'algo5']);
+const SILVER_ALGO_IDS = new Set(['algo3', 'algo5', 'algo6']);
 
 type Field = [string, string, string];
 
@@ -66,14 +66,17 @@ function SilverManualExitReentryToggle({
   );
 }
 
-function SilverMicro2OvernightCarryToggle({
+function SilverOvernightCarryToggle({
+  algoId,
   settings,
   setSettings,
 }: {
+  algoId: string;
   settings: Record<string, any>;
   setSettings: (settings: Record<string, any>) => void;
 }) {
   const enabled = Boolean(settings.overnight_carry_enabled);
+  const isSilverV = algoId === 'algo6';
   return (
     <div className="mt-5 rounded border border-[#f59e0b]/50 bg-[#f59e0b]/10 p-3">
       <label className="flex gap-3">
@@ -87,7 +90,9 @@ function SilverMicro2OvernightCarryToggle({
         <span>
           <span className="text-sm font-semibold text-gray-100">Carry paper trades overnight</span>
           <span className="mt-1 block text-xs text-gray-400">
-            Silver Micro 2.0 paper and backtest positions stay open after 23:25 and continue next session until SL/TSL, final target, reversal, or manual exit. Live carry is blocked until FYERS overnight protection is verified.
+            {isSilverV
+              ? 'Silver V Micro paper and backtest positions stay open after 23:25 and continue next session until SL/TSL, final target, reversal, or manual exit. Live is blocked for this experiment.'
+              : 'Silver Micro 2.0 paper and backtest positions stay open after 23:25 and continue next session until SL/TSL, final target, reversal, or manual exit. Live carry is blocked until FYERS overnight protection is verified.'}
           </span>
         </span>
       </label>
@@ -334,7 +339,7 @@ export default function StrategySettingsPanel({
           <>
             <SilverRiskSettings algoId={algoId} settings={settings} setSettings={setSettings} />
             <SilverManualExitReentryToggle settings={settings} setSettings={setSettings} />
-            {algoId === 'algo5' && <SilverMicro2OvernightCarryToggle settings={settings} setSettings={setSettings} />}
+            {(algoId === 'algo5' || algoId === 'algo6') && <SilverOvernightCarryToggle algoId={algoId} settings={settings} setSettings={setSettings} />}
           </>
         ) : (
           <FieldGroup
@@ -348,7 +353,9 @@ export default function StrategySettingsPanel({
             <div className="mt-5 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-xs text-[#93c5fd]">
             {algoId === 'algo5'
               ? 'Silver Micro 2.0 keeps the standard 15-minute references first, then adds the EMA-wick fallback: a red close above EMA can seed BUY when low - EMA20 is below the configured distance, and a green close below EMA can seed SELL when high - EMA20 is below it. Both use the same reference +/- n trigger.'
-              : (isLive ? 'Live Silver uses completed 15-minute reference candles. BUY carries the latest green close above EMA20 and enters at reference + n, including a prior-day gap at 09:00. SELL carries the latest red close below EMA20 through intervening green candles and enters at reference - n during a later red move, including a prior-day 09:00 gap.' : 'Silver backtests replay the same 15-minute reference BUY and selected SELL logic used by the live engine.')} Position size is in LOTS (1 lot = 1 kg). Entry price is always the actual market fill; SL and target values are POINTS from that fill. Default order type is MARKET.
+              : algoId === 'algo6'
+                ? 'Silver V Micro uses completed 9-minute candles anchored from 09:00 IST. BUY stores a green close above EMA20 only when volume is above volume EMA20; SELL stores a red close below EMA20 only when volume is above volume EMA20. Triggers remain reference +/- n on a fresh crossing.'
+                : (isLive ? 'Live Silver uses completed 15-minute reference candles. BUY carries the latest green close above EMA20 and enters at reference + n, including a prior-day gap at 09:00. SELL carries the latest red close below EMA20 through intervening green candles and enters at reference - n during a later red move, including a prior-day 09:00 gap.' : 'Silver backtests replay the same 15-minute reference BUY and selected SELL logic used by the live engine.')} Position size is in LOTS (1 lot = 1 kg). Entry price is always the actual market fill; SL and target values are POINTS from that fill. Default order type is MARKET.
             </div>
           )}
         {(algoId === 'algo1' || algoId === 'algo4') && <TestSchedule settings={settings} setSettings={setSettings} />}

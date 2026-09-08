@@ -144,6 +144,19 @@ STRATEGY_DEFAULT_OVERRIDES = {
         "silver_lots": 1,
         "order_type": "MARKET",
     },
+    "algo6": {
+        "scan_enabled": False,
+        "silver_breakout_points": 200,
+        "silver_buy_plan": "reference_breakout",
+        "sl_points": 200,
+        "tsl_activate_points": 500,
+        "target_points": 2000,
+        "exit_mode": "fixed_target_sl",
+        "manual_exit_reentry_enabled": False,
+        "overnight_carry_enabled": False,
+        "silver_lots": 1,
+        "order_type": "MARKET",
+    },
 }
 
 INT_FIELDS = {
@@ -228,7 +241,7 @@ def get_settings_storage_key(algo_id: str, mode: str | None = None) -> str:
 def _normalize(settings: dict, algo_id: str) -> dict:
     defaults = default_settings_for(algo_id)
     normalized = {**defaults, **settings}
-    is_silver = algo_id in {"algo3", "algo5"}
+    is_silver = algo_id in {"algo3", "algo5", "algo6"}
     if is_silver:
         legacy_exit_mode = str(settings.get("exit_mode") or "")
         # A pre-upgrade open position has no immutable policy snapshot. Keep
@@ -276,7 +289,7 @@ def _normalize(settings: dict, algo_id: str) -> dict:
 
 def validate_settings(settings: dict, algo_id: str) -> None:
     """Reject invalid new-entry settings before they reach a live strategy."""
-    if algo_id not in {"algo3", "algo5"}:
+    if algo_id not in {"algo3", "algo5", "algo6"}:
         return
     required = {
         "silver_breakout_points": "Breakout Offset",

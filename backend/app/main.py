@@ -131,11 +131,12 @@ def engine_status(_user=Depends(require_auth)):
 
 
 def get_strategy_or_raise(algo_id: str):
-    # Silver Micro 2.0 is deliberately a paper/backtest experiment.  Keep the
+    # Silver Micro 2.0 and Silver V Micro are paper/backtest experiments. Keep the
     # server boundary closed as well as hiding its tab, so a stale URL or
     # direct API request can never route it into the live dashboard.
-    if algo_id == "algo5" and get_runtime_trading_mode() != "paper":
-        raise HTTPException(403, "Silver Micro 2.0 is available in Paper mode only.")
+    if algo_id in {"algo5", "algo6"} and get_runtime_trading_mode() != "paper":
+        label = "Silver Micro 2.0" if algo_id == "algo5" else "Silver V Micro"
+        raise HTTPException(403, f"{label} is available in Paper mode only.")
     strategy = STRATEGIES.get(algo_id)
     if strategy:
         return strategy
@@ -266,7 +267,7 @@ def refresh_silver_history(algo_id: str, _user=Depends(require_auth)):
     gives the dashboard a safe recovery action when a transient FYERS history
     throttle left the 15-minute EMA/reference state empty after a deploy.
     """
-    if algo_id not in {"algo3", "algo5"}:
+    if algo_id not in {"algo3", "algo5", "algo6"}:
         raise HTTPException(status_code=404, detail="History refresh is only available for Silver strategies.")
     strategy = get_strategy_or_raise(algo_id)
     request_refresh = getattr(strategy, "request_manual_history_refresh", None)
@@ -716,7 +717,7 @@ def manual_trade(algo_id: str, payload: dict, _user=Depends(require_auth)):
             raise HTTPException(status_code=409, detail="No live price is available for this symbol yet.")
 
         settings = getattr(strategy, "settings", {}) or {}
-        if algo_id in {"algo3", "algo5"}:
+        if algo_id in {"algo3", "algo5", "algo6"}:
             # Silver Micro trades in whole lots. Do not reject using
             # capital//price math — MCX futures are margin-based, not
             # cash-equity "can I afford one share" based.
@@ -1027,7 +1028,7 @@ def create_backtest(payload: dict, _user=Depends(require_auth)):
     start_date = str(payload.get("start_date") or payload.get("date") or "")
     end_date = str(payload.get("end_date") or start_date)
     try:
-        if algo_id in {"algo3", "algo5"}:
+        if algo_id in {"algo3", "algo5", "algo6"}:
             # Resolve at request time so backtests always target the current
             # front-month contract, matching what live is trading.
             return start_backtest(

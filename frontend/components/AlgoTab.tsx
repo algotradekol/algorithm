@@ -7,7 +7,7 @@ import { useWebSocket, WebSocketState } from '../lib/useWebSocket';
 import { PAGE_SIZE, PaginationControls } from './PaginationControls';
 
 const FALLBACK_POLL_MS = 5_000;
-const SILVER_ALGO_IDS = new Set(['algo3', 'algo5']);
+const SILVER_ALGO_IDS = new Set(['algo3', 'algo5', 'algo6']);
 
 // ─── Debug logger (always on — remove later if too noisy) ──────────────────
 const _t = () => new Date().toLocaleTimeString('en-IN', { hour12: false, timeZone: 'Asia/Kolkata' });
@@ -714,6 +714,9 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
   const buyTrigger = buySetupClose != null ? Number(buySetupClose) + Number(n) : null;
   const sellTrigger = sellSetupClose != null ? Number(sellSetupClose) - Number(n) : null;
   const isSilverMicro2 = algoId === 'algo5';
+  const isSilverVMicro = algoId === 'algo6';
+  const timeframeLabel = isSilverVMicro ? '9m' : '15m';
+  const barsStored = isSilverVMicro ? (status?.bars_9m ?? status?.bars_15m ?? 0) : (status?.bars_15m ?? 0);
   const referenceSlots = status?.reference_slots || {};
   const candlePairSlots = status?.candle_pair_slots || {};
   const wickDistance = status?.ema_wick_distance_points ?? 300;
@@ -751,7 +754,9 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
   return (
     <div className="rounded border border-[#3b82f6]/30 bg-[#0b1220] p-3 text-xs text-gray-300">
       <div className="flex items-center justify-between gap-3">
-        <div className="label text-[10px]">Silver feed diagnostics (15m EMA breakout)</div>
+        <div className="label text-[10px]">
+          {isSilverVMicro ? 'Silver feed diagnostics (9m EMA + volume EMA breakout)' : 'Silver feed diagnostics (15m EMA breakout)'}
+        </div>
         <div className={`rounded px-2 py-0.5 font-semibold ${status?.last_tick_at ? 'bg-[#22c55e]/15 text-[#22c55e]' : 'bg-[#f59e0b]/15 text-[#f59e0b]'}`}>
           {status?.last_tick_at ? 'tick seen' : 'waiting for tick'}
         </div>
@@ -762,9 +767,10 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
         <FeedStat label="Last tick" value={lastTick || '--'} />
         <FeedStat label="Last price" value={formatNumber(status?.last_tick_ltp)} />
         <FeedStat label="Last 1m candle" value={lastMinuteCandle || '--'} />
-        <FeedStat label="Last 15m bar" value={lastBar || '--'} />
-        <FeedStat label="15m bars stored" value={status?.bars_15m ?? 0} />
+        <FeedStat label={`Last ${timeframeLabel} bar`} value={lastBar || '--'} />
+        <FeedStat label={`${timeframeLabel} bars stored`} value={barsStored} />
         <FeedStat label="EMA20" value={formatNumber(status?.ema20)} />
+        {isSilverVMicro && <FeedStat label="Volume EMA20" value={formatNumber(status?.volume_ema20)} />}
       </div>
       {isSilverMicro2 ? (
         <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2 xl:grid-cols-4">
@@ -816,7 +822,9 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
       <div className="mt-3 grid grid-cols-1 gap-2 sm:grid-cols-2">
         <div className="rounded border border-[#22c55e]/30 bg-[#22c55e]/5 p-2">
           <div className="flex items-center justify-between gap-2">
-            <div className="label text-[10px] text-[#22c55e]">BUY setup (green &gt; EMA20)</div>
+            <div className="label text-[10px] text-[#22c55e]">
+              {isSilverVMicro ? 'BUY setup (green 9m > EMA20 + vol > vol EMA20)' : 'BUY setup (green > EMA20)'}
+            </div>
             <button
               onClick={() => openHistory('BUY')}
               className="rounded border border-[#22c55e]/40 px-2 py-0.5 text-[10px] font-semibold text-[#22c55e]"
@@ -827,14 +835,21 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
           <div className="mt-1 num text-sm text-gray-100">
             {buySetupClose != null ? `Close ${formatNumber(buySetupClose)}` : 'None captured yet'}
           </div>
+          {isSilverVMicro && buySetupClose != null && (
+            <div className="mt-1 text-[10px] text-gray-500">
+              EMA20 {formatNumber(status?.ema20)} | Vol {formatNumber(status?.buy_setup_volume)} &gt; Vol EMA20 {formatNumber(status?.buy_setup_volume_ema20)}
+            </div>
+          )}
           <div className="text-[10px] text-gray-500">
-            {buyTrigger != null ? `Fires on tick >= ${formatNumber(buyTrigger)} (setup + ${n})` : `Waiting for a green 15m candle to close above EMA20`}
+            {buyTrigger != null ? `Fires on fresh upward cross >= ${formatNumber(buyTrigger)} (setup + ${n})` : `Waiting for a green ${timeframeLabel} candle to close above EMA20 with volume above volume EMA20`}
             {buySetupAt && <span className="ml-1">| set at {buySetupAt}</span>}
           </div>
         </div>
         <div className="rounded border border-[#ef4444]/30 bg-[#ef4444]/5 p-2">
           <div className="flex items-center justify-between gap-2">
-            <div className="label text-[10px] text-[#ef4444]">SELL setup (red &lt; EMA20)</div>
+            <div className="label text-[10px] text-[#ef4444]">
+              {isSilverVMicro ? 'SELL setup (red 9m < EMA20 + vol > vol EMA20)' : 'SELL setup (red < EMA20)'}
+            </div>
             <button
               onClick={() => openHistory('SELL')}
               className="rounded border border-[#ef4444]/40 px-2 py-0.5 text-[10px] font-semibold text-[#ef4444]"
@@ -845,8 +860,13 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
           <div className="mt-1 num text-sm text-gray-100">
             {sellSetupClose != null ? `Close ${formatNumber(sellSetupClose)}` : 'None captured yet'}
           </div>
+          {isSilverVMicro && sellSetupClose != null && (
+            <div className="mt-1 text-[10px] text-gray-500">
+              EMA20 {formatNumber(status?.ema20)} | Vol {formatNumber(status?.sell_setup_volume)} &gt; Vol EMA20 {formatNumber(status?.sell_setup_volume_ema20)}
+            </div>
+          )}
           <div className="text-[10px] text-gray-500">
-            {sellTrigger != null ? `Fires on tick <= ${formatNumber(sellTrigger)} (setup - ${n})` : `Waiting for a red 15m candle to close below EMA20`}
+            {sellTrigger != null ? `Fires on fresh downward cross <= ${formatNumber(sellTrigger)} (setup - ${n})` : `Waiting for a red ${timeframeLabel} candle to close below EMA20 with volume above volume EMA20`}
             {sellSetupAt && <span className="ml-1">| set at {sellSetupAt}</span>}
           </div>
         </div>
@@ -864,7 +884,7 @@ function SilverFeedPanel({ algoId, status }: { algoId: string; status: any }) {
               <div>
                 <div className="text-sm font-semibold text-gray-100">{historyOpenSide} setup history</div>
                 <div className="text-xs text-gray-500">
-                  Saved qualifying 15m candles for {algoId === 'algo5' ? 'Silver Micro 2.0' : 'Silver Micro'}
+                  Saved qualifying {timeframeLabel} candles for {algoId === 'algo5' ? 'Silver Micro 2.0' : algoId === 'algo6' ? 'Silver V Micro' : 'Silver Micro'}
                 </div>
               </div>
               <button onClick={() => setHistoryOpenSide(null)} className="text-sm text-gray-500 hover:text-gray-100">X</button>
@@ -1750,22 +1770,27 @@ function SignalAuditFacts({ row }: { row: any }) {
   if (!signal || typeof signal !== 'object') {
     return <span className="text-xs text-gray-500">Not captured for this legacy trade</span>;
   }
-  const algo3Snapshot = signal.timeframe === '15m' && (
+  const silverSnapshot = (signal.timeframe === '15m' || signal.timeframe === '9m') && (
     signal.buy_setup_close !== undefined ||
     signal.sell_setup_close !== undefined ||
     signal.trigger_level !== undefined ||
     signal.ema20 !== undefined
   );
-  if (algo3Snapshot) {
+  if (silverSnapshot) {
     const triggerLabel = signal.side === 'SELL' ? 'Sell trigger' : 'Buy trigger';
     const activeSetup = signal.side === 'SELL' ? signal.sell_setup_close : signal.buy_setup_close;
     const referenceTime = signal?.setup_reference_bar?.time
       || (signal.side === 'SELL' ? signal.sell_setup_time : signal.buy_setup_time);
+    const timeframe = signal.timeframe === '9m' ? '9m' : '15m';
+    const isSilverV = signal.algo_variant === 'silver_v_micro' || signal.logic_code === 'V1' || timeframe === '9m';
+    const volume = signal.side === 'SELL' ? signal.sell_setup_volume : signal.buy_setup_volume;
+    const volumeEma = signal.side === 'SELL' ? signal.sell_setup_volume_ema20 : signal.buy_setup_volume_ema20;
     return (
       <div className="space-y-1 break-words whitespace-normal">
-        <div className="font-semibold text-gray-200">15m reference details</div>
+        <div className="font-semibold text-gray-200">{timeframe} reference details</div>
         <div><span className="text-gray-500">Setup</span> {formatNumber(activeSetup)} <span className="text-gray-600">|</span> <span className="text-gray-500">{triggerLabel}</span> <span className="font-semibold text-[#fbbf24]">{formatNumber(signal.trigger_level)}</span></div>
         <div><span className="text-gray-500">Entry LTP</span> {formatNumber(signal.entry_ltp)} <span className="text-gray-600">|</span> <span className="text-gray-500">EMA20</span> {formatNumber(signal.ema20)}</div>
+        {isSilverV && <div><span className="text-gray-500">Volume</span> {formatNumber(volume)} <span className="text-gray-600">|</span> <span className="text-gray-500">Volume EMA20</span> {formatNumber(volumeEma)}</div>}
         <div><span className="text-gray-500">Reference candle</span> <span className="font-medium text-[#a5b4fc]">{formatDateTimeWithDate(referenceTime)}</span></div>
         <div className="text-[10px] text-gray-500">BUY ref {formatNumber(signal.buy_setup_close)} | SELL ref {formatNumber(signal.sell_setup_close)}</div>
       </div>
@@ -1791,7 +1816,10 @@ function LogicCodeBadge({ row }: { row: any }) {
     : {};
   const side = String(row?.side || snapshot?.side || '').toUpperCase();
   const fallback = snapshot?.setup_family === 'fallback_ema_wick';
-  const entryCode = side === 'BUY' ? (fallback ? 'B2' : 'B1') : (side === 'SELL' ? (fallback ? 'S2' : 'S1') : '--');
+  const silverV = snapshot?.algo_variant === 'silver_v_micro' || snapshot?.logic_code === 'V1' || snapshot?.timeframe === '9m';
+  const entryCode = silverV
+    ? (side === 'BUY' ? 'V-B1' : side === 'SELL' ? 'V-S1' : 'V')
+    : side === 'BUY' ? (fallback ? 'B2' : 'B1') : (side === 'SELL' ? (fallback ? 'S2' : 'S1') : '--');
   const candlePair = !!(snapshot?.silver_candle_pair_tsl && typeof snapshot.silver_candle_pair_tsl === 'object');
   const policyCode = candlePair
     ? 'CP'
@@ -1799,7 +1827,7 @@ function LogicCodeBadge({ row }: { row: any }) {
     ? 'BE'
     : 'FIX';
   const title = [
-    `${entryCode}: ${entryCode === 'B1' ? 'standard green-above-EMA BUY reference' : entryCode === 'B2' ? 'EMA-wick red-above-EMA BUY reference' : entryCode === 'S1' ? 'standard red-below-EMA SELL reference' : entryCode === 'S2' ? 'EMA-wick green-below-EMA SELL reference' : 'entry reference unavailable'}`,
+    `${entryCode}: ${entryCode === 'V-B1' ? 'Silver V green 9m close above EMA20 with volume above volume EMA20' : entryCode === 'V-S1' ? 'Silver V red 9m close below EMA20 with volume above volume EMA20' : entryCode === 'B1' ? 'standard green-above-EMA BUY reference' : entryCode === 'B2' ? 'EMA-wick red-above-EMA BUY reference' : entryCode === 'S1' ? 'standard red-below-EMA SELL reference' : entryCode === 'S2' ? 'EMA-wick green-below-EMA SELL reference' : 'entry reference unavailable'}`,
     `${policyCode}: ${policyCode === 'CP' ? 'breakeven then candle-pair TSL' : policyCode === 'BE' ? 'breakeven TSL' : 'fixed target and fixed stop loss'}`,
   ].join('\n');
   const tone = candlePair ? 'border-[#a855f7]/70 text-[#d8b4fe]' : policyCode === 'BE' ? 'border-[#f59e0b]/70 text-[#fcd34d]' : 'border-[#475569] text-[#cbd5e1]';
