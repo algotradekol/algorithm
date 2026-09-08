@@ -1724,6 +1724,7 @@ def _simulate_silver_micro_range(
             "low": min(c["low"] for c in minute_buffer),
             "close": minute_buffer[-1]["close"],
             "volume": sum(c["volume"] for c in minute_buffer),
+            "minute_count": len(minute_buffer),
         }
         ema20 = _ema_step(ema20, bar["close"])
         if silver_v_micro:
@@ -1846,6 +1847,7 @@ def _simulate_silver_micro_range(
                     "low": round(bar["low"], 2),
                     "close": round(bar["close"], 2),
                     "volume": round(float(bar["volume"]), 2),
+                    "minute_count": int(bar.get("minute_count") or 0),
                     "ema20": _round_or_none(ema20),
                     "volume_ema20": _round_or_none(volume_ema20) if silver_v_micro else None,
                 })
@@ -1865,6 +1867,7 @@ def _simulate_silver_micro_range(
                     "trigger_level": round(setup_event["close"] + n, 2) if setup_event["side"] == "BUY" else round(setup_event["close"] - n, 2),
                     "ema20": round(ema20, 2) if ema20 is not None else None,
                     "volume_ema20": round(volume_ema20, 2) if volume_ema20 is not None else None,
+                    "minute_count": int(bar.get("minute_count") or 0),
                     "n_points": n,
                     "setup_family": setup_event.get("setup_family"),
                      "previous_red_reference_close": _round_or_none(setup_event.get("previous_red_reference_close")),

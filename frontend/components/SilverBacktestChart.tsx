@@ -17,6 +17,7 @@ const CHART_COLORS = {
   effectiveSl: '#ec4899',
   target: '#8b5cf6',
   trailing: '#a3e635',
+  volumeEma: '#f59e0b',
   crosshair: '#94a3b8',
 };
 
@@ -53,6 +54,9 @@ export default function SilverBacktestChart({
   const chartTrades = Array.isArray(chart.trades) ? chart.trades : [];
   const chartSetups = Array.isArray(chart.setups) ? chart.setups : [];
   const viewportHint = chart.viewport_hint || {};
+  const candleMinutes = String(chart.resolution || '') === '9' ? 9 : 15;
+  const candleLabel = `${candleMinutes}-minute candles`;
+  const showVolumeEma = candleMinutes === 9;
 
   const normalized = useMemo(() => chartCandles.map((candle: any) => ({
     ...candle,
@@ -61,6 +65,8 @@ export default function SilverBacktestChart({
     low: Number(candle.low),
     close: Number(candle.close),
     volume: Number(candle.volume || 0),
+    volumeEma20: numberOrNull(candle.volume_ema20),
+    minuteCount: Number.isFinite(Number(candle.minute_count)) ? Number(candle.minute_count) : null,
     ema20: Number(candle.ema20),
     timeMs: parseMaybeDate(candle.time)?.getTime() ?? null,
   })).filter((candle: any) => Number.isFinite(candle.close)), [chartCandles]);
@@ -166,7 +172,10 @@ export default function SilverBacktestChart({
   const high = priceScale.high;
   const low = priceScale.low;
   const priceTicks = priceScale.ticks;
-  const maxVolume = Math.max(...visible.map((candle: any) => candle.volume), 1);
+  const maxVolume = Math.max(...visible.flatMap((candle: any) => [
+    candle.volume,
+    Number.isFinite(candle.volumeEma20) ? candle.volumeEma20 : 0,
+  ]), 1);
   const priceSpan = high - low || 1;
   const first = visible[0];
   const last = visible[visible.length - 1];
@@ -223,6 +232,11 @@ export default function SilverBacktestChart({
 
   function y(price: number) {
     return 16 + ((high - price) / priceSpan) * (priceHeight - 32);
+  }
+
+  function volumeY(value: number) {
+    const clamped = Math.max(0, Math.min(maxVolume, value));
+    return priceHeight + 18 + (volumeHeight - (clamped / maxVolume) * (volumeHeight - 10));
   }
 
   function fitInitialViewport() {
@@ -350,20 +364,23 @@ export default function SilverBacktestChart({
         <div className="rounded border border-[#1f2937] bg-[#111827] p-3">
           <div className="mb-3 flex flex-wrap items-center justify-between gap-3">
             <div>
-              <div className="font-mono text-base font-semibold text-gray-100">{chart.symbol} / 15-minute candles / {selectedDay.date}</div>
+              <div className="font-mono text-base font-semibold text-gray-100">{chart.symbol} / {candleLabel} / {selectedDay.date}</div>
               <div className="mt-1 text-sm text-gray-400">
                 {activeCandle ? `Focused candle: ${formatAxisDateTime(activeCandle.time)} IST` : `Showing candles ${start + 1}-${end} of ${normalized.length}`}
               </div>
             </div>
           </div>
 
-          <ChartSymbolLibrary />
+          <ChartSymbolLibrary candleLabel={candleLabel} showVolumeEma={showVolumeEma} />
 
           <div className="mt-3 flex flex-wrap items-center gap-4 border-t border-[#1f2937] pt-3 text-xs">
             <Stat label="Open" value={formatNumber(statCandle.open)} />
             <Stat label="High" value={formatNumber(statCandle.high)} />
             <Stat label="Low" value={formatNumber(statCandle.low)} />
             <Stat label="Close" value={formatNumber(statCandle.close)} />
+            <Stat label="Volume" value={formatNumber(statCandle.volume)} />
+            {showVolumeEma && <Stat label="Volume EMA20" value={formatOptionalNumber(statCandle.volumeEma20)} tone="text-[#f59e0b]" />}
+            {statCandle.minuteCount !== null && <Stat label="1m bars" value={`${statCandle.minuteCount}/${candleMinutes}`} tone={statCandle.minuteCount === candleMinutes ? 'text-[#22c55e]' : 'text-[#f59e0b]'} />}
             <Stat label="Change" value={`${change >= 0 ? '+' : ''}${formatNumber(change)} (${changePct.toFixed(2)}%)`} tone={change >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
           </div>
 
@@ -435,7 +452,7 @@ export default function SilverBacktestChart({
                 const bodyHeight = Math.max(1, Math.abs(closeY - openY));
                 const bodyWidth = Math.max(2, candleWidth * 0.58);
                 const volumeBarHeight = candle.volume / maxVolume * (volumeHeight - 10);
-                const volumeY = priceHeight + 18 + (volumeHeight - volumeBarHeight);
+                const volumeBarY = priceHeight + 18 + (volumeHeight - volumeBarHeight);
                 const absoluteIndex = start + index;
                 const highlighted = Boolean(
                   selectedTradeOverlay
@@ -468,10 +485,10 @@ export default function SilverBacktestChart({
                     }}
                     style={{ cursor: 'pointer' }}
                   >
-                    <title>{`${candle.time}\nO ${formatNumber(candle.open)} H ${formatNumber(candle.high)} L ${formatNumber(candle.low)} C ${formatNumber(candle.close)}\nEMA20 ${formatNumber(candle.ema20)}\nVol ${candle.volume.toLocaleString('en-IN')}`}</title>
+                    <title>{`${candle.time}\nO ${formatNumber(candle.open)} H ${formatNumber(candle.high)} L ${formatNumber(candle.low)} C ${formatNumber(candle.close)}\nEMA20 ${formatNumber(candle.ema20)}\nVol ${candle.volume.toLocaleString('en-IN')}${showVolumeEma && candle.volumeEma20 !== null ? `\nVol EMA20 ${formatNumber(candle.volumeEma20)}` : ''}${candle.minuteCount !== null ? `\nBuilt from ${candle.minuteCount} one-minute candles` : ''}`}</title>
                     <line x1={x} x2={x} y1={highY} y2={lowY} stroke={color} strokeWidth="1.2" />
                     <rect x={x - bodyWidth / 2} y={bodyTop} width={bodyWidth} height={bodyHeight} fill={color} opacity={bullish ? 0.85 : 0.75} />
-                    <rect x={x - bodyWidth / 2} y={volumeY} width={bodyWidth} height={volumeBarHeight} fill={color} opacity="0.35" />
+                    <rect x={x - bodyWidth / 2} y={volumeBarY} width={bodyWidth} height={volumeBarHeight} fill={color} opacity="0.35" />
                     {highlighted && (
                       <rect
                         x={x - bodyWidth / 2 - 6}
@@ -501,6 +518,22 @@ export default function SilverBacktestChart({
                   </g>
                 );
               })}
+
+              {showVolumeEma && (
+                <path
+                  d={visible
+                    .map((candle: any, index: number) => (
+                      Number.isFinite(candle.volumeEma20)
+                        ? `${index === 0 ? 'M' : 'L'} ${index * candleWidth + candleWidth / 2} ${volumeY(candle.volumeEma20)}`
+                        : ''
+                    ))
+                    .filter(Boolean)
+                    .join(' ')}
+                  fill="none"
+                  stroke={CHART_COLORS.volumeEma}
+                  strokeWidth="2"
+                />
+              )}
 
               {overlays.setups && visibleSetupOverlays.map((setup: any, index: number) => {
                 const localIndex = setup.index - start;
@@ -560,7 +593,7 @@ export default function SilverBacktestChart({
                     }}
                     style={{ cursor: 'pointer' }}
                   >
-                    <title>{`${tradeCount} executed ${trade.side || ''} trade${tradeCount === 1 ? '' : 's'} in this 15-minute candle. Click to inspect ${trade.trade_id}.`}</title>
+                    <title>{`${tradeCount} executed ${trade.side || ''} trade${tradeCount === 1 ? '' : 's'} in this ${candleMinutes}-minute candle. Click to inspect ${trade.trade_id}.`}</title>
                     <line x1={entryX} x2={entryX} y1={shaftStartY} y2={shaftEndY} stroke={color} strokeWidth={isSelected ? 3 : 2.4} strokeLinecap="round" />
                     <polygon points={arrowHeadPoints} fill={color} stroke="#e5e7eb" strokeWidth="0.8" />
                     {tradeCount > 1 && (
@@ -634,7 +667,7 @@ export default function SilverBacktestChart({
                 </g>
               ))}
               <text x={8} y={totalHeight - 46} fill="#60a5fa" fontSize="13" fontWeight="600" fontFamily="ui-monospace">
-                15-minute candles · time in IST
+                {candleLabel} · time in IST
               </text>
               <text x={8} y={totalHeight - 10} fill="#94a3b8" fontSize="12" fontFamily="ui-monospace">
                 {activeCandle ? `Focused ${formatAxisDateTime(activeCandle.time)}  |  window ${formatAxisDateTime(first.time)} -> ${formatAxisDateTime(last.time)}` : `${formatAxisDateTime(first.time)} -> ${formatAxisDateTime(last.time)}`}
@@ -673,7 +706,7 @@ export default function SilverBacktestChart({
               aria-label="Fixed time scale"
             >
               <svg viewBox={`0 0 ${Math.max(fixedPlotViewportWidth, 1)} 76`} width="100%" height="76" preserveAspectRatio="none">
-                <text x={8} y={18} fill="#60a5fa" fontSize="13" fontWeight="600" fontFamily="ui-monospace">15-minute candles · IST</text>
+                <text x={8} y={18} fill="#60a5fa" fontSize="13" fontWeight="600" fontFamily="ui-monospace">{candleLabel} · IST</text>
                 {visibleTimeTicks.map((tick) => {
                   const x = tick.x;
                   return (
@@ -752,12 +785,12 @@ function Toggle({ label, checked, onChange }: { label: string; checked: boolean;
   );
 }
 
-function ChartSymbolLibrary() {
+function ChartSymbolLibrary({ candleLabel, showVolumeEma }: { candleLabel: string; showVolumeEma: boolean }) {
   return (
     <div className="rounded border border-[#1f2937] bg-[#0d1117] p-3" aria-label="Chart symbol library">
       <div className="flex flex-wrap items-baseline justify-between gap-2">
         <div className="text-xs font-semibold uppercase tracking-wide text-gray-300">Chart symbol library</div>
-        <div className="text-[11px] text-gray-500">15-minute candles · IST · selected trade is highlighted</div>
+        <div className="text-[11px] text-gray-500">{candleLabel} · IST · selected trade is highlighted</div>
       </div>
       <div className="mt-3 grid gap-x-4 gap-y-2 sm:grid-cols-2 xl:grid-cols-4">
         <LegendItem swatch="buy" label="BUY entry" detail="Green down arrow" />
@@ -772,6 +805,7 @@ function ChartSymbolLibrary() {
         <LegendItem swatch="sl-final" label="Effective SL" detail="Pink solid line" />
         <LegendItem swatch="target" label="Target" detail="Violet dashed line" />
         <LegendItem swatch="trailing" label="Trailing path" detail="Lime stepped line" />
+        {showVolumeEma && <LegendItem swatch="volume-ema" label="Volume EMA20" detail="Orange line over volume bars" />}
         <LegendItem swatch="crosshair" label="Crosshair" detail="Gray guide lines" />
       </div>
     </div>
@@ -826,6 +860,7 @@ function LegendSwatch({ type }: { type: string }) {
     'sl-final': 'h-0 w-7 border-t-2 border-[#ec4899]',
     target: 'h-0 w-7 border-t-2 border-dashed border-[#8b5cf6]',
     trailing: 'h-0 w-7 border-t-2 border-[#a3e635]',
+    'volume-ema': 'h-0 w-7 border-t-2 border-[#f59e0b]',
     crosshair: 'h-0 w-7 border-t border-dashed border-[#94a3b8]',
   };
   return <span className={`inline-flex w-7 shrink-0 items-center justify-center ${styles[type] || 'h-3 w-3 rounded-full bg-[#64748b]'}`} aria-hidden="true" />;
@@ -873,6 +908,12 @@ function formatEntryMode(value: unknown, label?: unknown) {
 
 function formatOptionalNumber(value: unknown) {
   return value === null || value === undefined ? '--' : formatNumber(Number(value));
+}
+
+function numberOrNull(value: unknown) {
+  if (value === null || value === undefined || value === '') return null;
+  const parsed = Number(value);
+  return Number.isFinite(parsed) ? parsed : null;
 }
 
 function indexForTime(candles: any[], timeValue: string | null | undefined) {

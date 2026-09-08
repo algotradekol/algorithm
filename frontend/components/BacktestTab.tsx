@@ -559,6 +559,8 @@ function BacktestCandidates({ days }: { days: any[] }) {
     .filter((row: any) => row.symbol?.toLowerCase().includes(query.toLowerCase()))
     .sort((left: any, right: any) => compareCandidates(left, right, sortKey, sortDirection));
 
+  const hasVolumeEma = days.some((item: any) => (item.candidates || []).some((row: any) => row.volume_ema20 !== null && row.volume_ema20 !== undefined));
+  const hasMinuteCount = days.some((item: any) => (item.candidates || []).some((row: any) => row.minute_count !== null && row.minute_count !== undefined));
   const columns: [string, string][] = [
     ['symbol', 'Symbol'],
     ['sector', 'Sector'],
@@ -568,6 +570,8 @@ function BacktestCandidates({ days }: { days: any[] }) {
     ['low', 'Low'],
     ['close', 'Close'],
     ['volume', 'Volume'],
+    ...(hasVolumeEma ? [['volume_ema20', 'Volume EMA20'] as [string, string]] : []),
+    ...(hasMinuteCount ? [['minute_count', '1m Bars'] as [string, string]] : []),
     ['prev_close', 'Prev Close'],
     ['gap_pct', 'Gap %'],
     ['shape_passed', 'Shape'],
@@ -622,7 +626,7 @@ function BacktestCandidates({ days }: { days: any[] }) {
           <tbody>
             {!candidates.length ? (
               <tr>
-                <td colSpan={18} className="table-cell text-gray-500">No rows to show. This date may be a market holiday, or enable missing-candle data for an audit view.</td>
+                <td colSpan={columns.length} className="table-cell text-gray-500">No rows to show. This date may be a market holiday, or enable missing-candle data for an audit view.</td>
               </tr>
             ) : (
               candidates.map((row: any, index: number) => (
@@ -635,6 +639,8 @@ function BacktestCandidates({ days }: { days: any[] }) {
                   <td className="table-cell num">{optionalNumber(row.low)}</td>
                   <td className="table-cell num">{optionalNumber(row.close)}</td>
                   <td className="table-cell num">{optionalNumber(row.volume)}</td>
+                  {hasVolumeEma && <td className="table-cell num">{optionalNumber(row.volume_ema20)}</td>}
+                  {hasMinuteCount && <td className="table-cell num">{optionalNumber(row.minute_count)}</td>}
                   <td className="table-cell num">{optionalNumber(row.prev_close)}</td>
                   <td className={`table-cell num ${Number(row.gap_pct) > 0 ? 'text-[#22c55e]' : Number(row.gap_pct) < 0 ? 'text-[#ef4444]' : ''}`}>{optionalNumber(row.gap_pct)}%</td>
                   <td className="table-cell">{flag(row.shape_passed)}</td>
@@ -976,14 +982,14 @@ function diagnosticTone(trade: any) { return String(trade?.diagnostics?.primary_
 function diagnosticChipTone(trade: any) { return String(trade?.diagnostics?.primary_cause_code || '').includes('target') ? 'border-[#22c55e]/40 bg-[#22c55e]/10 text-[#22c55e]' : Number(trade?.net_pnl) < 0 ? 'border-[#ef4444]/40 bg-[#ef4444]/10 text-[#ef4444]' : 'border-[#f59e0b]/40 bg-[#f59e0b]/10 text-[#f59e0b]'; }
 
 function downloadBacktestCsv(result: any) {
-  const headers = ['Record Type', 'Date', 'Symbol', 'Sector', 'Side', 'Open', 'High', 'Low', 'Close', 'Volume', 'Previous Close', 'Gap %', 'Shape Passed', 'Gap Passed', 'Filters Passed', 'Selected For Trade', 'Rejection Reason', 'VWAP', 'RSI', 'ADX', 'Quantity', 'Entry Time IST', 'Entry Price', 'Exit Time IST', 'Exit Price', 'Initial SL', 'Final SL', 'Target', 'Trailing Enabled', 'Trailing Active', 'Trailing Trigger Points', 'Trailing Distance Points', 'Trailing Move Count', 'Trailing Moves', 'Exit Reason', 'Primary Cause', 'Diagnostic Summary', 'Warning Codes', 'Gross P&L', 'Charges', 'Net P&L', 'Metric', 'Value'];
+  const headers = ['Record Type', 'Date', 'Symbol', 'Sector', 'Side', 'Open', 'High', 'Low', 'Close', 'Volume', 'Previous Close', 'Gap %', 'Shape Passed', 'Gap Passed', 'Filters Passed', 'Selected For Trade', 'Rejection Reason', 'VWAP', 'RSI', 'ADX', 'Quantity', 'Entry Time IST', 'Entry Price', 'Exit Time IST', 'Exit Price', 'Initial SL', 'Final SL', 'Target', 'Trailing Enabled', 'Trailing Active', 'Trailing Trigger Points', 'Trailing Distance Points', 'Trailing Move Count', 'Trailing Moves', 'Exit Reason', 'Primary Cause', 'Diagnostic Summary', 'Warning Codes', 'Gross P&L', 'Charges', 'Net P&L', 'Metric', 'Value', 'Volume EMA20', '1m Bars In Candle'];
   const rows: any[][] = [];
   Object.entries(result.summary || {}).forEach(([metric, value]) => rows.push(['Summary', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', metric, typeof value === 'object' ? JSON.stringify(value) : value]));
   (result.daily_results || []).forEach((day: any) => {
     const summary = day.summary || {};
     rows.push(['Daily Result', day.date, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', summary.gross_pnl, summary.total_charges, summary.net_pnl, 'Trades / wins / losses', `${summary.trade_count || 0} / ${summary.win_count || 0} / ${summary.loss_count || 0}`]);
     (day.trades || []).forEach((trade: any) => rows.push(['Trade', day.date, trade.symbol, trade.sector || '', trade.side, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', trade.qty, formatTime(trade.entry_time), trade.entry_price, formatTime(trade.exit_time), trade.exit_price, trade.initial_sl_price, trade.sl_price, trade.target_price, trade.trailing_sl_enabled, trade.trailing_sl_active, trade.trailing_trigger_points, trade.trailing_distance_points, trade.trailing_move_count, JSON.stringify(trade.trailing_moves || []), trade.exit_reason, trade.diagnostics?.primary_cause_label || '', trade.diagnostics?.summary || '', JSON.stringify(trade.diagnostics?.warning_codes || []), trade.gross_pnl, trade.total_charges, trade.net_pnl, '', '']));
-    (day.candidates || []).forEach((row: any) => rows.push(['Candidate', day.date, row.symbol, row.sector || '', row.side, row.open, row.high, row.low, row.close, row.volume, row.prev_close, row.gap_pct, row.shape_passed, row.gap_passed, row.filters_passed, row.selected_for_trade, row.rejection_reason, row.indicator_results?.vwap?.value, row.indicator_results?.rsi?.value, row.indicator_results?.adx?.value, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '']));
+    (day.candidates || []).forEach((row: any) => rows.push(['Candidate', day.date, row.symbol, row.sector || '', row.side, row.open, row.high, row.low, row.close, row.volume, row.prev_close, row.gap_pct, row.shape_passed, row.gap_passed, row.filters_passed, row.selected_for_trade, row.rejection_reason, row.indicator_results?.vwap?.value, row.indicator_results?.rsi?.value, row.indicator_results?.adx?.value, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', row.volume_ema20 ?? '', row.minute_count ?? '']));
   });
   const csv = [headers, ...rows].map((row) => row.map(csvValue).join(',')).join('\r\n');
   const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });

@@ -275,37 +275,65 @@ class Algo6SilverVMicro(Algo3SilverMicro):
 
     def _check_triggers(self, ltp: float, event_time=None):
         n = float(self.settings.get("silver_breakout_points", 200))
-        if n <= 0 or self._prev_ltp is None:
+        if n <= 0:
             return
-        prev = float(self._prev_ltp)
+        prev = float(self._prev_ltp) if self._prev_ltp is not None else None
         buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
+        buy_opening_gap = bool(
+            buy_level is not None
+            and self._buy_setup_bar_at is not None
+            and ltp >= buy_level
+            and self._is_opening_gap_from_prior_session(event_time, self._buy_setup_bar_at)
+        )
+        buy_later_bucket = bool(
+            buy_level is not None
+            and self._buy_setup_bar_at is not None
+            and self._current_bucket is not None
+            and self._current_bucket > self._buy_setup_bar_at
+        )
         if (
             buy_level is not None
-            and prev < buy_level <= ltp
+            and (buy_opening_gap or buy_later_bucket)
+            and (buy_opening_gap or (prev is not None and prev < buy_level <= ltp))
+            and not self._already_fired_this_setup("BUY", self._buy_setup_bar_at)
             and not self._failed_attempt_blocks_setup("BUY")
         ):
             print(
-                f"[algo6] TRIGGER BUY (fresh upward cross): prev {prev:.2f} -> "
+                f"[algo6] TRIGGER BUY ({'opening gap' if buy_opening_gap else 'fresh upward cross'}): prev {_fmt(prev)} -> "
                 f"LTP {ltp:.2f} crossed {buy_level:.2f}"
             )
-            if self._fire_entry("BUY", ltp, buy_level, event_time=event_time):
+            if self._fire_entry("BUY", buy_level, buy_level, event_time=event_time):
                 self._buy_reentry_after_exit = None
-                self._mark_fired("BUY")
+                self._mark_fired("BUY", setup_bar_at=self._buy_setup_bar_at)
                 return
 
         sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
+        sell_opening_gap = bool(
+            sell_level is not None
+            and self._sell_setup_bar_at is not None
+            and ltp <= sell_level
+            and self._is_opening_gap_from_prior_session(event_time, self._sell_setup_bar_at)
+        )
+        sell_later_bucket = bool(
+            sell_level is not None
+            and self._sell_setup_bar_at is not None
+            and self._current_bucket is not None
+            and self._current_bucket > self._sell_setup_bar_at
+        )
         if (
             sell_level is not None
-            and prev > sell_level >= ltp
+            and (sell_opening_gap or sell_later_bucket)
+            and (sell_opening_gap or (prev is not None and prev > sell_level >= ltp))
+            and not self._already_fired_this_setup("SELL", self._sell_setup_bar_at)
             and not self._failed_attempt_blocks_setup("SELL")
         ):
             print(
-                f"[algo6] TRIGGER SELL (fresh downward cross): prev {prev:.2f} -> "
+                f"[algo6] TRIGGER SELL ({'opening gap' if sell_opening_gap else 'fresh downward cross'}): prev {_fmt(prev)} -> "
                 f"LTP {ltp:.2f} crossed {sell_level:.2f}"
             )
-            if self._fire_entry("SELL", ltp, sell_level, event_time=event_time):
+            if self._fire_entry("SELL", sell_level, sell_level, event_time=event_time):
                 self._sell_reentry_after_exit = None
-                self._mark_fired("SELL")
+                self._mark_fired("SELL", setup_bar_at=self._sell_setup_bar_at)
 
     def _signal_snapshot(self, side: str, entry_price: float, trigger_level: float) -> dict:
         snapshot = super()._signal_snapshot(side, entry_price, trigger_level)

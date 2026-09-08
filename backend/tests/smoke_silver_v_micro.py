@@ -132,32 +132,75 @@ def test_triggers_require_fresh_crossing():
     setup_time = datetime.datetime(2026, 9, 8, 9, 0)
     strategy._buy_setup_close = 1000
     strategy._buy_setup_bar_at = setup_time
+    strategy._current_bucket = datetime.datetime(2026, 9, 8, 9, 9)
     strategy._prev_ltp = 1199
     strategy._check_triggers(1200, datetime.datetime(2026, 9, 8, 9, 10))
     assert len(strategy.broker.positions) == 1
     assert strategy.broker.positions[0]["side"] == "BUY"
+    assert strategy.broker.positions[0]["entry_price"] == 1200
 
     strategy = make_strategy()
     strategy._buy_setup_close = 1000
     strategy._buy_setup_bar_at = setup_time
+    strategy._current_bucket = datetime.datetime(2026, 9, 8, 9, 9)
     strategy._prev_ltp = 1200
     strategy._check_triggers(1205, datetime.datetime(2026, 9, 8, 9, 10))
     assert strategy.broker.positions == []
 
     strategy = make_strategy()
-    strategy._sell_setup_close = 1000
-    strategy._sell_setup_bar_at = setup_time
-    strategy._prev_ltp = 801
-    strategy._check_triggers(800, datetime.datetime(2026, 9, 8, 9, 10))
-    assert len(strategy.broker.positions) == 1
-    assert strategy.broker.positions[0]["side"] == "SELL"
+    strategy._buy_setup_close = 1000
+    strategy._buy_setup_bar_at = setup_time
+    strategy._current_bucket = setup_time
+    strategy._prev_ltp = 1199
+    strategy._check_triggers(1200, datetime.datetime(2026, 9, 8, 9, 5))
+    assert strategy.broker.positions == []
 
     strategy = make_strategy()
     strategy._sell_setup_close = 1000
     strategy._sell_setup_bar_at = setup_time
+    strategy._current_bucket = datetime.datetime(2026, 9, 8, 9, 9)
+    strategy._prev_ltp = 801
+    strategy._check_triggers(800, datetime.datetime(2026, 9, 8, 9, 10))
+    assert len(strategy.broker.positions) == 1
+    assert strategy.broker.positions[0]["side"] == "SELL"
+    assert strategy.broker.positions[0]["entry_price"] == 800
+
+    strategy = make_strategy()
+    strategy._sell_setup_close = 1000
+    strategy._sell_setup_bar_at = setup_time
+    strategy._current_bucket = datetime.datetime(2026, 9, 8, 9, 9)
     strategy._prev_ltp = 800
     strategy._check_triggers(795, datetime.datetime(2026, 9, 8, 9, 10))
     assert strategy.broker.positions == []
+
+    strategy = make_strategy()
+    strategy._sell_setup_close = 1000
+    strategy._sell_setup_bar_at = setup_time
+    strategy._current_bucket = setup_time
+    strategy._prev_ltp = 801
+    strategy._check_triggers(800, datetime.datetime(2026, 9, 8, 9, 5))
+    assert strategy.broker.positions == []
+
+    strategy = make_strategy()
+    strategy._sell_setup_close = 1000
+    strategy._sell_setup_bar_at = setup_time
+    strategy._current_bucket = datetime.datetime(2026, 9, 8, 9, 9)
+    strategy._last_fired_sell_bar_at = setup_time
+    strategy._prev_ltp = 801
+    strategy._check_triggers(800, datetime.datetime(2026, 9, 8, 9, 10))
+    assert strategy.broker.positions == []
+
+
+def test_opening_gap_can_use_prior_day_reference():
+    strategy = make_strategy()
+    setup_time = datetime.datetime(2026, 9, 8, 23, 21)
+    strategy._buy_setup_close = 1000
+    strategy._buy_setup_bar_at = setup_time
+    strategy._prev_ltp = None
+    strategy._check_triggers(1205, datetime.datetime(2026, 9, 9, 9, 0, 22))
+    assert len(strategy.broker.positions) == 1
+    assert strategy.broker.positions[0]["side"] == "BUY"
+    assert strategy.broker.positions[0]["entry_price"] == 1200
 
 
 def test_overnight_carry_controls_squareoff():
@@ -223,8 +266,11 @@ def test_backtest_uses_9m_ema_volume_reference():
 
     result = results[0]
     assert result["chart"]["resolution"] == "9"
+    assert all(1 <= candle["minute_count"] <= 9 for candle in result["chart"]["candles"])
+    assert result["chart"]["candles"][-1]["volume_ema20"] is not None
     assert result["candidates"][-1]["setup_family"] == "nine_minute_ema_volume"
     assert result["candidates"][-1]["volume_ema20"] is not None
+    assert result["candidates"][-1]["minute_count"] == 9
     assert len(result["trades"]) == 1
     trade = result["trades"][0]
     assert trade["side"] == "BUY"
@@ -237,6 +283,7 @@ def run():
     test_buy_requires_green_above_ema_and_strict_volume_ema()
     test_sell_requires_red_below_ema_and_strict_volume_ema()
     test_triggers_require_fresh_crossing()
+    test_opening_gap_can_use_prior_day_reference()
     test_overnight_carry_controls_squareoff()
     test_backtest_uses_9m_ema_volume_reference()
     print("smoke_silver_v_micro passed")
