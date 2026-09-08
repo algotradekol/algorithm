@@ -35,6 +35,7 @@ class Algo2Momentum(Strategy):
         from ..strategy_settings import get_settings
         self.settings = get_settings(self.algo_id)
         self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
+        self._last_ltp_by_symbol: dict[str, float] = {}
 
     def reload_settings(self, mode: str | None = None):
         from ..strategy_settings import get_settings
@@ -62,7 +63,7 @@ class Algo2Momentum(Strategy):
         broadcast_sync({"event": "scan_complete", "algo_id": self.algo_id, "results": result})
 
     def on_tick(self, symbol: str, ltp: float, timestamp):
-        pass  # acts on candle close, not raw ticks
+        self._last_ltp_by_symbol[symbol] = float(ltp)
 
     def on_candle_close(self, symbol: str, candle: dict, indicators: dict):
         now = datetime.datetime.now()
@@ -118,5 +119,5 @@ class Algo2Momentum(Strategy):
 
     def square_off_all(self):
         for position in self.broker.open_positions():
-            ltp = position.get("_last_ltp", position["entry_price"])
+            ltp = position.get("_last_ltp") or self._last_ltp_by_symbol.get(position["symbol"]) or position["entry_price"]
             self.broker.close_trade(position, ltp, "EOD_SQUAREOFF")

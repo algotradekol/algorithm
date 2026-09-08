@@ -91,7 +91,7 @@ export default function AlgoTab({
       const [rows, settings] = await Promise.all([
         kind === 'open'
           ? api.positions(algoId)
-          : api.trades(algoId, 10_000, false),
+          : api.trades(algoId, 10_000, true),
         api.getSettings(algoId),
       ]);
       downloadCsvFile(
@@ -665,7 +665,14 @@ export default function AlgoTab({
             <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Open Positions</h3>
             <CsvButton label="Download open CSV" busy={csvBusy === 'open'} onClick={() => downloadCsv('open')} />
           </div>
-          <PositionsTable rows={openPositionRows} onExit={exitPosition} onEditProtection={openEditProtection} exitingPositionId={exitingPositionId} tradingMode={tradingMode} />
+          <PositionsTable
+            rows={openPositionRows}
+            onExit={exitPosition}
+            onEditProtection={openEditProtection}
+            exitingPositionId={exitingPositionId}
+            tradingMode={tradingMode}
+            showSymbol={!isSilverAlgo}
+          />
         </section>
 
         <section className="min-w-0">
@@ -673,7 +680,7 @@ export default function AlgoTab({
             <h3 className="text-xs font-semibold uppercase tracking-wider text-gray-500">Closed Trades Today</h3>
             <CsvButton label="Download closed CSV" busy={csvBusy === 'closed'} onClick={() => downloadCsv('closed')} />
           </div>
-          <TradesTable rows={trades} />
+          <TradesTable rows={trades} showSymbol={!isSilverAlgo} />
         </section>
       </div>
       {description && <div className="rounded border border-[#1f2937] bg-[#111827] px-3 py-2 text-xs text-gray-500">{description}</div>}
@@ -1254,12 +1261,14 @@ function PositionsTable({
   onEditProtection,
   exitingPositionId,
   tradingMode,
+  showSymbol = false,
 }: {
   rows: any[];
   onExit: (row: any) => void;
   onEditProtection: (row: any) => void;
   exitingPositionId: string | null;
   tradingMode?: string;
+  showSymbol?: boolean;
 }) {
   const [page, setPage] = useState(0);
   const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
@@ -1283,6 +1292,7 @@ function PositionsTable({
                 {row.side === 'SELL' ? 'S' : 'B'}
               </div>
               <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
+                {showSymbol && <MobileField label="Symbol" value={row.symbol || '--'} wide />}
                 <MobileField label="Source" value={<PositionSourceBadge row={row} />} wide />
                 <MobileField label="Entry Time" value={formatDateTime(row.entry_time)} wide />
                 <MobileField label="Qty" value={row.qty} />
@@ -1302,10 +1312,13 @@ function PositionsTable({
         })}
       </div>
       <div className="hidden w-full max-w-full overflow-x-auto overscroll-x-contain rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1640px] table-auto border-collapse text-xs">
+        <table className={`w-full ${showSymbol ? 'min-w-[1820px]' : 'min-w-[1640px]'} table-auto border-collapse text-xs`}>
         <thead className="bg-[#111827]">
           <tr>
-            {['#', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'SL', 'Target', 'Logic', 'Trailing SL', 'Trade Setup', 'Unreal P&L', 'Exit'].map((column) => (
+            {(showSymbol
+              ? ['#', 'Symbol', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'SL', 'Target', 'Logic', 'Trailing SL', 'Trade Setup', 'Unreal P&L', 'Exit']
+              : ['#', 'Source', 'Side', 'Qty', 'Entry Time', 'Entry', 'LTP', 'SL', 'Target', 'Logic', 'Trailing SL', 'Trade Setup', 'Unreal P&L', 'Exit']
+            ).map((column) => (
               <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
@@ -1313,7 +1326,7 @@ function PositionsTable({
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={14} className="table-cell text-gray-500">No open positions</td>
+              <td colSpan={showSymbol ? 15 : 14} className="table-cell text-gray-500">No open positions</td>
             </tr>
           ) : visibleRows.map((row, index) => {
             const ltp = Number(row.ltp ?? row.last_ltp ?? row._last_ltp);
@@ -1327,6 +1340,7 @@ function PositionsTable({
             return (
               <tr key={row.id || index} className={`align-top ${index % 2 === 0 ? 'bg-[#111827]' : 'bg-[#0d1117]'}`}>
                 <td className="table-cell num whitespace-nowrap text-gray-500">{safePage * PAGE_SIZE + index + 1}</td>
+                {showSymbol && <td className="table-cell w-[180px] whitespace-nowrap font-semibold text-gray-100">{row.symbol || '--'}</td>}
                 <td className="table-cell w-[120px] whitespace-nowrap"><PositionSourceBadge row={row} /></td>
                 <td className={`table-cell font-semibold ${row.side === 'SELL' ? 'text-[#ef4444]' : 'text-[#22c55e]'}`}>
                   <i className={`${row.side === 'SELL' ? 'ri-indeterminate-circle-fill' : 'ri-add-circle-fill'} mr-1 text-sm`} />
@@ -1373,7 +1387,7 @@ function formatTradeQty(row: any): string {
   return `${qty} qty`;
 }
 
-function TradesTable({ rows }: { rows: any[] }) {
+function TradesTable({ rows, showSymbol = false }: { rows: any[]; showSymbol?: boolean }) {
   const [page, setPage] = useState(0);
   const safePage = Math.min(page, Math.max(0, Math.ceil(rows.length / PAGE_SIZE) - 1));
   const visibleRows = rows.slice(safePage * PAGE_SIZE, safePage * PAGE_SIZE + PAGE_SIZE);
@@ -1397,6 +1411,7 @@ function TradesTable({ rows }: { rows: any[] }) {
               {row.side === "SELL" ? "S" : "B"}
             </div>
             <div className="mt-3 grid grid-cols-2 gap-2 text-xs text-gray-500">
+              {showSymbol && <MobileField label="Symbol" value={row.symbol || '--'} wide />}
               <MobileField label="Qty / Lots" value={formatTradeQty(row)} />
               <MobileField label="Entry Time" value={formatTradeTime(row.entry_time, row.exit_time)} />
               <MobileField label="Entry" value={formatNumber(row.entry_price)} />
@@ -1412,10 +1427,13 @@ function TradesTable({ rows }: { rows: any[] }) {
         ))}
       </div>
       <div className="hidden w-full max-w-full overflow-x-auto overscroll-x-contain rounded border border-[#1f2937] sm:block">
-        <table className="w-full min-w-[1760px] table-auto border-collapse text-xs">
+        <table className={`w-full ${showSymbol ? 'min-w-[1940px]' : 'min-w-[1760px]'} table-auto border-collapse text-xs`}>
         <thead className="bg-[#111827]">
           <tr>
-            {["Side", "Qty / Lots", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Logic", "Trailing SL", "Trade Setup", "Gross", "Charges", "Net"].map((column) => (
+            {(showSymbol
+              ? ["Symbol", "Side", "Qty / Lots", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Logic", "Trailing SL", "Trade Setup", "Gross", "Charges", "Net"]
+              : ["Side", "Qty / Lots", "Entry Time", "Entry", "Exit Time", "Exit", "Reason", "Logic", "Trailing SL", "Trade Setup", "Gross", "Charges", "Net"]
+            ).map((column) => (
               <th key={column} className="table-cell label whitespace-nowrap">{column}</th>
             ))}
           </tr>
@@ -1423,10 +1441,11 @@ function TradesTable({ rows }: { rows: any[] }) {
         <tbody>
           {!rows.length ? (
             <tr className="bg-[#0d1117]">
-              <td colSpan={13} className="table-cell text-gray-500">No closed trades yet</td>
+              <td colSpan={showSymbol ? 14 : 13} className="table-cell text-gray-500">No closed trades yet</td>
             </tr>
           ) : visibleRows.map((row, index) => (
             <tr key={row.id || index} className={`align-top ${index % 2 === 0 ? "bg-[#111827]" : "bg-[#0d1117]"}`}>
+              {showSymbol && <td className="table-cell w-[180px] whitespace-nowrap font-semibold text-gray-100">{row.symbol || '--'}</td>}
               <td className={`table-cell font-semibold ${row.side === "SELL" ? "text-[#ef4444]" : "text-[#22c55e]"}`}>
                 <i className={`${row.side === "SELL" ? "ri-indeterminate-circle-fill" : "ri-add-circle-fill"} mr-1 text-sm`} />
                 {row.side === "SELL" ? "S" : "B"}

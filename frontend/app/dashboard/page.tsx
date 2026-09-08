@@ -450,7 +450,7 @@ function DashboardContent() {
                   key={`algo5-${tradingMode}`}
                   algoId="algo5"
                   displayName="Silver Micro 2.0 - 15m reference BUY / red-chain SELL"
-                  description="Exact duplicate of Silver Micro on its own isolated strategy id, settings namespace, and setup history so you can test changes safely."
+                  description="Paper-only Silver Micro 2.0 experiment with isolated strategy id, settings namespace, and setup history so you can test changes safely."
                   tradingMode={tradingMode}
                   fyersConnected={fyersConnectedForMode}
                   onWebSocketStatus={setWsStatus}

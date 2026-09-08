@@ -195,6 +195,7 @@ class Algo1OpeningRange(Strategy):
         self.prev_close: dict[str, float] = {}
         self.preloaded_ltps: dict[str, float] = {}
         self.test_mode_ltps: dict[str, float] = {}  # Store LTPs from test mode candles
+        self._last_ltp_by_symbol: dict[str, float] = {}
         self.buy_candidates: list[str] = []
         self.sell_candidates: list[str] = []
         self.candidate_details: dict[str, dict] = {}
@@ -259,6 +260,7 @@ class Algo1OpeningRange(Strategy):
         self.phase2_backfill_failed = {}
         self.entries_evaluated_today = None
         self.test_mode_ltps = {}
+        self._last_ltp_by_symbol = {}
         self.debug_logger = ScanDebugLogger(len(self.watchlist))
 
     def _load_previous_closes_background(self):
@@ -391,7 +393,7 @@ class Algo1OpeningRange(Strategy):
         }
 
     def on_tick(self, symbol: str, ltp: float, timestamp):
-        pass  # algo1 acts on the signal candle close and enters on the next candle open/check
+        self._last_ltp_by_symbol[symbol] = float(ltp)
 
     def on_candle_close(self, symbol: str, candle: dict, indicators: dict):
         if not self._is_collection_candle(candle["time"].strftime("%H:%M")):
@@ -1398,7 +1400,7 @@ class Algo1OpeningRange(Strategy):
         for broker in self._active_brokers():
             try:
                 for position in broker.open_positions():
-                    ltp = position.get("_last_ltp", position["entry_price"])
+                    ltp = position.get("_last_ltp") or self._last_ltp_by_symbol.get(position["symbol"]) or position["entry_price"]
                     broker.close_trade(position, ltp, "EOD_SQUAREOFF")
             except Exception as exc:
                 if broker is not self.broker:

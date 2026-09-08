@@ -40,6 +40,7 @@ class Algo4OpeningRangeIndicators(Strategy):
         self.planned_symbols: set[str] = set()
         self.entry_failures: dict[str, str] = {}
         self.scan_seen_symbols: set[str] = set()
+        self._last_ltp_by_symbol: dict[str, float] = {}
         self.entries_evaluated_today = None
         self._previous_close_load_lock = threading.Lock()
         self._previous_close_loading = False
@@ -79,6 +80,7 @@ class Algo4OpeningRangeIndicators(Strategy):
         self.selected_symbols = set()
         self.entry_failures = {}
         self.scan_seen_symbols = set()
+        self._last_ltp_by_symbol = {}
         self.entries_evaluated_today = None
 
     def scan_enabled(self) -> bool:
@@ -192,7 +194,7 @@ class Algo4OpeningRangeIndicators(Strategy):
         }
 
     def on_tick(self, symbol: str, ltp: float, timestamp):
-        pass
+        self._last_ltp_by_symbol[symbol] = float(ltp)
 
     def on_candle_close(self, symbol: str, candle: dict, indicators: dict):
         history = self.candles[symbol]
@@ -805,7 +807,7 @@ class Algo4OpeningRangeIndicators(Strategy):
 
     def square_off_all(self):
         for position in self.broker.open_positions():
-            ltp = position.get("_last_ltp", position["entry_price"])
+            ltp = position.get("_last_ltp") or self._last_ltp_by_symbol.get(position["symbol"]) or position["entry_price"]
             self.broker.close_trade(position, ltp, "EOD_SQUAREOFF")
 
     def _ema(self, candles: list[dict], period: int) -> float | None:
