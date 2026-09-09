@@ -1,8 +1,10 @@
 'use client';
 import { Suspense, useEffect, useState } from 'react';
+import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
 import AlgoTab from '../../components/AlgoTab';
+import DeltaTab from '../../components/DeltaTab';
 import CompareTab from '../../components/CompareTab';
 import CalendarTab from '../../components/CalendarTab';
 import ChargesPanel from '../../components/ChargesPanel';
@@ -141,6 +143,8 @@ function DashboardContent() {
   const [wsStatus, setWsStatus] = useState<WebSocketState>('reconnecting');
   const router = useRouter();
   const pathname = usePathname();
+  const isDelta = pathname === '/delta';
+  const [deltaTab, setDeltaTab] = useState<'Delta Gold 15 min' | 'Delta Gold 1 hr'>('Delta Gold 15 min');
   const searchParams = useSearchParams();
   const tradingMode = (engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper';
   // Silver Micro 2.0 is an experiment. It is intentionally unavailable in
@@ -264,9 +268,9 @@ function DashboardContent() {
   if (!ready) return null;
 
   return (
-    <main className="min-h-screen overflow-x-hidden bg-[#0a0e14]" data-ai-active-tab={tab}>
+    <main className="min-h-screen overflow-x-hidden bg-[#0a0e14]" data-ai-active-tab={isDelta ? 'Delta' : tab}>
       <div className="w-full px-3 py-3 sm:px-4 sm:py-4">
-        {fyersLoginResult && showFyersBanner && (
+        {!isDelta && fyersLoginResult && showFyersBanner && (
           <div
             className={`mb-3 flex items-start justify-between gap-3 rounded border px-3 py-2 ${
               fyersLoginResult === 'success'
@@ -310,6 +314,7 @@ function DashboardContent() {
         <header className="flex flex-col gap-3 border-b border-[#1f2937] pb-3 lg:flex-row lg:items-center lg:justify-between">
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2 sm:gap-x-5">
             <div className="font-mono text-sm font-semibold tracking-[0.18em] text-gray-100 sm:text-base">ALGO TRADING</div>
+            {!isDelta && <>
             <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-gray-400">
               <i className={`ri-checkbox-blank-circle-fill text-[8px] ${statusIconTone}`} />
               <span>{statusText}</span>
@@ -326,9 +331,11 @@ function DashboardContent() {
               <i className={`ri-checkbox-blank-circle-fill text-[8px] ${engineStatus?.state === 'running' ? 'text-[#22c55e]' : 'text-[#f59e0b]'}`} />
               <span>Engine {engineStatus?.state || 'checking'}</span>
             </div>
+            </>}
           </div>
 
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
+            {!isDelta && <>
             <TradingModeToggle
               mode={engineStatus?.trading_mode}
               onModeChanged={(mode) => {
@@ -352,6 +359,7 @@ function DashboardContent() {
               autoRecovering={Boolean(engineStatus?.auto_recovering)}
               sessionState={sessionState}
             />
+            </>}
             <button
               onClick={async () => { clearPinToken(); await supabase.auth.signOut(); router.replace('/login'); }}
               className="inline-flex min-h-10 items-center gap-1 text-sm text-gray-500 hover:text-gray-100"
@@ -362,6 +370,50 @@ function DashboardContent() {
           </div>
         </header>
 
+        <nav aria-label="Broker" className="mt-4 flex gap-2 border-b border-[#1f2937] pb-3">
+          {[
+            { label: 'FYERS', href: DASHBOARD_TAB_ROUTES[tab], active: !isDelta },
+            { label: 'Delta', href: '/delta', active: isDelta },
+          ].map((broker) => (
+            <Link
+              key={broker.label}
+              href={broker.href}
+              aria-current={broker.active ? 'page' : undefined}
+              className={`min-w-28 rounded-md border px-5 py-2.5 text-center text-sm font-semibold transition-colors ${
+                broker.active
+                  ? 'border-[#3b82f6] bg-[#3b82f6]/15 text-[#93c5fd]'
+                  : 'border-[#1f2937] bg-[#111827] text-gray-400 hover:border-gray-500 hover:text-gray-100'
+              }`}
+            >
+              {broker.label}
+            </Link>
+          ))}
+        </nav>
+
+        {isDelta ? (
+          <>
+            <nav aria-label="Delta strategies" className="mb-4 flex gap-6 overflow-x-auto whitespace-nowrap border-b border-[#1f2937]">
+              {(['Delta Gold 15 min', 'Delta Gold 1 hr'] as const).map((name) => (
+                <button
+                  key={name}
+                  type="button"
+                  aria-pressed={deltaTab === name}
+                  onClick={() => setDeltaTab(name)}
+                  className={`min-h-10 whitespace-nowrap border-b-2 py-3 text-sm font-medium ${
+                    deltaTab === name
+                      ? 'border-[#3b82f6] text-gray-100'
+                      : 'border-transparent text-gray-500 hover:text-gray-300'
+                  }`}
+                >
+                  {name}
+                </button>
+              ))}
+            </nav>
+            <section aria-label={deltaTab}>
+              <DeltaTab key={deltaTab} minutes={deltaTab === 'Delta Gold 15 min' ? 15 : 60} />
+            </section>
+          </>
+        ) : <>
         <nav className="mb-4 flex gap-6 overflow-x-auto whitespace-nowrap border-b border-[#1f2937] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {visibleTabs.map((t) => (
             <button
@@ -498,6 +550,7 @@ function DashboardContent() {
             {tab === 'Charges' && !isTabHidden('Charges') && <ChargesPanel />}
           </>
         )}
+        </>}
       </div>
     </main>
   );

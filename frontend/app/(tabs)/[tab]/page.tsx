@@ -8,7 +8,7 @@ export default function DashboardTabRoute({
   params: { tab: string };
 }) {
   const slug = String(params?.tab || '').trim().toLowerCase();
-  if (!DASHBOARD_SLUG_TO_TAB[slug]) notFound();
+  if (slug !== 'delta' && !DASHBOARD_SLUG_TO_TAB[slug]) notFound();
   return <DashboardPage />;
 }
 

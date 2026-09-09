@@ -3,5 +3,6 @@ uvicorn[standard]
 fyers-apiv3
 pyotp
 requests
+websocket-client
 pyjwt
 supabase

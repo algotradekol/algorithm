@@ -193,13 +193,13 @@ class Algo3SilverMicro(Strategy):
     _MCX_SESSION_END = "23:30"
     _MCX_SQUARE_OFF_TIME = "23:25"
 
-    def __init__(self, watchlist: list[str] | None = None):
+    def __init__(self, watchlist: list[str] | None = None, *, settings: dict | None = None, broker=None):
         # Prefer an explicit override (used by backtest); otherwise resolve
         # the live MCX front-month symbol so we auto-roll as contracts expire.
         self.symbol = (watchlist or [None])[0] if watchlist else _resolve_silver_symbol()
         self.watchlist = [self.symbol] if self.symbol else []
-        self.settings = get_settings(self.algo_id)
-        self.broker = create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
+        self.settings = settings if settings is not None else get_settings(self.algo_id)
+        self.broker = broker if broker is not None else create_broker(algo_id=self.algo_id, starting_capital=self.settings["starting_capital"])
         self.broker.on_position_closed = self._handle_broker_position_closed
 
         self._history_lock = threading.Lock()

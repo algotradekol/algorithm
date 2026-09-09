@@ -95,15 +95,20 @@ manager = ConnectionManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
+    from .delta_engine import delta_service
     from .broadcaster import set_manager
     set_manager(manager)
     # Start engine in a background thread so it doesn't block FastAPI startup
     engine_thread = threading.Thread(target=start_engine, daemon=True)
     engine_thread.start()
+    delta_service.start()
     yield
+    delta_service.stop()
 
 
 app = FastAPI(title="Algo Paper Trading API", lifespan=lifespan)
+from .delta_routes import router as delta_router
+app.include_router(delta_router)
 
 app.add_middleware(
     CORSMiddleware,
