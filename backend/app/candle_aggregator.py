@@ -46,7 +46,9 @@ class CandleAggregator:
         incremental_volume = 0
         if state.last_volume_total is not None:
             incremental_volume = max(0, day_volume - state.last_volume_total)
-        state.last_volume_total = day_volume
+        # Price-only REST samples must not reset the cumulative WS baseline.
+        if day_volume > 0:
+            state.last_volume_total = day_volume
         state.last_ltp = ltp
 
         if state.current_minute is None:

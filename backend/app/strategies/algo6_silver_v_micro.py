@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import datetime
+import time
 
 from .algo3_silver_micro import (
     Algo3SilverMicro,
@@ -56,9 +57,45 @@ class Algo6SilverVMicro(Algo3SilverMicro):
         # Keep the experiment isolated from live settings while we iterate.
         return super().reload_settings(mode="paper")
 
-    def refresh_market_data(self):
+    def refresh_market_data(self, force: bool = False):
         if self._is_paper_mode_active():
-            return super().refresh_market_data()
+            return super().refresh_market_data(force=force)
+
+    def _load_history_background(self):
+        # A data rebuild must not re-arm a previously fired reference or erase
+        # the stop-loss cooldown. Entry checks remain blocked during replay.
+        names = (
+            "_last_fired_buy_bar_at", "_last_fired_sell_bar_at",
+            "_last_attempted_buy_bar_at", "_last_attempted_sell_bar_at",
+            "_entry_cooldown_until_monotonic", "_sl_cooldown_until_monotonic",
+            "_buy_reentry_after_exit", "_sell_reentry_after_exit",
+        )
+        saved = {name: getattr(self, name, None) for name in names}
+        self._reference_rebuilding = True
+        try:
+            super()._load_history_background()
+        finally:
+            for name, value in saved.items():
+                setattr(self, name, value)
+            self._reference_rebuilding = False
+
+    def _references_current(self, now):
+        if self._history_loading or getattr(self, "_reference_rebuilding", False):
+            return False
+        if not self._history_ready or self._history_error or not self._last_bar_at:
+            return False
+        bucket = _bucket_start_9m(now)
+        last = datetime.datetime.fromisoformat(self._last_bar_at)
+        if bucket.hour == 9 and bucket.minute == 0:
+            # Opening-gap entries use the prior session's verified reference.
+            return last < bucket and last.date() >= (now.date() - datetime.timedelta(days=4))
+        return last == bucket - datetime.timedelta(minutes=BUCKET_MINUTES)
+
+    def _request_reference_repair(self):
+        now = time.monotonic()
+        if now - getattr(self, "_last_reference_repair_at", float("-inf")) >= 30:
+            self._last_reference_repair_at = now
+            self.refresh_market_data(force=True)
 
     def _reset_aggregation_state(self) -> None:
         super()._reset_aggregation_state()
@@ -87,12 +124,26 @@ class Algo6SilverVMicro(Algo3SilverMicro):
     def on_tick(self, symbol: str, ltp: float, timestamp):
         if not self._is_paper_mode_active():
             return
+        if symbol != self.symbol:
+            return
+        now = datetime.datetime.now(IST).replace(tzinfo=None)
+        if not self._references_current(now):
+            self._last_tick_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+            self._last_tick_ltp = float(ltp)
+            self._prev_ltp = float(ltp)
+            self._request_reference_repair()
+            return
         super().on_tick(symbol, ltp, timestamp)
 
     def on_candle_close(self, symbol: str, candle: dict, indicators: dict):
         if not self._is_paper_mode_active():
             return
-        super().on_candle_close(symbol, candle, indicators)
+        if symbol != self.symbol:
+            return
+        # Sparse WS/REST observations are unsuitable for volume references.
+        self._last_minute_candle_at = candle["time"].isoformat()
+        if not self._references_current(datetime.datetime.now(IST).replace(tzinfo=None)):
+            self._request_reference_repair()
 
     def check_exits(self):
         if not self._is_paper_mode_active():
@@ -122,7 +173,7 @@ class Algo6SilverVMicro(Algo3SilverMicro):
         }
         if candle_time >= _latest_closed_minute_cutoff():
             return
-        if self._last_ingested_minute_at == candle_time:
+        if self._last_ingested_minute_at is not None and candle_time <= self._last_ingested_minute_at:
             return
         self._last_ingested_minute_at = candle_time
         bucket = _bucket_start_9m(candle_time)
@@ -144,6 +195,10 @@ class Algo6SilverVMicro(Algo3SilverMicro):
         if not self._minute_buffer or self._current_bucket is None:
             return
         if require_closed and not _is_bucket_closed(self._current_bucket, minutes=BUCKET_MINUTES):
+            return
+        expected = {self._current_bucket + datetime.timedelta(minutes=i) for i in range(BUCKET_MINUTES)}
+        if {c["time"] for c in self._minute_buffer} != expected:
+            self._minute_buffer = []
             return
         bar = {
             "time": self._current_bucket,
@@ -175,6 +230,8 @@ class Algo6SilverVMicro(Algo3SilverMicro):
         self._update_setups(bar, log=allow_signals)
 
     def flush_clock_closed_bar(self, allow_signals: bool | None = None) -> bool:
+        if self._history_loading or getattr(self, "_reference_rebuilding", False):
+            return False
         if not self._minute_buffer or self._current_bucket is None:
             return False
         if not _is_bucket_closed(self._current_bucket, minutes=BUCKET_MINUTES):
@@ -274,6 +331,12 @@ class Algo6SilverVMicro(Algo3SilverMicro):
         return
 
     def _check_triggers(self, ltp: float, event_time=None):
+        if self._history_loading or getattr(self, "_reference_rebuilding", False):
+            return
+        trigger_bucket = self._current_bucket
+        if isinstance(event_time, datetime.datetime):
+            local = event_time.astimezone(IST).replace(tzinfo=None) if event_time.tzinfo else event_time
+            trigger_bucket = _bucket_start_9m(local)
         n = float(self.settings.get("silver_breakout_points", 200))
         if n <= 0:
             return
@@ -288,8 +351,8 @@ class Algo6SilverVMicro(Algo3SilverMicro):
         buy_later_bucket = bool(
             buy_level is not None
             and self._buy_setup_bar_at is not None
-            and self._current_bucket is not None
-            and self._current_bucket > self._buy_setup_bar_at
+            and trigger_bucket is not None
+            and trigger_bucket > self._buy_setup_bar_at
         )
         if (
             buy_level is not None
@@ -317,8 +380,8 @@ class Algo6SilverVMicro(Algo3SilverMicro):
         sell_later_bucket = bool(
             sell_level is not None
             and self._sell_setup_bar_at is not None
-            and self._current_bucket is not None
-            and self._current_bucket > self._sell_setup_bar_at
+            and trigger_bucket is not None
+            and trigger_bucket > self._sell_setup_bar_at
         )
         if (
             sell_level is not None
@@ -392,28 +455,35 @@ class Algo6SilverVMicro(Algo3SilverMicro):
         )
 
     def feed_status(self) -> dict:
-        self.flush_clock_closed_bar()
+        now = datetime.datetime.now(IST).replace(tzinfo=None)
+        current = self._references_current(now)
+        market_hours = datetime.time(9) <= now.time() < datetime.time(23, 30)
+        history_error = self._history_error
+        if market_hours and not current and not history_error:
+            history_error = "Waiting for complete FYERS 9m history; new entries paused."
         buy_setup_close = self._buy_setup_close
         buy_setup_bar_at = self._buy_setup_bar_at
         buy_volume = self._buy_setup_volume
         buy_volume_ema = self._buy_setup_volume_ema20
-        if buy_setup_close is None or buy_setup_bar_at is None:
+        if not self._history_ready and (buy_setup_close is None or buy_setup_bar_at is None):
             buy_setup_close, buy_setup_bar_at, buy_volume, buy_volume_ema = self._load_persisted_reference("BUY")
 
         sell_setup_close = self._sell_setup_close
         sell_setup_bar_at = self._sell_setup_bar_at
         sell_volume = self._sell_setup_volume
         sell_volume_ema = self._sell_setup_volume_ema20
-        if sell_setup_close is None or sell_setup_bar_at is None:
+        if not self._history_ready and (sell_setup_close is None or sell_setup_bar_at is None):
             sell_setup_close, sell_setup_bar_at, sell_volume, sell_volume_ema = self._load_persisted_reference("SELL")
 
         return {
             "algo_id": self.algo_id,
             "display_name": self.display_name,
             "symbol": self.symbol,
-            "history_ready": self._history_ready,
+            "history_ready": self._history_ready and (current or not market_hours),
             "history_loading": self._history_loading,
-            "history_error": self._history_error,
+            "history_error": history_error,
+            "reference_data_current": current,
+            "reference_source": "fyers_1m_history",
             "last_manual_history_refresh_at": self._last_manual_history_refresh_at,
             "warmup_minute_candles": self._warmup_minute_candles,
             "timeframe": "9m",

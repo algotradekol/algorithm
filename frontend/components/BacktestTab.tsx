@@ -991,7 +991,8 @@ function downloadBacktestCsv(result: any) {
     (day.trades || []).forEach((trade: any) => rows.push(['Trade', day.date, trade.symbol, trade.sector || '', trade.side, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', trade.qty, formatTime(trade.entry_time), trade.entry_price, formatTime(trade.exit_time), trade.exit_price, trade.initial_sl_price, trade.sl_price, trade.target_price, trade.trailing_sl_enabled, trade.trailing_sl_active, trade.trailing_trigger_points, trade.trailing_distance_points, trade.trailing_move_count, JSON.stringify(trade.trailing_moves || []), trade.exit_reason, trade.diagnostics?.primary_cause_label || '', trade.diagnostics?.summary || '', JSON.stringify(trade.diagnostics?.warning_codes || []), trade.gross_pnl, trade.total_charges, trade.net_pnl, '', '']));
     (day.candidates || []).forEach((row: any) => rows.push(['Candidate', day.date, row.symbol, row.sector || '', row.side, row.open, row.high, row.low, row.close, row.volume, row.prev_close, row.gap_pct, row.shape_passed, row.gap_passed, row.filters_passed, row.selected_for_trade, row.rejection_reason, row.indicator_results?.vwap?.value, row.indicator_results?.rsi?.value, row.indicator_results?.adx?.value, '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', row.volume_ema20 ?? '', row.minute_count ?? '']));
   });
-  const csv = [headers, ...rows].map((row) => row.map(csvValue).join(',')).join('\r\n');
+  const normalizedRows = rows.map((row) => headers.map((_, index) => row[index] ?? ''));
+  const csv = [headers, ...normalizedRows].map((row) => row.map(csvValue).join(',')).join('\r\n');
   const blob = new Blob([`\uFEFF${csv}`], { type: 'text/csv;charset=utf-8;' });
   const url = URL.createObjectURL(blob);
   const link = document.createElement('a');

@@ -278,6 +278,47 @@ def test_backtest_uses_9m_ema_volume_reference():
     assert trade["exit_reason"] == "TARGET"
 
 
+def test_backtest_does_not_reuse_same_9m_reference_after_sl():
+    day = datetime.date(2026, 9, 8)
+    start = datetime.datetime(2026, 9, 8, 9, 0)
+    history = []
+    for index in range(20):
+        history.extend(_expand_9m_bar(start + datetime.timedelta(minutes=9 * index), 100, 101, 99, 100, 100))
+    setup_start = start + datetime.timedelta(minutes=9 * 20)
+    history.extend(_expand_9m_bar(setup_start, 100, 121, 99, 120, 200))
+    trigger_start = setup_start + datetime.timedelta(minutes=9)
+    history.extend([
+        {"time": trigger_start, "open": 120, "high": 130, "low": 124, "close": 124, "volume": 10},
+        {"time": trigger_start + datetime.timedelta(minutes=1), "open": 124, "high": 130, "low": 124, "close": 124, "volume": 10},
+    ])
+
+    results = bt._simulate_silver_micro_range(
+        "silver-v-no-duplicate-reference",
+        "algo6",
+        day,
+        day,
+        "MCX:TEST",
+        history,
+        [day],
+        {
+            "silver_breakout_points": 10,
+            "silver_lots": 1,
+            "sl_points": 5,
+            "target_points": 1000,
+            "tsl_activate_points": 500,
+            "exit_mode": "fixed_target_sl",
+            "overnight_carry_enabled": False,
+        },
+        get_charges_config(),
+    )
+
+    trades = results[0]["trades"]
+    assert len(trades) == 1
+    assert trades[0]["side"] == "BUY"
+    assert trades[0]["entry_price"] == 130
+    assert trades[0]["exit_reason"] == "SL"
+
+
 def run():
     test_bucket_is_anchored_from_0900()
     test_buy_requires_green_above_ema_and_strict_volume_ema()
@@ -286,6 +327,7 @@ def run():
     test_opening_gap_can_use_prior_day_reference()
     test_overnight_carry_controls_squareoff()
     test_backtest_uses_9m_ema_volume_reference()
+    test_backtest_does_not_reuse_same_9m_reference_after_sl()
     print("smoke_silver_v_micro passed")
 
 

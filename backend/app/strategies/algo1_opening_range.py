@@ -1048,8 +1048,10 @@ class Algo1OpeningRange(Strategy):
                 scan_status="disabled",
                 scan_message="Scan is turned OFF for this strategy. Toggle back on in the strategy tab to resume.",
             )
-            self.entries_evaluated_today = today  # prevent re-runs later in the day
-            return True
+            # Do not consume the day while the user has scanning disabled.
+            # If they turn it back on after the scheduled scan time, the engine
+            # should be allowed to evaluate immediately with the data it has.
+            return False
 
         is_test_schedule = bool(self.settings.get("test_schedule_enabled"))
 
@@ -1146,6 +1148,19 @@ class Algo1OpeningRange(Strategy):
 
         if not self._opening_data_ready():
             self._record_scan_results([], [], scan_status="incomplete", scan_message=self._opening_data_message())
+            return False
+
+        if self.entry_failures and all(reason == "entry_price_unavailable" for reason in self.entry_failures.values()):
+            self._record_scan_results(
+                [],
+                [],
+                scan_status="incomplete",
+                scan_message=(
+                    "Valid Simple candidates were found, but Fyers/tick LTP was unavailable, "
+                    "so no executable entry price could be used. The scan will retry while entries remain open."
+                ),
+                planned_symbols=all_attempted,
+            )
             return False
 
         self.entries_evaluated_today = today

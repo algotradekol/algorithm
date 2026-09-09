@@ -2312,6 +2312,7 @@ def _simulate_silver_micro_range(
             if (
                 buy_level is not None
                 and buy_setup_bar_at is not None
+                and last_fired_buy_setup_at != buy_setup_bar_at
                 and current_bucket is not None
                 and current_bucket > buy_setup_bar_at
                 and float(prev_ltp) < buy_level <= float(candle["high"])
@@ -2338,6 +2339,7 @@ def _simulate_silver_micro_range(
             if (
                 sell_level is not None
                 and sell_setup_bar_at is not None
+                and last_fired_sell_setup_at != sell_setup_bar_at
                 and current_bucket is not None
                 and current_bucket > sell_setup_bar_at
                 and float(prev_ltp) > sell_level >= float(candle["low"])

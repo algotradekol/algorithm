@@ -172,10 +172,13 @@ export default function SilverBacktestChart({
   const high = priceScale.high;
   const low = priceScale.low;
   const priceTicks = priceScale.ticks;
-  const maxVolume = Math.max(...visible.flatMap((candle: any) => [
+  const volumeValues = visible.flatMap((candle: any) => [
     candle.volume,
     Number.isFinite(candle.volumeEma20) ? candle.volumeEma20 : 0,
-  ]), 1);
+  ]).filter((value: number) => Number.isFinite(value) && value > 0);
+  const rawMaxVolume = Math.max(...volumeValues, 1);
+  const typicalMaxVolume = showVolumeEma ? percentile(volumeValues, 0.9) * 1.35 : rawMaxVolume;
+  const maxVolume = Math.max(typicalMaxVolume, 1);
   const priceSpan = high - low || 1;
   const first = visible[0];
   const last = visible[visible.length - 1];
@@ -914,6 +917,13 @@ function numberOrNull(value: unknown) {
   if (value === null || value === undefined || value === '') return null;
   const parsed = Number(value);
   return Number.isFinite(parsed) ? parsed : null;
+}
+
+function percentile(values: number[], ratio: number) {
+  if (!values.length) return 0;
+  const sorted = [...values].sort((left, right) => left - right);
+  const index = Math.min(sorted.length - 1, Math.max(0, Math.floor((sorted.length - 1) * ratio)));
+  return sorted[index];
 }
 
 function indexForTime(candles: any[], timeValue: string | null | undefined) {

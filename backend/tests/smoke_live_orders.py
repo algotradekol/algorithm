@@ -2142,7 +2142,6 @@ def test_proxy_preflight_no_proxy_configured():
 # ── 22-23. Persistent scan_enabled toggle (replaces skip-today) ──────
 def test_scan_disabled_short_circuits_algo1():
     print("\n22. Scan OFF — algo1.evaluate_entries returns early without work")
-    import datetime
     from app.strategies.algo1_opening_range import Algo1OpeningRange
     strat = object.__new__(Algo1OpeningRange)
     strat.algo_id = "algo1"
@@ -2153,12 +2152,12 @@ def test_scan_disabled_short_circuits_algo1():
 
     result = strat.evaluate_entries(get_ltp_fn=lambda s: 0.0)
 
-    check("evaluate_entries returned True (short-circuited)", result is True)
+    check("evaluate_entries returned False (retryable when re-enabled)", result is False)
     check("scan_status recorded as 'disabled'",
           any(status == "disabled" for _, status in called),
           f"called={called}")
-    check("entries_evaluated_today set (prevents re-runs same day)",
-          strat.entries_evaluated_today == datetime.date.today())
+    check("entries_evaluated_today NOT set (scan can retry when re-enabled)",
+          strat.entries_evaluated_today is None)
 
 
 def test_scan_disabled_short_circuits_algo3():
