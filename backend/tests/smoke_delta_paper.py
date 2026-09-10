@@ -24,6 +24,9 @@ class MemoryStore:
     def load(self):
         return copy.deepcopy(self.state)
 
+    def trades(self, offset=0, limit=100, before=None):
+        return copy.deepcopy(list(reversed(self.closed))[offset:offset + limit])
+
     def save(self, state, trade=None):
         if self.fail:
             raise RuntimeError("mock storage failure")
@@ -190,7 +193,7 @@ def run():
         assert client.symbol == "PAXGUSD"
         with patch.object(client.session, "get") as request:
             try:
-                client.get("/v2/orders", private=True)
+                client.get("/v2/orders/123", private=True)
                 raise AssertionError("private order path should be blocked")
             except ValueError:
                 request.assert_not_called()

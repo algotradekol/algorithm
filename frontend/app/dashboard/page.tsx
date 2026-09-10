@@ -5,6 +5,8 @@ import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
 import AlgoTab from '../../components/AlgoTab';
 import DeltaTab from '../../components/DeltaTab';
+import DeltaActivityTab from '../../components/DeltaActivityTab';
+import DeltaBacktestTab from '../../components/DeltaBacktestTab';
 import CompareTab from '../../components/CompareTab';
 import CalendarTab from '../../components/CalendarTab';
 import ChargesPanel from '../../components/ChargesPanel';
@@ -144,7 +146,7 @@ function DashboardContent() {
   const router = useRouter();
   const pathname = usePathname();
   const isDelta = pathname === '/delta';
-  const [deltaTab, setDeltaTab] = useState<'Delta Gold 15 min' | 'Delta Gold 1 hr'>('Delta Gold 15 min');
+  const [deltaTab, setDeltaTab] = useState<'Delta Gold 15 min' | 'Delta Gold 1 hr' | 'Positions & Orders' | 'Delta Backtest'>('Delta Gold 15 min');
   const searchParams = useSearchParams();
   const tradingMode = (engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper';
   // Silver Micro 2.0 is an experiment. It is intentionally unavailable in
@@ -393,7 +395,7 @@ function DashboardContent() {
         {isDelta ? (
           <>
             <nav aria-label="Delta strategies" className="mb-4 flex gap-6 overflow-x-auto whitespace-nowrap border-b border-[#1f2937]">
-              {(['Delta Gold 15 min', 'Delta Gold 1 hr'] as const).map((name) => (
+              {(['Delta Gold 15 min', 'Delta Gold 1 hr', 'Positions & Orders', 'Delta Backtest'] as const).map((name) => (
                 <button
                   key={name}
                   type="button"
@@ -410,7 +412,7 @@ function DashboardContent() {
               ))}
             </nav>
             <section aria-label={deltaTab}>
-              <DeltaTab key={deltaTab} minutes={deltaTab === 'Delta Gold 15 min' ? 15 : 60} />
+              {deltaTab === 'Positions & Orders' ? <DeltaActivityTab /> : deltaTab === 'Delta Backtest' ? <DeltaBacktestTab /> : <DeltaTab key={deltaTab} minutes={deltaTab === 'Delta Gold 15 min' ? 15 : 60} />}
             </section>
           </>
         ) : <>

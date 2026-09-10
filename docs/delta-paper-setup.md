@@ -46,15 +46,17 @@ values with the India values above, and use credentials created on India.
 India `PAXGUSD` (product 123006) and Global `PAXGUSDT` (product
 277715) are different products. Both were verified through their respective
 public product endpoints on 2026-09-09. Uppercasing `PAXGUSD` does not make it a
-valid Global contract. The paper UI displays India's notional USD P&L; it does
-not convert this to the exchange's INR account balance. Delta's official notice
+valid Global contract. The paper UI displays India's notional USD P&L and an INR
+equivalent using Delta India's fixed 85 INR/USD accounting conversion. This is
+not a live FX quote or a fetched account balance. Delta's official notice
 says Indian customers are served by Delta India:
 https://support.global.delta.exchange/support/solutions/articles/80001153662-important-update-for-delta-exchange-global-users-in-india
 
 India public WebSocket subscriptions use
 `wss://public-socket.india.delta.exchange`.
 
-Optional credentials, used only by the dashboard's **Verify API connection**:
+Optional read-only credentials, used by **Verify API connection** and the
+**Positions & Orders > Live account (read-only)** view:
 
 ```dotenv
 DELTA_API_KEY=YOUR_INDIA_API_KEY
@@ -62,7 +64,8 @@ DELTA_API_SECRET=YOUR_INDIA_API_SECRET
 ```
 
 Public candles/trades do not need these credentials. Verification performs a
-signed read-only wallet request. No Delta order-placement endpoint or live broker
+signed read-only wallet request. The account tab also reads positions and paginated
+open/stop orders and order history. No Delta order-placement endpoint or live broker
 exists in this implementation. Keep credentials in Railway backend variables;
 never use `NEXT_PUBLIC_` for secrets or put them in source code.
 
@@ -87,10 +90,61 @@ gross P&L is signed price difference * contracts * contract value, in nominal US
 Estimated net deducts the product's published taker fee on entry and exit;
 funding, taxes, slippage, leverage and liquidation are not simulated.
 
+Quantity is displayed as lots: 1 displayed lot = 1 exchange contract, with no
+change in sizing. New paper entries capture base margin percentage and estimated
+entry margin (entry price * lots * contract value * base margin percent / 100).
+This estimate excludes account leverage overrides, size tiers and fees; it is not
+an actual exchange margin reservation. Old records without margin snapshots show
+`--`. Live account margin is displayed only when returned by Delta, never invented
+for orders. INR conversions apply only to India USD amounts.
+
+The Positions & Orders tab defaults to Paper and offers both paper timeframes.
+Paper entries fill immediately, so there are no pending entry orders. Paper stops
+and targets are virtual protection; history lists simulated entry/exit events.
+Switching its data source to Live account is read-only and shows all account
+products; it does not enable live trading. Missing fields and failed fetches are
+not represented as zero balances or confirmed empty accounts.
+
+Both Gold paper dashboards have an inline Edit SL / Target control and an Exit
+button on each open row. Edits require a fresh price and unchanged position ID,
+SL and target. Protection changes persist before success is returned, retain
+the original initial SL, and record a manual-edit audit. Stops must remain on
+the valid side of current price; an armed breakeven stop cannot return to loss.
+Pending activation stays fixed, and activation preserves a tighter manual stop.
+These controls never amend or close actual Delta account orders.
+
+Download open CSV exports the current position; Download closed CSV fetches all
+closed trades up to a fixed export cutoff, not just the current page. Exports
+include settings, reference snapshots, manual edits, fees, margin and INR values.
+The 50,000-row safety limit fails explicitly rather than returning a partial CSV.
+No additional SQL migration is needed for these JSON snapshot fields.
+
 Times display in IST. Candle boundaries follow Delta's UTC-aligned exchange
 bars. An exchange 1-hour candle can therefore display at `:30` IST, not `:00`.
 Restarting the backend restores open positions and their captured protection;
 settings changes apply to new trades, not existing stops/targets.
+
+## Delta Backtest
+
+The Delta Backtest tab supports Gold 15 min and Gold 1 hr independently of the
+running paper engine. It fetches exchange reference candles with 300 warmup bars,
+and replays completed 1-minute execution candles. Date selection is IST, up to
+31 inclusive days; today stops at the latest completed minute. Historical ranges
+before listing, missing candles and conflicting duplicates fail explicitly.
+
+Choose the assumed intraminute path O-H-L-C or O-L-H-C. Level crossings are
+interpolated within that synthetic path; the 30-second SL cooldown uses simulated
+time, never the production clock. Both variants are scenarios, not guaranteed
+upper/lower profit bounds. There is no reconstructed tick history, so results
+cannot be expected to equal real-time paper activity. References use only candles
+completed before the simulated tick. There is no daily or forced range-end exit.
+
+Reports include an equity chart, closed trades, any range-end open position,
+reference timestamps, SL/target/breakeven facts, lots, margin estimates, INR and
+CSV containing settings and assumptions. Product fees/size/margin metadata are
+current, not a historical schedule. No funding, tax, slippage or liquidation model.
+The replay makes no database writes or private exchange requests. One replay runs
+at a time per worker. Neither paper settings nor active positions are changed.
 
 ## Feed recovery
 
@@ -110,6 +164,9 @@ No API can recover an unobserved intrabar path with certainty.
 ```powershell
 cd backend
 python -m tests.smoke_delta_paper
+python -m tests.smoke_delta_reporting
+python -m tests.smoke_delta_controls
+python -m tests.smoke_delta_backtest
 python -m tests.smoke_silver_logic
 python -m tests.smoke_silver_micro_2
 python -m tests.smoke_silver_v_micro

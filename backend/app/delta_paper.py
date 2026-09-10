@@ -8,6 +8,7 @@ import uuid
 
 from .storage_namespace import namespaced_value
 from .supabase_client import run_with_supabase
+from .delta_reporting import paper_margin
 
 
 def utc_now():
@@ -27,10 +28,13 @@ class DeltaStore:
             "p_key": self.key, "p_state": state, "p_trade": trade,
         }).execute())
 
-    def trades(self, offset=0, limit=100):
-        rows = run_with_supabase(lambda db: db.table("delta_paper_trades").select("trade")
-                                .eq("storage_key", self.key).order("closed_at", desc=True)
-                                .range(offset, offset + limit - 1).execute()).data
+    def trades(self, offset=0, limit=100, before=None):
+        def query(db):
+            request = db.table('delta_paper_trades').select('trade').eq('storage_key', self.key)
+            if before:
+                request = request.lte('closed_at', before)
+            return request.order('closed_at', desc=True).order('id', desc=True).range(offset, offset + limit - 1).execute()
+        rows = run_with_supabase(query).data
         return [row["trade"] for row in rows or []]
 
 
@@ -68,6 +72,9 @@ class DeltaPaperBroker:
             "sl_price": sl_price, "initial_sl": sl_price, "target_price": target_price,
             "entry_trigger": trigger, "signal_snapshot": copy.deepcopy(snapshot),
             "contract_value": float(self.product["contract_value"]),
+            "quote_currency": self.product.get("quoting_asset", {}).get("symbol"),
+            "initial_margin_percent": self.product.get("initial_margin"),
+            "estimated_entry_margin": paper_margin(entry_price, qty, self.product["contract_value"], self.product.get("initial_margin")),
             "fee_rate": float(self.product.get("taker_commission_rate") or 0),
             "trailing_sl_active": False,
         }
@@ -110,7 +117,9 @@ class DeltaPaperBroker:
             return position
         state = copy.deepcopy(self.state)
         updated = state["position"]
-        updated["sl_price"] = updated["entry_price"]
+        # Never undo a manually tightened stop when breakeven activates later.
+        updated["sl_price"] = (max(updated['sl_price'], updated['entry_price']) if updated['side'] == 'BUY'
+                               else min(updated['sl_price'], updated['entry_price']))
         updated["trailing_sl_active"] = True
         updated["signal_snapshot"]["silver_breakeven"].update(armed=True, armed_at=utc_now())
         self.commit(state)

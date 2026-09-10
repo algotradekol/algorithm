@@ -9,6 +9,7 @@ import time
 
 from .delta_client import DeltaClient, epoch_seconds, positive
 from .delta_paper import DeltaPaperBroker, DeltaStore
+from .delta_reporting import paper_row, inr_rate
 from .strategies.delta_gold import DELTA_DEFAULTS, DeltaGold, validate_settings
 
 
@@ -180,7 +181,7 @@ class DeltaService:
             if position and self.last_price:
                 position["unrealized_pnl"] = strategy.broker.pnl(position, self.last_price)
             result.update(
-                settings=strategy.settings, position=position,
+                settings=strategy.settings, position=paper_row(position, self.client.region) if position else None,
                 summary={k: state[k] for k in ("gross_pnl", "fees", "closed_count", "buy_count", "sell_count")},
                 history_error=strategy.data_error, ema20=strategy._ema20,
                 last_bar_at=strategy.last_candle_epoch,
@@ -190,6 +191,7 @@ class DeltaService:
                 settlement_currency=self.product.get("settling_asset", {}).get("symbol"),
                 contract_value=float(self.product["contract_value"]),
                 contract_unit=self.product.get("contract_unit_currency"),
+                inr_rate=inr_rate(self.client.region, self.product.get("quoting_asset", {}).get("symbol")),
             )
             return copy.deepcopy(result)
 
@@ -212,6 +214,42 @@ class DeltaService:
             if not position or position["id"] != position_id:
                 raise ValueError("That position has already closed or changed")
             strategy.broker.close_trade(position, self.last_price, "MANUAL_EXIT")
+
+    def edit_protection(self, minutes, position_id, sl_price, target_price, expected_sl, expected_target):
+        with self.lock:
+            strategy = self.strategy(minutes)
+            if self.last_price is None or not -2 <= time.time() - self.last_event_at <= 15:
+                raise ValueError('Fresh Delta price unavailable; reload before editing protection')
+            current = strategy._open_position()
+            if not current or current['id'] != position_id:
+                raise ValueError('That position has closed or changed; reload before editing')
+            if current['sl_price'] != expected_sl or current['target_price'] != expected_target:
+                raise ValueError('Protection changed while editing; reopen the editor')
+            sl, target = positive(sl_price), positive(target_price)
+            if sl == current['sl_price'] and target == current['target_price']:
+                raise ValueError('Change at least one protection level')
+            buy = current['side'] == 'BUY'
+            if not (sl < self.last_price < target if buy else target < self.last_price < sl):
+                raise ValueError('BUY requires SL < current price < target; SELL requires target < current price < SL')
+            if not (target > current['entry_price'] if buy else target < current['entry_price']):
+                raise ValueError('Target must remain on the profitable side of entry')
+            protection = current['signal_snapshot'].get('silver_breakeven')
+            if protection and protection.get('armed') and (sl < current['entry_price'] if buy else sl > current['entry_price']):
+                raise ValueError('An armed breakeven stop cannot be moved back into loss')
+            if protection and not protection.get('armed') and (target <= protection['activation_price'] if buy else target >= protection['activation_price']):
+                raise ValueError('Final target must remain beyond the pending TSL activation level')
+            state = copy.deepcopy(strategy.broker.state)
+            position = state['position']
+            position.setdefault('protection_edits', []).append({
+                'time': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'source': 'manual_paper',
+                'previous_sl': current['sl_price'], 'previous_target': current['target_price'],
+                'new_sl': sl, 'new_target': target, 'ltp': self.last_price,
+            })
+            position.update(sl_price=sl, target_price=target)
+            if protection:
+                position['signal_snapshot']['silver_breakeven']['target_price'] = target
+            strategy.broker.commit(state)
+            return copy.deepcopy(position)
 
 
 delta_service = DeltaService()

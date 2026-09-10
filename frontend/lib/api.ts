@@ -136,7 +136,11 @@ export const api = {
   deltaTrades: (minutes: number, offset = 0) => authedFetch(`/api/delta/${minutes}/trades?offset=${offset}&limit=100`),
   deltaSettings: (minutes: number, changes: Record<string, unknown>) => authedFetch(`/api/delta/${minutes}/settings`, { method: 'PUT', body: JSON.stringify(changes) }),
   deltaClose: (minutes: number, positionId: string) => authedFetch(`/api/delta/${minutes}/close`, { method: 'POST', body: JSON.stringify({ position_id: positionId }) }),
+  deltaProtection: (minutes: number, payload: Record<string, unknown>) => authedFetch(`/api/delta/${minutes}/protection`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deltaExport: (minutes: number, kind: 'open' | 'closed') => authedFetch(`/api/delta/${minutes}/export?kind=${kind}`),
   deltaCheckConnection: () => authedFetch('/api/delta/connection/check', { method: 'POST' }),
+  deltaBacktest: (request: Record<string, unknown>) => authedFetch('/api/delta/backtest/run', { method: 'POST', body: JSON.stringify(request) }),
+  deltaAccount: (kind: string, source: string, minutes: number, offset = 0, after = '') => authedFetch(`/api/delta/account/${kind}?source=${source}&minutes=${minutes}&offset=${offset}${after ? `&after=${encodeURIComponent(after)}` : ''}`),
   summary: (algoId: string) => authedFetch(`/api/algo/${algoId}/summary`),
   positions: (algoId: string) => authedFetch(`/api/algo/${algoId}/positions`),
   exitPosition: (algoId: string, positionId: string) =>

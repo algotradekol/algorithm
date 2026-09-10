@@ -30,7 +30,7 @@ def validate_settings(settings):
             raise ValueError(f"{key} must be positive")
         settings[key] = value
     if not float(settings["silver_lots"]).is_integer():
-        raise ValueError("Contracts per trade must be a whole number")
+        raise ValueError("Lots per trade must be a whole number")
     if settings["exit_mode"] not in {"fixed_target_sl", "target_to_breakeven_sl"}:
         raise ValueError("Invalid Delta exit mode")
     if settings["exit_mode"] == "target_to_breakeven_sl" and settings["tsl_activate_points"] >= settings["target_points"]:

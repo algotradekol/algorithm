@@ -64,17 +64,19 @@ class DeltaClient:
             return "Set DELTA_GOLD_SYMBOL to the exact Delta gold perpetual symbol."
         return None
 
-    def get(self, path: str, params=None, *, private=False):
+    def get(self, path: str, params=None, *, private=False, envelope=False):
         if not self.base_url:
             raise ValueError("Delta exchange is not configured")
         headers = {}
         if private:
-            if path != "/v2/wallet/balances" or params:
-                raise ValueError("Only read-only Delta wallet verification is supported")
+            if path not in {"/v2/wallet/balances", "/v2/positions/margined", "/v2/orders", "/v2/orders/history"}:
+                raise ValueError("Only allowlisted read-only Delta account endpoints are supported")
             if not self.key or not self.secret:
                 raise ValueError("Both DELTA_API_KEY and DELTA_API_SECRET are required")
             stamp = str(int(time.time()))
-            signature = hmac.new(self.secret.encode(), f"GET{stamp}{path}".encode(), hashlib.sha256).hexdigest()
+            # Sign the exact encoded query that requests will send, including '?'.
+            request_path = requests.Request("GET", self.base_url + path, params=params).prepare().path_url
+            signature = hmac.new(self.secret.encode(), f"GET{stamp}{request_path}".encode(), hashlib.sha256).hexdigest()
             headers = {"api-key": self.key, "timestamp": stamp, "signature": signature}
         try:
             response = self.session.get(self.base_url + path, params=params, headers=headers, timeout=(5, 10))
@@ -88,7 +90,7 @@ class DeltaClient:
             error = payload.get("error", {}) if isinstance(payload, dict) else {}
             code = error.get("code", "unknown") if isinstance(error, dict) else "unknown"
             raise RuntimeError(f"Delta API error: {code}")
-        return payload["result"]
+        return payload if envelope else payload["result"]
 
     def product(self):
         data = self.get(f"/v2/products/{quote(self.symbol, safe='')}")
