@@ -102,6 +102,10 @@ class ReplayBroker(DeltaPaperBroker):
 
 class ReplayGold(DeltaGold):
     """Reuse canonical reference/exit handling without global clocks or production writes."""
+    def __init__(self, *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        self.entry_diagnostics = {'eligible_events': 0, 'already_positioned': 0, 'cooldown_blocked': 0}
+
     def _arm_post_sl_cooldown(self, exit_reason):
         self.replay_cooldown = self.broker.now + 30
 
@@ -109,10 +113,13 @@ class ReplayGold(DeltaGold):
         return max(0, getattr(self, 'replay_cooldown', 0) - self.broker.now)
 
     def _fire_entry(self, side, ltp, trigger_level, setup_bar_at_override=None, event_time=None):
+        self.entry_diagnostics['eligible_events'] += 1
         current = self._open_position()
         if current and current['side'] == side:
+            self.entry_diagnostics['already_positioned'] += 1
             return False
         if self._post_sl_cooldown_remaining() and not current:
+            self.entry_diagnostics['cooldown_blocked'] += 1
             return False
         if current:
             self.broker.close_trade(current, ltp, 'REVERSAL_CONTRA_SIGNAL')
@@ -208,6 +215,11 @@ def replay(product, region, minutes, settings, references, minute_rows, start, e
     strategy.ingest_history(warmup, bucket)
     previous_bucket = None
     equity = []
+    diagnostics = {'buy_reference_updates': 0, 'sell_reference_updates': 0,
+                   'buy_threshold_minutes': 0, 'sell_threshold_minutes': 0,
+                   'warmup_buy_reference': strategy._buy_setup_close, 'warmup_sell_reference': strategy._sell_setup_close,
+                   'closest_buy': None, 'closest_sell': None,
+                   'price_low': min(r['low'] for r in minute_rows), 'price_high': max(r['high'] for r in minute_rows)}
     deadline = time.monotonic() + 60
     for row in minute_rows:
         stamp = row['time']
@@ -218,8 +230,24 @@ def replay(product, region, minutes, settings, references, minute_rows, start, e
         bucket = stamp // interval * interval
         if bucket != previous_bucket:
             # Only reference bars completed BEFORE this minute can affect entries.
+            old_buy, old_sell = strategy._buy_setup_bar_at, strategy._sell_setup_bar_at
             strategy.ingest_history([ref_map[bucket - interval], {'time': bucket, 'open': ref_map[bucket]['open']}], stamp)
+            diagnostics['buy_reference_updates'] += strategy._buy_setup_bar_at != old_buy
+            diagnostics['sell_reference_updates'] += strategy._sell_setup_bar_at != old_sell
             previous_bucket = bucket
+        for side in ('buy', 'sell'):
+            reference = getattr(strategy, f'_{side}_setup_close')
+            reference_at = getattr(strategy, f'_{side}_setup_bar_at')
+            if reference is None:
+                continue
+            trigger = reference + (1 if side == 'buy' else -1) * settings['silver_breakout_points']
+            observed = row['high'] if side == 'buy' else row['low']
+            gap = trigger - observed if side == 'buy' else observed - trigger
+            diagnostics[f'{side}_threshold_minutes'] += gap <= 0
+            previous = diagnostics[f'closest_{side}']
+            if previous is None or gap < previous['remaining_points']:
+                diagnostics[f'closest_{side}'] = {'reference_close': reference, 'reference_time': reference_at.replace(tzinfo=IST).isoformat(),
+                                                 'trigger': trigger, 'observed_price': observed, 'minute': iso(stamp), 'remaining_points': gap}
         strategy.tick(row['open'], stamp)
         points = [row['open'], row['high'], row['low'], row['close']] if path == 'high_first' else [row['open'], row['low'], row['high'], row['close']]
         for i, (a, b) in enumerate(zip(points, points[1:])):
@@ -232,7 +260,16 @@ def replay(product, region, minutes, settings, references, minute_rows, start, e
         position['unrealized_pnl'] = broker.pnl(position, minute_rows[-1]['close'])
     net = broker.state['gross_pnl'] - broker.state['fees']
     rate = inr_rate(region, product.get('quoting_asset', {}).get('symbol'))
+    diagnostics.update(strategy.entry_diagnostics, entries=broker.serial)
+    if not broker.serial:
+        if not diagnostics['buy_threshold_minutes'] and not diagnostics['sell_threshold_minutes']:
+            diagnostics['explanation'] = 'No active reference +/- offset trigger was reached. This run produced no entry signals; the loaded candles were replayed.'
+        else:
+            diagnostics['explanation'] = 'Some price thresholds were touched, but no entry passed the candle-direction/cooldown rules. Threshold touches alone are not entry confirmations.'
+    else:
+        diagnostics['explanation'] = f'{broker.serial} entries were simulated; {len(broker.closed)} closed and {int(position is not None)} remains open.'
     return {'symbol': product['symbol'], 'minutes': minutes, 'settings': settings, 'path': path, 'start': start, 'end': end,
+            'diagnostics': diagnostics,
             'currency': product.get('quoting_asset', {}).get('symbol'), 'inr_rate': rate,
             'trades': [paper_row(t, region) for t in broker.closed], 'open_position': paper_row(position, region) if position else None,
             'summary': {'trades': len(broker.closed), 'wins': sum(t['net_pnl'] > 0 for t in broker.closed),

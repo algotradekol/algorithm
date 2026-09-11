@@ -5,7 +5,13 @@ import { api } from '../lib/api';
 
 type Settings = { silver_breakout_points: number; sl_points: number; target_points: number; tsl_activate_points: number; silver_lots: number; exit_mode: string };
 type Trade = { id: string; side: string; qty: number; entry_time: string; entry_price: number; exit_time?: string; exit_price?: number; exit_reason?: string; initial_sl: number; sl_price: number; target_price: number; estimated_entry_margin?: number; margin_inr?: number; net_pnl?: number; gross_pnl?: number; fees?: number; pnl_inr?: number; unrealized_pnl?: number; signal_snapshot: { setup_time?: string; setup_close?: number; trigger_level?: number; silver_breakeven?: { armed: boolean; activation_price: number } } };
-type Result = { symbol: string; minutes: number; path: string; start: number; end: number; currency: string; inr_rate?: number; settings: Settings; warnings: string[]; trades: Trade[]; open_position?: Trade; equity: { time: number; net: number; equity: number }[]; summary: { trades: number; wins: number; gross: number; fees: number; net: number; net_inr?: number; max_drawdown: number }; coverage: { minutes: number; reference_bars: number } };
+type TriggerDiagnostic = { reference_close: number; reference_time: string; trigger: number; observed_price: number; minute: string; remaining_points: number };
+type Diagnostics = {
+  explanation?: string; buy_reference_updates: number; sell_reference_updates: number; buy_threshold_minutes: number; sell_threshold_minutes: number;
+  warmup_buy_reference?: number; warmup_sell_reference?: number; price_low: number; price_high: number; closest_buy?: TriggerDiagnostic | null; closest_sell?: TriggerDiagnostic | null;
+  eligible_events: number; already_positioned: number; cooldown_blocked: number; entries: number;
+};
+type Result = { symbol: string; minutes: number; path: string; start: number; end: number; currency: string; inr_rate?: number; settings: Settings; diagnostics?: Diagnostics; warnings: string[]; trades: Trade[]; open_position?: Trade; equity: { time: number; net: number; equity: number }[]; summary: { trades: number; wins: number; gross: number; fees: number; net: number; net_inr?: number; max_drawdown: number }; coverage: { minutes: number; reference_bars: number } };
 const initial: Settings = { silver_breakout_points: 200, sl_points: 200, target_points: 2000, tsl_activate_points: 500, silver_lots: 1, exit_mode: 'fixed_target_sl' };
 const control = 'w-full rounded border border-[#334155] bg-[#0a0e14] px-3 py-2 text-sm text-gray-100';
 const button = 'rounded border border-[#334155] px-3 py-2 text-sm text-gray-200 disabled:opacity-40';
@@ -55,12 +61,56 @@ export default function DeltaBacktestTab() {
     {result && <>
       <div className="flex flex-wrap items-center justify-between gap-3"><div className="text-sm text-gray-300">{result.symbol} | {result.minutes}m | {date(result.start)} to {date(result.end)} IST<br /><span className="text-xs text-gray-500">{num(result.coverage.minutes)} execution candles | {num(result.coverage.reference_bars)} reference bars including warmup | {result.path === 'high_first' ? 'O-H-L-C' : 'O-L-H-C'}</span></div><button className={button} onClick={() => download(result)}>Download full CSV</button></div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{[['Closed trades / wins', `${result.summary.trades} / ${result.summary.wins}`], [`Realized net (${result.currency})`, num(result.summary.net)], ['Realized net (INR)', num(result.summary.net_inr)], [`Max equity drawdown (${result.currency})`, num(result.summary.max_drawdown)]].map(([label, value]) => <div key={label} className="rounded border border-[#1f2937] bg-[#111827] p-3"><p className="text-xs text-gray-400">{label}</p><p className="mt-2 font-mono text-lg text-gray-100">{value}</p></div>)}</div>
+      <DiagnosticsPanel diagnostics={result.diagnostics} settings={result.settings} currency={result.currency} />
       <EquityChart points={result.equity} currency={result.currency} />
       <div className="rounded border border-[#f59e0b]/30 p-3 text-xs text-[#fbbf24]">{result.warnings.map(w => <p className="mb-1" key={w}>{w}</p>)}</div>
       <h2 className="text-sm text-gray-300">OPEN AT RANGE END</h2><Results rows={result.open_position ? [result.open_position] : []} />
       <h2 className="text-sm text-gray-300">CLOSED TRADES</h2><Results rows={[...result.trades].reverse()} />
     </>}
   </section>;
+}
+
+function DiagnosticsPanel({ diagnostics, settings, currency }: { diagnostics?: Diagnostics; settings: Settings; currency: string }) {
+  if (!diagnostics) return null;
+  const cards = [
+    ['BUY references', num(diagnostics.buy_reference_updates), 'Completed reference bars accepted'],
+    ['SELL references', num(diagnostics.sell_reference_updates), 'Completed reference bars accepted'],
+    ['BUY threshold minutes', num(diagnostics.buy_threshold_minutes), 'Minutes where high reached reference + offset'],
+    ['SELL threshold minutes', num(diagnostics.sell_threshold_minutes), 'Minutes where low reached reference - offset'],
+  ];
+  return <div className="rounded border border-[#334155] bg-[#0f172a] p-3">
+    <div className="flex flex-wrap items-start justify-between gap-3">
+      <div>
+        <h2 className="text-sm font-semibold text-gray-100">Entry diagnostics</h2>
+        <p className="mt-1 text-xs text-gray-400">{diagnostics.explanation || 'Diagnostics generated for this replay.'}</p>
+      </div>
+      <div className="rounded border border-[#475569] px-3 py-2 text-xs text-gray-300">
+        Offset used: <span className="font-mono text-white">{num(settings.silver_breakout_points)}</span> {currency} price points
+      </div>
+    </div>
+    <div className="mt-3 grid gap-2 sm:grid-cols-2 xl:grid-cols-4">{cards.map(([label, value, helper]) => <div key={label} className="rounded border border-[#1f2937] bg-[#111827] p-3"><p className="text-xs text-gray-400">{label}</p><p className="mt-1 font-mono text-lg text-gray-100">{value}</p><p className="mt-1 text-[11px] text-gray-500">{helper}</p></div>)}</div>
+    <div className="mt-3 grid gap-3 xl:grid-cols-2">
+      <TriggerGap title="Closest BUY trigger" diagnostic={diagnostics.closest_buy} side="BUY" currency={currency} />
+      <TriggerGap title="Closest SELL trigger" diagnostic={diagnostics.closest_sell} side="SELL" currency={currency} />
+    </div>
+    <p className="mt-3 text-xs text-gray-500">Replay price range: {num(diagnostics.price_low)} to {num(diagnostics.price_high)}. Eligible entry events: {num(diagnostics.eligible_events)}, simulated entries: {num(diagnostics.entries)}, cooldown blocks: {num(diagnostics.cooldown_blocked)}.</p>
+  </div>;
+}
+
+function TriggerGap({ title, diagnostic, side, currency }: { title: string; diagnostic?: TriggerDiagnostic | null; side: string; currency: string }) {
+  if (!diagnostic) return <div className="rounded border border-[#1f2937] bg-[#111827] p-3 text-xs text-gray-500">{title}: no active reference found.</div>;
+  const hit = diagnostic.remaining_points <= 0;
+  return <div className={`rounded border p-3 ${hit ? 'border-[#22c55e]/40 bg-[#052e1a]/30' : 'border-[#f59e0b]/40 bg-[#1f1604]/30'}`}>
+    <p className={`text-xs font-semibold ${hit ? 'text-[#22c55e]' : 'text-[#fbbf24]'}`}>{title}</p>
+    <div className="mt-2 grid gap-2 text-xs text-gray-300 sm:grid-cols-2">
+      <span>Reference <b className="font-mono text-white">{num(diagnostic.reference_close)}</b></span>
+      <span>Reference time <b className="font-mono text-white">{date(diagnostic.reference_time)}</b></span>
+      <span>Trigger <b className="font-mono text-white">{num(diagnostic.trigger)}</b></span>
+      <span>{side === 'BUY' ? 'Highest high seen' : 'Lowest low seen'} <b className="font-mono text-white">{num(diagnostic.observed_price)}</b></span>
+      <span>Closest minute <b className="font-mono text-white">{date(diagnostic.minute)}</b></span>
+      <span>Remaining <b className="font-mono text-white">{hit ? '0' : num(diagnostic.remaining_points)}</b> {currency} points</span>
+    </div>
+  </div>;
 }
 
 function EquityChart({ points, currency }: { points: Result['equity']; currency: string }) {
@@ -77,9 +127,11 @@ function Results({ rows }: { rows: Trade[] }) {
 }
 
 function download(result: Result) {
-  const columns = ['id', 'side', 'lots', 'entry_time', 'entry_price', 'exit_time', 'exit_price', 'reason', 'gross', 'fees', 'net', 'open_pnl', 'pnl_inr', 'initial_sl', 'final_sl', 'target', 'margin', 'margin_inr', 'signal_snapshot', 'run_settings', 'path', 'timeframe', 'symbol', 'start', 'end', 'warnings'];
+  const columns = ['id', 'side', 'lots', 'entry_time', 'entry_price', 'exit_time', 'exit_price', 'reason', 'gross', 'fees', 'net', 'open_pnl', 'pnl_inr', 'initial_sl', 'final_sl', 'target', 'margin', 'margin_inr', 'signal_snapshot', 'run_settings', 'diagnostics', 'path', 'timeframe', 'symbol', 'start', 'end', 'warnings'];
   const cell = (v: unknown) => { let text = v == null ? '' : typeof v === 'object' ? JSON.stringify(v) : String(v); if (typeof v === 'string' && /^[=+@-]/.test(text)) text = "'" + text; return `"${text.replace(/"/g, '""')}"`; };
-  const lines = [...result.trades, ...(result.open_position ? [result.open_position] : [])].map(r => [r.id, r.side, r.qty, r.entry_time, r.entry_price, r.exit_time, r.exit_price, r.exit_reason || 'OPEN', r.gross_pnl, r.fees, r.net_pnl, r.unrealized_pnl, r.pnl_inr, r.initial_sl, r.sl_price, r.target_price, r.estimated_entry_margin, r.margin_inr, r.signal_snapshot, result.settings, result.path, result.minutes, result.symbol, result.start, result.end, result.warnings].map(cell).join(','));
+  const tradeRows = [...result.trades, ...(result.open_position ? [result.open_position] : [])];
+  const sourceRows = tradeRows.length ? tradeRows : [{ id: 'NO_TRADES' } as Trade];
+  const lines = sourceRows.map(r => [r.id, r.side, r.qty, r.entry_time, r.entry_price, r.exit_time, r.exit_price, r.exit_reason || (r.id === 'NO_TRADES' ? 'NO_TRADES' : 'OPEN'), r.gross_pnl, r.fees, r.net_pnl, r.unrealized_pnl, r.pnl_inr, r.initial_sl, r.sl_price, r.target_price, r.estimated_entry_margin, r.margin_inr, r.signal_snapshot, result.settings, result.diagnostics, result.path, result.minutes, result.symbol, result.start, result.end, result.warnings].map(cell).join(','));
   const url = URL.createObjectURL(new Blob([[columns.join(','), ...lines].join('\r\n')], { type: 'text/csv;charset=utf-8' }));
   const a = document.createElement('a'); a.href = url; a.download = `delta-${result.minutes}m-backtest-${result.start}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

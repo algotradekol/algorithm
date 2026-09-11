@@ -105,6 +105,24 @@ def run():
         b = replay(META, 'india', minutes, SETTINGS, refs, conflict, NOW, NOW + 60, 'low_first')
         assert a['trades'] != b['trades']
 
+        # A valid reference with an offset too wide for the price path should
+        # explain the flat result instead of looking like a silent engine bug.
+        wide_settings = {**SETTINGS, 'silver_breakout_points': 200}
+        quiet_minute = [{'time': NOW, 'open': 1030, 'high': 1040, 'low': 1020, 'close': 1035}]
+        flat = replay(META, 'india', minutes, wide_settings, refs, quiet_minute, NOW, NOW + 60, 'high_first')
+        diag = flat['diagnostics']
+        assert flat['summary']['trades'] == 0 and not flat['open_position']
+        assert diag['warmup_buy_reference'] == 1030
+        assert diag['buy_threshold_minutes'] == 0
+        assert diag['closest_buy']['trigger'] == 1230
+        assert diag['closest_buy']['observed_price'] == 1040
+        assert diag['closest_buy']['remaining_points'] == 190
+        assert 'No active reference' in diag['explanation']
+
+        # With the narrower test offset, the same replay records entry events.
+        assert first['diagnostics']['entries'] >= 1
+        assert first['diagnostics']['buy_threshold_minutes'] >= 1
+
     fake = MagicMock()
     candles = [{'time': t, 'open': 100, 'high': 102, 'low': 99, 'close': 101} for t in range(0, 1600 * 60, 60)]
     fake.candles.side_effect = lambda res, start, end: list(reversed([r for r in candles if start <= r['time'] <= end]))
