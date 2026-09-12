@@ -38,9 +38,10 @@ DELTA_PROXY_URL=http://PROXY_USERNAME:URL_ENCODED_PASSWORD@PROXY_HOST:PROXY_PORT
 DELTA_HIDDEN_SECTIONS=
 ```
 
-Each Delta timeframe has an independent post-exit rest setting. Manual exits,
+Each Delta timeframe has an independent 1-minute-to-7-day post-exit rest setting. Manual exits,
 fixed or trailing stops, and targets start that timer; reversal exits bypass it.
-The timeframe dashboard can clear an active timer immediately with Resume now.
+The timeframe dashboard also provides rest presets, a custom-minute pause, and
+an immediate Resume action in its top controls.
 
 `DELTA_PROXY_URL` is optional. Set it to the existing Google VM HTTP CONNECT
 proxy address if all Delta traffic should use the VM's public egress IP. Both

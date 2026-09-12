@@ -334,6 +334,18 @@ class DeltaService:
             strategy._sl_cooldown_until_monotonic = 0.0
             return strategy.cooldown_status()
 
+    def pause(self, minutes, duration_minutes):
+        with self.lock:
+            strategy = self.strategy(minutes)
+            duration = float(duration_minutes)
+            if not duration.is_integer() or not 1 <= duration <= 10_080:
+                raise ValueError("Rest duration must be a whole number from 1 to 10080 minutes")
+            state = copy.deepcopy(strategy.broker.state)
+            state["cooldown_until"] = time.time() + int(duration) * 60
+            state["cooldown_reason"] = "MANUAL_PAUSE"
+            strategy.broker.commit(state)
+            return strategy.cooldown_status()
+
     def edit_protection(self, minutes, position_id, sl_price, target_price, expected_sl, expected_target):
         with self.lock:
             strategy = self.strategy(minutes)

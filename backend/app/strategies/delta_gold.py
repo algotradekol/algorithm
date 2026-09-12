@@ -52,8 +52,11 @@ def validate_settings(settings):
         settings[key] = value
     if not float(settings["silver_lots"]).is_integer():
         raise ValueError("Lots per trade must be a whole number")
-    if settings["post_exit_cooldown_minutes"] not in {5, 15, 30, 60, 240, 720}:
-        raise ValueError("Post-exit rest must be 5, 15, 30, 60, 240 or 720 minutes")
+    if not float(settings["post_exit_cooldown_minutes"]).is_integer():
+        raise ValueError("Post-exit rest must be a whole number of minutes")
+    settings["post_exit_cooldown_minutes"] = int(settings["post_exit_cooldown_minutes"])
+    if not 1 <= settings["post_exit_cooldown_minutes"] <= 10_080:
+        raise ValueError("Post-exit rest must be between 1 minute and 7 days")
     if settings["strategy_version"] != DELTA_STRATEGY_VERSION:
         raise ValueError("Invalid Delta strategy version")
     if settings["exit_mode"] not in {

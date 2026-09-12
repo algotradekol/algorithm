@@ -98,6 +98,10 @@ class CloseRequest(BaseModel):
     position_id: str
 
 
+class PauseRequest(BaseModel):
+    duration_minutes: int = Field(ge=1, le=10_080)
+
+
 class ProtectionRequest(BaseModel):
     position_id: str
     sl_price: float = Field(gt=0, allow_inf_nan=False)
@@ -233,6 +237,17 @@ def resume(minutes: int):
         raise HTTPException(409, str(exc)) from None
     except Exception:
         raise HTTPException(503, "Delta rest timer could not be cleared; retry after reloading") from None
+
+
+@router.post("/{minutes}/pause")
+def pause(minutes: int, request: PauseRequest):
+    require_delta(minutes=minutes)
+    try:
+        return {"cooldown": delta_service.pause(minutes, request.duration_minutes)}
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    except Exception:
+        raise HTTPException(503, "Delta rest timer could not be started; retry after reloading") from None
 
 
 @router.post("/connection/check")

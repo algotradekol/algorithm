@@ -236,12 +236,13 @@ def run():
             raise AssertionError("invalid setting accepted")
         except ValueError:
             pass
-    for invalid in (1, 10, 300):
+    for invalid in (0.5, 10_081):
         try:
             validate_settings({**DELTA_DEFAULTS, "post_exit_cooldown_minutes": invalid})
-            raise AssertionError("unsupported cooldown preset accepted")
+            raise AssertionError("invalid custom cooldown accepted")
         except ValueError:
             pass
+    assert validate_settings({**DELTA_DEFAULTS, "post_exit_cooldown_minutes": 37})["post_exit_cooldown_minutes"] == 37
 
     for reason in ("MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET"):
         cooldown = strategy(settings={"post_exit_cooldown_minutes": 15})
