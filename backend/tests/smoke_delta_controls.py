@@ -63,6 +63,9 @@ def run():
         assert json.loads(rows[0]['protection_edits'])[0]['new_sl'] == sl
         service.close(15, position['id'])
         assert not s._open_position() and s.broker.store.closed[-1]['exit_reason'] == 'MANUAL_EXIT'
+        assert s.cooldown_status()['active'] and s.cooldown_status()['reason'] == 'MANUAL_EXIT'
+        service.resume(15)
+        assert not s.cooldown_status()['active'] and not s.broker.state.get('cooldown_until')
         try:
             service.close(15, position['id'])
             raise AssertionError('duplicate exit accepted')
@@ -76,6 +79,13 @@ def run():
         exported = list(csv.DictReader(io.StringIO(closed['csv'])))
         assert len(exported) == closed['count'] == 1001
         assert len({row['id'] for row in exported}) == 1001
+
+    isolated = DeltaService()
+    isolated.strategies = {5: strategy(5), 15: strategy(15)}
+    isolated.strategies[5].broker.state.update(cooldown_until=time.time() + 900, cooldown_reason='TARGET')
+    isolated.resume(5)
+    assert not isolated.strategies[5].cooldown_status()['active']
+    assert not isolated.strategies[15].broker.state.get('cooldown_until')
     assert csv_cell('=HYPERLINK("bad")').startswith("'")
     assert csv_cell(-12.5) == -12.5
     print('smoke_delta_controls: all checks passed')

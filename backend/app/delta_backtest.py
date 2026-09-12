@@ -6,9 +6,10 @@ import threading
 import time
 
 from .delta_client import DeltaClient
+from .delta_candles import aggregate_seven_minute, delta_resolution
 from .delta_paper import DeltaPaperBroker
 from .delta_reporting import paper_row, inr_rate
-from .strategies.delta_gold import DeltaGold, DELTA_DEFAULTS, validate_settings
+from .strategies.delta_gold import DeltaGold, DELTA_DEFAULTS, DELTA_TIMEFRAMES, validate_settings
 from .timezone import IST
 
 BACKTEST_LOCK = threading.Lock()
@@ -48,7 +49,10 @@ def fetch_candles(client, resolution, start, end, interval):
                 raise ValueError('Delta returned invalid candle timestamps/prices')
             if not prices['low'] <= min(prices['open'], prices['close']) <= max(prices['open'], prices['close']) <= prices['high']:
                 raise ValueError('Delta returned inconsistent OHLC')
-            row = {'time': stamp, **prices}
+            volume = float(raw.get('volume', 0))
+            if not math.isfinite(volume) or volume < 0:
+                raise ValueError('Delta returned invalid candle volume')
+            row = {'time': stamp, **prices, 'volume': volume}
             if stamp in rows and rows[stamp] != row:
                 raise ValueError('Conflicting duplicate Delta candles; retry history later')
             rows[stamp] = row
@@ -96,6 +100,10 @@ class ReplayBroker(DeltaPaperBroker):
                             'exit_reason': exit_reason, 'gross_pnl': gross, 'fees': fees, 'net_pnl': gross - fees})
         self.state.update(position=None, gross_pnl=self.state['gross_pnl'] + gross,
                           fees=self.state['fees'] + fees, closed_count=len(self.closed))
+        if exit_reason in {'MANUAL_EXIT', 'SL', 'TRAILING_SL', 'TARGET'}:
+            minutes = float(self.state['settings'].get('post_exit_cooldown_minutes') or 5)
+            self.state['cooldown_until'] = self.now + minutes * 60
+            self.state['cooldown_reason'] = exit_reason
         if len(self.closed) > 5000:
             raise ValueError('Replay exceeded 5000 trades; shorten the range or review risk distances')
 
@@ -107,10 +115,10 @@ class ReplayGold(DeltaGold):
         self.entry_diagnostics = {'eligible_events': 0, 'already_positioned': 0, 'cooldown_blocked': 0}
 
     def _arm_post_sl_cooldown(self, exit_reason):
-        self.replay_cooldown = self.broker.now + 30
+        return
 
     def _post_sl_cooldown_remaining(self):
-        return max(0, getattr(self, 'replay_cooldown', 0) - self.broker.now)
+        return max(0, float(self.broker.state.get('cooldown_until') or 0) - self.broker.now)
 
     def _fire_entry(self, side, ltp, trigger_level, setup_bar_at_override=None, event_time=None):
         self.entry_diagnostics['eligible_events'] += 1
@@ -123,38 +131,13 @@ class ReplayGold(DeltaGold):
             return False
         if current:
             self.broker.close_trade(current, ltp, 'REVERSAL_CONTRA_SIGNAL')
-        direction = 1 if side == 'BUY' else -1
-        sl = ltp - direction * self.settings['sl_points']
-        target = ltp + direction * self.settings['target_points']
-        if min(sl, target) <= 0:
-            raise ValueError('SL/target becomes non-positive; reduce point distances for gold')
-        snapshot = self._signal_snapshot(side, ltp, trigger_level)
-        snapshot.update(execution='backtest', silver_exit_policy=self.settings['exit_mode'])
-        if self.settings['exit_mode'] == 'target_to_breakeven_sl':
-            snapshot['silver_breakeven'] = {'armed': False, 'activation_price': ltp + direction * self.settings['tsl_activate_points'],
-                                          'activation_points': self.settings['tsl_activate_points'], 'target_price': target,
-                                          'final_target_enabled': True, 'initial_sl_price': sl}
-        self.broker.open_trade(self.symbol, side, int(self.settings['silver_lots']), ltp, sl, target,
-                               self._entry_trigger(side, ltp, trigger_level), snapshot, entry_time=iso(self.broker.now))
-        return True
+        event = dt.datetime.fromtimestamp(self.broker.now, dt.timezone.utc)
+        return self._enter(side, ltp, trigger_level, event_time=event)
 
-    def _check_triggers(self, ltp, event_time=None):
-        # Mirror DeltaGold's inherited original-Silver SELL-first trigger priority.
-        n, prev = self.settings['silver_breakout_points'], self._prev_ltp
-        sell = self._sell_setup_close - n if self._sell_setup_close is not None else None
-        handoff = self._sell_reentry_after_exit
-        same = bool(handoff and handoff['setup_bar_at'] == self._sell_setup_bar_at and handoff['trigger_level'] == sell)
-        red = bool(sell is not None and self._ema20 is not None and self._minute_buffer and
-                   self._current_bucket > self._sell_setup_bar_at and ltp < self._minute_buffer[0]['open'] and ltp < self._ema20)
-        if red and ltp <= sell and (prev is None or prev > sell or (same and ltp < prev)):
-            if self._fire_entry('SELL', ltp, sell):
-                self._sell_reentry_after_exit = None
-        buy = self._buy_setup_close + n if self._buy_setup_close is not None else None
-        handoff = self._buy_reentry_after_exit
-        same = bool(handoff and handoff['setup_bar_at'] == self._buy_setup_bar_at and handoff['trigger_level'] == buy)
-        if buy is not None and ltp >= buy and prev is not None and (not same or ltp > prev):
-            if self._fire_entry('BUY', ltp, buy):
-                self._buy_reentry_after_exit = None
+    def _signal_snapshot(self, side, entry_price, trigger_level):
+        snapshot = super()._signal_snapshot(side, entry_price, trigger_level)
+        snapshot['execution'] = 'backtest'
+        return snapshot
 
     def tick(self, price, stamp):
         self.broker.now = stamp
@@ -184,17 +167,13 @@ class ReplayGold(DeltaGold):
                 if protection and not protection.get('armed'):
                     levels.append(protection['activation_price'])
             else:
-                # A renewed move after target can re-enter on the next assumed tick.
-                buy_level = self._buy_setup_close + self.settings['silver_breakout_points'] if self._buy_setup_close is not None else None
-                sell_level = self._sell_setup_close - self.settings['silver_breakout_points'] if self._sell_setup_close is not None else None
-                renewed_sell = self._sell_reentry_after_exit and sell_level is not None and price <= sell_level and direction < 0
-                renewed_buy = buy_level is not None and price >= buy_level and (not self._buy_reentry_after_exit or direction > 0)
-                if not self._post_sl_cooldown_remaining() and (renewed_sell or renewed_buy):
-                    levels.append(price + direction * tick_size)
-                cooldown = getattr(self, 'replay_cooldown', 0)
+                cooldown = float(self.broker.state.get('cooldown_until') or 0)
                 if start_time < cooldown < end_time:
                     levels.append(start_price + (end_price - start_price) * (cooldown - start_time) / (end_time - start_time))
             candidates = [p for p in levels if direction * (p - price) > 1e-9 and direction * (end_price - p) >= 0]
+            if not candidates:
+                self.tick(end_price, end_time)
+                return
             next_price = min(candidates) if direction > 0 else max(candidates)
             stamp = start_time + (end_time - start_time) * abs((next_price - start_price) / (end_price - start_price))
             self.tick(next_price, stamp)
@@ -231,7 +210,8 @@ def replay(product, region, minutes, settings, references, minute_rows, start, e
         if bucket != previous_bucket:
             # Only reference bars completed BEFORE this minute can affect entries.
             old_buy, old_sell = strategy._buy_setup_bar_at, strategy._sell_setup_bar_at
-            strategy.ingest_history([ref_map[bucket - interval], {'time': bucket, 'open': ref_map[bucket]['open']}], stamp)
+            broker.now = stamp
+            strategy.ingest_history([ref_map[bucket - interval], ref_map[bucket]], stamp)
             diagnostics['buy_reference_updates'] += strategy._buy_setup_bar_at != old_buy
             diagnostics['sell_reference_updates'] += strategy._sell_setup_bar_at != old_sell
             previous_bucket = bucket
@@ -278,13 +258,13 @@ def replay(product, region, minutes, settings, references, minute_rows, start, e
             'equity': equity[::max(1, len(equity) // 1000)] + (equity[-1:] if equity else []),
             'coverage': {'minutes': len(minute_rows), 'reference_bars': len(references)},
             'warnings': ['1-minute OHLC replay uses an assumed price path, not historical ticks. Intraminute times and fills are simulated.',
-                         '30-second cooldown uses the assumed timeline. Compare both paths; neither is a guaranteed best/worst bound.',
+                         'The configured post-exit cooldown uses the assumed timeline. Compare both paths; neither is a guaranteed best/worst bound.',
                          'No daily square-off. Any remaining position stays open at range end and is excluded from realized net.',
                          'Current product size, base margin and taker fee metadata are used for the whole range. Funding, taxes, slippage and liquidation are excluded.']}
 
 
 def run_backtest(minutes, start_date, end_date, settings, path):
-    if minutes not in (15, 60) or path not in ('high_first', 'low_first'):
+    if minutes not in DELTA_TIMEFRAMES or path not in ('high_first', 'low_first'):
         raise ValueError('Invalid Delta timeframe or intraminute path')
     start, end = date_range(start_date, end_date)
     settings = validate_settings({**DELTA_DEFAULTS, **settings})
@@ -293,8 +273,14 @@ def run_backtest(minutes, start_date, end_date, settings, path):
         product = client.product()
         interval = minutes * 60
         first_bucket, final_bucket = start // interval * interval, (end - 60) // interval * interval
-        references = fetch_candles(client, '15m' if minutes == 15 else '1h', first_bucket - 300 * interval, final_bucket + interval, interval)
-        minute_rows = fetch_candles(client, '1m', start, end, 60)
+        history_start, history_end = first_bucket - 300 * interval, final_bucket + interval
+        if minutes == 7:
+            source_minutes = fetch_candles(client, '1m', history_start, history_end, 60)
+            references = aggregate_seven_minute(source_minutes)
+            minute_rows = [row for row in source_minutes if start <= row['time'] < end]
+        else:
+            references = fetch_candles(client, delta_resolution(minutes), history_start, history_end, interval)
+            minute_rows = fetch_candles(client, '1m', start, end, 60)
         return replay(product, client.region, minutes, settings, references, minute_rows, start, end, path)
     finally:
         client.session.close()

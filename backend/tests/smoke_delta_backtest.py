@@ -7,16 +7,16 @@ from app.delta_backtest import ReplayBroker, ReplayGold, date_range, fetch_candl
 from app.strategies.delta_gold import DELTA_DEFAULTS
 from tests.smoke_delta_paper import strategy, history, PRODUCT
 
-NOW = 1789171200  # UTC midnight, aligned to both tested timeframes.
+NOW = 1789200000  # 2026-09-12 08:00 UTC; aligned to 5m, 7m, 15m, 30m, 1h and 4h.
 SETTINGS = {**DELTA_DEFAULTS, 'trading_enabled': True, 'silver_breakout_points': 10,
             'sl_points': 20, 'target_points': 100, 'tsl_activate_points': 30}
 META = {**PRODUCT, 'initial_margin': '1', 'quoting_asset': {'symbol': 'USD'}}
 
 
 def run():
-    for minutes in (15, 60):
+    for minutes in (5, 7, 15, 30, 60, 240):
         for side in ('BUY', 'SELL'):
-            for mode in ('fixed_target_sl', 'target_to_breakeven_sl'):
+            for mode in ('fixed_target_sl', 'target_to_breakeven_sl', 'three_candle_tsl'):
                 for outcome in ('target', 'stop', 'breakeven'):
                     settings = {**SETTINGS, 'exit_mode': mode}
                     live = strategy(minutes, settings)
@@ -41,17 +41,17 @@ def run():
                         assert (x['exit_reason'], x['exit_price'], x['net_pnl']) == (y['exit_reason'], y['exit_price'], y['net_pnl'])
                         assert y['exit_time'].startswith('2026-09-12')
                         if outcome == 'stop':
-                            assert test._post_sl_cooldown_remaining() == 30
-                            broker.now += 30
+                            assert test._post_sl_cooldown_remaining() == 300
+                            broker.now += 300
                             assert test._post_sl_cooldown_remaining() == 0
 
         # Trigger parity on both sides, including reversal and same-reference reentry.
         actual = strategy(minutes, SETTINGS)
         test = ReplayGold(minutes, META['symbol'], ReplayBroker(SETTINGS, META))
         refs = history(minutes, NOW)
-        refs[-2].update(open=1000, high=1001, low=969, close=970)
-        refs[-1].update(open=1000, high=1031, low=999, close=1030)
-        refs.append({'time': NOW, 'open': 1000, 'high': 1200, 'low': 800, 'close': 1000})
+        refs[-2].update(open=1000, high=1001, low=969, close=970, volume=300)
+        refs[-1].update(open=1000, high=1031, low=999, close=1030, volume=300)
+        refs.append({'time': NOW, 'open': 1000, 'high': 1200, 'low': 800, 'close': 1000, 'volume': 10})
         for s in (actual, test):
             s.ingest_history(refs, NOW)
         for i, price in enumerate((1039, 1041, 1050, 959, 950, 859, 850)):
@@ -63,14 +63,14 @@ def run():
                 assert (a['side'], a['entry_price'], a['sl_price'], a['target_price']) == (b['side'], b['entry_price'], b['sl_price'], b['target_price'])
 
         refs = history(minutes, NOW)
-        refs[-1].update(open=1000, high=1031, low=999, close=1030)
-        refs.append({'time': NOW, 'open': 1039, 'high': 2000, 'low': 900, 'close': 1999})
+        refs[-1].update(open=1000, high=1031, low=999, close=1030, volume=300)
+        refs.append({'time': NOW, 'open': 1039, 'high': 2000, 'low': 900, 'close': 1999, 'volume': 10})
         minute = [{'time': NOW, 'open': 1039, 'high': 1145, 'low': 1038, 'close': 1140}]
         first = replay(META, 'india', minutes, SETTINGS, refs, minute, NOW, NOW + 60, 'high_first')
         assert first['trades'] and first['trades'][0]['entry_price'] == 1040
         assert first['trades'][0]['exit_price'] == 1140 and first['trades'][0]['exit_reason'] == 'TARGET'
         assert first['trades'][0]['signal_snapshot']['setup_close'] == 1030
-        assert first['open_position']  # No artificial range-end/EOD liquidation.
+        assert not first['open_position']  # A fresh second crossing can complete within the same replay minute.
         changed = copy.deepcopy(refs)
         changed[-1].update(high=3000, close=2999)
         second = replay(META, 'india', minutes, SETTINGS, changed, minute, NOW, NOW + 60, 'high_first')
@@ -78,8 +78,8 @@ def run():
 
         # SELL reference + downward path fills at the threshold, not the minute low.
         sell_refs = history(minutes, NOW)
-        sell_refs[-1].update(open=1000, high=1001, low=969, close=970)
-        sell_refs.append({'time': NOW, 'open': 961, 'high': 962, 'low': 850, 'close': 855})
+        sell_refs[-1].update(open=1000, high=1001, low=969, close=970, volume=300)
+        sell_refs.append({'time': NOW, 'open': 961, 'high': 962, 'low': 850, 'close': 855, 'volume': 10})
         sell_minute = [{'time': NOW, 'open': 961, 'high': 962, 'low': 855, 'close': 860}]
         result = replay(META, 'india', minutes, SETTINGS, sell_refs, sell_minute, NOW, NOW + 60, 'low_first')
         assert result['trades'][0]['side'] == 'SELL' and result['trades'][0]['entry_price'] == 960

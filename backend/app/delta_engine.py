@@ -8,9 +8,11 @@ import threading
 import time
 
 from .delta_client import DeltaClient, epoch_seconds, positive
+from .delta_candles import aggregate_seven_minute, delta_resolution
+from .delta_config import delta_capabilities, timeframe_enabled
 from .delta_paper import DeltaPaperBroker, DeltaStore
 from .delta_reporting import paper_row, inr_rate
-from .strategies.delta_gold import DELTA_DEFAULTS, DeltaGold, validate_settings
+from .strategies.delta_gold import DELTA_DEFAULTS, DELTA_TIMEFRAMES, DeltaGold, validate_settings
 
 
 class DeltaService:
@@ -28,6 +30,8 @@ class DeltaService:
         self.last_source = None
         self.socket = None
         self.started = False
+        self.initialized = False
+        self._overview_trade_cache = {}
 
     def start(self):
         if self.started:
@@ -41,13 +45,22 @@ class DeltaService:
             self.socket.close()
 
     def _initialize(self):
+        capabilities = delta_capabilities()
+        if capabilities["config_error"]:
+            self.error = capabilities["config_error"]
+            self.initialized = True
+            return
+        if not capabilities["delta_enabled"]:
+            self.error = "Delta is disabled by DELTA_HIDDEN_SECTIONS"
+            self.initialized = True
+            return
         self.client = DeltaClient()
         error = self.client.configuration_error()
         if error:
             raise ValueError(error)
         product = self.client.product()
         strategies = {}
-        for minutes in (15, 60):
+        for minutes in capabilities["enabled_timeframes"]:
             key = f"delta:{self.client.region}:{self.client.symbol}:{minutes}:paper"
             broker = DeltaPaperBroker(DeltaStore(key), dict(DELTA_DEFAULTS), product)
             strategies[minutes] = DeltaGold(minutes, self.client.symbol, broker)
@@ -55,17 +68,20 @@ class DeltaService:
             self.strategies = strategies
             self.product = product
             self.error = None
+            self.initialized = True
         threading.Thread(target=self._websocket, name="delta-public-ws", daemon=True).start()
 
     def _run(self):
-        while not self.stop_event.is_set() and not self.strategies:
+        while not self.stop_event.is_set() and not self.initialized:
             try:
                 self._initialize()
             except Exception as exc:
                 self.error = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else "Delta storage unavailable; check Supabase migration and backend logs"
                 print(f"[delta-paper] startup: {self.error}")
                 self.stop_event.wait(30)
-        next_history = {15: 0.0, 60: 0.0}
+        if not self.client:
+            return
+        next_history = {minutes: 0.0 for minutes in self.strategies}
         next_rest = 0.0
         while not self.stop_event.is_set():
             now = time.time()
@@ -75,10 +91,15 @@ class DeltaService:
                 next_history[minutes] = now + 10
                 interval = minutes * 60
                 bucket = int(now // interval) * interval
-                # Include the forming candle to establish its actual open.
-                start = strategy.last_candle_epoch or bucket - 300 * interval
+                # Include the forming candle to establish its actual open. Seven-minute
+                # history is assembled from 1m rows and stays under Delta's 2000 row cap.
+                lookback = 250 if minutes == 7 else 300
+                start = strategy.last_candle_epoch or bucket - lookback * interval
                 try:
-                    rows = self.client.candles("15m" if minutes == 15 else "1h", start, int(now))
+                    resolution = delta_resolution(minutes)
+                    rows = self.client.candles(resolution, start, int(now))
+                    if minutes == 7:
+                        rows = aggregate_seven_minute(rows, current_time=now)
                     with self.lock:
                         strategy.ingest_history(rows, now)
                         next_history[minutes] = min(bucket + interval + 1, now + 60)
@@ -156,8 +177,10 @@ class DeltaService:
             delay = min(delay * 2, 60)
 
     def strategy(self, minutes):
-        if minutes not in (15, 60):
-            raise ValueError("Delta timeframe must be 15 or 60 minutes")
+        if minutes not in DELTA_TIMEFRAMES:
+            raise ValueError("Delta timeframe must be 5, 7, 15, 30, 60 or 240 minutes")
+        if not timeframe_enabled(minutes):
+            raise ValueError("That Delta timeframe is disabled in this deployment")
         if minutes not in self.strategies:
             raise ValueError(self.error or "Delta is not ready")
         return self.strategies[minutes]
@@ -184,9 +207,12 @@ class DeltaService:
                 settings=strategy.settings, position=paper_row(position, self.client.region) if position else None,
                 summary={k: state[k] for k in ("gross_pnl", "fees", "closed_count", "buy_count", "sell_count")},
                 history_error=strategy.data_error, ema20=strategy._ema20,
+                volume_ema20=strategy._volume_ema20,
+                current_candle_open=strategy._current_candle_open,
                 last_bar_at=strategy.last_candle_epoch,
                 buy_reference=strategy._buy_setup_close, sell_reference=strategy._sell_setup_close,
                 references=list(strategy.reference_history),
+                cooldown=strategy.cooldown_status(),
                 quote_currency=self.product.get("quoting_asset", {}).get("symbol"),
                 settlement_currency=self.product.get("settling_asset", {}).get("symbol"),
                 contract_value=float(self.product["contract_value"]),
@@ -194,6 +220,89 @@ class DeltaService:
                 inr_rate=inr_rate(self.client.region, self.product.get("quoting_asset", {}).get("symbol")),
             )
             return copy.deepcopy(result)
+
+    @staticmethod
+    def _trade_stats(rows):
+        wins = sum(1 for row in rows if float(row.get("net_pnl") or 0) > 0)
+        losses = sum(1 for row in rows if float(row.get("net_pnl") or 0) < 0)
+        gross = sum(float(row.get("gross_pnl") or 0) for row in rows)
+        fees = sum(float(row.get("fees") or 0) for row in rows)
+        return {
+            "trades": len(rows), "wins": wins, "losses": losses,
+            "breakeven": len(rows) - wins - losses,
+            "win_rate": (wins / len(rows) * 100) if rows else 0.0,
+            "gross": gross, "fees": fees, "net": gross - fees,
+        }
+
+    def _all_closed_trades(self, minutes, strategy):
+        closed_count = int(strategy.broker.state.get("closed_count") or 0)
+        cached = self._overview_trade_cache.get(minutes)
+        if cached and cached[0] == closed_count:
+            return cached[1]
+        rows = []
+        offset = 0
+        while True:
+            page = strategy.broker.store.trades(offset, 1000)
+            rows.extend(page)
+            if len(page) < 1000:
+                break
+            offset += len(page)
+        self._overview_trade_cache[minutes] = (closed_count, rows)
+        return rows
+
+    def overview(self):
+        with self.lock:
+            capabilities = delta_capabilities()
+            if not capabilities["delta_enabled"] or not capabilities["sections"]["overview"]:
+                raise ValueError("Delta overview is disabled in this deployment")
+            today = datetime.datetime.now(datetime.timezone.utc).date()
+            rate = inr_rate(self.client.region, self.product.get("quoting_asset", {}).get("symbol")) if self.client and self.product else None
+            entries = []
+            for minutes in capabilities["enabled_timeframes"]:
+                strategy = self.strategy(minutes)
+                state = copy.deepcopy(strategy.broker.state)
+                rows = self._all_closed_trades(minutes, strategy)
+                today_rows = []
+                for row in rows:
+                    try:
+                        closed = datetime.datetime.fromisoformat(str(row.get("exit_time", "")).replace("Z", "+00:00"))
+                    except (ValueError, TypeError):
+                        continue
+                    if (closed if closed.tzinfo else closed.replace(tzinfo=datetime.timezone.utc)).astimezone(datetime.timezone.utc).date() == today:
+                        today_rows.append(row)
+                all_time = self._trade_stats(rows)
+                # Persistent totals remain authoritative for historical financial values.
+                all_time.update(gross=float(state.get("gross_pnl") or 0), fees=float(state.get("fees") or 0))
+                all_time["net"] = all_time["gross"] - all_time["fees"]
+                position = state.get("position")
+                unrealized = strategy.broker.pnl(position, self.last_price) if position and self.last_price is not None else 0.0
+                entries.append({
+                    "minutes": minutes, "label": strategy.display_name,
+                    "scan_enabled": strategy.settings["scan_enabled"],
+                    "trading_enabled": strategy.settings["trading_enabled"],
+                    "stale": time.time() - self.last_event_at > 15,
+                    "last_bar_at": strategy.last_candle_epoch,
+                    "ema20": strategy._ema20, "volume_ema20": strategy._volume_ema20,
+                    "position": paper_row({**position, "unrealized_pnl": unrealized}, self.client.region) if position else None,
+                    "cooldown": strategy.cooldown_status(),
+                    "unrealized": unrealized, "today": self._trade_stats(today_rows), "all_time": all_time,
+                    "combined_today": self._trade_stats(today_rows)["net"] + unrealized,
+                    "combined_all_time": all_time["net"] + unrealized,
+                })
+            def total(period):
+                result = {key: sum(float(row[period][key]) for row in entries) for key in ("trades", "wins", "losses", "breakeven", "gross", "fees", "net")}
+                result["win_rate"] = result["wins"] / result["trades"] * 100 if result["trades"] else 0.0
+                return result
+            unrealized_total = sum(row["unrealized"] for row in entries)
+            today_total, all_total = total("today"), total("all_time")
+            return copy.deepcopy({
+                "generated_at": time.time(), "utc_date": today.isoformat(), "ltp": self.last_price,
+                "currency": self.product.get("quoting_asset", {}).get("symbol") if self.product else None,
+                "inr_rate": rate, "timeframes": entries,
+                "totals": {"today": today_total, "all_time": all_total, "unrealized": unrealized_total,
+                           "today_with_unrealized": today_total["net"] + unrealized_total,
+                           "all_time_with_unrealized": all_total["net"] + unrealized_total},
+            })
 
     def save_settings(self, minutes, changes):
         with self.lock:
@@ -214,6 +323,16 @@ class DeltaService:
             if not position or position["id"] != position_id:
                 raise ValueError("That position has already closed or changed")
             strategy.broker.close_trade(position, self.last_price, "MANUAL_EXIT")
+
+    def resume(self, minutes):
+        with self.lock:
+            strategy = self.strategy(minutes)
+            state = copy.deepcopy(strategy.broker.state)
+            state["cooldown_until"] = 0.0
+            state["cooldown_reason"] = None
+            strategy.broker.commit(state)
+            strategy._sl_cooldown_until_monotonic = 0.0
+            return strategy.cooldown_status()
 
     def edit_protection(self, minutes, position_id, sl_price, target_price, expected_sl, expected_target):
         with self.lock:

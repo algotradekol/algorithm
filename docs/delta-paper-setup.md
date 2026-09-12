@@ -33,7 +33,14 @@ DELTA_PAPER_ENABLED=true
 DELTA_EXCHANGE=india
 DELTA_GOLD_SYMBOL=PAXGUSD
 DELTA_PROXY_URL=http://PROXY_USERNAME:URL_ENCODED_PASSWORD@PROXY_HOST:PROXY_PORT
+# Optional comma-separated deployment gate. Supported values: delta, overview,
+# gold5m, gold7m, gold15m, gold30m, gold1h, gold4h, activity, backtest.
+DELTA_HIDDEN_SECTIONS=
 ```
+
+Each Delta timeframe has an independent post-exit rest setting. Manual exits,
+fixed or trailing stops, and targets start that timer; reversal exits bypass it.
+The timeframe dashboard can clear an active timer immediately with Resume now.
 
 `DELTA_PROXY_URL` is optional. Set it to the existing Google VM HTTP CONNECT
 proxy address if all Delta traffic should use the VM's public egress IP. Both

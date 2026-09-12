@@ -66,17 +66,19 @@ class DeltaPaperBroker:
             raise ValueError("Entry, target and stop must remain positive")
         state = copy.deepcopy(self.state)
         state["manual_guard"] = None
+        configured_initial_sl = snapshot.get("configured_initial_sl_price", sl_price)
+        three_candle = snapshot.get("delta_three_candle_tsl")
         state["position"] = {
             "id": uuid.uuid4().hex, "symbol": symbol, "side": side, "qty": qty,
             "entry_price": entry_price, "entry_time": entry_time or utc_now(),
-            "sl_price": sl_price, "initial_sl": sl_price, "target_price": target_price,
+            "sl_price": sl_price, "initial_sl": configured_initial_sl, "target_price": target_price,
             "entry_trigger": trigger, "signal_snapshot": copy.deepcopy(snapshot),
             "contract_value": float(self.product["contract_value"]),
             "quote_currency": self.product.get("quoting_asset", {}).get("symbol"),
             "initial_margin_percent": self.product.get("initial_margin"),
             "estimated_entry_margin": paper_margin(entry_price, qty, self.product["contract_value"], self.product.get("initial_margin")),
             "fee_rate": float(self.product.get("taker_commission_rate") or 0),
-            "trailing_sl_active": False,
+            "trailing_sl_active": bool(three_candle and three_candle.get("events")),
         }
         state[f"{side.lower()}_count"] += 1
         self.commit(state)
@@ -97,12 +99,19 @@ class DeltaPaperBroker:
         state = copy.deepcopy(self.state)
         state.update(position=None, gross_pnl=state["gross_pnl"] + gross,
                      fees=state["fees"] + fees, closed_count=state["closed_count"] + 1)
-        if exit_reason in {"SL", "TRAILING_SL"}:
-            state["cooldown_until"] = time.time() + 30
+        if exit_reason in {"MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET"}:
+            cooldown_minutes = float(state["settings"].get("post_exit_cooldown_minutes") or 5)
+            state["cooldown_until"] = time.time() + cooldown_minutes * 60
+            state["cooldown_reason"] = exit_reason
         if exit_reason == "MANUAL_EXIT" and not state["settings"].get("manual_exit_reentry_enabled"):
             state["manual_guard"] = {"side": current["side"], "setup_time": current["signal_snapshot"].get("setup_time")}
         self.commit(state, trade)
-        print(f"[delta-paper] closed {current['symbol']} {current['side']} reason={exit_reason} gross={gross:.6f}")
+        cooldown_note = (
+            f" cooldown={state['settings'].get('post_exit_cooldown_minutes')}m"
+            if exit_reason in {"MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET"}
+            else " cooldown=bypassed"
+        )
+        print(f"[delta-paper] closed {current['symbol']} {current['side']} reason={exit_reason} gross={gross:.6f}{cooldown_note}")
         if self.on_position_closed:
             self.on_position_closed(position=current, exit_price=exit_price, exit_reason=exit_reason, exit_time=trade["exit_time"])
 
@@ -123,6 +132,37 @@ class DeltaPaperBroker:
         updated["trailing_sl_active"] = True
         updated["signal_snapshot"]["silver_breakeven"].update(armed=True, armed_at=utc_now())
         self.commit(state)
+        return copy.deepcopy(updated)
+
+    def apply_three_candle_stop(self, position, details, completed_close):
+        current = self.state.get("position")
+        if not current or current["id"] != position["id"]:
+            return None
+        state = copy.deepcopy(self.state)
+        updated = state["position"]
+        policy = updated["signal_snapshot"].get("delta_three_candle_tsl")
+        if not isinstance(policy, dict):
+            return copy.deepcopy(updated)
+        candidate = float(details["candidate_sl"])
+        close = float(completed_close)
+        current_sl = float(updated["sl_price"])
+        buy = updated["side"] == "BUY"
+        tighter = candidate > current_sl if buy else candidate < current_sl
+        breached = candidate >= close if buy else candidate <= close
+        status = "breached" if tighter and breached else "accepted" if tighter else "not_tighter"
+        evaluation = {**copy.deepcopy(details), "status": status, "previous_sl": current_sl, "completed_close": close}
+        policy.setdefault("evaluations", []).append(evaluation)
+        policy["evaluations"] = policy["evaluations"][-200:]
+        if tighter:
+            policy.setdefault("events", []).append(evaluation)
+            policy["events"] = policy["events"][-200:]
+        if tighter and not breached:
+            updated["sl_price"] = candidate
+            updated["trailing_sl_active"] = True
+        self.commit(state)
+        if tighter and breached:
+            self.close_trade(updated, close, "TRAILING_SL")
+            return None
         return copy.deepcopy(updated)
 
     def should_exit_at_target(self, settings, position=None):

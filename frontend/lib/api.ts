@@ -132,10 +132,13 @@ function fetchFyersOrders(mode: TradingMode = 'live', force = false) {
 }
 
 export const api = {
+  deltaCapabilities: () => authedFetch('/api/delta/capabilities'),
+  deltaOverview: () => authedFetch('/api/delta/overview'),
   deltaStatus: (minutes: number) => authedFetch(`/api/delta/${minutes}/status`),
   deltaTrades: (minutes: number, offset = 0) => authedFetch(`/api/delta/${minutes}/trades?offset=${offset}&limit=100`),
   deltaSettings: (minutes: number, changes: Record<string, unknown>) => authedFetch(`/api/delta/${minutes}/settings`, { method: 'PUT', body: JSON.stringify(changes) }),
   deltaClose: (minutes: number, positionId: string) => authedFetch(`/api/delta/${minutes}/close`, { method: 'POST', body: JSON.stringify({ position_id: positionId }) }),
+  deltaResume: (minutes: number) => authedFetch(`/api/delta/${minutes}/resume`, { method: 'POST' }),
   deltaProtection: (minutes: number, payload: Record<string, unknown>) => authedFetch(`/api/delta/${minutes}/protection`, { method: 'PUT', body: JSON.stringify(payload) }),
   deltaExport: (minutes: number, kind: 'open' | 'closed') => authedFetch(`/api/delta/${minutes}/export?kind=${kind}`),
   deltaCheckConnection: () => authedFetch('/api/delta/connection/check', { method: 'POST' }),

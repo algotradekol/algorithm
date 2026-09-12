@@ -5,6 +5,7 @@ from typing import Literal
 
 from .auth import require_auth
 from .delta_engine import delta_service
+from .delta_config import delta_capabilities, timeframe_enabled
 from .delta_reporting import paper_row, account_rows, inr_rate
 import time
 
@@ -12,15 +13,43 @@ router = APIRouter(prefix="/api/delta", dependencies=[Depends(require_auth)])
 
 
 class BacktestRequest(BaseModel):
-    minutes: Literal[15, 60]
+    minutes: Literal[5, 7, 15, 30, 60, 240]
     start_date: datetime.date
     end_date: datetime.date
     settings: dict = Field(default_factory=dict)
     path: Literal['high_first', 'low_first'] = 'high_first'
 
 
+def require_delta(*, section: str | None = None, minutes: int | None = None):
+    capabilities = delta_capabilities()
+    if capabilities["config_error"] or not capabilities["delta_enabled"]:
+        raise HTTPException(404, capabilities["config_error"] or "Delta is disabled")
+    if section and not capabilities["sections"].get(section, False):
+        raise HTTPException(404, f"Delta {section} is disabled")
+    if minutes is not None and not timeframe_enabled(minutes, capabilities):
+        raise HTTPException(404, "That Delta timeframe is disabled")
+    return capabilities
+
+
+@router.get('/capabilities')
+def capabilities():
+    return delta_capabilities()
+
+
+@router.get('/overview')
+def overview():
+    require_delta(section="overview")
+    try:
+        return delta_service.overview()
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from None
+    except Exception:
+        raise HTTPException(503, "Delta overview is temporarily unavailable") from None
+
+
 @router.post('/backtest/run')
 def backtest(request: BacktestRequest):
+    require_delta(section="backtest", minutes=request.minutes)
     from .delta_backtest import BACKTEST_LOCK, run_backtest
     if not BACKTEST_LOCK.acquire(blocking=False):
         raise HTTPException(409, 'A Delta backtest is already running; retry when it finishes')
@@ -36,13 +65,15 @@ def backtest(request: BacktestRequest):
 
 @router.get("/{minutes}/status")
 def status(minutes: int):
-    if minutes not in (15, 60):
+    if minutes not in (5, 7, 15, 30, 60, 240):
         raise HTTPException(400, "Invalid Delta timeframe")
+    require_delta(minutes=minutes)
     return delta_service.snapshot(minutes)
 
 
 @router.get("/{minutes}/trades")
 def trades(minutes: int, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200)):
+    require_delta(minutes=minutes)
     try:
         strategy = delta_service.strategy(minutes)
         return {"trades": [paper_row(row, delta_service.client.region) for row in strategy.broker.store.trades(offset, limit)]}
@@ -54,6 +85,7 @@ def trades(minutes: int, offset: int = Query(0, ge=0), limit: int = Query(100, g
 
 @router.put("/{minutes}/settings")
 def settings(minutes: int, changes: dict):
+    require_delta(minutes=minutes)
     try:
         return delta_service.save_settings(minutes, changes)
     except (ValueError, TypeError) as exc:
@@ -76,6 +108,7 @@ class ProtectionRequest(BaseModel):
 
 @router.put('/{minutes}/protection')
 def edit_protection(minutes: int, request: ProtectionRequest):
+    require_delta(minutes=minutes)
     try:
         position = delta_service.edit_protection(minutes, request.position_id, request.sl_price, request.target_price, request.expected_sl, request.expected_target)
         return {'position': position}
@@ -87,6 +120,7 @@ def edit_protection(minutes: int, request: ProtectionRequest):
 
 @router.get('/{minutes}/export')
 def export(minutes: int, kind: Literal['open', 'closed']):
+    require_delta(minutes=minutes)
     from .delta_export import export_paper
     try:
         return export_paper(delta_service, minutes, kind)
@@ -98,9 +132,10 @@ def export(minutes: int, kind: Literal['open', 'closed']):
 
 @router.get("/account/{kind}")
 def account(kind: str, after: str | None = Query(None, max_length=256), source: str = "paper", minutes: int = 15, offset: int = Query(0, ge=0)):
+    require_delta(section="activity", minutes=minutes if source == "paper" else None)
     if kind not in {"positions", "open_orders", "stop_orders", "history"}:
         raise HTTPException(400, "Invalid Delta account view")
-    if source not in {"paper", "live"} or minutes not in {15, 60}:
+    if source not in {"paper", "live"} or minutes not in {5, 7, 15, 30, 60, 240}:
         raise HTTPException(400, "Invalid Delta source or timeframe")
     if source == "paper":
         return paper_account(kind, minutes, offset)
@@ -179,6 +214,7 @@ def paper_account(kind, minutes, offset):
 
 @router.post("/{minutes}/close")
 def close(minutes: int, request: CloseRequest):
+    require_delta(minutes=minutes)
     try:
         delta_service.close(minutes, request.position_id)
         return {"closed": True}
@@ -188,8 +224,20 @@ def close(minutes: int, request: CloseRequest):
         raise HTTPException(503, "Delta paper exit was not confirmed; reload position status") from None
 
 
+@router.post("/{minutes}/resume")
+def resume(minutes: int):
+    require_delta(minutes=minutes)
+    try:
+        return {"cooldown": delta_service.resume(minutes)}
+    except ValueError as exc:
+        raise HTTPException(409, str(exc)) from None
+    except Exception:
+        raise HTTPException(503, "Delta rest timer could not be cleared; retry after reloading") from None
+
+
 @router.post("/connection/check")
 def connection_check():
+    require_delta()
     try:
         if not delta_service.client:
             raise ValueError("Delta is not configured")

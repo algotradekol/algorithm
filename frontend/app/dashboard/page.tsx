@@ -7,6 +7,7 @@ import AlgoTab from '../../components/AlgoTab';
 import DeltaTab from '../../components/DeltaTab';
 import DeltaActivityTab from '../../components/DeltaActivityTab';
 import DeltaBacktestTab from '../../components/DeltaBacktestTab';
+import DeltaOverviewTab from '../../components/DeltaOverviewTab';
 import CompareTab from '../../components/CompareTab';
 import CalendarTab from '../../components/CalendarTab';
 import ChargesPanel from '../../components/ChargesPanel';
@@ -57,6 +58,13 @@ function isTabHidden(name: string): boolean {
 }
 const TABS = ALL_DASHBOARD_TABS.filter((t) => !isTabHidden(t)) as readonly DashboardTabName[];
 const PAPER_ONLY_TABS = new Set<DashboardTabName>(['Silver Micro 2.0', 'Silver V Micro']);
+type DeltaCapabilities = {
+  delta_enabled: boolean;
+  enabled_timeframes: number[];
+  sections: { overview: boolean; activity: boolean; backtest: boolean };
+  config_error?: string | null;
+};
+const deltaLabel = (minutes: number) => `Delta Gold ${minutes === 60 ? '1 hr' : minutes === 240 ? '4 hr' : `${minutes} min`}`;
 
 function formatIstTime() {
   return new Intl.DateTimeFormat('en-IN', {
@@ -146,7 +154,8 @@ function DashboardContent() {
   const router = useRouter();
   const pathname = usePathname();
   const isDelta = pathname === '/delta';
-  const [deltaTab, setDeltaTab] = useState<'Delta Gold 15 min' | 'Delta Gold 1 hr' | 'Positions & Orders' | 'Delta Backtest'>('Delta Gold 15 min');
+  const [deltaTab, setDeltaTab] = useState('overview');
+  const [deltaCapabilities, setDeltaCapabilities] = useState<DeltaCapabilities | null>(null);
   const searchParams = useSearchParams();
   const tradingMode = (engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper';
   // Silver Micro 2.0 is an experiment. It is intentionally unavailable in
@@ -267,6 +276,26 @@ function DashboardContent() {
     };
   }, [ready, fyersLoginResult, statusReloadNonce]);
 
+  useEffect(() => {
+    if (!ready) return;
+    let cancelled = false;
+    api.deltaCapabilities().then((value) => {
+      if (cancelled) return;
+      setDeltaCapabilities(value);
+      const available = [
+        ...(value.sections.overview ? ['overview'] : []),
+        ...value.enabled_timeframes.map((minutes: number) => `gold${minutes}`),
+        ...(value.sections.activity ? ['activity'] : []),
+        ...(value.sections.backtest ? ['backtest'] : []),
+      ];
+      setDeltaTab(current => available.includes(current) ? current : (available[0] || 'unavailable'));
+      if (pathname === '/delta' && !value.delta_enabled) router.replace(DASHBOARD_TAB_ROUTES[tab]);
+    }).catch(() => {
+      if (!cancelled) setDeltaCapabilities({ delta_enabled: false, enabled_timeframes: [], sections: { overview: false, activity: false, backtest: false }, config_error: 'Delta capabilities unavailable' });
+    });
+    return () => { cancelled = true; };
+  }, [ready, pathname, router, tab]);
+
   if (!ready) return null;
 
   return (
@@ -375,7 +404,7 @@ function DashboardContent() {
         <nav aria-label="Broker" className="mt-4 flex gap-2 border-b border-[#1f2937] pb-3">
           {[
             { label: 'FYERS', href: DASHBOARD_TAB_ROUTES[tab], active: !isDelta },
-            { label: 'Delta', href: '/delta', active: isDelta },
+            ...(deltaCapabilities?.delta_enabled ? [{ label: 'Delta', href: '/delta', active: isDelta }] : []),
           ].map((broker) => (
             <Link
               key={broker.label}
@@ -395,24 +424,35 @@ function DashboardContent() {
         {isDelta ? (
           <>
             <nav aria-label="Delta strategies" className="mb-4 flex gap-6 overflow-x-auto whitespace-nowrap border-b border-[#1f2937]">
-              {(['Delta Gold 15 min', 'Delta Gold 1 hr', 'Positions & Orders', 'Delta Backtest'] as const).map((name) => (
+              {[
+                ...(deltaCapabilities?.sections.overview ? [{ key: 'overview', label: 'Overview' }] : []),
+                ...(deltaCapabilities?.enabled_timeframes || []).map(minutes => ({ key: `gold${minutes}`, label: deltaLabel(minutes) })),
+                ...(deltaCapabilities?.sections.activity ? [{ key: 'activity', label: 'Positions & Orders' }] : []),
+                ...(deltaCapabilities?.sections.backtest ? [{ key: 'backtest', label: 'Delta Backtest' }] : []),
+              ].map((item) => (
                 <button
-                  key={name}
+                  key={item.key}
                   type="button"
-                  aria-pressed={deltaTab === name}
-                  onClick={() => setDeltaTab(name)}
+                  aria-pressed={deltaTab === item.key}
+                  onClick={() => setDeltaTab(item.key)}
                   className={`min-h-10 whitespace-nowrap border-b-2 py-3 text-sm font-medium ${
-                    deltaTab === name
+                    deltaTab === item.key
                       ? 'border-[#3b82f6] text-gray-100'
                       : 'border-transparent text-gray-500 hover:text-gray-300'
                   }`}
                 >
-                  {name}
+                  {item.label}
                 </button>
               ))}
             </nav>
             <section aria-label={deltaTab}>
-              {deltaTab === 'Positions & Orders' ? <DeltaActivityTab /> : deltaTab === 'Delta Backtest' ? <DeltaBacktestTab /> : <DeltaTab key={deltaTab} minutes={deltaTab === 'Delta Gold 15 min' ? 15 : 60} />}
+              {!deltaCapabilities ? <div className="panel p-4 text-sm text-gray-400">Loading Delta configuration...</div>
+                : deltaCapabilities.config_error ? <div className="panel border-[#ef4444]/40 p-4 text-sm text-[#f87171]">{deltaCapabilities.config_error}</div>
+                : deltaTab === 'overview' ? <DeltaOverviewTab />
+                : deltaTab === 'activity' ? <DeltaActivityTab enabledTimeframes={deltaCapabilities.enabled_timeframes} />
+                : deltaTab === 'backtest' ? <DeltaBacktestTab enabledTimeframes={deltaCapabilities.enabled_timeframes} />
+                : deltaTab.startsWith('gold') ? <DeltaTab key={deltaTab} minutes={Number(deltaTab.slice(4))} />
+                : <div className="panel p-4 text-sm text-gray-400">No Delta sections are enabled.</div>}
             </section>
           </>
         ) : <>
