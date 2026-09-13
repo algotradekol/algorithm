@@ -29,9 +29,13 @@ DELTA_DEFAULTS = {
 }
 
 
-SILVER_STRATEGY_VERSION = 'silver_micro_v1'
+SILVER_STRATEGY_VERSION = 'silver_micro_tradetron_v1'
 SILVER_DEFAULTS = {
     **DELTA_DEFAULTS,
+    'silver_breakout_points': 200.0,
+    'sl_points': 200.0,
+    'tsl_activate_points': 500.0,
+    'target_points': 2000.0,
     'exit_mode': 'target_to_breakeven_sl',
     'strategy_version': SILVER_STRATEGY_VERSION,
 }

@@ -15,7 +15,7 @@ type Diagnostics = {
 type Result = { asset?: DeltaAsset; symbol: string; minutes: number; path: string; start: number; end: number; currency: string; inr_rate?: number; settings: Settings; diagnostics?: Diagnostics; warnings: string[]; trades: Trade[]; open_position?: Trade; equity: { time: number; net: number; equity: number }[]; summary: { trades: number; wins: number; gross: number; fees: number; net: number; net_inr?: number; max_drawdown: number }; coverage: { minutes: number; reference_bars: number } };
 const initial: Settings = { silver_breakout_points: 3, sl_points: 15, target_points: 50, tsl_activate_points: 15, tsl_buffer_points: 3, silver_lots: 1, post_exit_cooldown_minutes: 5, exit_mode: 'fixed_target_sl', strategy_version: 'paxg_ema_volume_v1' };
 const initialFor = (asset: DeltaAsset): Settings => asset === 'silver'
-  ? { ...initial, exit_mode: 'target_to_breakeven_sl', strategy_version: 'silver_micro_v1' }
+  ? { ...initial, silver_breakout_points: 200, sl_points: 200, target_points: 2000, tsl_activate_points: 500, exit_mode: 'target_to_breakeven_sl', strategy_version: 'silver_micro_tradetron_v1' }
   : initial;
 const control = 'w-full rounded border border-[#334155] bg-[#0a0e14] px-3 py-2 text-sm text-gray-100';
 const button = 'rounded border border-[#334155] px-3 py-2 text-sm text-gray-200 disabled:opacity-40';

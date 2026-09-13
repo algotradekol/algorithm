@@ -38,10 +38,10 @@ const duration = (value?: number) => {
 };
 const button = 'rounded border border-[#334155] px-3 py-2 text-sm text-gray-200 hover:border-[#60a5fa] disabled:opacity-40';
 const silverTradetronDefaults = {
-  silver_breakout_points: 3,
-  sl_points: 15,
-  target_points: 50,
-  tsl_activate_points: 15,
+  silver_breakout_points: 200,
+  sl_points: 200,
+  target_points: 2000,
+  tsl_activate_points: 500,
   tsl_buffer_points: 3,
   silver_lots: 1,
   exit_mode: 'target_to_breakeven_sl' as const,

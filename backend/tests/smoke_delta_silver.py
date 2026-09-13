@@ -34,6 +34,10 @@ def run():
     assert DeltaSilver._check_triggers is Algo3SilverMicro._check_triggers
     assert not SILVER_DEFAULTS['trading_enabled']
     assert SILVER_DEFAULTS['exit_mode'] == 'target_to_breakeven_sl'
+    assert SILVER_DEFAULTS['silver_breakout_points'] == 200
+    assert SILVER_DEFAULTS['sl_points'] == 200
+    assert SILVER_DEFAULTS['tsl_activate_points'] == 500
+    assert SILVER_DEFAULTS['target_points'] == 2000
     for minutes in SILVER_TIMEFRAMES:
         refs = history(minutes, NOW)
         refs[-2].update(open=1000, high=1001, low=969, close=970, volume=1)
@@ -61,7 +65,7 @@ def run():
         s.process_price(1039, NOW + 1)
         s.process_price(1041, NOW + 2)
         assert s._open_position()['side'] == 'BUY' and s._open_position()['entry_price'] == 1041
-        assert s._open_position()['signal_snapshot']['strategy_version'] == 'silver_micro_v1'
+        assert s._open_position()['signal_snapshot']['strategy_version'] == 'silver_micro_tradetron_v1'
 
         for side in ('BUY', 'SELL'):
             for mode in ('fixed_target_sl', 'target_to_breakeven_sl'):
