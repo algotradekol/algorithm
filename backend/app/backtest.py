@@ -6,6 +6,7 @@ import pickle
 import shutil
 import tempfile
 import threading
+import time
 import uuid
 from collections import Counter, defaultdict
 from concurrent.futures import ThreadPoolExecutor, as_completed
@@ -55,6 +56,8 @@ SILVER_BUY_PLAN_LABELS = {
 
 _jobs: dict[str, dict] = {}
 _lock = threading.Lock()
+ACTIVE_BACKTEST_STATUSES = {"queued", "running", "cancelling"}
+BACKTEST_STALE_SECONDS = 15 * 60
 
 
 class BacktestCancelled(Exception):
@@ -63,9 +66,48 @@ class BacktestCancelled(Exception):
 
 def _raise_if_cancelled(job_id: str) -> None:
     with _lock:
-        cancelled = bool((_jobs.get(job_id) or {}).get("cancel_requested"))
+        job = _jobs.get(job_id) or {}
+        if job:
+            job["heartbeat_at"] = time.monotonic()
+            job["heartbeat_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        cancelled = bool(job.get("cancel_requested"))
     if cancelled:
         raise BacktestCancelled()
+
+
+def _release_stale_jobs_locked() -> None:
+    now = time.monotonic()
+    for job in _jobs.values():
+        if job.get("status") not in ACTIVE_BACKTEST_STATUSES:
+            continue
+        heartbeat = float(job.get("heartbeat_at") or job.get("created_monotonic") or 0)
+        if now - heartbeat < BACKTEST_STALE_SECONDS:
+            continue
+        job.update(
+            status="failed",
+            phase="failed",
+            error="Backtest worker became stale and was released. Start a new run.",
+            message="Previous hidden backtest worker became stale and was released.",
+            stale_released_at=datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        )
+        _persist_job(dict(job))
+
+
+def cancel_active_backtest_job() -> dict | None:
+    with _lock:
+        _release_stale_jobs_locked()
+        job = next((existing for existing in _jobs.values() if existing.get("status") in ACTIVE_BACKTEST_STATUSES), None)
+        if not job:
+            return None
+        job["cancel_requested"] = True
+        job["status"] = "cancelling"
+        job["phase"] = "cancelling"
+        job["message"] = "Cancelling active backtest after the current operation finishes."
+        job["heartbeat_at"] = time.monotonic()
+        job["heartbeat_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
+        snapshot = dict(job)
+    _persist_job(snapshot)
+    return _public_job(snapshot)
 
 
 def _ema_step(previous: float | None, value: float, period: int = EMA_PERIOD) -> float:
@@ -170,10 +212,14 @@ def start_backtest(
         "error": None,
         "cancel_requested": False,
         "created_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "created_monotonic": time.monotonic(),
+        "heartbeat_at": time.monotonic(),
+        "heartbeat_utc": datetime.datetime.now(datetime.timezone.utc).isoformat(),
     }
     with _lock:
+        _release_stale_jobs_locked()
         active = next(
-            (existing for existing in _jobs.values() if existing.get("status") in {"queued", "running", "cancelling"}),
+            (existing for existing in _jobs.values() if existing.get("status") in ACTIVE_BACKTEST_STATUSES),
             None,
         )
         if active:
@@ -202,11 +248,13 @@ def cancel_backtest_job(job_id: str) -> dict | None:
         job = _jobs.get(job_id)
         if not job:
             return None
-        if job.get("status") in {"queued", "running", "cancelling"}:
+        if job.get("status") in ACTIVE_BACKTEST_STATUSES:
             job["cancel_requested"] = True
             job["status"] = "cancelling"
             job["phase"] = "cancelling"
             job["message"] = "Cancelling backtest after the current operation finishes."
+            job["heartbeat_at"] = time.monotonic()
+            job["heartbeat_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
         snapshot = dict(job)
     _persist_job(snapshot)
     return _public_job(snapshot)
@@ -221,6 +269,8 @@ def _public_job(job: dict | None) -> dict | None:
 def _update(job_id: str, **values):
     with _lock:
         if job_id in _jobs:
+            values.setdefault("heartbeat_at", time.monotonic())
+            values.setdefault("heartbeat_utc", datetime.datetime.now(datetime.timezone.utc).isoformat())
             _jobs[job_id].update(values)
             job = dict(_jobs[job_id])
         else:
@@ -513,6 +563,8 @@ def _increment(job_id: str, field: str):
         job = _jobs.get(job_id)
         if job:
             job[field] = int(job.get(field) or 0) + 1
+            job["heartbeat_at"] = time.monotonic()
+            job["heartbeat_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 def _job_progress(job_id: str, field: str) -> int:
@@ -529,6 +581,8 @@ def _append_replay_activity(job_id: str, activity: dict) -> None:
         events = list(job.get("replay_activity") or [])
         events.append(activity)
         job["replay_activity"] = events[-8:]
+        job["heartbeat_at"] = time.monotonic()
+        job["heartbeat_utc"] = datetime.datetime.now(datetime.timezone.utc).isoformat()
 
 
 def _replay_cached_symbol(

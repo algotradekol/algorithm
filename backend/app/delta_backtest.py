@@ -15,7 +15,28 @@ from .timezone import IST
 from .strategies.algo3_silver_micro import _ema_step
 
 BACKTEST_LOCK = threading.Lock()
+BACKTEST_CANCEL = threading.Event()
 MAX_DAYS = 31
+
+
+class DeltaBacktestCancelled(Exception):
+    """Raised when the user cancels the active Delta backtest."""
+
+
+def clear_cancel_request():
+    BACKTEST_CANCEL.clear()
+
+
+def cancel_active_backtest():
+    if not BACKTEST_LOCK.locked():
+        return False
+    BACKTEST_CANCEL.set()
+    return True
+
+
+def raise_if_cancelled():
+    if BACKTEST_CANCEL.is_set():
+        raise DeltaBacktestCancelled()
 
 
 def iso(stamp):
@@ -38,8 +59,10 @@ def fetch_candles(client, resolution, start, end, interval):
     rows = {}
     # Stay below Delta's 2000-candle response limit, including inclusive end points.
     for cursor in range(start, end, interval * 1500):
+        raise_if_cancelled()
         stop = min(end, cursor + interval * 1500)
         batch = client.candles(resolution, cursor, stop)
+        raise_if_cancelled()
         if not isinstance(batch, list):
             raise ValueError('Delta returned invalid candle data')
         for raw in batch:
@@ -63,6 +86,7 @@ def fetch_candles(client, resolution, start, end, interval):
     last_close = None
     filled = 0
     for stamp in expected:
+        raise_if_cancelled()
         row = rows.get(stamp)
         if row is None:
             if last_close is None:
@@ -228,6 +252,7 @@ def chart_candles(references, minute_rows, minutes, start, end):
 
 
 def replay(product, region, minutes, settings, references, minute_rows, start, end, path, asset='gold'):
+    raise_if_cancelled()
     settings = validate_settings({**defaults_for(asset), **settings, 'scan_enabled': True, 'trading_enabled': True}, asset)
     broker = ReplayBroker(settings, product)
     strategy = (ReplaySilver if asset == 'silver' else ReplayGold)(minutes, product['symbol'], broker)
@@ -245,6 +270,7 @@ def replay(product, region, minutes, settings, references, minute_rows, start, e
                    'price_low': min(r['low'] for r in minute_rows), 'price_high': max(r['high'] for r in minute_rows)}
     deadline = time.monotonic() + 60
     for row in minute_rows:
+        raise_if_cancelled()
         stamp = row['time']
         if not start <= stamp < end:
             continue
@@ -309,13 +335,16 @@ def replay(product, region, minutes, settings, references, minute_rows, start, e
 
 
 def run_backtest(minutes, start_date, end_date, settings, path, asset='gold'):
+    raise_if_cancelled()
     if asset not in {'gold', 'silver'} or minutes not in (SILVER_TIMEFRAMES if asset == 'silver' else DELTA_TIMEFRAMES) or path not in ('high_first', 'low_first'):
         raise ValueError('Invalid Delta timeframe or intraminute path')
     start, end = date_range(start_date, end_date)
     settings = validate_settings({**defaults_for(asset), **settings}, asset)
     client = DeltaClient() if asset == 'gold' else DeltaClient(asset=asset)
     try:
+        raise_if_cancelled()
         product = client.product()
+        raise_if_cancelled()
         interval = minutes * 60
         first_bucket, final_bucket = start // interval * interval, (end - 60) // interval * interval
         history_start, history_end = first_bucket - 300 * interval, final_bucket + interval

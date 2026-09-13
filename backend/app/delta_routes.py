@@ -59,17 +59,60 @@ def overview(asset: Asset = 'gold'):
 @router.post('/backtest/run')
 def backtest(request: BacktestRequest):
     require_delta(section="backtest", minutes=request.minutes, asset=request.asset)
-    from .delta_backtest import BACKTEST_LOCK, run_backtest
+    from .delta_backtest import BACKTEST_LOCK, DeltaBacktestCancelled, clear_cancel_request, run_backtest
     if not BACKTEST_LOCK.acquire(blocking=False):
         raise HTTPException(409, 'A Delta backtest is already running; retry when it finishes')
+    clear_cancel_request()
+    started = time.monotonic()
+    print(
+        "[delta_backtest] START "
+        f"asset={request.asset} minutes={request.minutes} "
+        f"range={request.start_date.isoformat()}..{request.end_date.isoformat()} "
+        f"path={request.path}"
+    )
     try:
-        return run_backtest(request.minutes, request.start_date, request.end_date, request.settings, request.path, asset=request.asset)
+        result = run_backtest(request.minutes, request.start_date, request.end_date, request.settings, request.path, asset=request.asset)
+        summary = result.get("summary") if isinstance(result, dict) else {}
+        print(
+            "[delta_backtest] END "
+            f"asset={request.asset} minutes={request.minutes} "
+            f"trades={(summary or {}).get('trades')} net={(summary or {}).get('net')} "
+            f"elapsed={time.monotonic() - started:.2f}s"
+        )
+        return result
+    except DeltaBacktestCancelled:
+        print(
+            "[delta_backtest] CANCELLED "
+            f"asset={request.asset} minutes={request.minutes} "
+            f"elapsed={time.monotonic() - started:.2f}s"
+        )
+        raise HTTPException(409, 'Delta backtest cancelled') from None
     except (ValueError, TypeError, KeyError) as exc:
+        print(
+            "[delta_backtest] FAILED "
+            f"asset={request.asset} minutes={request.minutes} "
+            f"error={exc}"
+        )
         raise HTTPException(400, str(exc)) from None
-    except Exception:
+    except Exception as exc:
+        print(
+            "[delta_backtest] ERROR "
+            f"asset={request.asset} minutes={request.minutes} "
+            f"error={exc}"
+        )
         raise HTTPException(503, 'Delta backtest data unavailable; check history/proxy connectivity') from None
     finally:
         BACKTEST_LOCK.release()
+
+
+@router.post('/backtest/cancel')
+def cancel_backtest(asset: Asset = 'gold'):
+    require_delta(section="backtest", asset=asset)
+    from .delta_backtest import cancel_active_backtest
+    if not cancel_active_backtest():
+        raise HTTPException(404, 'No Delta backtest is running')
+    print(f"[delta_backtest] cancel requested asset={asset}")
+    return {"status": "cancelling"}
 
 
 @router.get("/{minutes}/status")

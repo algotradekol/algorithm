@@ -34,11 +34,26 @@ export default function DeltaBacktestTab({ enabledTimeframes, asset = 'gold' }: 
   const [result, setResult] = useState<Result | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
+  const [cancelHint, setCancelHint] = useState(false);
   async function run(event: React.FormEvent) {
-    event.preventDefault(); setBusy(true); setError(''); setResult(null);
+    event.preventDefault(); setBusy(true); setError(''); setCancelHint(false); setResult(null);
     try { setResult(await api.deltaBacktest({ minutes, start_date: start, end_date: end, path, settings })); }
-    catch (err) { setError(err instanceof Error ? err.message : 'Backtest failed'); }
+    catch (err) {
+      const message = err instanceof Error ? err.message : 'Backtest failed';
+      setError(message);
+      setCancelHint(message.includes('API error 409') && message.toLowerCase().includes('already running'));
+    }
     finally { setBusy(false); }
+  }
+  async function cancelActive() {
+    setError('');
+    setCancelHint(false);
+    try {
+      await api.deltaCancelBacktest();
+      setError('Delta backtest stop requested. It will release after the current history/replay checkpoint.');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not stop Delta backtest');
+    }
   }
   async function loadSettings() {
     setBusy(true); setError('');
@@ -63,7 +78,11 @@ export default function DeltaBacktestTab({ enabledTimeframes, asset = 'gold' }: 
       </div>
       <p className="text-xs text-gray-400">{enabledTimeframes.length ? 'Maximum 31 days; today uses completed minutes only. One lot equals one exchange quantity unit. Risk distances use the quoted price, not INR. Internal no-trade history gaps replay as flat zero-volume candles.' : 'No Delta strategy timeframe is enabled for backtesting in this deployment.'}</p>
       <div className="flex flex-wrap gap-2"><button className={`${button} border-[#3b82f6] bg-[#3b82f6]/15`} type="submit">{busy ? 'Loading / replaying...' : 'Run backtest'}</button><button className={button} type="button" onClick={loadSettings}>Load this strategy&apos;s paper settings</button></div>
-    </fieldset></form>
+    </fieldset>
+    {(busy || cancelHint) && <button className={`${button} mt-3 border-[#ef4444] text-[#fecaca]`} type="button" onClick={cancelActive}>
+      Stop active Delta backtest
+    </button>}
+    </form>
     {error && <p role="alert" className="rounded border border-[#ef4444]/40 p-3 text-sm text-[#f87171]">{error}</p>}
     {result && <>
       <div className="flex flex-wrap items-center justify-between gap-3"><div className="text-sm text-gray-300">{result.symbol} | {result.minutes}m | {date(result.start)} to {date(result.end)} IST<br /><span className="text-xs text-gray-500">{num(result.coverage.minutes)} execution candles | {num(result.coverage.reference_bars)} reference bars including warmup | {result.path === 'high_first' ? 'O-H-L-C' : 'O-L-H-C'}</span></div><button className={button} onClick={() => download(result)}>Download full CSV</button></div>

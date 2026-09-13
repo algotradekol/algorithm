@@ -1074,3 +1074,12 @@ def cancel_backtest(job_id: str, _user=Depends(require_auth)):
     if not job:
         raise HTTPException(status_code=404, detail="Backtest job not found.")
     return job
+
+
+@app.post("/api/backtests/cancel-active")
+def cancel_active_backtest(_user=Depends(require_auth)):
+    from .backtest import cancel_active_backtest_job
+    job = cancel_active_backtest_job()
+    if not job:
+        raise HTTPException(status_code=404, detail="No active backtest is running.")
+    return job

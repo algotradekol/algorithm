@@ -221,6 +221,8 @@ export const api = {
   backtestStatus: (jobId: string) => authedFetch(`/api/backtests/${encodeURIComponent(jobId)}`),
   cancelBacktest: (jobId: string) =>
     authedFetch(`/api/backtests/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
+  cancelActiveBacktest: () =>
+    authedFetch('/api/backtests/cancel-active', { method: 'POST' }),
 };
 
 export type DeltaAsset = 'gold' | 'silver';
@@ -242,6 +244,7 @@ export function deltaApi(asset: DeltaAsset = 'gold') {
   deltaExport: (minutes: number, kind: 'open' | 'closed') => fetchAsset(`/api/delta/${minutes}/export?kind=${kind}`),
   deltaCheckConnection: () => fetchAsset('/api/delta/connection/check', { method: 'POST' }),
   deltaBacktest: (request: Record<string, unknown>) => fetchAsset('/api/delta/backtest/run', { method: 'POST', body: JSON.stringify({ ...request, asset }) }),
+  deltaCancelBacktest: () => fetchAsset('/api/delta/backtest/cancel', { method: 'POST' }),
   deltaAccount: (kind: string, source: string, minutes: number, offset = 0, after = '') => fetchAsset(`/api/delta/account/${kind}?source=${source}&minutes=${minutes}&offset=${offset}${after ? `&after=${encodeURIComponent(after)}` : ''}`),
   };
 }

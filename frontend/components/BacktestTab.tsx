@@ -32,6 +32,7 @@ export default function BacktestTab() {
   const [endDate, setEndDate] = useState(today);
   const [job, setJob] = useState<any>(null);
   const [error, setError] = useState('');
+  const [canCancelActive, setCanCancelActive] = useState(false);
   const [storageReady, setStorageReady] = useState(false);
   // Per-algo backtest settings overrides. Persisted to localStorage so a page
   // reload keeps the user's tuned values, but never sent to the settings API
@@ -102,6 +103,7 @@ export default function BacktestTab() {
 
   async function run() {
     setError('');
+    setCanCancelActive(false);
     setJob(null);
     if (!startDate || !endDate) {
       setError('Choose both a start date and an end date.');
@@ -124,17 +126,30 @@ export default function BacktestTab() {
         ...(hasOverride ? { settings_override: activeOverride } : {}),
       }));
     } catch (e: any) {
-      setError(e?.message || 'Could not start backtest');
+      const message = e?.message || 'Could not start backtest';
+      setError(message);
+      setCanCancelActive(message.includes('API error 409') && message.toLowerCase().includes('already running'));
     }
   }
 
   async function cancel() {
     if (!job?.id || !active) return;
     setError('');
+    setCanCancelActive(false);
     try {
       setJob(await api.cancelBacktest(job.id));
     } catch (e: any) {
       setError(e?.message || 'Could not cancel backtest');
+    }
+  }
+
+  async function cancelActive() {
+    setError('');
+    setCanCancelActive(false);
+    try {
+      setJob(await api.cancelActiveBacktest());
+    } catch (e: any) {
+      setError(e?.message || 'Could not stop the active backtest');
     }
   }
 
@@ -278,7 +293,12 @@ export default function BacktestTab() {
         </div>
       )}
 
-      {error && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{error}</p>}
+      {error && <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">
+        <span>{error}</span>
+        {canCancelActive && <button type="button" onClick={cancelActive} className="rounded border border-[#ef4444] px-3 py-1.5 text-xs font-semibold text-[#fecaca] transition hover:bg-[#ef4444]/20">
+          <i className="ri-stop-circle-line mr-1" />Stop hidden backtest
+        </button>}
+      </div>}
       {job && !result && <section className="panel p-4"><div className="flex justify-between gap-3 text-sm text-gray-200"><span>{job.message}</span><span className="num">{progressCompleted} / {progressTotal}</span></div><div className="mt-3 h-2 overflow-hidden rounded bg-[#020617]"><div className="h-full bg-[#3b82f6] transition-[width] duration-500" style={{ width: `${progress}%` }} /></div><p className="mt-2 text-xs text-gray-500">{progress}% complete. {replaying ? `${job.replay_failed || 0} selected signals could not be replayed.` : `${job.failed_symbols || 0} symbols returned no usable history.`}</p>{replaying && <ReplayMonitor activity={job.replay_activity || []} />}</section>}
       {job?.status === 'failed' && <p className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 px-3 py-2 text-sm text-[#ef4444]">{job.error || job.message}</p>}
       {job?.status === 'cancelled' && <p className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 px-3 py-2 text-sm text-[#f59e0b]">Backtest cancelled. You can start a new range now.</p>}
