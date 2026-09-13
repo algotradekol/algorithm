@@ -157,6 +157,9 @@ class DeltaPaperBroker:
         if tighter:
             policy.setdefault("events", []).append(evaluation)
             policy["events"] = policy["events"][-200:]
+            policy["status"] = status
+        elif not policy.get("events"):
+            policy["status"] = "waiting_for_tighter_post_entry_window"
         if tighter and not breached:
             updated["sl_price"] = candidate
             updated["trailing_sl_active"] = True

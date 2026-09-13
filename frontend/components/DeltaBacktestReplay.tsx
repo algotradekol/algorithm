@@ -33,7 +33,7 @@ export default function DeltaBacktestReplay({ result }: { result: Result }) {
     const snap = trade.signal_snapshot;
     const moves = (snap.delta_three_candle_tsl?.events || []) as Move[];
     const trailing = moves.filter(move => move.status === 'accepted' && move.calculated_at && move.candidate_sl != null).map(move => ({
-      // Pair timestamps identify candle opens; a new stop is available at its close.
+      // TSL timestamps identify candle opens; a new stop is available at its close.
       time: new Date(Math.max(Date.parse(trade.entry_time), Date.parse(move.calculated_at!) + result.minutes * 60000)).toISOString(),
       new_sl: move.candidate_sl,
     }));

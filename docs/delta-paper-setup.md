@@ -99,6 +99,12 @@ panel includes a `Use Tradetron defaults` button for restoring the normal Fyers
 Silver Micro values: offset `200`, SL `200`, target `2000`, breakeven activation
 `500`, lots `1`, and breakeven mode.
 
+Gold three-candle TSL waits until the first three strategy candles after the
+entry candle have fully closed. BUY uses the lowest low of those three candles
+minus the TSL buffer; SELL uses the highest high plus the buffer. After that,
+each newly closed candle rolls the three-candle window forward and only tighter
+stops are accepted.
+
 Manual exits, SL exits, trailing exits, and targets start the per-timeframe
 post-exit rest timer when it is greater than zero. Set rest to `0` for immediate
 re-entry eligibility after those exits. Reversal exits bypass this timer.

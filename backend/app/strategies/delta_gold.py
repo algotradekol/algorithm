@@ -352,7 +352,7 @@ class DeltaGold(Algo3SilverMicro):
         return super()._fire_entry(side, ltp, trigger_level, setup_bar_at_override, event_time)
 
     def _three_candle_window(self, entry_bucket=None):
-        eligible = [bar for bar in self._bars if entry_bucket is None or bar["time"] != entry_bucket]
+        eligible = [bar for bar in self._bars if entry_bucket is None or bar["time"] > entry_bucket]
         return eligible[-3:] if len(eligible) >= 3 else []
 
     def _three_candle_details(self, side, window, buffer_points=None):
@@ -427,20 +427,14 @@ class DeltaGold(Algo3SilverMicro):
             event_stamp = event.timestamp() if event.tzinfo else event.replace(tzinfo=IST).timestamp()
             entry_bucket_stamp = int(event_stamp // (self.minutes * 60)) * self.minutes * 60
             entry_bucket = datetime.datetime.fromtimestamp(entry_bucket_stamp, IST).replace(tzinfo=None)
-            details = self._three_candle_details(side, self._three_candle_window(entry_bucket))
-            accepted = bool(
-                details
-                and (configured_sl < details["candidate_sl"] < entry_price if side == "BUY" else entry_price < details["candidate_sl"] < configured_sl)
-            )
-            if accepted:
-                effective_sl = float(details["candidate_sl"])
             snapshot["delta_three_candle_tsl"] = {
                 "policy": DELTA_EXIT_MODE_THREE_CANDLE,
                 "entry_bucket": entry_bucket.replace(tzinfo=IST).isoformat(),
+                "status": "waiting_for_three_post_entry_candles",
+                "window_rule": "latest_3_closed_strategy_candles_after_entry_bucket",
                 "buffer_points": self.settings["tsl_buffer_points"],
-                "initial_window": details,
-                "events": ([{**details, "status": "accepted", "previous_sl": configured_sl}] if accepted else []),
-                "evaluations": ([{**details, "status": "accepted" if accepted else "not_tighter"}] if details else []),
+                "events": [],
+                "evaluations": [],
             }
 
         try:

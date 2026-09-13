@@ -183,8 +183,8 @@ def run():
     base = datetime.datetime(2026, 9, 12, 9)
     for side in ("BUY", "SELL"):
         three = strategy(settings={"exit_mode": DELTA_EXIT_MODE_THREE_CANDLE, "tsl_buffer_points": 3, "target_points": 50})
-        lows = (90, 95, 94)
-        highs = (110, 105, 108)
+        lows = (10, 20, 30)
+        highs = (190, 180, 170)
         three._bars = deque([
             bar(base + datetime.timedelta(minutes=15 * index), 100, highs[index], lows[index], 100)
             for index in range(3)
@@ -195,21 +195,43 @@ def run():
         assert three._enter(side, 100, 100, event_time=event)
         pos = three._open_position()
         assert pos["initial_sl"] == (80 if side == "BUY" else 120)
-        assert pos["sl_price"] == (87 if side == "BUY" else 113)
-        assert pos["trailing_sl_active"]
-        assert len(pos["signal_snapshot"]["delta_three_candle_tsl"]["events"]) == 1
+        assert pos["sl_price"] == pos["initial_sl"]
+        assert not pos["trailing_sl_active"]
+        assert pos["signal_snapshot"]["delta_three_candle_tsl"]["events"] == []
+        assert pos["signal_snapshot"]["delta_three_candle_tsl"]["status"] == "waiting_for_three_post_entry_candles"
 
         entry_bar = bar(base + datetime.timedelta(minutes=45), 100, 104, 96, 102)
         three._bars.append(entry_bar)
         three._apply_three_candle_tsl(entry_bar)
         assert three._open_position()["sl_price"] == pos["sl_price"]
-        next_bar = bar(base + datetime.timedelta(minutes=60), 102, 106, 96, 104)
-        three._bars.append(next_bar)
-        three._apply_three_candle_tsl(next_bar)
+        post1 = bar(base + datetime.timedelta(minutes=60), 102, 104, 96, 102)
+        post2 = bar(base + datetime.timedelta(minutes=75), 102, 106, 95, 104)
+        post3 = bar(base + datetime.timedelta(minutes=90), 104, 108, 94, 106)
+        for wait_bar in (post1, post2):
+            three._bars.append(wait_bar)
+            three._apply_three_candle_tsl(wait_bar)
+            assert three._open_position()["sl_price"] == pos["sl_price"]
+        three._bars.append(post3)
+        three._apply_three_candle_tsl(post3)
         moved = three._open_position()
         assert moved["sl_price"] == (91 if side == "BUY" else 111)
         latest = moved["signal_snapshot"]["delta_three_candle_tsl"]["events"][-1]
-        assert all(candle["time"] != entry_bar["time"].replace(tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat() for candle in latest["candles"])
+        assert [candle["time"] for candle in latest["candles"]] == [
+            post1["time"].replace(tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat(),
+            post2["time"].replace(tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat(),
+            post3["time"].replace(tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat(),
+        ]
+        post4 = bar(base + datetime.timedelta(minutes=105), 106, 106, 97, 105)
+        three._bars.append(post4)
+        three._apply_three_candle_tsl(post4)
+        assert three._open_position()["sl_price"] == moved["sl_price"]
+        post5 = bar(base + datetime.timedelta(minutes=120), 105, 105, 98, 104)
+        post6 = bar(base + datetime.timedelta(minutes=135), 104, 104, 99, 103)
+        for roll_bar in (post5, post6):
+            three._bars.append(roll_bar)
+            three._apply_three_candle_tsl(roll_bar)
+        rolled = three._open_position()
+        assert rolled["sl_price"] == (94 if side == "BUY" else 109)
 
     persisted = strategy()
     persisted._enter("BUY", 1000, 1000)
