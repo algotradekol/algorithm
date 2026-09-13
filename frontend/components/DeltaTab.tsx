@@ -37,11 +37,11 @@ const duration = (value?: number) => {
   return `${hours ? `${hours}h ` : ''}${minutes}m ${seconds % 60}s`;
 };
 const button = 'rounded border border-[#334155] px-3 py-2 text-sm text-gray-200 hover:border-[#60a5fa] disabled:opacity-40';
-const silverTradetronDefaults = {
-  silver_breakout_points: 200,
-  sl_points: 200,
-  target_points: 2000,
-  tsl_activate_points: 500,
+const silverDeltaDefaults = {
+  silver_breakout_points: 0.10,
+  sl_points: 0.30,
+  target_points: 1.0,
+  tsl_activate_points: 0.30,
   tsl_buffer_points: 3,
   silver_lots: 1,
   exit_mode: 'target_to_breakeven_sl' as const,
@@ -182,7 +182,7 @@ export default function DeltaTab({ minutes, asset = 'gold' }: { minutes: number;
     }}>
       <h2 className="font-semibold text-gray-100">Paper risk settings</h2>
       <p className="text-xs text-gray-400">All distances are in the quoted {asset} price, not rupees. Existing positions retain their entry-time protection.</p>
-      {asset === 'silver' && <button type="button" className={`${button} border-[#94a3b8] text-gray-100`} onClick={() => setDraft({ ...draft, ...silverTradetronDefaults })}>Use Tradetron defaults</button>}
+      {asset === 'silver' && <button type="button" className={`${button} border-[#94a3b8] text-gray-100`} onClick={() => setDraft({ ...draft, ...silverDeltaDefaults })}>Use Delta Silver defaults</button>}
       <label className="block text-sm text-gray-300">Exit mode
         <select className="mt-1 block w-full rounded border border-[#334155] bg-[#0a0e14] p-2" value={draft.exit_mode} onChange={e => setDraft({ ...draft, exit_mode: e.target.value as Settings['exit_mode'] })}>
           <option value="fixed_target_sl">Fixed Target + Fixed Stop Loss</option>

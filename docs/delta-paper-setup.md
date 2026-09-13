@@ -95,9 +95,9 @@ Gold supports fixed target plus SL, target plus breakeven SL, and three-candle
 TSL. Silver supports fixed target plus SL and target plus breakeven SL, matching
 normal Silver Micro behavior without Gold's volume filter or three-candle TSL.
 New Silver settings default to target plus breakeven SL, and the Silver settings
-panel includes a `Use Tradetron defaults` button for restoring the normal Fyers
-Silver Micro values: offset `200`, SL `200`, target `2000`, breakeven activation
-`500`, lots `1`, and breakeven mode.
+panel includes a `Use Delta Silver defaults` button for restoring USD-sized
+SLVONUSD values: offset `0.10`, SL `0.30`, target `1.00`, breakeven activation
+`0.30`, lots `1`, and breakeven mode.
 
 Gold three-candle TSL waits until the first three strategy candles after the
 entry candle have fully closed. BUY uses the lowest low of those three candles
