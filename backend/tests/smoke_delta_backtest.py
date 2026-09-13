@@ -139,6 +139,10 @@ def run():
     filled = fetch_candles(fake, '1m', 0, 120, 60)
     assert filled[1]['synthetic_flat'] and filled[1]['volume'] == 0
     assert filled[1]['open'] == filled[1]['high'] == filled[1]['low'] == filled[1]['close'] == candles[0]['close']
+    fake.candles.return_value = [candles[0]]
+    anchored = fetch_candles(fake, '1m', 60, 180, 60, anchor_lookback=1)
+    assert len(anchored) == 2 and anchored[0]['time'] == 60
+    assert anchored[0]['synthetic_flat'] and anchored[0]['open'] == candles[0]['close']
     fake.candles.return_value = [candles[1]]
     try:
         fetch_candles(fake, '1m', 0, 120, 60)

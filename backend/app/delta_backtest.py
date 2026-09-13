@@ -55,10 +55,11 @@ def date_range(start_date, end_date, now=None):
     return int(start), int(end)
 
 
-def fetch_candles(client, resolution, start, end, interval):
+def fetch_candles(client, resolution, start, end, interval, anchor_lookback=0):
     rows = {}
+    query_start = start - max(0, int(anchor_lookback)) * interval
     # Stay below Delta's 2000-candle response limit, including inclusive end points.
-    for cursor in range(start, end, interval * 1500):
+    for cursor in range(query_start, end, interval * 1500):
         raise_if_cancelled()
         stop = min(end, cursor + interval * 1500)
         batch = client.candles(resolution, cursor, stop)
@@ -67,7 +68,7 @@ def fetch_candles(client, resolution, start, end, interval):
             raise ValueError('Delta returned invalid candle data')
         for raw in batch:
             stamp = int(raw['time'])
-            if not start <= stamp < end:
+            if not query_start <= stamp < end:
                 continue
             prices = {key: float(raw[key]) for key in ('open', 'high', 'low', 'close')}
             if stamp % interval or any(not math.isfinite(v) or v <= 0 for v in prices.values()):
@@ -81,7 +82,7 @@ def fetch_candles(client, resolution, start, end, interval):
             if stamp in rows and rows[stamp] != row:
                 raise ValueError('Conflicting duplicate Delta candles; retry history later')
             rows[stamp] = row
-    expected = list(range(start, end, interval))
+    expected = list(range(query_start, end, interval))
     output = []
     last_close = None
     filled = 0
@@ -97,6 +98,7 @@ def fetch_candles(client, resolution, start, end, interval):
         else:
             last_close = row['close']
         output.append(row)
+    output = [row for row in output if row['time'] >= start]
     if filled:
         print(f"[delta_backtest] filled {filled} missing {resolution} candles as flat zero-volume bars")
     return output
@@ -349,12 +351,12 @@ def run_backtest(minutes, start_date, end_date, settings, path, asset='gold'):
         first_bucket, final_bucket = start // interval * interval, (end - 60) // interval * interval
         history_start, history_end = first_bucket - 300 * interval, final_bucket + interval
         if minutes == 7:
-            source_minutes = fetch_candles(client, '1m', history_start, history_end, 60)
+            source_minutes = fetch_candles(client, '1m', history_start, history_end, 60, anchor_lookback=120)
             references = aggregate_seven_minute(source_minutes)
             minute_rows = [row for row in source_minutes if start <= row['time'] < end]
         else:
-            references = fetch_candles(client, delta_resolution(minutes), history_start, history_end, interval)
-            minute_rows = fetch_candles(client, '1m', start, end, 60)
+            references = fetch_candles(client, delta_resolution(minutes), history_start, history_end, interval, anchor_lookback=20)
+            minute_rows = fetch_candles(client, '1m', start, end, 60, anchor_lookback=120)
         return replay(product, client.region, minutes, settings, references, minute_rows, start, end, path, asset)
     finally:
         client.session.close()
