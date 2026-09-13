@@ -111,7 +111,7 @@ class CloseRequest(BaseModel):
 
 
 class PauseRequest(BaseModel):
-    duration_minutes: int = Field(ge=1, le=10_080)
+    duration_minutes: int = Field(ge=0, le=10_080)
 
 
 class ProtectionRequest(BaseModel):

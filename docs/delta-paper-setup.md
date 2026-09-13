@@ -94,10 +94,14 @@ Current Delta defaults for new normalized settings:
 Gold supports fixed target plus SL, target plus breakeven SL, and three-candle
 TSL. Silver supports fixed target plus SL and target plus breakeven SL, matching
 normal Silver Micro behavior without Gold's volume filter or three-candle TSL.
+New Silver settings default to target plus breakeven SL, and the Silver settings
+panel includes a `Use Tradetron defaults` button for restoring offset `3`, SL
+`15`, target `50`, breakeven activation `15`, lots `1`, and breakeven mode.
 
 Manual exits, SL exits, trailing exits, and targets start the per-timeframe
-post-exit rest timer. Reversal exits bypass that timer. Dashboards include
-presets, a custom-minute pause, and a Resume action.
+post-exit rest timer when it is greater than zero. Set rest to `0` for immediate
+re-entry eligibility after those exits. Reversal exits bypass this timer.
+Dashboards include presets, a custom-minute pause, and a Resume action.
 
 ## Frontend
 

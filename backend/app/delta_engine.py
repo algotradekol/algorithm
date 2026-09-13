@@ -344,8 +344,10 @@ class DeltaService:
         with self.lock:
             strategy = self.strategy(minutes)
             duration = float(duration_minutes)
-            if not duration.is_integer() or not 1 <= duration <= 10_080:
-                raise ValueError("Rest duration must be a whole number from 1 to 10080 minutes")
+            if not duration.is_integer() or not 0 <= duration <= 10_080:
+                raise ValueError("Rest duration must be a whole number from 0 to 10080 minutes")
+            if int(duration) == 0:
+                return self.resume(minutes)
             state = copy.deepcopy(strategy.broker.state)
             state["cooldown_until"] = time.time() + int(duration) * 60
             state["cooldown_reason"] = "MANUAL_PAUSE"

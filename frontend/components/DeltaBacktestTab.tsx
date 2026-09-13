@@ -14,6 +14,9 @@ type Diagnostics = {
 };
 type Result = { asset?: DeltaAsset; symbol: string; minutes: number; path: string; start: number; end: number; currency: string; inr_rate?: number; settings: Settings; diagnostics?: Diagnostics; warnings: string[]; trades: Trade[]; open_position?: Trade; equity: { time: number; net: number; equity: number }[]; summary: { trades: number; wins: number; gross: number; fees: number; net: number; net_inr?: number; max_drawdown: number }; coverage: { minutes: number; reference_bars: number } };
 const initial: Settings = { silver_breakout_points: 3, sl_points: 15, target_points: 50, tsl_activate_points: 15, tsl_buffer_points: 3, silver_lots: 1, post_exit_cooldown_minutes: 5, exit_mode: 'fixed_target_sl', strategy_version: 'paxg_ema_volume_v1' };
+const initialFor = (asset: DeltaAsset): Settings => asset === 'silver'
+  ? { ...initial, exit_mode: 'target_to_breakeven_sl', strategy_version: 'silver_micro_v1' }
+  : initial;
 const control = 'w-full rounded border border-[#334155] bg-[#0a0e14] px-3 py-2 text-sm text-gray-100';
 const button = 'rounded border border-[#334155] px-3 py-2 text-sm text-gray-200 disabled:opacity-40';
 const num = (value?: number) => value == null ? '--' : value.toLocaleString('en-IN', { maximumFractionDigits: 4 });
@@ -27,7 +30,7 @@ export default function DeltaBacktestTab({ enabledTimeframes, asset = 'gold' }: 
   const [start, setStart] = useState(() => day(-1));
   const [end, setEnd] = useState(() => day(-1));
   const [path, setPath] = useState('high_first');
-  const [settings, setSettings] = useState<Settings>({ ...initial, strategy_version: asset === 'silver' ? 'silver_micro_v1' : initial.strategy_version });
+  const [settings, setSettings] = useState<Settings>(() => ({ ...initialFor(asset) }));
   const [result, setResult] = useState<Result | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -56,7 +59,7 @@ export default function DeltaBacktestTab({ enabledTimeframes, asset = 'gold' }: 
         <label className="text-xs text-gray-400">Assumed 1-minute path<select className={`${control} mt-1`} value={path} onChange={e => setPath(e.target.value)}><option value="high_first">Open → High → Low → Close</option><option value="low_first">Open → Low → High → Close</option></select></label>
         <label className="text-xs text-gray-400">Exit mode<select className={`${control} mt-1`} value={settings.exit_mode} onChange={e => setSettings({ ...settings, exit_mode: e.target.value })}><option value="fixed_target_sl">Fixed target + SL</option><option value="target_to_breakeven_sl">Target + breakeven SL</option>{asset === 'gold' && <option value="three_candle_tsl">Three-Candle TSL</option>}</select></label>
         {([['silver_breakout_points', 'Breakout offset'], ['sl_points', 'Initial SL points'], ['target_points', 'Final target points'], ['tsl_activate_points', 'TSL activation points'], ['tsl_buffer_points', 'TSL buffer points'], ['silver_lots', 'Lots per trade']] as const).filter(([key]) => (key !== 'tsl_activate_points' || settings.exit_mode === 'target_to_breakeven_sl') && (key !== 'tsl_buffer_points' || settings.exit_mode === 'three_candle_tsl')).map(([key, label]) => <label key={key} className="text-xs text-gray-400">{label}<input className={`${control} mt-1`} type="number" required min={key === 'silver_lots' ? 1 : .000001} step={key === 'silver_lots' ? 1 : 'any'} value={settings[key]} onChange={e => setSettings({ ...settings, [key]: Number(e.target.value) })} /></label>)}
-        <label className="text-xs text-gray-400">Post-exit rest (minutes)<input className={`${control} mt-1`} type="number" required min={1} max={10080} step={1} value={settings.post_exit_cooldown_minutes} onChange={e => setSettings({ ...settings, post_exit_cooldown_minutes: Number(e.target.value) })} /></label>
+        <label className="text-xs text-gray-400">Post-exit rest (minutes)<input className={`${control} mt-1`} type="number" required min={0} max={10080} step={1} value={settings.post_exit_cooldown_minutes} onChange={e => setSettings({ ...settings, post_exit_cooldown_minutes: Number(e.target.value) })} /></label>
       </div>
       <p className="text-xs text-gray-400">{enabledTimeframes.length ? 'Maximum 31 days; today uses completed minutes only. One lot equals one exchange quantity unit. Risk distances use the quoted price, not INR. Internal no-trade history gaps replay as flat zero-volume candles.' : 'No Delta strategy timeframe is enabled for backtesting in this deployment.'}</p>
       <div className="flex flex-wrap gap-2"><button className={`${button} border-[#3b82f6] bg-[#3b82f6]/15`} type="submit">{busy ? 'Loading / replaying...' : 'Run backtest'}</button><button className={button} type="button" onClick={loadSettings}>Load this strategy&apos;s paper settings</button></div>

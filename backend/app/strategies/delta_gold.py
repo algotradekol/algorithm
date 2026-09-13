@@ -30,7 +30,11 @@ DELTA_DEFAULTS = {
 
 
 SILVER_STRATEGY_VERSION = 'silver_micro_v1'
-SILVER_DEFAULTS = {**DELTA_DEFAULTS, 'strategy_version': SILVER_STRATEGY_VERSION}
+SILVER_DEFAULTS = {
+    **DELTA_DEFAULTS,
+    'exit_mode': 'target_to_breakeven_sl',
+    'strategy_version': SILVER_STRATEGY_VERSION,
+}
 
 
 def defaults_for(asset='gold'):
@@ -55,7 +59,7 @@ def validate_settings(settings, asset='gold'):
         if isinstance(settings[key], bool):
             raise ValueError(f"{key} must be numeric")
         value = float(settings[key])
-        if not math.isfinite(value) or value <= 0:
+        if not math.isfinite(value) or value < 0 or (key != "post_exit_cooldown_minutes" and value <= 0):
             raise ValueError(f"{key} must be positive")
         settings[key] = value
     if not float(settings["silver_lots"]).is_integer():
@@ -63,8 +67,8 @@ def validate_settings(settings, asset='gold'):
     if not float(settings["post_exit_cooldown_minutes"]).is_integer():
         raise ValueError("Post-exit rest must be a whole number of minutes")
     settings["post_exit_cooldown_minutes"] = int(settings["post_exit_cooldown_minutes"])
-    if not 1 <= settings["post_exit_cooldown_minutes"] <= 10_080:
-        raise ValueError("Post-exit rest must be between 1 minute and 7 days")
+    if not 0 <= settings["post_exit_cooldown_minutes"] <= 10_080:
+        raise ValueError("Post-exit rest must be between 0 minutes and 7 days")
     if settings["strategy_version"] != defaults_for(asset)['strategy_version']:
         raise ValueError("Invalid Delta strategy version")
     if settings["exit_mode"] not in {

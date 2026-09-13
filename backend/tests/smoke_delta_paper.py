@@ -236,12 +236,13 @@ def run():
             raise AssertionError("invalid setting accepted")
         except ValueError:
             pass
-    for invalid in (0.5, 10_081):
+    for invalid in (0.5, -1, 10_081):
         try:
             validate_settings({**DELTA_DEFAULTS, "post_exit_cooldown_minutes": invalid})
             raise AssertionError("invalid custom cooldown accepted")
         except ValueError:
             pass
+    assert validate_settings({**DELTA_DEFAULTS, "post_exit_cooldown_minutes": 0})["post_exit_cooldown_minutes"] == 0
     assert validate_settings({**DELTA_DEFAULTS, "post_exit_cooldown_minutes": 37})["post_exit_cooldown_minutes"] == 37
 
     for reason in ("MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET"):
@@ -251,6 +252,12 @@ def run():
             cooldown.broker.close_trade(cooldown._open_position(), 1000, reason)
         assert cooldown.broker.state["cooldown_until"] == 10_900
         assert cooldown.broker.state["cooldown_reason"] == reason
+        no_rest = strategy(settings={"post_exit_cooldown_minutes": 0})
+        assert no_rest._enter("BUY", 1000, 1000)
+        with patch("app.delta_paper.time.time", return_value=10_000):
+            no_rest.broker.close_trade(no_rest._open_position(), 1000, reason)
+        assert not no_rest.broker.state.get("cooldown_until")
+        assert no_rest.broker.state.get("cooldown_reason") is None
     reversal = strategy(settings={"post_exit_cooldown_minutes": 15})
     assert reversal._enter("BUY", 1000, 1000)
     reversal.broker.close_trade(reversal._open_position(), 1000, "REVERSAL_CONTRA_SIGNAL")

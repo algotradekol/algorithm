@@ -88,6 +88,8 @@ def run():
     assert isolated.strategies[5].cooldown_status()['reason'] == 'MANUAL_PAUSE'
     assert isolated.strategies[5]._open_position(), 'pausing entries must not close an open position'
     assert not isolated.strategies[15].cooldown_status()['active']
+    isolated.pause(5, 0)
+    assert not isolated.strategies[5].cooldown_status()['active']
     isolated.strategies[5].broker.state.update(cooldown_until=time.time() + 900, cooldown_reason='TARGET')
     isolated.resume(5)
     assert not isolated.strategies[5].cooldown_status()['active']

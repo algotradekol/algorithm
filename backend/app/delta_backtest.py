@@ -116,9 +116,10 @@ class ReplayBroker(DeltaPaperBroker):
         self.state.update(position=None, gross_pnl=self.state['gross_pnl'] + gross,
                           fees=self.state['fees'] + fees, closed_count=len(self.closed))
         if exit_reason in {'MANUAL_EXIT', 'SL', 'TRAILING_SL', 'TARGET'}:
-            minutes = float(self.state['settings'].get('post_exit_cooldown_minutes') or 5)
-            self.state['cooldown_until'] = self.now + minutes * 60
-            self.state['cooldown_reason'] = exit_reason
+            raw_minutes = self.state['settings'].get('post_exit_cooldown_minutes')
+            minutes = 5.0 if raw_minutes is None else float(raw_minutes)
+            self.state['cooldown_until'] = self.now + minutes * 60 if minutes > 0 else 0.0
+            self.state['cooldown_reason'] = exit_reason if minutes > 0 else None
         if len(self.closed) > 5000:
             raise ValueError('Replay exceeded 5000 trades; shorten the range or review risk distances')
 

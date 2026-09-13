@@ -33,6 +33,7 @@ def silver(minutes, settings=None):
 def run():
     assert DeltaSilver._check_triggers is Algo3SilverMicro._check_triggers
     assert not SILVER_DEFAULTS['trading_enabled']
+    assert SILVER_DEFAULTS['exit_mode'] == 'target_to_breakeven_sl'
     for minutes in SILVER_TIMEFRAMES:
         refs = history(minutes, NOW)
         refs[-2].update(open=1000, high=1001, low=969, close=970, volume=1)

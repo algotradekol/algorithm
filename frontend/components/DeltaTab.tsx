@@ -37,6 +37,15 @@ const duration = (value?: number) => {
   return `${hours ? `${hours}h ` : ''}${minutes}m ${seconds % 60}s`;
 };
 const button = 'rounded border border-[#334155] px-3 py-2 text-sm text-gray-200 hover:border-[#60a5fa] disabled:opacity-40';
+const silverTradetronDefaults = {
+  silver_breakout_points: 3,
+  sl_points: 15,
+  target_points: 50,
+  tsl_activate_points: 15,
+  tsl_buffer_points: 3,
+  silver_lots: 1,
+  exit_mode: 'target_to_breakeven_sl' as const,
+};
 
 export default function DeltaTab({ minutes, asset = 'gold' }: { minutes: number; asset?: DeltaAsset }) {
   const api = deltaApi(asset);
@@ -127,11 +136,11 @@ export default function DeltaTab({ minutes, asset = 'gold' }: { minutes: number;
           <button className={button} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { trading_enabled: !settings.trading_enabled }), 'Paper trading setting saved')}>Trading: {settings.trading_enabled ? 'ON' : 'OFF'}</button>
           <button className={button} onClick={() => setDraft({ ...settings })}>Settings</button>
           <select aria-label="Entry rest duration" className={`${button} bg-[#0a0e14]`} value={restPreset} disabled={busy} onChange={e => setRestPreset(e.target.value)}>
-            <option value="5">5 min rest</option><option value="15">15 min rest</option><option value="30">30 min rest</option>
+            <option value="0">No rest</option><option value="5">5 min rest</option><option value="15">15 min rest</option><option value="30">30 min rest</option>
             <option value="60">1 hr rest</option><option value="240">4 hr rest</option><option value="720">12 hr rest</option><option value="custom">Custom minutes</option>
           </select>
-          {restPreset === 'custom' && <input aria-label="Custom entry rest minutes" className={`${button} w-28 bg-[#0a0e14]`} type="number" min={1} max={10080} step={1} value={customRestMinutes} disabled={busy} onChange={e => setCustomRestMinutes(Number(e.target.value))} />}
-          <button className={`${button} border-[#f59e0b]/70 text-[#fbbf24]`} disabled={busy || !Number.isInteger(selectedRestMinutes) || selectedRestMinutes < 1 || selectedRestMinutes > 10080} onClick={() => action(() => api.deltaPause(minutes, selectedRestMinutes), `New entries paused for ${selectedRestMinutes} minutes`)}>Pause entries</button>
+          {restPreset === 'custom' && <input aria-label="Custom entry rest minutes" className={`${button} w-28 bg-[#0a0e14]`} type="number" min={0} max={10080} step={1} value={customRestMinutes} disabled={busy} onChange={e => setCustomRestMinutes(Number(e.target.value))} />}
+          <button className={`${button} border-[#f59e0b]/70 text-[#fbbf24]`} disabled={busy || !Number.isInteger(selectedRestMinutes) || selectedRestMinutes < 0 || selectedRestMinutes > 10080} onClick={() => action(() => api.deltaPause(minutes, selectedRestMinutes), selectedRestMinutes ? `New entries paused for ${selectedRestMinutes} minutes` : 'Entry rest cleared')}>{selectedRestMinutes ? 'Pause entries' : 'Clear rest'}</button>
           <button className={`${button} border-[#22c55e]/70 text-[#22c55e]`} disabled={busy || !cooldown?.active} onClick={() => action(() => api.deltaResume(minutes), 'Entry rest cleared. The next qualifying crossing may trade.')}>Resume</button>
         </>}
         <button className={button} disabled={busy || !status?.credentials_configured} onClick={() => action(() => api.deltaCheckConnection(), 'Delta account verified. Execution remains paper only.')}>Verify API connection</button>
@@ -173,6 +182,7 @@ export default function DeltaTab({ minutes, asset = 'gold' }: { minutes: number;
     }}>
       <h2 className="font-semibold text-gray-100">Paper risk settings</h2>
       <p className="text-xs text-gray-400">All distances are in the quoted {asset} price, not rupees. Existing positions retain their entry-time protection.</p>
+      {asset === 'silver' && <button type="button" className={`${button} border-[#94a3b8] text-gray-100`} onClick={() => setDraft({ ...draft, ...silverTradetronDefaults })}>Use Tradetron defaults</button>}
       <label className="block text-sm text-gray-300">Exit mode
         <select className="mt-1 block w-full rounded border border-[#334155] bg-[#0a0e14] p-2" value={draft.exit_mode} onChange={e => setDraft({ ...draft, exit_mode: e.target.value as Settings['exit_mode'] })}>
           <option value="fixed_target_sl">Fixed Target + Fixed Stop Loss</option>
@@ -190,9 +200,9 @@ export default function DeltaTab({ minutes, asset = 'gold' }: { minutes: number;
       </div>
       <label className="flex items-center gap-2 text-sm text-gray-300"><input type="checkbox" checked={draft.manual_exit_reentry_enabled} onChange={e => setDraft({ ...draft, manual_exit_reentry_enabled: e.target.checked })} /> Allow re-entry after manual exit when the signal qualifies</label>
       <label className="block text-sm text-gray-300">Rest after manual, stop, or target exit
-        <input className="mt-1 block w-full rounded border border-[#334155] bg-[#0a0e14] p-2" type="number" required min={1} max={10080} step={1} value={draft.post_exit_cooldown_minutes} onChange={e => setDraft({ ...draft, post_exit_cooldown_minutes: Number(e.target.value) })} />
-        <span className="mt-2 flex flex-wrap gap-2">{[[5, '5m'], [15, '15m'], [30, '30m'], [60, '1h'], [240, '4h'], [720, '12h']].map(([value, label]) => <button key={value} type="button" className="rounded border border-[#334155] px-2 py-1 text-xs text-[#93c5fd]" onClick={() => setDraft({ ...draft, post_exit_cooldown_minutes: Number(value) })}>{label}</button>)}</span>
-        <span className="mt-1 block text-xs text-gray-500">Applies to manual exits, SL, trailing SL, and targets. Reversals bypass this rest.</span>
+        <input className="mt-1 block w-full rounded border border-[#334155] bg-[#0a0e14] p-2" type="number" required min={0} max={10080} step={1} value={draft.post_exit_cooldown_minutes} onChange={e => setDraft({ ...draft, post_exit_cooldown_minutes: Number(e.target.value) })} />
+        <span className="mt-2 flex flex-wrap gap-2">{[[0, '0m'], [5, '5m'], [15, '15m'], [30, '30m'], [60, '1h'], [240, '4h'], [720, '12h']].map(([value, label]) => <button key={value} type="button" className="rounded border border-[#334155] px-2 py-1 text-xs text-[#93c5fd]" onClick={() => setDraft({ ...draft, post_exit_cooldown_minutes: Number(value) })}>{label}</button>)}</span>
+        <span className="mt-1 block text-xs text-gray-500">Use 0 for no rest. Applies to manual exits, SL, trailing SL, and targets. Reversals bypass this rest.</span>
       </label>
       <div className="flex gap-2"><button className={button} disabled={busy}>Save</button><button className={button} type="button" onClick={() => setDraft(null)}>Cancel</button></div>
     </form>}

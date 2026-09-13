@@ -100,9 +100,10 @@ class DeltaPaperBroker:
         state.update(position=None, gross_pnl=state["gross_pnl"] + gross,
                      fees=state["fees"] + fees, closed_count=state["closed_count"] + 1)
         if exit_reason in {"MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET"}:
-            cooldown_minutes = float(state["settings"].get("post_exit_cooldown_minutes") or 5)
-            state["cooldown_until"] = time.time() + cooldown_minutes * 60
-            state["cooldown_reason"] = exit_reason
+            raw_minutes = state["settings"].get("post_exit_cooldown_minutes")
+            cooldown_minutes = 5.0 if raw_minutes is None else float(raw_minutes)
+            state["cooldown_until"] = time.time() + cooldown_minutes * 60 if cooldown_minutes > 0 else 0.0
+            state["cooldown_reason"] = exit_reason if cooldown_minutes > 0 else None
         if exit_reason == "MANUAL_EXIT" and not state["settings"].get("manual_exit_reentry_enabled"):
             state["manual_guard"] = {"side": current["side"], "setup_time": current["signal_snapshot"].get("setup_time")}
         self.commit(state, trade)
