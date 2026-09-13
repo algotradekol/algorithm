@@ -129,12 +129,16 @@ def run():
     assert len(fetch_candles(fake, '1m', 0, 1600 * 60, 60)) == 1600
     assert fake.candles.call_count == 2
     fake.candles.side_effect = None
-    fake.candles.return_value = candles[:1]
+    fake.candles.return_value = [candles[0]]
+    filled = fetch_candles(fake, '1m', 0, 120, 60)
+    assert filled[1]['synthetic_flat'] and filled[1]['volume'] == 0
+    assert filled[1]['open'] == filled[1]['high'] == filled[1]['low'] == filled[1]['close'] == candles[0]['close']
+    fake.candles.return_value = [candles[1]]
     try:
         fetch_candles(fake, '1m', 0, 120, 60)
-        raise AssertionError('history gaps accepted')
+        raise AssertionError('missing first candle accepted')
     except ValueError as exc:
-        assert 'missing' in str(exc)
+        assert 'first candle' in str(exc)
     for start, end in ((dt.date(2026, 1, 2), dt.date(2026, 1, 1)), (dt.date(2026, 1, 1), dt.date(2026, 2, 1))):
         try:
             date_range(start, end, NOW)

@@ -57,10 +57,23 @@ def fetch_candles(client, resolution, start, end, interval):
                 raise ValueError('Conflicting duplicate Delta candles; retry history later')
             rows[stamp] = row
     expected = list(range(start, end, interval))
-    missing = [stamp for stamp in expected if stamp not in rows]
-    if missing:
-        raise ValueError(f'Delta {resolution} history missing {len(missing)} candles; first gap {iso(missing[0])}. Replay refused rather than invent prices.')
-    return [rows[stamp] for stamp in expected]
+    output = []
+    last_close = None
+    filled = 0
+    for stamp in expected:
+        row = rows.get(stamp)
+        if row is None:
+            if last_close is None:
+                raise ValueError(f'Delta {resolution} history missing the first candle at {iso(stamp)}; no prior close is available to anchor replay.')
+            row = {'time': stamp, 'open': last_close, 'high': last_close, 'low': last_close,
+                   'close': last_close, 'volume': 0.0, 'synthetic_flat': True}
+            filled += 1
+        else:
+            last_close = row['close']
+        output.append(row)
+    if filled:
+        print(f"[delta_backtest] filled {filled} missing {resolution} candles as flat zero-volume bars")
+    return output
 
 
 class MemoryStore:

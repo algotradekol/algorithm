@@ -44,11 +44,7 @@ export default function DeltaOverviewTab() {
   const currency = data?.currency || 'USD';
   const inr = (value?: number) => data?.inr_rate && value != null ? `Rs ${number(value * data.inr_rate)}` : '--';
   const frames = data?.timeframes || [];
-  const openPositions = frames.filter(row => row.position).length;
-  const freshFeeds = frames.filter(row => !row.stale).length;
-  const resting = frames.filter(row => row.cooldown?.active).length;
   const maxOutcome = Math.max(1, ...frames.map(row => Math.abs(row.combined_today)));
-  const freshPercent = frames.length ? Math.round(freshFeeds / frames.length * 100) : 0;
   return <section className="space-y-4">
     <header className="relative overflow-hidden rounded-xl border border-[#1d3850] bg-[radial-gradient(circle_at_82%_12%,rgba(14,165,233,0.14),transparent_28%),linear-gradient(135deg,#0d1824,#091018_70%)] p-5">
       <div className="absolute -right-12 -top-16 h-40 w-40 rounded-full border border-[#38bdf8]/10" />
@@ -58,23 +54,6 @@ export default function DeltaOverviewTab() {
       </div>
     </header>
     {error && <p role="alert" className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 p-3 text-sm text-[#f87171]">{error}</p>}
-    <div className="grid gap-3 xl:grid-cols-[1.45fr_1fr]">
-      <div className="grid gap-3 sm:grid-cols-2">
-        <Summary featured label={`Today + open (${currency})`} value={data?.totals.today_with_unrealized} inr={inr(data?.totals.today_with_unrealized)} detail={`${number(data?.totals.today.trades, 0)} closed today | ${openPositions} open now`} />
-        <Summary label={`Today realized (${currency})`} value={data?.totals.today.net} inr={inr(data?.totals.today.net)} detail={`${number(data?.totals.today.wins, 0)} wins / ${number(data?.totals.today.losses, 0)} losses | ${number(data?.totals.today.win_rate)}%`} />
-        <Summary label={`Open P&L (${currency})`} value={data?.totals.unrealized} inr={inr(data?.totals.unrealized)} detail="Live mark across open simulations" />
-        <Summary label={`All-time + open (${currency})`} value={data?.totals.all_time_with_unrealized} inr={inr(data?.totals.all_time_with_unrealized)} detail={`${number(data?.totals.all_time.trades, 0)} all-time closed trades`} />
-      </div>
-      <div className="rounded-xl border border-[#1f2937] bg-[#0d131e] p-4">
-        <div className="flex items-center justify-between"><div><p className="text-[10px] uppercase tracking-[0.2em] text-gray-500">System pulse</p><h2 className="mt-1 text-sm font-semibold text-gray-200">Strategy health</h2></div><div className="grid h-20 w-20 place-items-center rounded-full" style={{ background: `conic-gradient(#22c55e ${freshPercent}%, #1f2937 0)` }}><div className="grid h-14 w-14 place-items-center rounded-full bg-[#0d131e] font-mono text-sm text-gray-100">{freshPercent}%</div></div></div>
-        <div className="mt-4 grid grid-cols-2 gap-2">
-          <Pulse label="Fresh feeds" value={`${freshFeeds}/${frames.length}`} color="text-[#22c55e]" />
-          <Pulse label="Open positions" value={String(openPositions)} color="text-[#38bdf8]" />
-          <Pulse label="Entry rest" value={String(resting)} color={resting ? 'text-[#f59e0b]' : 'text-gray-300'} />
-          <Pulse label="Trading on" value={`${frames.filter(row => row.trading_enabled).length}/${frames.length}`} color="text-[#22c55e]" />
-        </div>
-      </div>
-    </div>
     <div className="grid gap-3 lg:grid-cols-[0.9fr_1.6fr]">
       <div className="rounded-xl border border-[#1f2937] bg-[#0d131e] p-4">
         <div className="mb-4"><p className="text-[10px] uppercase tracking-[0.2em] text-gray-500">Relative contribution</p><h2 className="mt-1 text-sm font-semibold text-gray-200">Today realized + open</h2></div>
@@ -105,14 +84,6 @@ export default function DeltaOverviewTab() {
     </details>
     <p className="rounded border border-[#f59e0b]/30 bg-[#f59e0b]/5 p-3 text-xs text-[#fbbf24]">Combined values add independent paper simulations. Several timeframes may hold overlapping PAXG positions, so this is not a single-account portfolio result.</p>
   </section>;
-}
-
-function Summary({ label, value, inr, detail, featured = false }: { label: string; value?: number; inr: string; detail: string; featured?: boolean }) {
-  return <div className={`relative overflow-hidden rounded-xl border p-4 ${featured ? 'border-[#0ea5e9]/50 bg-[linear-gradient(145deg,rgba(14,165,233,0.13),#0d131e_62%)]' : 'border-[#1f2937] bg-[linear-gradient(145deg,#111827,#0d131e)]'}`}><div className={`absolute left-0 top-0 h-full w-1 ${featured ? 'bg-[#38bdf8]' : (value || 0) >= 0 ? 'bg-[#22c55e]/60' : 'bg-[#ef4444]/70'}`} /><div className="text-[10px] uppercase tracking-[0.16em] text-gray-400">{label}</div><div className={`mt-3 font-mono ${featured ? 'text-3xl' : 'text-2xl'} ${tone(value)}`}>{number(value)}</div><div className="mt-1 font-mono text-sm text-gray-400">{inr}</div><p className="mt-3 text-xs text-gray-500">{detail}</p></div>;
-}
-
-function Pulse({ label, value, color }: { label: string; value: string; color: string }) {
-  return <div className="rounded-lg border border-[#1f2937] bg-[#0a1018] p-3"><div className={`font-mono text-lg ${color}`}>{value}</div><div className="mt-1 text-[10px] uppercase tracking-wide text-gray-500">{label}</div></div>;
 }
 
 function OutcomeBar({ row, max, currency }: { row: Outcome; max: number; currency: string }) {
