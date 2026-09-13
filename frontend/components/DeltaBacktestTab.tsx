@@ -1,7 +1,8 @@
 'use client';
 
 import { useState } from 'react';
-import { api } from '../lib/api';
+import { deltaApi, DeltaAsset } from '../lib/api';
+import DeltaBacktestReplay from './DeltaBacktestReplay';
 
 type Settings = { silver_breakout_points: number; sl_points: number; target_points: number; tsl_activate_points: number; tsl_buffer_points: number; silver_lots: number; post_exit_cooldown_minutes: number; exit_mode: string; strategy_version: string };
 type Trade = { id: string; side: string; qty: number; entry_time: string; entry_price: number; exit_time?: string; exit_price?: number; exit_reason?: string; initial_sl: number; sl_price: number; target_price: number; estimated_entry_margin?: number; margin_inr?: number; net_pnl?: number; gross_pnl?: number; fees?: number; pnl_inr?: number; unrealized_pnl?: number; signal_snapshot: { setup_time?: string; setup_close?: number; trigger_level?: number; silver_breakeven?: { armed: boolean; activation_price: number }; delta_three_candle_tsl?: { events?: unknown[] } } };
@@ -11,7 +12,7 @@ type Diagnostics = {
   warmup_buy_reference?: number; warmup_sell_reference?: number; price_low: number; price_high: number; closest_buy?: TriggerDiagnostic | null; closest_sell?: TriggerDiagnostic | null;
   eligible_events: number; already_positioned: number; cooldown_blocked: number; entries: number;
 };
-type Result = { symbol: string; minutes: number; path: string; start: number; end: number; currency: string; inr_rate?: number; settings: Settings; diagnostics?: Diagnostics; warnings: string[]; trades: Trade[]; open_position?: Trade; equity: { time: number; net: number; equity: number }[]; summary: { trades: number; wins: number; gross: number; fees: number; net: number; net_inr?: number; max_drawdown: number }; coverage: { minutes: number; reference_bars: number } };
+type Result = { asset?: DeltaAsset; symbol: string; minutes: number; path: string; start: number; end: number; currency: string; inr_rate?: number; settings: Settings; diagnostics?: Diagnostics; warnings: string[]; trades: Trade[]; open_position?: Trade; equity: { time: number; net: number; equity: number }[]; summary: { trades: number; wins: number; gross: number; fees: number; net: number; net_inr?: number; max_drawdown: number }; coverage: { minutes: number; reference_bars: number } };
 const initial: Settings = { silver_breakout_points: 3, sl_points: 15, target_points: 50, tsl_activate_points: 15, tsl_buffer_points: 3, silver_lots: 1, post_exit_cooldown_minutes: 5, exit_mode: 'fixed_target_sl', strategy_version: 'paxg_ema_volume_v1' };
 const control = 'w-full rounded border border-[#334155] bg-[#0a0e14] px-3 py-2 text-sm text-gray-100';
 const button = 'rounded border border-[#334155] px-3 py-2 text-sm text-gray-200 disabled:opacity-40';
@@ -19,12 +20,14 @@ const num = (value?: number) => value == null ? '--' : value.toLocaleString('en-
 const date = (value?: string | number) => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) : '--';
 const day = (offset: number) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(Date.now() + offset * 86400000));
 
-export default function DeltaBacktestTab({ enabledTimeframes }: { enabledTimeframes: number[] }) {
+export default function DeltaBacktestTab({ enabledTimeframes, asset = 'gold' }: { enabledTimeframes: number[]; asset?: DeltaAsset }) {
+  const api = deltaApi(asset);
+  const metal = asset === 'silver' ? 'Silver' : 'Gold';
   const [minutes, setMinutes] = useState(enabledTimeframes[0] || 15);
   const [start, setStart] = useState(() => day(-1));
   const [end, setEnd] = useState(() => day(-1));
   const [path, setPath] = useState('high_first');
-  const [settings, setSettings] = useState<Settings>(initial);
+  const [settings, setSettings] = useState<Settings>({ ...initial, strategy_version: asset === 'silver' ? 'silver_micro_v1' : initial.strategy_version });
   const [result, setResult] = useState<Result | null>(null);
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
@@ -44,14 +47,14 @@ export default function DeltaBacktestTab({ enabledTimeframes }: { enabledTimefra
     finally { setBusy(false); }
   }
   return <section className="space-y-4">
-    <header><h1 className="text-lg font-semibold text-gray-100">Delta Gold Backtest</h1><p className="mt-2 text-sm text-gray-400">Enabled Delta price EMA20 + volume EMA20 strategies, replayed against 1-minute candles. Runs in isolated memory, with no account orders or changes to paper settings.</p></header>
+    <header><h1 className="text-lg font-semibold text-gray-100">Delta {metal} Backtest</h1><p className="mt-2 text-sm text-gray-400">{asset === 'gold' ? 'Delta price EMA20 + volume EMA20' : 'Normal Silver Micro price EMA20 and red-chain SELL'} strategies, replayed against 1-minute candles. Runs in isolated memory, with no account orders or changes to paper settings.</p></header>
     <form onSubmit={run} className="rounded border border-[#1f2937] bg-[#111827] p-4"><fieldset disabled={busy || !enabledTimeframes.length} className="space-y-4 disabled:opacity-60">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <label className="text-xs text-gray-400">Strategy<select className={`${control} mt-1`} value={minutes} onChange={e => setMinutes(Number(e.target.value))}>{enabledTimeframes.map(value => <option key={value} value={value}>Delta Gold {value === 60 ? '1 hr' : value === 240 ? '4 hr' : `${value} min`}</option>)}</select></label>
+        <label className="text-xs text-gray-400">Strategy<select className={`${control} mt-1`} value={minutes} onChange={e => setMinutes(Number(e.target.value))}>{enabledTimeframes.map(value => <option key={value} value={value}>Delta {metal} {value === 60 ? '1 hr' : value === 240 ? '4 hr' : `${value} min`}</option>)}</select></label>
         <label className="text-xs text-gray-400">From (IST)<input className={`${control} mt-1`} type="date" required max={end} value={start} onChange={e => setStart(e.target.value)} /></label>
         <label className="text-xs text-gray-400">Through (IST, inclusive)<input className={`${control} mt-1`} type="date" required min={start} max={day(0)} value={end} onChange={e => setEnd(e.target.value)} /></label>
         <label className="text-xs text-gray-400">Assumed 1-minute path<select className={`${control} mt-1`} value={path} onChange={e => setPath(e.target.value)}><option value="high_first">Open → High → Low → Close</option><option value="low_first">Open → Low → High → Close</option></select></label>
-        <label className="text-xs text-gray-400">Exit mode<select className={`${control} mt-1`} value={settings.exit_mode} onChange={e => setSettings({ ...settings, exit_mode: e.target.value })}><option value="fixed_target_sl">Fixed target + SL</option><option value="target_to_breakeven_sl">Target + breakeven SL</option><option value="three_candle_tsl">Three-Candle TSL</option></select></label>
+        <label className="text-xs text-gray-400">Exit mode<select className={`${control} mt-1`} value={settings.exit_mode} onChange={e => setSettings({ ...settings, exit_mode: e.target.value })}><option value="fixed_target_sl">Fixed target + SL</option><option value="target_to_breakeven_sl">Target + breakeven SL</option>{asset === 'gold' && <option value="three_candle_tsl">Three-Candle TSL</option>}</select></label>
         {([['silver_breakout_points', 'Breakout offset'], ['sl_points', 'Initial SL points'], ['target_points', 'Final target points'], ['tsl_activate_points', 'TSL activation points'], ['tsl_buffer_points', 'TSL buffer points'], ['silver_lots', 'Lots per trade']] as const).filter(([key]) => (key !== 'tsl_activate_points' || settings.exit_mode === 'target_to_breakeven_sl') && (key !== 'tsl_buffer_points' || settings.exit_mode === 'three_candle_tsl')).map(([key, label]) => <label key={key} className="text-xs text-gray-400">{label}<input className={`${control} mt-1`} type="number" required min={key === 'silver_lots' ? 1 : .000001} step={key === 'silver_lots' ? 1 : 'any'} value={settings[key]} onChange={e => setSettings({ ...settings, [key]: Number(e.target.value) })} /></label>)}
         <label className="text-xs text-gray-400">Post-exit rest (minutes)<input className={`${control} mt-1`} type="number" required min={1} max={10080} step={1} value={settings.post_exit_cooldown_minutes} onChange={e => setSettings({ ...settings, post_exit_cooldown_minutes: Number(e.target.value) })} /></label>
       </div>
@@ -62,11 +65,10 @@ export default function DeltaBacktestTab({ enabledTimeframes }: { enabledTimefra
     {result && <>
       <div className="flex flex-wrap items-center justify-between gap-3"><div className="text-sm text-gray-300">{result.symbol} | {result.minutes}m | {date(result.start)} to {date(result.end)} IST<br /><span className="text-xs text-gray-500">{num(result.coverage.minutes)} execution candles | {num(result.coverage.reference_bars)} reference bars including warmup | {result.path === 'high_first' ? 'O-H-L-C' : 'O-L-H-C'}</span></div><button className={button} onClick={() => download(result)}>Download full CSV</button></div>
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">{[['Closed trades / wins', `${result.summary.trades} / ${result.summary.wins}`], [`Realized net (${result.currency})`, num(result.summary.net)], ['Realized net (INR)', num(result.summary.net_inr)], [`Max equity drawdown (${result.currency})`, num(result.summary.max_drawdown)]].map(([label, value]) => <div key={label} className="rounded border border-[#1f2937] bg-[#111827] p-3"><p className="text-xs text-gray-400">{label}</p><p className="mt-2 font-mono text-lg text-gray-100">{value}</p></div>)}</div>
-      <DiagnosticsPanel diagnostics={result.diagnostics} settings={result.settings} currency={result.currency} />
-      <EquityChart points={result.equity} currency={result.currency} />
-      <div className="rounded border border-[#f59e0b]/30 p-3 text-xs text-[#fbbf24]">{result.warnings.map(w => <p className="mb-1" key={w}>{w}</p>)}</div>
-      <h2 className="text-sm text-gray-300">OPEN AT RANGE END</h2><Results rows={result.open_position ? [result.open_position] : []} />
-      <h2 className="text-sm text-gray-300">CLOSED TRADES</h2><Results rows={[...result.trades].reverse()} />
+      <DeltaBacktestReplay result={result} />
+      <details className="rounded border border-[#334155] p-3"><summary className="cursor-pointer text-sm text-gray-300">Entry diagnostics and reference checks</summary><div className="mt-3"><DiagnosticsPanel diagnostics={result.diagnostics} settings={result.settings} currency={result.currency} /></div></details>
+      <details className="rounded border border-[#334155] p-3"><summary className="cursor-pointer text-sm text-gray-300">Equity curve</summary><EquityChart points={result.equity} currency={result.currency} /></details>
+      <details className="rounded border border-[#f59e0b]/30 p-3 text-xs text-[#fbbf24]"><summary className="cursor-pointer">Replay assumptions and limitations</summary>{result.warnings.map(w => <p className="mt-2" key={w}>{w}</p>)}</details>
     </>}
   </section>;
 }
@@ -122,10 +124,6 @@ function EquityChart({ points, currency }: { points: Result['equity']; currency:
   return <div className="rounded border border-[#1f2937] bg-[#111827] p-3"><p className="text-sm text-gray-300">Simulated equity ({currency}, includes open P&amp;L)</p><svg className="mt-2 w-full" viewBox="0 0 1000 230" role="img" aria-label={`Equity range ${num(low)} to ${num(high)} ${currency}`}><line x1="50" x2="950" y1={200 - (0 - low) / span * 170} y2={200 - (0 - low) / span * 170} stroke="#475569" strokeDasharray="4 4" /><polyline points={line} fill="none" stroke="#38bdf8" strokeWidth="2" /><text x="50" y="20" fill="#94a3b8" fontSize="12">{num(high)}</text><text x="50" y="220" fill="#94a3b8" fontSize="12">{num(low)}</text></svg></div>;
 }
 
-function Results({ rows }: { rows: Trade[] }) {
-  const headers = ['Side', 'Lots', 'Reference time (IST)', 'Ref close', 'Trigger', 'Entry time (simulated IST)', 'Entry', 'Exit time (simulated IST)', 'Exit', 'Reason', 'Initial SL', 'Final SL', 'Target', 'TSL status', 'Est. margin', 'Net / open P&L', 'INR'];
-  return <div className="max-h-[32rem] overflow-auto rounded border border-[#1f2937]"><table className="w-full whitespace-nowrap text-left text-xs"><thead className="sticky top-0 bg-[#111827]"><tr>{headers.map(h => <th key={h} className="p-3 text-gray-400">{h}</th>)}</tr></thead><tbody>{!rows.length && <tr><td colSpan={headers.length} className="p-4 text-gray-500">No trades.</td></tr>}{rows.map(r => <tr key={r.id} className="border-t border-[#1f2937] text-gray-200"><td className={`p-3 ${r.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{r.side}</td>{[num(r.qty), date(r.signal_snapshot.setup_time), num(r.signal_snapshot.setup_close), num(r.signal_snapshot.trigger_level), date(r.entry_time), num(r.entry_price), date(r.exit_time), num(r.exit_price), r.exit_reason || 'OPEN', num(r.initial_sl), num(r.sl_price), num(r.target_price), r.signal_snapshot.delta_three_candle_tsl ? `${r.signal_snapshot.delta_three_candle_tsl.events?.length || 0} three-candle move(s)` : r.signal_snapshot.silver_breakeven?.armed ? 'Breakeven armed' : 'Fixed', num(r.estimated_entry_margin), num(r.net_pnl ?? r.unrealized_pnl), num(r.pnl_inr)].map((v, i) => <td className="p-3 font-mono" key={i}>{v}</td>)}</tr>)}</tbody></table></div>;
-}
 
 function download(result: Result) {
   const columns = ['id', 'side', 'lots', 'entry_time', 'entry_price', 'exit_time', 'exit_price', 'reason', 'gross', 'fees', 'net', 'open_pnl', 'pnl_inr', 'initial_sl', 'final_sl', 'target', 'margin', 'margin_inr', 'signal_snapshot', 'run_settings', 'diagnostics', 'path', 'timeframe', 'symbol', 'start', 'end', 'warnings'];
@@ -134,5 +132,6 @@ function download(result: Result) {
   const sourceRows = tradeRows.length ? tradeRows : [{ id: 'NO_TRADES' } as Trade];
   const lines = sourceRows.map(r => [r.id, r.side, r.qty, r.entry_time, r.entry_price, r.exit_time, r.exit_price, r.exit_reason || (r.id === 'NO_TRADES' ? 'NO_TRADES' : 'OPEN'), r.gross_pnl, r.fees, r.net_pnl, r.unrealized_pnl, r.pnl_inr, r.initial_sl, r.sl_price, r.target_price, r.estimated_entry_margin, r.margin_inr, r.signal_snapshot, result.settings, result.diagnostics, result.path, result.minutes, result.symbol, result.start, result.end, result.warnings].map(cell).join(','));
   const url = URL.createObjectURL(new Blob([[columns.join(','), ...lines].join('\r\n')], { type: 'text/csv;charset=utf-8' }));
-  const a = document.createElement('a'); a.href = url; a.download = `delta-${result.minutes}m-backtest-${result.start}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
+  const metal = result.asset === 'silver' ? 'silver' : 'gold';
+  const a = document.createElement('a'); a.href = url; a.download = `delta-${metal}-${result.minutes}m-backtest-${result.start}.csv`; a.click(); setTimeout(() => URL.revokeObjectURL(url), 1000);
 }

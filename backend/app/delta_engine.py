@@ -9,14 +9,16 @@ import time
 
 from .delta_client import DeltaClient, epoch_seconds, positive
 from .delta_candles import aggregate_seven_minute, delta_resolution
-from .delta_config import delta_capabilities, timeframe_enabled
+from .delta_config import delta_capabilities, asset_capabilities, timeframe_enabled
 from .delta_paper import DeltaPaperBroker, DeltaStore
 from .delta_reporting import paper_row, inr_rate
-from .strategies.delta_gold import DELTA_DEFAULTS, DELTA_TIMEFRAMES, DeltaGold, validate_settings
+from .strategies.delta_gold import DELTA_DEFAULTS, DELTA_TIMEFRAMES, DeltaGold, validate_settings, defaults_for
+from .strategies.delta_silver import DeltaSilver
 
 
 class DeltaService:
-    def __init__(self):
+    def __init__(self, asset='gold'):
+        self.asset = asset
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
         self.client = None
@@ -45,7 +47,7 @@ class DeltaService:
             self.socket.close()
 
     def _initialize(self):
-        capabilities = delta_capabilities()
+        capabilities = asset_capabilities(self.asset)
         if capabilities["config_error"]:
             self.error = capabilities["config_error"]
             self.initialized = True
@@ -54,7 +56,7 @@ class DeltaService:
             self.error = "Delta is disabled by DELTA_HIDDEN_SECTIONS"
             self.initialized = True
             return
-        self.client = DeltaClient()
+        self.client = DeltaClient() if self.asset == 'gold' else DeltaClient(asset=self.asset)
         error = self.client.configuration_error()
         if error:
             raise ValueError(error)
@@ -62,8 +64,11 @@ class DeltaService:
         strategies = {}
         for minutes in capabilities["enabled_timeframes"]:
             key = f"delta:{self.client.region}:{self.client.symbol}:{minutes}:paper"
-            broker = DeltaPaperBroker(DeltaStore(key), dict(DELTA_DEFAULTS), product)
-            strategies[minutes] = DeltaGold(minutes, self.client.symbol, broker)
+            if self.asset == 'silver':
+                key = f"delta:silver:{self.client.region}:{self.client.symbol}:{minutes}:paper"
+            broker = DeltaPaperBroker(DeltaStore(key), dict(defaults_for(self.asset)), product)
+            strategy_class = DeltaSilver if self.asset == 'silver' else DeltaGold
+            strategies[minutes] = strategy_class(minutes, self.client.symbol, broker)
         with self.lock:
             self.strategies = strategies
             self.product = product
@@ -179,7 +184,7 @@ class DeltaService:
     def strategy(self, minutes):
         if minutes not in DELTA_TIMEFRAMES:
             raise ValueError("Delta timeframe must be 5, 7, 15, 30, 60 or 240 minutes")
-        if not timeframe_enabled(minutes):
+        if not timeframe_enabled(minutes, asset=self.asset):
             raise ValueError("That Delta timeframe is disabled in this deployment")
         if minutes not in self.strategies:
             raise ValueError(self.error or "Delta is not ready")
@@ -188,7 +193,7 @@ class DeltaService:
     def snapshot(self, minutes):
         with self.lock:
             result = {
-                "mode": "paper", "exchange": self.client.region if self.client else None,
+                "asset": self.asset, "mode": "paper", "exchange": self.client.region if self.client else None,
                 "symbol": self.client.symbol if self.client else None, "minutes": minutes,
                 "error": self.error, "ws_connected": self.ws_connected, "ws_error": self.ws_error,
                 "ltp": self.last_price, "last_tick_at": self.last_event_at or None,
@@ -252,7 +257,7 @@ class DeltaService:
 
     def overview(self):
         with self.lock:
-            capabilities = delta_capabilities()
+            capabilities = asset_capabilities(self.asset)
             if not capabilities["delta_enabled"] or not capabilities["sections"]["overview"]:
                 raise ValueError("Delta overview is disabled in this deployment")
             today = datetime.datetime.now(datetime.timezone.utc).date()
@@ -296,6 +301,7 @@ class DeltaService:
             unrealized_total = sum(row["unrealized"] for row in entries)
             today_total, all_total = total("today"), total("all_time")
             return copy.deepcopy({
+                "asset": self.asset, "symbol": self.product.get('symbol') if self.product else None,
                 "generated_at": time.time(), "utc_date": today.isoformat(), "ltp": self.last_price,
                 "currency": self.product.get("quoting_asset", {}).get("symbol") if self.product else None,
                 "inr_rate": rate, "timeframes": entries,
@@ -307,7 +313,7 @@ class DeltaService:
     def save_settings(self, minutes, changes):
         with self.lock:
             strategy = self.strategy(minutes)
-            settings = validate_settings({**strategy.settings, **changes})
+            settings = validate_settings({**strategy.settings, **changes}, self.asset)
             state = copy.deepcopy(strategy.broker.state)
             state["settings"] = settings
             strategy.broker.commit(state)
@@ -384,3 +390,12 @@ class DeltaService:
 
 
 delta_service = DeltaService()
+delta_silver_service = DeltaService('silver')
+
+
+def service_for(asset='gold'):
+    if asset == 'gold':
+        return delta_service
+    if asset == 'silver':
+        return delta_silver_service
+    raise ValueError('Unknown Delta asset')

@@ -9,8 +9,10 @@ from .delta_client import DeltaClient
 from .delta_candles import aggregate_seven_minute, delta_resolution
 from .delta_paper import DeltaPaperBroker
 from .delta_reporting import paper_row, inr_rate
-from .strategies.delta_gold import DeltaGold, DELTA_DEFAULTS, DELTA_TIMEFRAMES, validate_settings
+from .strategies.delta_gold import DeltaGold, DELTA_DEFAULTS, DELTA_TIMEFRAMES, validate_settings, defaults_for
+from .strategies.delta_silver import DeltaSilver, SILVER_TIMEFRAMES
 from .timezone import IST
+from .strategies.algo3_silver_micro import _ema_step
 
 BACKTEST_LOCK = threading.Lock()
 MAX_DAYS = 31
@@ -196,10 +198,38 @@ class ReplayGold(DeltaGold):
         raise ValueError('Intraminute replay exceeded safety limit; review settings/range')
 
 
-def replay(product, region, minutes, settings, references, minute_rows, start, end, path):
-    settings = validate_settings({**DELTA_DEFAULTS, **settings, 'scan_enabled': True, 'trading_enabled': True})
+class ReplaySilver(ReplayGold, DeltaSilver):
+    pass
+
+
+def chart_candles(references, minute_rows, minutes, start, end):
+    """Chart the replay inputs, truncating the final forming bar at the replay end."""
+    interval = minutes * 60
+    output = []
+    price_ema = volume_ema = None
+    for raw in sorted(references, key=lambda r: r['time']):
+        row = dict(raw)
+        stamp = row['time']
+        if stamp >= end:
+            break
+        if stamp + interval > end:
+            parts = [r for r in minute_rows if stamp <= r['time'] < end]
+            if not parts:
+                continue
+            row.update(open=parts[0]['open'], high=max(r['high'] for r in parts),
+                       low=min(r['low'] for r in parts), close=parts[-1]['close'],
+                       volume=sum(r.get('volume', 0) for r in parts), partial=True)
+        price_ema = _ema_step(price_ema, row['close'])
+        volume_ema = _ema_step(volume_ema, row.get('volume', 0))
+        if stamp >= start // interval * interval - 20 * interval:
+            output.append({**row, 'time': iso(stamp), 'ema20': price_ema, 'volume_ema20': volume_ema})
+    return output
+
+
+def replay(product, region, minutes, settings, references, minute_rows, start, end, path, asset='gold'):
+    settings = validate_settings({**defaults_for(asset), **settings, 'scan_enabled': True, 'trading_enabled': True}, asset)
     broker = ReplayBroker(settings, product)
-    strategy = ReplayGold(minutes, product['symbol'], broker)
+    strategy = (ReplaySilver if asset == 'silver' else ReplayGold)(minutes, product['symbol'], broker)
     interval = minutes * 60
     ref_map = {r['time']: r for r in references}
     bucket = start // interval * interval
@@ -261,8 +291,9 @@ def replay(product, region, minutes, settings, references, minute_rows, start, e
             diagnostics['explanation'] = 'Some price thresholds were touched, but no entry passed the candle-direction/cooldown rules. Threshold touches alone are not entry confirmations.'
     else:
         diagnostics['explanation'] = f'{broker.serial} entries were simulated; {len(broker.closed)} closed and {int(position is not None)} remains open.'
-    return {'symbol': product['symbol'], 'minutes': minutes, 'settings': settings, 'path': path, 'start': start, 'end': end,
+    return {'asset': asset, 'symbol': product['symbol'], 'minutes': minutes, 'settings': settings, 'path': path, 'start': start, 'end': end,
             'diagnostics': diagnostics,
+            'candles': chart_candles(references, minute_rows, minutes, start, end),
             'currency': product.get('quoting_asset', {}).get('symbol'), 'inr_rate': rate,
             'trades': [paper_row(t, region) for t in broker.closed], 'open_position': paper_row(position, region) if position else None,
             'summary': {'trades': len(broker.closed), 'wins': sum(t['net_pnl'] > 0 for t in broker.closed),
@@ -276,12 +307,12 @@ def replay(product, region, minutes, settings, references, minute_rows, start, e
                          'Current product size, base margin and taker fee metadata are used for the whole range. Funding, taxes, slippage and liquidation are excluded.']}
 
 
-def run_backtest(minutes, start_date, end_date, settings, path):
-    if minutes not in DELTA_TIMEFRAMES or path not in ('high_first', 'low_first'):
+def run_backtest(minutes, start_date, end_date, settings, path, asset='gold'):
+    if asset not in {'gold', 'silver'} or minutes not in (SILVER_TIMEFRAMES if asset == 'silver' else DELTA_TIMEFRAMES) or path not in ('high_first', 'low_first'):
         raise ValueError('Invalid Delta timeframe or intraminute path')
     start, end = date_range(start_date, end_date)
-    settings = validate_settings({**DELTA_DEFAULTS, **settings})
-    client = DeltaClient()  # Separate HTTP session; never use the running engine's state.
+    settings = validate_settings({**defaults_for(asset), **settings}, asset)
+    client = DeltaClient() if asset == 'gold' else DeltaClient(asset=asset)
     try:
         product = client.product()
         interval = minutes * 60
@@ -294,6 +325,6 @@ def run_backtest(minutes, start_date, end_date, settings, path):
         else:
             references = fetch_candles(client, delta_resolution(minutes), history_start, history_end, interval)
             minute_rows = fetch_candles(client, '1m', start, end, 60)
-        return replay(product, client.region, minutes, settings, references, minute_rows, start, end, path)
+        return replay(product, client.region, minutes, settings, references, minute_rows, start, end, path, asset)
     finally:
         client.session.close()

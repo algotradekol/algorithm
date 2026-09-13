@@ -37,10 +37,14 @@ def positive(value) -> float:
 
 
 class DeltaClient:
-    def __init__(self):
+    def __init__(self, asset='gold'):
+        if asset not in {'gold', 'silver'}:
+            raise ValueError('Unknown Delta asset')
+        self.asset = asset
         self.region = os.getenv("DELTA_EXCHANGE", "india").strip().lower()
         default_symbol = "PAXGUSDT" if self.region == "global" else "PAXGUSD"
-        self.symbol = os.getenv("DELTA_GOLD_SYMBOL", default_symbol).strip().upper()
+        default_symbol = default_symbol if asset == 'gold' else 'SLVONUSD'
+        self.symbol = os.getenv(f"DELTA_{asset.upper()}_SYMBOL", default_symbol).strip().upper()
         self.enabled = os.getenv("DELTA_PAPER_ENABLED", "false").lower() == "true"
         self.base_url, self.ws_url = ENDPOINTS.get(self.region, ("", ""))
         self.proxy = os.getenv("DELTA_PROXY_URL", "").strip()
@@ -61,7 +65,7 @@ class DeltaClient:
         if self.region not in ENDPOINTS:
             return "Set DELTA_EXCHANGE to india or global."
         if not self.symbol or not self.symbol.replace("-", "").isalnum():
-            return "Set DELTA_GOLD_SYMBOL to the exact Delta gold perpetual symbol."
+            return f"Set DELTA_{self.asset.upper()}_SYMBOL to the exact Delta perpetual symbol."
         return None
 
     def get(self, path: str, params=None, *, private=False, envelope=False):
@@ -95,16 +99,17 @@ class DeltaClient:
     def product(self):
         data = self.get(f"/v2/products/{quote(self.symbol, safe='')}")
         if data.get("symbol") != self.symbol or data.get("contract_type") != "perpetual_futures":
-            raise ValueError("DELTA_GOLD_SYMBOL must identify a perpetual futures product")
+            raise ValueError(f"DELTA_{self.asset.upper()}_SYMBOL must identify a perpetual futures product")
         if data.get("state") != "live" or data.get("trading_status") != "operational":
             raise ValueError("Selected Delta product is not operational")
         if data.get("notional_type") != "vanilla" or data.get("is_quanto"):
-            raise ValueError("This paper model supports linear non-quanto gold contracts only")
+            raise ValueError("This paper model supports linear non-quanto contracts only")
         positive(data["contract_value"])
         positive(data["tick_size"])
         gold_text = f"{data.get('description', '')} {data.get('underlying_asset', {}).get('symbol', '')} {self.symbol}".lower()
-        if not any(word in gold_text for word in ("gold", "xau", "paxg")):
-            raise ValueError("Configured Delta product does not identify a gold underlying")
+        expected = ('gold', 'xau', 'paxg') if self.asset == 'gold' else ('silver', 'xag', 'slvon')
+        if not any(word in gold_text for word in expected):
+            raise ValueError(f"Configured Delta product does not identify a {self.asset} underlying")
         return data
 
     def candles(self, resolution: str, start: int, end: int):

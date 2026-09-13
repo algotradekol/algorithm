@@ -132,19 +132,7 @@ function fetchFyersOrders(mode: TradingMode = 'live', force = false) {
 }
 
 export const api = {
-  deltaCapabilities: () => authedFetch('/api/delta/capabilities'),
-  deltaOverview: () => authedFetch('/api/delta/overview'),
-  deltaStatus: (minutes: number) => authedFetch(`/api/delta/${minutes}/status`),
-  deltaTrades: (minutes: number, offset = 0) => authedFetch(`/api/delta/${minutes}/trades?offset=${offset}&limit=100`),
-  deltaSettings: (minutes: number, changes: Record<string, unknown>) => authedFetch(`/api/delta/${minutes}/settings`, { method: 'PUT', body: JSON.stringify(changes) }),
-  deltaClose: (minutes: number, positionId: string) => authedFetch(`/api/delta/${minutes}/close`, { method: 'POST', body: JSON.stringify({ position_id: positionId }) }),
-  deltaResume: (minutes: number) => authedFetch(`/api/delta/${minutes}/resume`, { method: 'POST' }),
-  deltaPause: (minutes: number, durationMinutes: number) => authedFetch(`/api/delta/${minutes}/pause`, { method: 'POST', body: JSON.stringify({ duration_minutes: durationMinutes }) }),
-  deltaProtection: (minutes: number, payload: Record<string, unknown>) => authedFetch(`/api/delta/${minutes}/protection`, { method: 'PUT', body: JSON.stringify(payload) }),
-  deltaExport: (minutes: number, kind: 'open' | 'closed') => authedFetch(`/api/delta/${minutes}/export?kind=${kind}`),
-  deltaCheckConnection: () => authedFetch('/api/delta/connection/check', { method: 'POST' }),
-  deltaBacktest: (request: Record<string, unknown>) => authedFetch('/api/delta/backtest/run', { method: 'POST', body: JSON.stringify(request) }),
-  deltaAccount: (kind: string, source: string, minutes: number, offset = 0, after = '') => authedFetch(`/api/delta/account/${kind}?source=${source}&minutes=${minutes}&offset=${offset}${after ? `&after=${encodeURIComponent(after)}` : ''}`),
+  ...deltaApi('gold'),
   summary: (algoId: string) => authedFetch(`/api/algo/${algoId}/summary`),
   positions: (algoId: string) => authedFetch(`/api/algo/${algoId}/positions`),
   exitPosition: (algoId: string, positionId: string) =>
@@ -234,3 +222,26 @@ export const api = {
   cancelBacktest: (jobId: string) =>
     authedFetch(`/api/backtests/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
 };
+
+export type DeltaAsset = 'gold' | 'silver';
+
+export function deltaApi(asset: DeltaAsset = 'gold') {
+  const fetchAsset = (path: string, options?: RequestInit) => authedFetch(
+    `${path}${path.includes('?') ? '&' : '?'}asset=${asset}`, options,
+  );
+  return {
+  deltaCapabilities: () => fetchAsset('/api/delta/capabilities'),
+  deltaOverview: () => fetchAsset('/api/delta/overview'),
+  deltaStatus: (minutes: number) => fetchAsset(`/api/delta/${minutes}/status`),
+  deltaTrades: (minutes: number, offset = 0) => fetchAsset(`/api/delta/${minutes}/trades?offset=${offset}&limit=100`),
+  deltaSettings: (minutes: number, changes: Record<string, unknown>) => fetchAsset(`/api/delta/${minutes}/settings`, { method: 'PUT', body: JSON.stringify(changes) }),
+  deltaClose: (minutes: number, positionId: string) => fetchAsset(`/api/delta/${minutes}/close`, { method: 'POST', body: JSON.stringify({ position_id: positionId }) }),
+  deltaResume: (minutes: number) => fetchAsset(`/api/delta/${minutes}/resume`, { method: 'POST' }),
+  deltaPause: (minutes: number, durationMinutes: number) => fetchAsset(`/api/delta/${minutes}/pause`, { method: 'POST', body: JSON.stringify({ duration_minutes: durationMinutes }) }),
+  deltaProtection: (minutes: number, payload: Record<string, unknown>) => fetchAsset(`/api/delta/${minutes}/protection`, { method: 'PUT', body: JSON.stringify(payload) }),
+  deltaExport: (minutes: number, kind: 'open' | 'closed') => fetchAsset(`/api/delta/${minutes}/export?kind=${kind}`),
+  deltaCheckConnection: () => fetchAsset('/api/delta/connection/check', { method: 'POST' }),
+  deltaBacktest: (request: Record<string, unknown>) => fetchAsset('/api/delta/backtest/run', { method: 'POST', body: JSON.stringify({ ...request, asset }) }),
+  deltaAccount: (kind: string, source: string, minutes: number, offset = 0, after = '') => fetchAsset(`/api/delta/account/${kind}?source=${source}&minutes=${minutes}&offset=${offset}${after ? `&after=${encodeURIComponent(after)}` : ''}`),
+  };
+}

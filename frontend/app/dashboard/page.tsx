@@ -1,13 +1,11 @@
 'use client';
+
+import DeltaWorkspace from '../../components/DeltaWorkspace';
 import { Suspense, useEffect, useState } from 'react';
 import Link from 'next/link';
 import { usePathname, useRouter, useSearchParams } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
 import AlgoTab from '../../components/AlgoTab';
-import DeltaTab from '../../components/DeltaTab';
-import DeltaActivityTab from '../../components/DeltaActivityTab';
-import DeltaBacktestTab from '../../components/DeltaBacktestTab';
-import DeltaOverviewTab from '../../components/DeltaOverviewTab';
 import CompareTab from '../../components/CompareTab';
 import CalendarTab from '../../components/CalendarTab';
 import ChargesPanel from '../../components/ChargesPanel';
@@ -154,7 +152,6 @@ function DashboardContent() {
   const router = useRouter();
   const pathname = usePathname();
   const isDelta = pathname === '/delta';
-  const [deltaTab, setDeltaTab] = useState('overview');
   const [deltaCapabilities, setDeltaCapabilities] = useState<DeltaCapabilities | null>(null);
   const searchParams = useSearchParams();
   const tradingMode = (engineStatus?.trading_mode as 'paper' | 'live' | undefined) || 'paper';
@@ -282,13 +279,6 @@ function DashboardContent() {
     api.deltaCapabilities().then((value) => {
       if (cancelled) return;
       setDeltaCapabilities(value);
-      const available = [
-        ...(value.sections.overview ? ['overview'] : []),
-        ...value.enabled_timeframes.map((minutes: number) => `gold${minutes}`),
-        ...(value.sections.activity ? ['activity'] : []),
-        ...(value.sections.backtest ? ['backtest'] : []),
-      ];
-      setDeltaTab(current => available.includes(current) ? current : (available[0] || 'unavailable'));
       if (pathname === '/delta' && !value.delta_enabled) router.replace(DASHBOARD_TAB_ROUTES[tab]);
     }).catch(() => {
       if (!cancelled) setDeltaCapabilities({ delta_enabled: false, enabled_timeframes: [], sections: { overview: false, activity: false, backtest: false }, config_error: 'Delta capabilities unavailable' });
@@ -422,39 +412,7 @@ function DashboardContent() {
         </nav>
 
         {isDelta ? (
-          <>
-            <nav aria-label="Delta strategies" className="mb-4 flex gap-6 overflow-x-auto whitespace-nowrap border-b border-[#1f2937]">
-              {[
-                ...(deltaCapabilities?.sections.overview ? [{ key: 'overview', label: 'Overview' }] : []),
-                ...(deltaCapabilities?.enabled_timeframes || []).map(minutes => ({ key: `gold${minutes}`, label: deltaLabel(minutes) })),
-                ...(deltaCapabilities?.sections.activity ? [{ key: 'activity', label: 'Positions & Orders' }] : []),
-                ...(deltaCapabilities?.sections.backtest ? [{ key: 'backtest', label: 'Delta Backtest' }] : []),
-              ].map((item) => (
-                <button
-                  key={item.key}
-                  type="button"
-                  aria-pressed={deltaTab === item.key}
-                  onClick={() => setDeltaTab(item.key)}
-                  className={`min-h-10 whitespace-nowrap border-b-2 py-3 text-sm font-medium ${
-                    deltaTab === item.key
-                      ? 'border-[#3b82f6] text-gray-100'
-                      : 'border-transparent text-gray-500 hover:text-gray-300'
-                  }`}
-                >
-                  {item.label}
-                </button>
-              ))}
-            </nav>
-            <section aria-label={deltaTab}>
-              {!deltaCapabilities ? <div className="panel p-4 text-sm text-gray-400">Loading Delta configuration...</div>
-                : deltaCapabilities.config_error ? <div className="panel border-[#ef4444]/40 p-4 text-sm text-[#f87171]">{deltaCapabilities.config_error}</div>
-                : deltaTab === 'overview' ? <DeltaOverviewTab />
-                : deltaTab === 'activity' ? <DeltaActivityTab enabledTimeframes={deltaCapabilities.enabled_timeframes} />
-                : deltaTab === 'backtest' ? <DeltaBacktestTab enabledTimeframes={deltaCapabilities.enabled_timeframes} />
-                : deltaTab.startsWith('gold') ? <DeltaTab key={deltaTab} minutes={Number(deltaTab.slice(4))} />
-                : <div className="panel p-4 text-sm text-gray-400">No Delta sections are enabled.</div>}
-            </section>
-          </>
+          <DeltaWorkspace capabilities={deltaCapabilities} />
         ) : <>
         <nav className="mb-4 flex gap-6 overflow-x-auto whitespace-nowrap border-b border-[#1f2937] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {visibleTabs.map((t) => (

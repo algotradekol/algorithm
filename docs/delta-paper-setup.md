@@ -1,30 +1,28 @@
-# Delta Gold paper setup
+# Delta paper setup
 
-Two independent strategies run continuously on Delta India's `PAXGUSD` perpetual:
+Delta runs as paper-only strategies under the main Delta tab. The workspace is
+split into two metal groups:
 
-- Delta Gold 15 min: completed exchange 15-minute candles.
-- Delta Gold 1 hr: completed exchange 1-hour candles.
+- Gold: `PAXGUSD`, timeframes `5m`, `7m`, `15m`, `30m`, `1h`, and `4h`.
+- Silver: `SLVONUSD` by default, timeframes `5m`, `15m`, `30m`, `1h`, and `4h`.
 
-Both reuse original Silver Micro's EMA20 reference selection, tick entry,
-same-reference re-entry, reversal and 30-second post-stop cooldown methods.
-Green closes above EMA20 supply BUY references; red closes below EMA20 supply
-SELL references. Trigger distances, initial SL, final target, breakeven activation
-and contracts per trade are editable separately. There is no volume filter,
-EMA-wick fallback, candle-pair trailing or daily square-off.
+Gold uses the Delta PAXG EMA20 plus volume EMA20 strategy. Silver uses the
+normal Silver Micro EMA20/red-chain entry behavior on Delta silver candles.
+Both groups are continuous paper simulations with no daily square-off and no
+Delta live order placement.
 
 ## Supabase
 
 Run `backend/supabase_migrations/20260909_delta_paper.sql` in the Supabase SQL
-Editor before enabling Delta. It creates isolated state and trade tables with
-RLS and a service-role-only function that saves position closure and its trade
-journal entry atomically. Existing FYERS tables/settings are not migrated.
+Editor before enabling Delta. It creates isolated JSON state and trade tables
+with RLS and a service-role-only closure function. Existing FYERS tables and
+settings are not migrated.
 
-The backend uses the existing Supabase service-role connection. Data keys contain
-exchange, symbol, timeframe, paper mode, and the existing `BROKER_KEY_SUFFIX`.
-Use different `BROKER_KEY_SUFFIX` values for dev and production when sharing a DB.
-Run one Railway replica with one Uvicorn worker for each storage namespace, as
-this engine owns its state in one process. Do not run multiple active deployments
-with the same namespace.
+The backend uses the existing Supabase service-role connection. State keys
+include exchange, symbol, timeframe, paper mode, and `BROKER_KEY_SUFFIX`. Use
+different `BROKER_KEY_SUFFIX` values for dev and production when sharing one
+Supabase project. Run one Railway replica with one Uvicorn worker for each
+storage namespace.
 
 ## Railway backend environment
 
@@ -32,162 +30,140 @@ with the same namespace.
 DELTA_PAPER_ENABLED=true
 DELTA_EXCHANGE=india
 DELTA_GOLD_SYMBOL=PAXGUSD
+DELTA_SILVER_SYMBOL=SLVONUSD
 DELTA_PROXY_URL=http://PROXY_USERNAME:URL_ENCODED_PASSWORD@PROXY_HOST:PROXY_PORT
-# Optional comma-separated deployment gate. Supported values: delta, overview,
-# gold5m, gold7m, gold15m, gold30m, gold1h, gold4h, activity, backtest.
+
+# Optional read-only account credentials for Verify API connection and the
+# Positions & Orders live-account view. These never enable live Delta trading.
+DELTA_API_KEY=YOUR_INDIA_API_KEY
+DELTA_API_SECRET=YOUR_INDIA_API_SECRET
+
+# Optional comma-separated deployment gate. Empty = show everything.
 DELTA_HIDDEN_SECTIONS=
 ```
 
-Each Delta timeframe has an independent 1-minute-to-7-day post-exit rest setting. Manual exits,
-fixed or trailing stops, and targets start that timer; reversal exits bypass it.
-The timeframe dashboard also provides rest presets, a custom-minute pause, and
-an immediate Resume action in its top controls.
+Supported `DELTA_HIDDEN_SECTIONS` keywords:
 
-`DELTA_PROXY_URL` is optional. Set it to the existing Google VM HTTP CONNECT
-proxy address if all Delta traffic should use the VM's public egress IP. Both
-REST and WebSocket use this explicit proxy. There is no automatic direct bypass
-when a proxy is configured. The VM must allow HTTPS CONNECT on port 443 to
-`api.india.delta.exchange` and `public-socket.india.delta.exchange`.
+`delta`, `gold`, `silver`, `overview`, `activity`, `backtest`,
+`gold5m`, `gold7m`, `gold15m`, `gold30m`, `gold1h`, `gold4h`,
+`silveroverview`, `silveractivity`, `silverbacktest`,
+`silver5m`, `silver15m`, `silver30m`, `silver1h`, `silver4h`.
 
-India is the default. Replace any previously configured Global environment
-values with the India values above, and use credentials created on India.
-India `PAXGUSD` (product 123006) and Global `PAXGUSDT` (product
-277715) are different products. Both were verified through their respective
-public product endpoints on 2026-09-09. Uppercasing `PAXGUSD` does not make it a
-valid Global contract. The paper UI displays India's notional USD P&L and an INR
-equivalent using Delta India's fixed 85 INR/USD accounting conversion. This is
-not a live FX quote or a fetched account balance. Delta's official notice
-says Indian customers are served by Delta India:
-https://support.global.delta.exchange/support/solutions/articles/80001153662-important-update-for-delta-exchange-global-users-in-india
-
-India public WebSocket subscriptions use
-`wss://public-socket.india.delta.exchange`.
-
-Optional read-only credentials, used by **Verify API connection** and the
-**Positions & Orders > Live account (read-only)** view:
+Examples:
 
 ```dotenv
-DELTA_API_KEY=YOUR_INDIA_API_KEY
-DELTA_API_SECRET=YOUR_INDIA_API_SECRET
+# Client sees only the selected Gold strategies, with no activity/backtest.
+DELTA_HIDDEN_SECTIONS=gold5m,gold7m,gold4h,activity,backtest,silver
+
+# Developer sees all Gold, but only Silver 15m and 1h.
+DELTA_HIDDEN_SECTIONS=silver5m,silver30m,silver4h
 ```
 
-Public candles/trades do not need these credentials. Verification performs a
-signed read-only wallet request. The account tab also reads positions and paginated
-open/stop orders and order history. No Delta order-placement endpoint or live broker
-exists in this implementation. Keep credentials in Railway backend variables;
-never use `NEXT_PUBLIC_` for secrets or put them in source code.
+Unknown keywords fail closed for Delta and surface a configuration error. The
+visibility setting is per deployment, so client/dev separation should be done
+with separate Railway services or separate environment values.
 
-For an IP-restricted key, whitelist the Google VM's actual external egress IP in
-Delta separately. Reusing the same VM IP as FYERS is possible; the FYERS whitelist
-does not automatically apply to Delta. Reserve a static external IP on the VM.
-If your existing tunnel has a changing host/port, the tunnel URL still needs
-maintenance even though its ultimate egress IP stays fixed.
+## Proxy and API key
+
+`DELTA_PROXY_URL` is optional. Set it to the existing Google VM HTTP CONNECT
+proxy address when Delta traffic must leave from the same static egress IP used
+for exchange whitelisting. Both REST and WebSocket use the explicit proxy; there
+is no direct bypass when it is configured.
+
+The VM must allow HTTPS CONNECT on port 443 to:
+
+- `api.india.delta.exchange`
+- `public-socket.india.delta.exchange`
+
+Whitelist the VM public egress IP in Delta separately. The FYERS whitelist does
+not automatically apply to Delta, even if the same VM proxy is reused.
+
+## Strategy defaults
+
+Current Delta defaults for new normalized settings:
+
+- Breakout offset: `3`
+- Initial stop loss: `15`
+- Final target: `50`
+- Breakeven TSL activation: `15`
+- Three-candle TSL buffer: `3` for Gold only
+- Lots per trade: `1`
+- Post-exit rest: `5` minutes
+- Scan starts ON and paper trading starts OFF
+
+Gold supports fixed target plus SL, target plus breakeven SL, and three-candle
+TSL. Silver supports fixed target plus SL and target plus breakeven SL, matching
+normal Silver Micro behavior without Gold's volume filter or three-candle TSL.
+
+Manual exits, SL exits, trailing exits, and targets start the per-timeframe
+post-exit rest timer. Reversal exits bypass that timer. Dashboards include
+presets, a custom-minute pause, and a Resume action.
 
 ## Frontend
 
-Keep the existing `NEXT_PUBLIC_API_URL` pointing to Railway. No new frontend
-environment variables are needed. Open Delta, then either Gold tab. Review the
-settings and enable Trading separately for each strategy. Scan starts ON;
-Trading starts OFF for a new configuration.
+Keep `NEXT_PUBLIC_API_URL` pointed at Railway. No frontend Delta env variable is
+needed. The frontend reads `/api/delta/capabilities` and only renders the Gold
+or Silver groups, timeframes, activity view, and backtest view enabled by the
+backend.
 
-The copied defaults are offset 200, initial SL 200, TSL activation 500, final
-target 2000, and one contract. These are distances in the PAXGUSD quoted price,
-not INR and not ticks. Review them before enabling paper trading. A contract is
-currently 0.001 PAXG; the backend verifies product metadata on startup. Paper
-gross P&L is signed price difference * contracts * contract value, in nominal USD.
-Estimated net deducts the product's published taker fee on entry and exit;
-funding, taxes, slippage, leverage and liquidation are not simulated.
+The Delta tab contains separate Gold and Silver groups. Each group has its own
+dashboard, timeframe tabs, Positions & Orders tab, and backtest tab when enabled.
+Gold and Silver positions, settings, cooldowns, P&L, references, CSV exports,
+and backtests are stored independently.
 
-Quantity is displayed as lots: 1 displayed lot = 1 exchange contract, with no
-change in sizing. New paper entries capture base margin percentage and estimated
-entry margin (entry price * lots * contract value * base margin percent / 100).
-This estimate excludes account leverage overrides, size tiers and fees; it is not
-an actual exchange margin reservation. Old records without margin snapshots show
-`--`. Live account margin is displayed only when returned by Delta, never invented
-for orders. INR conversions apply only to India USD amounts.
+Quantities display as lots. One displayed lot equals one Delta exchange
+quantity unit. Paper P&L is calculated in the product quote currency and also
+shows INR where Delta India USD conversion is available. Margin is an estimate
+captured at entry from product metadata; it is not an actual exchange margin
+reservation.
 
-The Positions & Orders tab defaults to Paper and offers both paper timeframes.
-Paper entries fill immediately, so there are no pending entry orders. Paper stops
-and targets are virtual protection; history lists simulated entry/exit events.
-Switching its data source to Live account is read-only and shows all account
-products; it does not enable live trading. Missing fields and failed fetches are
-not represented as zero balances or confirmed empty accounts.
+The Positions & Orders view can show paper simulation rows or read-only live
+account rows for the selected metal. It never places or modifies Delta orders.
 
-Both Gold paper dashboards have an inline Edit SL / Target control and an Exit
-button on each open row. Edits require a fresh price and unchanged position ID,
-SL and target. Protection changes persist before success is returned, retain
-the original initial SL, and record a manual-edit audit. Stops must remain on
-the valid side of current price; an armed breakeven stop cannot return to loss.
-Pending activation stays fixed, and activation preserves a tighter manual stop.
-These controls never amend or close actual Delta account orders.
+## Backtest
 
-Download open CSV exports the current position; Download closed CSV fetches all
-closed trades up to a fixed export cutoff, not just the current page. Exports
-include settings, reference snapshots, manual edits, fees, margin and INR values.
-The 50,000-row safety limit fails explicitly rather than returning a partial CSV.
-No additional SQL migration is needed for these JSON snapshot fields.
+The Delta Backtest tab supports the enabled timeframes for the selected metal.
+It fetches exchange reference candles with warmup data and replays completed
+1-minute execution candles. The 7-minute Gold timeframe is built from complete
+1-minute OHLCV windows on UTC epoch boundaries.
 
-Times display in IST. Candle boundaries follow Delta's UTC-aligned exchange
-bars. An exchange 1-hour candle can therefore display at `:30` IST, not `:00`.
-Restarting the backend restores open positions and their captured protection;
-settings changes apply to new trades, not existing stops/targets.
+Backtests run in memory and do not write to Supabase or change paper settings.
+Reports include the chart, closed trades, any range-end open position, reference
+facts, exit/protection facts, lots, margin estimates, INR values, diagnostics,
+settings, and CSV export.
 
-## Delta Backtest
-
-The Delta Backtest tab supports Gold 15 min and Gold 1 hr independently of the
-running paper engine. It fetches exchange reference candles with 300 warmup bars,
-and replays completed 1-minute execution candles. Date selection is IST, up to
-31 inclusive days; today stops at the latest completed minute. Historical ranges
-before listing, missing candles and conflicting duplicates fail explicitly.
-
-Choose the assumed intraminute path O-H-L-C or O-L-H-C. Level crossings are
-interpolated within that synthetic path; the 30-second SL cooldown uses simulated
-time, never the production clock. Both variants are scenarios, not guaranteed
-upper/lower profit bounds. There is no reconstructed tick history, so results
-cannot be expected to equal real-time paper activity. References use only candles
-completed before the simulated tick. There is no daily or forced range-end exit.
-
-Reports include an equity chart, closed trades, any range-end open position,
-reference timestamps, SL/target/breakeven facts, lots, margin estimates, INR and
-CSV containing settings and assumptions. Product fees/size/margin metadata are
-current, not a historical schedule. No funding, tax, slippage or liquidation model.
-The replay makes no database writes or private exchange requests. One replay runs
-at a time per worker. Neither paper settings nor active positions are changed.
-
-## Feed recovery
-
-The worker runs independently of FYERS login, trading mode, market hours and the
-browser being open. WS trades are primary; REST recent trades provide fallback.
-Only fresh exchange timestamps can drive entries/exits; old or duplicate samples
-are rejected. A socket handshake alone does not mean a subscription succeeded.
-
-Completed reference candles come from Delta history, not from a sparse local
-tick reconstruction. Missing recent candles block entries and are retried, while
-fresh-price exits remain active. No trades are backdated to missed market moves
-during a backend/feed outage. A thin market may legitimately have no fresh trade.
-No API can recover an unobserved intrabar path with certainty.
+The replay uses an assumed 1-minute OHLC path, so intraminute fills are simulated
+rather than exact historical ticks. Internal no-trade history gaps are filled as
+flat zero-volume candles; duplicate or conflicting candles still fail explicitly.
 
 ## Verification
 
 ```powershell
 cd backend
 python -m tests.smoke_delta_paper
-python -m tests.smoke_delta_reporting
-python -m tests.smoke_delta_controls
 python -m tests.smoke_delta_backtest
+python -m tests.smoke_delta_controls
+python -m tests.smoke_delta_reporting
+python -m tests.smoke_delta_multiframe
+python -m tests.smoke_delta_silver
 python -m tests.smoke_silver_logic
 python -m tests.smoke_silver_micro_2
 python -m tests.smoke_silver_v_micro
-python -m tests.smoke_live_orders
+python -m compileall -q app
+
+cd ..\frontend
+npx tsc --noEmit
+npm run build
+
+cd ..
+git diff --check
 ```
 
+No extra SQL migration is needed for new Delta Gold/Silver timeframe settings or
+snapshot fields because they use the existing JSON state and trade tables.
+
 Official references:
-- https://docs-global.delta.exchange/
+
 - https://docs.delta.exchange/
 - https://api.india.delta.exchange/v2/products/PAXGUSD
-
-Public product checks on 2026-09-09 confirmed India `PAXGUSD` is live.
-Earlier Global checks confirmed `PAXGUSD` is invalid on Global and `PAXGUSDT`
-is live there; the Global history/WS checks do not verify India's feed.
-These public checks do not verify your Railway-to-VM route, private API key,
-Supabase migration or deployed instance; verify those after configuring them.
+- https://api.india.delta.exchange/v2/products/SLVONUSD

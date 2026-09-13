@@ -29,7 +29,15 @@ DELTA_DEFAULTS = {
 }
 
 
-def validate_settings(settings):
+SILVER_STRATEGY_VERSION = 'silver_micro_v1'
+SILVER_DEFAULTS = {**DELTA_DEFAULTS, 'strategy_version': SILVER_STRATEGY_VERSION}
+
+
+def defaults_for(asset='gold'):
+    return SILVER_DEFAULTS if asset == 'silver' else DELTA_DEFAULTS
+
+
+def validate_settings(settings, asset='gold'):
     if set(settings) != set(DELTA_DEFAULTS):
         raise ValueError("Unknown or missing Delta settings")
     for key in ("scan_enabled", "trading_enabled", "manual_exit_reentry_enabled"):
@@ -57,7 +65,7 @@ def validate_settings(settings):
     settings["post_exit_cooldown_minutes"] = int(settings["post_exit_cooldown_minutes"])
     if not 1 <= settings["post_exit_cooldown_minutes"] <= 10_080:
         raise ValueError("Post-exit rest must be between 1 minute and 7 days")
-    if settings["strategy_version"] != DELTA_STRATEGY_VERSION:
+    if settings["strategy_version"] != defaults_for(asset)['strategy_version']:
         raise ValueError("Invalid Delta strategy version")
     if settings["exit_mode"] not in {
         "fixed_target_sl",
@@ -65,6 +73,8 @@ def validate_settings(settings):
         DELTA_EXIT_MODE_THREE_CANDLE,
     }:
         raise ValueError("Invalid Delta exit mode")
+    if asset == 'silver' and settings['exit_mode'] == DELTA_EXIT_MODE_THREE_CANDLE:
+        raise ValueError('Delta Silver uses normal Silver Micro fixed or breakeven exits')
     if (
         settings["exit_mode"] == "target_to_breakeven_sl"
         and settings["tsl_activate_points"] >= settings["target_points"]
@@ -73,21 +83,23 @@ def validate_settings(settings):
     return settings
 
 
-def normalize_stored_settings(settings):
+def normalize_stored_settings(settings, asset='gold'):
     """Upgrade the old price-only Delta settings exactly once."""
     raw = settings if isinstance(settings, dict) else {}
-    if raw.get("strategy_version") != DELTA_STRATEGY_VERSION:
-        normalized = dict(DELTA_DEFAULTS)
+    defaults = defaults_for(asset)
+    if raw.get("strategy_version") != defaults['strategy_version']:
+        normalized = dict(defaults)
         for key in ("scan_enabled", "trading_enabled", "manual_exit_reentry_enabled"):
             if isinstance(raw.get(key), bool):
                 normalized[key] = raw[key]
         if raw.get("exit_mode") in {"fixed_target_sl", "target_to_breakeven_sl"}:
             normalized["exit_mode"] = raw["exit_mode"]
-        return validate_settings(normalized)
-    return validate_settings({**DELTA_DEFAULTS, **raw})
+        return validate_settings(normalized, asset)
+    return validate_settings({**defaults, **raw}, asset)
 
 
 class DeltaGold(Algo3SilverMicro):
+    asset = 'gold'
     def __init__(self, minutes, symbol, broker):
         if minutes not in DELTA_TIMEFRAMES:
             raise ValueError("Delta timeframe must be 5, 7, 15, 30, 60 or 240 minutes")
@@ -102,7 +114,7 @@ class DeltaGold(Algo3SilverMicro):
         self._current_candle_open = None
 
         original = copy.deepcopy(broker.state.get("settings") or {})
-        normalized = normalize_stored_settings(original)
+        normalized = normalize_stored_settings(original, self.asset)
         if normalized != original:
             state = copy.deepcopy(broker.state)
             state["settings"] = normalized
@@ -206,6 +218,7 @@ class DeltaGold(Algo3SilverMicro):
         if any(right - left != interval for left, right in zip(stamps, stamps[1:])):
             raise ValueError("Delta history contains missing candles; new entries paused")
 
+        live_completed_bars = self.last_candle_epoch is not None
         for stamp in stamps:
             raw = by_time[stamp]
             bar = {
@@ -217,6 +230,8 @@ class DeltaGold(Algo3SilverMicro):
             self._volume_ema20 = _ema_step(self._volume_ema20, bar["volume"])
             bar.update(ema20=self._ema20, volume_ema20=self._volume_ema20)
             self._bars.append(bar)
+            if live_completed_bars and self.asset == 'silver' and self.scan_enabled():
+                self._check_candle_close_trigger(bar)
             old_buy, old_sell = self._buy_setup_bar_at, self._sell_setup_bar_at
             self._update_setups(bar, log=False)
             if self._buy_setup_bar_at != old_buy:

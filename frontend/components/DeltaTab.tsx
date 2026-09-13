@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { api } from '../lib/api';
+import { deltaApi, DeltaAsset } from '../lib/api';
 
 type Settings = {
   scan_enabled: boolean; trading_enabled: boolean; silver_breakout_points: number;
@@ -38,7 +38,9 @@ const duration = (value?: number) => {
 };
 const button = 'rounded border border-[#334155] px-3 py-2 text-sm text-gray-200 hover:border-[#60a5fa] disabled:opacity-40';
 
-export default function DeltaTab({ minutes }: { minutes: number }) {
+export default function DeltaTab({ minutes, asset = 'gold' }: { minutes: number; asset?: DeltaAsset }) {
+  const api = deltaApi(asset);
+  const metal = asset === 'silver' ? 'Silver' : 'Gold';
   const [status, setStatus] = useState<Status | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
   const [offset, setOffset] = useState(0);
@@ -74,7 +76,7 @@ export default function DeltaTab({ minutes }: { minutes: number }) {
     }
     void poll();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [minutes, offset, reload]);
+  }, [asset, minutes, offset, reload]);
 
   async function action(work: () => Promise<unknown>, success: string) {
     setBusy(true); setNotice('');
@@ -116,8 +118,8 @@ export default function DeltaTab({ minutes }: { minutes: number }) {
   return <div className="space-y-4">
     <header className="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 className="text-lg font-semibold text-gray-100">Delta Gold {minutes === 60 ? '1 hr' : minutes === 240 ? '4 hr' : `${minutes} min`} <span className="ml-2 rounded bg-[#3b82f6]/20 px-2 py-1 text-xs text-[#93c5fd]">PAPER ONLY</span></h1>
-        <p className="mt-2 text-sm text-gray-400">{status?.symbol || 'Gold symbol not configured'} | 24/7 | Price EMA20 + volume EMA20 | No daily square-off</p>
+        <h1 className="text-lg font-semibold text-gray-100">Delta {metal} {minutes === 60 ? '1 hr' : minutes === 240 ? '4 hr' : `${minutes} min`} <span className="ml-2 rounded bg-[#3b82f6]/20 px-2 py-1 text-xs text-[#93c5fd]">PAPER ONLY</span></h1>
+        <p className="mt-2 text-sm text-gray-400">{status?.symbol || `${metal} symbol not configured`} | 24/7 | {asset === 'gold' ? 'Price EMA20 + volume EMA20' : 'Normal Silver Micro: price EMA20 / red-chain SELL'} | No daily square-off</p>
       </div>
       <div className="flex flex-wrap gap-2">
         {settings && <>
@@ -154,7 +156,7 @@ export default function DeltaTab({ minutes }: { minutes: number }) {
         const time = status?.references?.find(row => row.side === side)?.time;
         const trigger = ref != null && settings ? ref + (side === 'BUY' ? 1 : -1) * settings.silver_breakout_points : undefined;
         return <div key={side} className={`rounded border p-4 ${side === 'BUY' ? 'border-[#22c55e]/40 bg-[#22c55e]/5' : 'border-[#ef4444]/40 bg-[#ef4444]/5'}`}>
-          <div className={side === 'BUY' ? 'text-sm text-[#22c55e]' : 'text-sm text-[#ef4444]'}>{side} reference: {side === 'BUY' ? 'green close > EMA20' : 'red close < EMA20'} + volume &gt; volume EMA20</div>
+          <div className={side === 'BUY' ? 'text-sm text-[#22c55e]' : 'text-sm text-[#ef4444]'}>{side} reference: {side === 'BUY' ? 'green close > EMA20' : 'red close < EMA20'}{asset === 'gold' ? ' + volume > volume EMA20' : ' (no volume filter)'}</div>
           <div className="mt-2 font-mono text-gray-100">Close {number(ref)} | Trigger {number(trigger)}</div>
           <p className="mt-2 text-xs text-gray-400">{date(time)} IST | Volume {number(status?.references?.find(row => row.side === side)?.volume)} | Volume EMA20 {number(status?.references?.find(row => row.side === side)?.volume_ema20)}</p>
         </div>;
@@ -170,12 +172,12 @@ export default function DeltaTab({ minutes }: { minutes: number }) {
       void action(async () => { await api.deltaSettings(minutes, draft); setDraft(null); }, 'Delta settings saved');
     }}>
       <h2 className="font-semibold text-gray-100">Paper risk settings</h2>
-      <p className="text-xs text-gray-400">All distances are in the quoted gold price, not rupees. Existing positions retain their entry-time protection.</p>
+      <p className="text-xs text-gray-400">All distances are in the quoted {asset} price, not rupees. Existing positions retain their entry-time protection.</p>
       <label className="block text-sm text-gray-300">Exit mode
         <select className="mt-1 block w-full rounded border border-[#334155] bg-[#0a0e14] p-2" value={draft.exit_mode} onChange={e => setDraft({ ...draft, exit_mode: e.target.value as Settings['exit_mode'] })}>
           <option value="fixed_target_sl">Fixed Target + Fixed Stop Loss</option>
           <option value="target_to_breakeven_sl">Target + Breakeven Stop Loss</option>
-          <option value="three_candle_tsl">Three-Candle TSL</option>
+          {asset === 'gold' && <option value="three_candle_tsl">Three-Candle TSL</option>}
         </select>
       </label>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">

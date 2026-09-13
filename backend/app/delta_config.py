@@ -12,7 +12,10 @@ DELTA_TIMEFRAME_KEYS = {
     60: "gold1h",
     240: "gold4h",
 }
-DELTA_SECTION_KEYS = {"delta", "overview", "activity", "backtest", *DELTA_TIMEFRAME_KEYS.values()}
+SILVER_TIMEFRAME_KEYS = {5: 'silver5m', 15: 'silver15m', 30: 'silver30m', 60: 'silver1h', 240: 'silver4h'}
+DELTA_SECTION_KEYS = {"delta", "gold", "silver", "overview", "activity", "backtest",
+                      "silveroverview", "silveractivity", "silverbacktest",
+                      *DELTA_TIMEFRAME_KEYS.values(), *SILVER_TIMEFRAME_KEYS.values()}
 
 
 def _normalize(value: str) -> str:
@@ -35,21 +38,33 @@ def delta_capabilities() -> dict:
     enabled_timeframes = [
         minutes
         for minutes, key in DELTA_TIMEFRAME_KEYS.items()
-        if delta_enabled and key not in requested
+        if delta_enabled and 'gold' not in requested and key not in requested
     ]
+    gold_sections = {key: delta_enabled and 'gold' not in requested and key not in requested for key in ('overview', 'activity', 'backtest')}
+    silver_sections = {key: delta_enabled and 'silver' not in requested and f'silver{key}' not in requested for key in ('overview', 'activity', 'backtest')}
+    silver_timeframes = [minutes for minutes, key in SILVER_TIMEFRAME_KEYS.items() if delta_enabled and 'silver' not in requested and key not in requested]
     return {
         "delta_enabled": delta_enabled,
         "enabled_timeframes": enabled_timeframes,
-        "sections": {
-            "overview": delta_enabled and "overview" not in requested,
-            "activity": delta_enabled and "activity" not in requested,
-            "backtest": delta_enabled and "backtest" not in requested,
+        "sections": gold_sections,
+        "assets": {
+            "gold": {"enabled": delta_enabled and 'gold' not in requested, "enabled_timeframes": enabled_timeframes, "sections": gold_sections},
+            "silver": {"enabled": delta_enabled and 'silver' not in requested, "enabled_timeframes": silver_timeframes, "sections": silver_sections},
         },
         "hidden": sorted(requested),
         "config_error": config_error,
     }
 
 
-def timeframe_enabled(minutes: int, capabilities: dict | None = None) -> bool:
+def asset_capabilities(asset='gold', capabilities=None):
+    if asset not in {'gold', 'silver'}:
+        raise ValueError('Unknown Delta asset')
     capabilities = capabilities or delta_capabilities()
-    return minutes in capabilities["enabled_timeframes"]
+    group = capabilities['assets'][asset]
+    return {**capabilities, 'delta_enabled': group['enabled'],
+            'enabled_timeframes': group['enabled_timeframes'], 'sections': group['sections']}
+
+
+def timeframe_enabled(minutes: int, capabilities: dict | None = None, asset='gold') -> bool:
+    capabilities = capabilities or delta_capabilities()
+    return minutes in asset_capabilities(asset, capabilities)["enabled_timeframes"]

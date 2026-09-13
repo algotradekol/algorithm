@@ -37,6 +37,9 @@ type Props = {
   onSelectedTradeIdChange: (value: string | null) => void;
   overlays: OverlayState;
   expanded?: boolean;
+  title?: string;
+  currency?: string;
+  volumeEma?: boolean;
 };
 
 export default function SilverBacktestChart({
@@ -47,6 +50,9 @@ export default function SilverBacktestChart({
   onSelectedTradeIdChange,
   overlays,
   expanded = false,
+  title = 'Silver Replay Chart',
+  currency = 'Rs',
+  volumeEma = false,
 }: Props) {
   const selectedDay = days.find((day) => day.date === selectedDate) || days[0];
   const chart = selectedDay?.chart || {};
@@ -54,9 +60,9 @@ export default function SilverBacktestChart({
   const chartTrades = Array.isArray(chart.trades) ? chart.trades : [];
   const chartSetups = Array.isArray(chart.setups) ? chart.setups : [];
   const viewportHint = chart.viewport_hint || {};
-  const candleMinutes = String(chart.resolution || '') === '9' ? 9 : 15;
+  const candleMinutes = Number(chart.resolution) > 0 ? Number(chart.resolution) : 15;
   const candleLabel = `${candleMinutes}-minute candles`;
-  const showVolumeEma = candleMinutes === 9;
+  const showVolumeEma = volumeEma || candleMinutes === 9;
 
   const normalized = useMemo(() => chartCandles.map((candle: any) => ({
     ...candle,
@@ -146,8 +152,8 @@ export default function SilverBacktestChart({
       <section className="panel p-4">
         <div className="flex items-center justify-between gap-3">
           <div>
-            <h3 className="text-sm font-semibold text-gray-100">Silver Replay Chart</h3>
-            <p className="mt-1 text-xs text-gray-500">No chartable Silver candles were returned for {selectedDay.date}.</p>
+            <h3 className="text-sm font-semibold text-gray-100">{title}</h3>
+            <p className="mt-1 text-xs text-gray-500">No chartable candles were returned for {selectedDay.date}.</p>
           </div>
           <DateSelector days={days} selectedDate={selectedDate} onSelectedDateChange={onSelectedDateChange} />
         </div>
@@ -355,7 +361,7 @@ export default function SilverBacktestChart({
     <section className="panel p-4">
       <div className="flex flex-col gap-3 xl:flex-row xl:items-start xl:justify-between">
         <div>
-          <h3 className="text-sm font-semibold text-gray-100">Silver Replay Chart</h3>
+          <h3 className="text-sm font-semibold text-gray-100">{title}</h3>
           <p className="mt-1 text-xs text-gray-500">Executed replay trades only: arrows, exits, trailing paths, and P&amp;L come from trades the simulator actually opened and closed. Setup markers are optional signal context, not extra trades.</p>
         </div>
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center">
@@ -605,7 +611,7 @@ export default function SilverBacktestChart({
                         <text x={entryX + 28} y={badgeY + 14} textAnchor="middle" fill="#f8fafc" fontSize="12" fontWeight="800" fontFamily="ui-monospace">×{tradeCount}</text>
                       </g>
                     )}
-                    {isSelected && (
+                    {isSelected && !trade.is_open && (
                       <g>
                         <line x1={entryX} x2={exitX} y1={entryY} y2={exitY} stroke={CHART_COLORS.tradePath} strokeWidth="2.4" />
                         <circle cx={exitX} cy={exitY} r="5.4" fill="#0a0e14" stroke={exitPointerColor} strokeWidth="2.4" />
@@ -734,10 +740,10 @@ export default function SilverBacktestChart({
               <div className="mt-3 grid gap-2 text-sm md:grid-cols-2">
                 <ChartMetric label="Trade ID" value={String(selectedTrade.trade_id)} mono className="md:col-span-2" valueClassName="text-[12px] leading-5 break-all" />
                 <ChartMetric label="Side" value={selectedTrade.side} tone={selectedTrade.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
-                <ChartMetric label="Net P&L" value={money(Number(selectedTrade.net_pnl || 0))} tone={Number(selectedTrade.net_pnl || 0) >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
+                <ChartMetric label={selectedTrade.is_open ? 'Open P&L' : 'Net P&L'} value={`${currency} ${formatNumber(Number(selectedTrade.net_pnl || 0))}`} tone={Number(selectedTrade.net_pnl || 0) >= 0 ? 'text-[#22c55e]' : 'text-[#ef4444]'} />
                 <ChartMetric label="Entry mode" value={formatEntryMode(selectedTrade.entry_mode, selectedTrade.entry_mode_label)} className="md:col-span-2" valueClassName="leading-5 whitespace-normal text-[#fbbf24]" />
                 <ChartMetric label="Entry" value={`${formatBacktestDateTime(selectedTrade.entry_time, selectedTrade.exit_time)} @ ${formatNumber(Number(selectedTrade.entry_price))}`} className="md:col-span-2" valueClassName="leading-5 whitespace-normal" />
-                <ChartMetric label="Exit" value={`${formatBacktestDateTime(selectedTrade.exit_time, selectedTrade.entry_time)} @ ${formatNumber(Number(selectedTrade.exit_price))}`} className="md:col-span-2" valueClassName="leading-5 whitespace-normal" />
+                <ChartMetric label="Exit" value={selectedTrade.is_open ? 'Still open at range end' : `${formatBacktestDateTime(selectedTrade.exit_time, selectedTrade.entry_time)} @ ${formatNumber(Number(selectedTrade.exit_price))}`} className="md:col-span-2" valueClassName="leading-5 whitespace-normal" />
                 {selectedTrade.side === 'SELL' && <>
                   <ChartMetric label="Active reference" value={formatOptionalNumber(selectedTrade.active_reference_close)} />
                   <ChartMetric label="Trigger used" value={formatOptionalNumber(selectedTrade.trigger_level_used)} />
@@ -1049,9 +1055,6 @@ function buildNicePriceScale(rawHigh: number, rawLow: number, desiredTickCount: 
   return { high, low, ticks: ticks.reverse() };
 }
 
-function money(value: number) {
-  return `Rs ${formatNumber(value)}`;
-}
 
 function parseMaybeDate(value: string | null | undefined) {
   if (!value) return null;

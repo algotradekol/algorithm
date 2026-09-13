@@ -70,11 +70,17 @@ def run():
         assert first['trades'] and first['trades'][0]['entry_price'] == 1040
         assert first['trades'][0]['exit_price'] == 1140 and first['trades'][0]['exit_reason'] == 'TARGET'
         assert first['trades'][0]['signal_snapshot']['setup_close'] == 1030
+        chart = first['candles']
+        assert chart[-1]['partial'] and chart[-1]['high'] == 1145
+        assert chart[-1]['close'] == 1140  # Never chart the future close from the full reference bar.
+        assert chart[-2]['ema20'] is not None and chart[-2]['volume_ema20'] is not None
+        assert chart[-1]['time'].startswith('2026-09-12')
         assert not first['open_position']  # A fresh second crossing can complete within the same replay minute.
         changed = copy.deepcopy(refs)
         changed[-1].update(high=3000, close=2999)
         second = replay(META, 'india', minutes, SETTINGS, changed, minute, NOW, NOW + 60, 'high_first')
         assert first['trades'] == second['trades']  # Forming reference close cannot leak.
+        assert first['candles'] == second['candles']
 
         # SELL reference + downward path fills at the threshold, not the minute low.
         sell_refs = history(minutes, NOW)

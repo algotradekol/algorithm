@@ -49,4 +49,5 @@ def export_paper(service, minutes, kind):
                 'timeframe_minutes': minutes, 'mode': 'paper', 'settings_at_export': state['settings'],
                 'last_price_at_export': last_price, 'last_tick_at_export': last_tick_at}
         writer.writerow([csv_cell(data.get(field)) for field in fields])
-    return {'filename': f'delta-{minutes}m-paper-{kind}-{cutoff[:10]}.csv', 'csv': output.getvalue(), 'count': len(rows)}
+    metal = '-silver' if getattr(service, 'asset', 'gold') == 'silver' else ''
+    return {'filename': f'delta{metal}-{minutes}m-paper-{kind}-{cutoff[:10]}.csv', 'csv': output.getvalue(), 'count': len(rows)}
