@@ -6,7 +6,7 @@ from unittest.mock import patch
 
 from fastapi import HTTPException
 
-from app.delta_candles import aggregate_seven_minute, delta_resolution
+from app.delta_candles import aggregate_custom_minutes, aggregate_seven_minute, delta_resolution
 from app.delta_config import delta_capabilities
 from app.delta_engine import DeltaService
 from app.delta_routes import require_delta
@@ -19,9 +19,9 @@ def minute(stamp, price, volume=1):
 
 
 def run():
-    assert DELTA_TIMEFRAMES == (5, 7, 15, 30, 60, 240)
+    assert DELTA_TIMEFRAMES == (5, 7, 15, 30, 60, 120, 240)
     assert {minutes: delta_resolution(minutes) for minutes in DELTA_TIMEFRAMES} == {
-        5: "5m", 7: "1m", 15: "15m", 30: "30m", 60: "1h", 240: "4h",
+        5: "5m", 7: "1m", 15: "15m", 30: "30m", 60: "1h", 120: "1m", 240: "4h",
     }
 
     rows = [minute(index * 60, 100 + index, index + 1) for index in range(14)]
@@ -41,10 +41,15 @@ def run():
     assert aggregate_seven_minute(missing) == []
     partial = aggregate_seven_minute(crossing[:3], current_time=crossing_bucket + 180)
     assert len(partial) == 1 and partial[0]["source_minutes"] == 3
+    two_hour_rows = [minute(index * 60, 300 + index, 1) for index in range(120)]
+    two_hour = aggregate_custom_minutes(two_hour_rows, 120)
+    assert two_hour == [{"time": 0, "open": 300.0, "high": 421.0, "low": 299.0,
+                         "close": 420.0, "volume": 120.0, "source_minutes": 120}]
+    assert aggregate_custom_minutes(two_hour_rows[:-1], 120) == []
 
     with patch.dict(os.environ, {"DELTA_HIDDEN_SECTIONS": "gold5m,gold7m,gold4h,activity"}, clear=False):
         capabilities = delta_capabilities()
-        assert capabilities["enabled_timeframes"] == [15, 30, 60]
+        assert capabilities["enabled_timeframes"] == [15, 30, 60, 120]
         assert not capabilities["sections"]["activity"] and capabilities["sections"]["overview"]
         try:
             require_delta(minutes=7)
@@ -60,7 +65,11 @@ def run():
              patch("app.delta_engine.threading.Thread"):
             gated = DeltaService()
             gated._initialize()
-        assert sorted(gated.strategies) == [15, 30, 60]
+        assert sorted(gated.strategies) == [15, 30, 60, 120]
+    with patch.dict(os.environ, {"DELTA_HIDDEN_SECTIONS": "gold2h"}, clear=False):
+        capabilities = delta_capabilities()
+        assert 120 not in capabilities["enabled_timeframes"]
+        assert 60 in capabilities["enabled_timeframes"] and 240 in capabilities["enabled_timeframes"]
     with patch.dict(os.environ, {"DELTA_HIDDEN_SECTIONS": "typo"}, clear=False):
         capabilities = delta_capabilities()
         assert not capabilities["delta_enabled"] and capabilities["config_error"]
@@ -85,8 +94,8 @@ def run():
     with patch.dict(os.environ, {"DELTA_HIDDEN_SECTIONS": ""}, clear=False):
         overview = service.overview()
     assert [row["minutes"] for row in overview["timeframes"]] == list(DELTA_TIMEFRAMES)
-    assert overview["totals"]["all_time"]["trades"] == 6
-    assert overview["totals"]["today"]["trades"] == 6
+    assert overview["totals"]["all_time"]["trades"] == len(DELTA_TIMEFRAMES)
+    assert overview["totals"]["today"]["trades"] == len(DELTA_TIMEFRAMES)
     assert overview["totals"]["unrealized"] > 0
     assert overview["totals"]["all_time_with_unrealized"] == overview["totals"]["all_time"]["net"] + overview["totals"]["unrealized"]
     assert overview["inr_rate"] == 85

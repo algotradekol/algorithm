@@ -90,7 +90,7 @@ def run():
     assert DeltaGold._check_triggers is not Algo3SilverMicro._check_triggers
     assert DeltaGold._update_setups is not Algo3SilverMicro._update_setups
     assert DeltaGold.check_exits is Algo3SilverMicro.check_exits
-    assert DELTA_TIMEFRAMES == (5, 7, 15, 30, 60, 240)
+    assert DELTA_TIMEFRAMES == (5, 7, 15, 30, 60, 120, 240)
     assert DELTA_DEFAULTS["silver_breakout_points"] == 3
     assert DELTA_DEFAULTS["sl_points"] == DELTA_DEFAULTS["tsl_activate_points"] == 15
     assert DELTA_DEFAULTS["target_points"] == 50 and DELTA_DEFAULTS["tsl_buffer_points"] == 3
@@ -226,10 +226,24 @@ def run():
         three._apply_three_candle_tsl(post4)
         assert three._open_position()["sl_price"] == moved["sl_price"]
         post5 = bar(base + datetime.timedelta(minutes=120), 105, 105, 98, 104)
+        three._bars.append(post5)
+        three._apply_three_candle_tsl(post5)
+        checked = three._open_position()["signal_snapshot"]["delta_three_candle_tsl"]["evaluations"]
+        assert [[candle["time"] for candle in item["candles"]] for item in checked[-3:]] == [
+            [post1["time"].replace(tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat(),
+             post2["time"].replace(tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat(),
+             post3["time"].replace(tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat()],
+            [post2["time"].replace(tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat(),
+             post3["time"].replace(tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat(),
+             post4["time"].replace(tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat()],
+            [post3["time"].replace(tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat(),
+             post4["time"].replace(tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat(),
+             post5["time"].replace(tzinfo=datetime.timezone(datetime.timedelta(hours=5, minutes=30))).isoformat()],
+        ]
+        assert checked[-2]["status"] == "not_tighter" and checked[-1]["status"] == "not_tighter"
         post6 = bar(base + datetime.timedelta(minutes=135), 104, 104, 99, 103)
-        for roll_bar in (post5, post6):
-            three._bars.append(roll_bar)
-            three._apply_three_candle_tsl(roll_bar)
+        three._bars.append(post6)
+        three._apply_three_candle_tsl(post6)
         rolled = three._open_position()
         assert rolled["sl_price"] == (94 if side == "BUY" else 109)
 

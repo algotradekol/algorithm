@@ -10,6 +10,7 @@ DELTA_TIMEFRAME_KEYS = {
     15: "gold15m",
     30: "gold30m",
     60: "gold1h",
+    120: "gold2h",
     240: "gold4h",
 }
 SILVER_TIMEFRAME_KEYS = {5: 'silver5m', 15: 'silver15m', 30: 'silver30m', 60: 'silver1h', 240: 'silver4h'}

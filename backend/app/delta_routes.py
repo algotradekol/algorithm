@@ -21,7 +21,7 @@ def asset_service(asset):
 
 class BacktestRequest(BaseModel):
     asset: Asset = 'gold'
-    minutes: Literal[5, 7, 15, 30, 60, 240]
+    minutes: Literal[5, 7, 15, 30, 60, 120, 240]
     start_date: datetime.date
     end_date: datetime.date
     settings: dict = Field(default_factory=dict)
@@ -117,7 +117,7 @@ def cancel_backtest(asset: Asset = 'gold'):
 
 @router.get("/{minutes}/status")
 def status(minutes: int, asset: Asset = 'gold'):
-    if minutes not in (5, 7, 15, 30, 60, 240):
+    if minutes not in (5, 7, 15, 30, 60, 120, 240):
         raise HTTPException(400, "Invalid Delta timeframe")
     require_delta(minutes=minutes, asset=asset)
     service = asset_service(asset)
@@ -197,7 +197,7 @@ def account(kind: str, after: str | None = Query(None, max_length=256), source: 
     service = asset_service(asset)
     if kind not in {"positions", "open_orders", "stop_orders", "history"}:
         raise HTTPException(400, "Invalid Delta account view")
-    if source not in {"paper", "live"} or minutes not in {5, 7, 15, 30, 60, 240}:
+    if source not in {"paper", "live"} or minutes not in {5, 7, 15, 30, 60, 120, 240}:
         raise HTTPException(400, "Invalid Delta source or timeframe")
     if source == "paper":
         return paper_account(kind, minutes, offset, asset)

@@ -13,6 +13,10 @@ export type DeltaCapabilities = {
   assets?: Record<DeltaAsset, Group>; config_error?: string | null;
 };
 
+const deltaTimeframeLabel = (minutes: number) => (
+  minutes === 60 ? '1 hr' : minutes === 120 ? '2 hr' : minutes === 240 ? '4 hr' : `${minutes} min`
+);
+
 export default function DeltaWorkspace({ capabilities }: { capabilities: DeltaCapabilities | null }) {
   const [selected, setSelected] = useState<DeltaAsset>('gold');
   if (!capabilities) return <p className="panel p-4 text-sm text-gray-400">Loading Delta configuration...</p>;
@@ -40,7 +44,7 @@ function MetalWorkspace({ asset, group }: { asset: DeltaAsset; group: Group }) {
   const metal = asset === 'gold' ? 'Gold' : 'Silver';
   const tabs = [
     ...(group.sections.overview ? [{ key: 'overview', label: `${metal} dashboard` }] : []),
-    ...group.enabled_timeframes.map(minutes => ({ key: String(minutes), label: minutes === 60 ? '1 hr' : minutes === 240 ? '4 hr' : `${minutes} min` })),
+    ...group.enabled_timeframes.map(minutes => ({ key: String(minutes), label: deltaTimeframeLabel(minutes) })),
     ...(group.sections.activity ? [{ key: 'activity', label: 'Positions & Orders' }] : []),
     ...(group.sections.backtest ? [{ key: 'backtest', label: `${metal} backtest` }] : []),
   ];

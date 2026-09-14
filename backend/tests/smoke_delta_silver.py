@@ -117,7 +117,7 @@ def run():
             gold, sil = DeltaService(), DeltaService('silver')
             gold._initialize()
             sil._initialize()
-        assert len(keys) == len(set(keys)) == 11
+        assert len(keys) == len(set(keys)) == 12
         assert 'delta:india:PAXGUSD:15:paper' in keys  # Existing Gold keys survive.
         assert 'delta:silver:india:SLVONUSD:15:paper' in keys
         for service in (gold, sil):

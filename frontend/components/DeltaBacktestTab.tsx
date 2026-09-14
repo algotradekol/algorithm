@@ -22,6 +22,7 @@ const button = 'rounded border border-[#334155] px-3 py-2 text-sm text-gray-200 
 const num = (value?: number) => value == null ? '--' : value.toLocaleString('en-IN', { maximumFractionDigits: 4 });
 const date = (value?: string | number) => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) : '--';
 const day = (offset: number) => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Kolkata', year: 'numeric', month: '2-digit', day: '2-digit' }).format(new Date(Date.now() + offset * 86400000));
+const timeframeLabel = (minutes: number) => minutes === 60 ? '1 hr' : minutes === 120 ? '2 hr' : minutes === 240 ? '4 hr' : `${minutes} min`;
 
 export default function DeltaBacktestTab({ enabledTimeframes, asset = 'gold' }: { enabledTimeframes: number[]; asset?: DeltaAsset }) {
   const api = deltaApi(asset);
@@ -68,7 +69,7 @@ export default function DeltaBacktestTab({ enabledTimeframes, asset = 'gold' }: 
     <header><h1 className="text-lg font-semibold text-gray-100">Delta {metal} Backtest</h1><p className="mt-2 text-sm text-gray-400">{asset === 'gold' ? 'Delta price EMA20 + volume EMA20' : 'Normal Silver Micro price EMA20 and red-chain SELL'} strategies, replayed against 1-minute candles. Runs in isolated memory, with no account orders or changes to paper settings.</p></header>
     <form onSubmit={run} className="rounded border border-[#1f2937] bg-[#111827] p-4"><fieldset disabled={busy || !enabledTimeframes.length} className="space-y-4 disabled:opacity-60">
       <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-4">
-        <label className="text-xs text-gray-400">Strategy<select className={`${control} mt-1`} value={minutes} onChange={e => setMinutes(Number(e.target.value))}>{enabledTimeframes.map(value => <option key={value} value={value}>Delta {metal} {value === 60 ? '1 hr' : value === 240 ? '4 hr' : `${value} min`}</option>)}</select></label>
+        <label className="text-xs text-gray-400">Strategy<select className={`${control} mt-1`} value={minutes} onChange={e => setMinutes(Number(e.target.value))}>{enabledTimeframes.map(value => <option key={value} value={value}>Delta {metal} {timeframeLabel(value)}</option>)}</select></label>
         <label className="text-xs text-gray-400">From (IST)<input className={`${control} mt-1`} type="date" required max={end} value={start} onChange={e => setStart(e.target.value)} /></label>
         <label className="text-xs text-gray-400">Through (IST, inclusive)<input className={`${control} mt-1`} type="date" required min={start} max={day(0)} value={end} onChange={e => setEnd(e.target.value)} /></label>
         <label className="text-xs text-gray-400">Assumed 1-minute path<select className={`${control} mt-1`} value={path} onChange={e => setPath(e.target.value)}><option value="high_first">Open → High → Low → Close</option><option value="low_first">Open → Low → High → Close</option></select></label>

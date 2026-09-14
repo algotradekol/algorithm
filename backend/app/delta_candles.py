@@ -14,16 +14,19 @@ NATIVE_DELTA_RESOLUTIONS = {
 
 
 def delta_resolution(minutes: int) -> str:
-    return "1m" if minutes == 7 else NATIVE_DELTA_RESOLUTIONS[minutes]
+    return "1m" if minutes in {7, 120} else NATIVE_DELTA_RESOLUTIONS[minutes]
 
 
-def aggregate_seven_minute(rows, current_time: int | float | None = None):
-    """Aggregate continuous epoch-anchored 7m bars from validated 1m OHLCV."""
+def aggregate_custom_minutes(rows, minutes: int, current_time: int | float | None = None):
+    """Aggregate continuous epoch-anchored custom bars from validated 1m OHLCV."""
+    if minutes <= 1:
+        raise ValueError("Custom Delta aggregation requires a timeframe above 1 minute")
+    interval = minutes * 60
     by_bucket: dict[int, dict[int, dict]] = {}
     for raw in rows:
         stamp = int(raw["time"])
         if stamp % 60:
-            raise ValueError("Delta 7m source contains a non-minute timestamp")
+            raise ValueError("Delta custom source contains a non-minute timestamp")
         prices = {key: float(raw[key]) for key in ("open", "high", "low", "close")}
         volume = float(raw.get("volume", 0))
         if (
@@ -34,18 +37,18 @@ def aggregate_seven_minute(rows, current_time: int | float | None = None):
             <= max(prices["open"], prices["close"]) <= prices["high"]
         ):
             raise ValueError("Invalid Delta 1m OHLCV history")
-        bucket = stamp // 420 * 420
+        bucket = stamp // interval * interval
         row = {"time": stamp, **prices, "volume": volume}
         existing = by_bucket.setdefault(bucket, {}).get(stamp)
         if existing is not None and existing != row:
             raise ValueError("Conflicting duplicate Delta 1m candles")
         by_bucket[bucket][stamp] = row
 
-    current_bucket = int(current_time // 420 * 420) if current_time is not None else None
+    current_bucket = int(current_time // interval * interval) if current_time is not None else None
     output = []
     for bucket in sorted(by_bucket):
         minute_rows = by_bucket[bucket]
-        expected = list(range(bucket, bucket + 420, 60))
+        expected = list(range(bucket, bucket + interval, 60))
         complete = all(stamp in minute_rows for stamp in expected)
         is_forming = current_bucket == bucket
         if not complete:
@@ -68,3 +71,8 @@ def aggregate_seven_minute(rows, current_time: int | float | None = None):
             "source_minutes": len(selected),
         })
     return output
+
+
+def aggregate_seven_minute(rows, current_time: int | float | None = None):
+    """Aggregate continuous epoch-anchored 7m bars from validated 1m OHLCV."""
+    return aggregate_custom_minutes(rows, 7, current_time=current_time)

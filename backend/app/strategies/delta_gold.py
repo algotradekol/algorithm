@@ -12,7 +12,7 @@ from ..timezone import IST
 
 DELTA_STRATEGY_VERSION = "paxg_ema_volume_v1"
 DELTA_EXIT_MODE_THREE_CANDLE = "three_candle_tsl"
-DELTA_TIMEFRAMES = (5, 7, 15, 30, 60, 240)
+DELTA_TIMEFRAMES = (5, 7, 15, 30, 60, 120, 240)
 DELTA_DEFAULTS = {
     "scan_enabled": True,
     "trading_enabled": False,
@@ -110,10 +110,10 @@ class DeltaGold(Algo3SilverMicro):
     asset = 'gold'
     def __init__(self, minutes, symbol, broker):
         if minutes not in DELTA_TIMEFRAMES:
-            raise ValueError("Delta timeframe must be 5, 7, 15, 30, 60 or 240 minutes")
+            raise ValueError("Delta timeframe must be 5, 7, 15, 30, 60, 120 or 240 minutes")
         self.minutes = minutes
         self.algo_id = f"delta_gold_{minutes}m"
-        labels = {60: "Delta Gold 1 hr", 240: "Delta Gold 4 hr"}
+        labels = {60: "Delta Gold 1 hr", 120: "Delta Gold 2 hr", 240: "Delta Gold 4 hr"}
         self.display_name = labels.get(minutes, f"Delta Gold {minutes} min")
         self.reference_history = []
         self.last_candle_epoch = None
@@ -431,7 +431,7 @@ class DeltaGold(Algo3SilverMicro):
                 "policy": DELTA_EXIT_MODE_THREE_CANDLE,
                 "entry_bucket": entry_bucket.replace(tzinfo=IST).isoformat(),
                 "status": "waiting_for_three_post_entry_candles",
-                "window_rule": "latest_3_closed_strategy_candles_after_entry_bucket",
+                "window_rule": "rolling_latest_3_closed_strategy_candles_after_entry_bucket",
                 "buffer_points": self.settings["tsl_buffer_points"],
                 "events": [],
                 "evaluations": [],

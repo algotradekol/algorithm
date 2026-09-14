@@ -6,7 +6,7 @@ import threading
 import time
 
 from .delta_client import DeltaClient
-from .delta_candles import aggregate_seven_minute, delta_resolution
+from .delta_candles import aggregate_custom_minutes, delta_resolution
 from .delta_paper import DeltaPaperBroker
 from .delta_reporting import paper_row, inr_rate
 from .strategies.delta_gold import DeltaGold, DELTA_DEFAULTS, DELTA_TIMEFRAMES, validate_settings, defaults_for
@@ -350,9 +350,11 @@ def run_backtest(minutes, start_date, end_date, settings, path, asset='gold'):
         interval = minutes * 60
         first_bucket, final_bucket = start // interval * interval, (end - 60) // interval * interval
         history_start, history_end = first_bucket - 300 * interval, final_bucket + interval
-        if minutes == 7:
+        if minutes in {7, 120}:
+            custom_warmup = 300 if minutes == 7 else 40
+            history_start = first_bucket - custom_warmup * interval
             source_minutes = fetch_candles(client, '1m', history_start, history_end, 60, anchor_lookback=120)
-            references = aggregate_seven_minute(source_minutes)
+            references = aggregate_custom_minutes(source_minutes, minutes)
             minute_rows = [row for row in source_minutes if start <= row['time'] < end]
         else:
             references = fetch_candles(client, delta_resolution(minutes), history_start, history_end, interval, anchor_lookback=20)

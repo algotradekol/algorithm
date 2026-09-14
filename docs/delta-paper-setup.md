@@ -45,7 +45,7 @@ DELTA_HIDDEN_SECTIONS=
 Supported `DELTA_HIDDEN_SECTIONS` keywords:
 
 `delta`, `gold`, `silver`, `overview`, `activity`, `backtest`,
-`gold5m`, `gold7m`, `gold15m`, `gold30m`, `gold1h`, `gold4h`,
+`gold5m`, `gold7m`, `gold15m`, `gold30m`, `gold1h`, `gold2h`, `gold4h`,
 `silveroverview`, `silveractivity`, `silverbacktest`,
 `silver5m`, `silver15m`, `silver30m`, `silver1h`, `silver4h`.
 
@@ -53,7 +53,7 @@ Examples:
 
 ```dotenv
 # Client sees only the selected Gold strategies, with no activity/backtest.
-DELTA_HIDDEN_SECTIONS=gold5m,gold7m,gold4h,activity,backtest,silver
+DELTA_HIDDEN_SECTIONS=gold5m,gold7m,gold2h,gold4h,activity,backtest,silver
 
 # Developer sees all Gold, but only Silver 15m and 1h.
 DELTA_HIDDEN_SECTIONS=silver5m,silver30m,silver4h

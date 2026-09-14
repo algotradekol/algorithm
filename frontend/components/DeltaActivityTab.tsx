@@ -13,6 +13,7 @@ const views = { positions: 'Positions', open_orders: 'Open orders', stop_orders:
 const control = 'rounded border border-[#334155] bg-[#111827] px-3 py-2 text-sm text-gray-200 disabled:opacity-40';
 const num = (value?: number) => value == null ? '--' : value.toLocaleString('en-IN', { maximumFractionDigits: 4 });
 const date = (value?: string | number) => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) : '--';
+const timeframeLabel = (minutes: number) => minutes === 60 ? '1 hr' : minutes === 120 ? '2 hr' : minutes === 240 ? '4 hr' : `${minutes} min`;
 
 export default function DeltaActivityTab({ enabledTimeframes, asset = 'gold' }: { enabledTimeframes: number[]; asset?: DeltaAsset }) {
   const [source, setSource] = useState(enabledTimeframes.length ? 'paper' : 'live');
@@ -24,7 +25,7 @@ export default function DeltaActivityTab({ enabledTimeframes, asset = 'gold' }: 
       <div><h1 className="text-lg font-semibold text-gray-100">Delta {asset === 'silver' ? 'Silver' : 'Gold'} activity</h1><p className="mt-1 text-sm text-gray-400">Paper simulation and actual Delta account records stay separate.</p></div>
       <div className="flex flex-wrap gap-2">
         <label className="text-xs text-gray-400">Data source<select aria-label="Activity data source" className={`${control} ml-2`} value={source} onChange={e => setSource(e.target.value)}>{enabledTimeframes.length > 0 && <option value="paper">Paper</option>}<option value="live">Live account (read-only)</option></select></label>
-        {source === 'paper' && <select aria-label="Paper timeframe" className={control} value={minutes} onChange={e => setMinutes(Number(e.target.value))}>{enabledTimeframes.map(value => <option key={value} value={value}>{asset === 'silver' ? 'Silver' : 'Gold'} {value === 60 ? '1 hr' : value === 240 ? '4 hr' : `${value} min`}</option>)}</select>}
+        {source === 'paper' && <select aria-label="Paper timeframe" className={control} value={minutes} onChange={e => setMinutes(Number(e.target.value))}>{enabledTimeframes.map(value => <option key={value} value={value}>{asset === 'silver' ? 'Silver' : 'Gold'} {timeframeLabel(value)}</option>)}</select>}
       </div>
     </div>
     <p className={`rounded border p-3 text-sm ${source === 'paper' ? 'border-[#3b82f6]/40 text-[#93c5fd]' : 'border-[#f59e0b]/40 text-[#fbbf24]'}`}>

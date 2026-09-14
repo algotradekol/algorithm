@@ -8,7 +8,7 @@ import threading
 import time
 
 from .delta_client import DeltaClient, epoch_seconds, positive
-from .delta_candles import aggregate_seven_minute, delta_resolution
+from .delta_candles import aggregate_custom_minutes, delta_resolution
 from .delta_config import delta_capabilities, asset_capabilities, timeframe_enabled
 from .delta_paper import DeltaPaperBroker, DeltaStore
 from .delta_reporting import paper_row, inr_rate
@@ -96,15 +96,16 @@ class DeltaService:
                 next_history[minutes] = now + 10
                 interval = minutes * 60
                 bucket = int(now // interval) * interval
-                # Include the forming candle to establish its actual open. Seven-minute
-                # history is assembled from 1m rows and stays under Delta's 2000 row cap.
-                lookback = 250 if minutes == 7 else 300
+                # Include the forming candle to establish its actual open.
+                # Custom intervals are assembled from 1m rows.
+                custom_minutes = minutes in {7, 120}
+                lookback = 250 if minutes == 7 else 40 if minutes == 120 else 300
                 start = strategy.last_candle_epoch or bucket - lookback * interval
                 try:
                     resolution = delta_resolution(minutes)
                     rows = self.client.candles(resolution, start, int(now))
-                    if minutes == 7:
-                        rows = aggregate_seven_minute(rows, current_time=now)
+                    if custom_minutes:
+                        rows = aggregate_custom_minutes(rows, minutes, current_time=now)
                     with self.lock:
                         strategy.ingest_history(rows, now)
                         next_history[minutes] = min(bucket + interval + 1, now + 60)
@@ -183,7 +184,7 @@ class DeltaService:
 
     def strategy(self, minutes):
         if minutes not in DELTA_TIMEFRAMES:
-            raise ValueError("Delta timeframe must be 5, 7, 15, 30, 60 or 240 minutes")
+            raise ValueError("Delta timeframe must be 5, 7, 15, 30, 60, 120 or 240 minutes")
         if not timeframe_enabled(minutes, asset=self.asset):
             raise ValueError("That Delta timeframe is disabled in this deployment")
         if minutes not in self.strategies:

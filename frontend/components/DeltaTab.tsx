@@ -30,6 +30,7 @@ type Status = {
 
 const number = (value?: number | null) => value == null ? '--' : value.toLocaleString('en-IN', { maximumFractionDigits: 6 });
 const date = (value?: string | number) => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) : '--';
+const timeframeLabel = (minutes: number) => minutes === 60 ? '1 hr' : minutes === 120 ? '2 hr' : minutes === 240 ? '4 hr' : `${minutes} min`;
 const duration = (value?: number) => {
   const seconds = Math.max(0, Math.ceil(value || 0));
   const hours = Math.floor(seconds / 3600);
@@ -127,7 +128,7 @@ export default function DeltaTab({ minutes, asset = 'gold' }: { minutes: number;
   return <div className="space-y-4">
     <header className="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 className="text-lg font-semibold text-gray-100">Delta {metal} {minutes === 60 ? '1 hr' : minutes === 240 ? '4 hr' : `${minutes} min`} <span className="ml-2 rounded bg-[#3b82f6]/20 px-2 py-1 text-xs text-[#93c5fd]">PAPER ONLY</span></h1>
+        <h1 className="text-lg font-semibold text-gray-100">Delta {metal} {timeframeLabel(minutes)} <span className="ml-2 rounded bg-[#3b82f6]/20 px-2 py-1 text-xs text-[#93c5fd]">PAPER ONLY</span></h1>
         <p className="mt-2 text-sm text-gray-400">{status?.symbol || `${metal} symbol not configured`} | 24/7 | {asset === 'gold' ? 'Price EMA20 + volume EMA20' : 'Normal Silver Micro: price EMA20 / red-chain SELL'} | No daily square-off</p>
       </div>
       <div className="flex flex-wrap gap-2">
@@ -242,8 +243,9 @@ function TslAudit({ row }: { row: Trade }) {
   const three = row.signal_snapshot.delta_three_candle_tsl;
   if (three) {
     const events = three.events || [];
-    const latest = events[events.length - 1];
-    return <details><summary className="cursor-pointer text-[#a78bfa]">Three-candle {events.length ? `${events.length} move(s)` : 'waiting'}</summary>{latest && <div className="mt-2 min-w-80 space-y-1 text-[11px] text-gray-400"><div>Candidate {number(latest.candidate_sl)} from {number(latest.reference_price)} with buffer {number(latest.buffer_points)}</div>{latest.candles?.map((candle: any) => <div key={candle.time}>{date(candle.time)} | O {number(candle.open)} H {number(candle.high)} L {number(candle.low)} C {number(candle.close)}</div>)}</div>}</details>;
+    const evaluations = three.evaluations || [];
+    const latest = evaluations[evaluations.length - 1] || events[events.length - 1];
+    return <details><summary className="cursor-pointer text-[#a78bfa]">Three-candle {evaluations.length ? `${evaluations.length} check(s)` : 'waiting'}{events.length ? ` / ${events.length} move(s)` : ''}</summary>{latest && <div className="mt-2 min-w-80 space-y-1 text-[11px] text-gray-400"><div>Status {latest.status || 'checked'} | Candidate {number(latest.candidate_sl)} from {number(latest.reference_price)} with buffer {number(latest.buffer_points)}</div>{latest.candles?.map((candle: any) => <div key={candle.time}>{date(candle.time)} | O {number(candle.open)} H {number(candle.high)} L {number(candle.low)} C {number(candle.close)}</div>)}</div>}</details>;
   }
   if (row.trailing_sl_active) return <>Breakeven armed</>;
   if (row.signal_snapshot.silver_breakeven) return <>Arms at {number(row.signal_snapshot.silver_breakeven.activation_price)}</>;

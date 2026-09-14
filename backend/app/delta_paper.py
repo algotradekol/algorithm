@@ -154,6 +154,7 @@ class DeltaPaperBroker:
         evaluation = {**copy.deepcopy(details), "status": status, "previous_sl": current_sl, "completed_close": close}
         policy.setdefault("evaluations", []).append(evaluation)
         policy["evaluations"] = policy["evaluations"][-200:]
+        policy["last_evaluation"] = evaluation
         if tighter:
             policy.setdefault("events", []).append(evaluation)
             policy["events"] = policy["events"][-200:]
