@@ -29,10 +29,10 @@ export default function DeltaWorkspace({ capabilities }: { capabilities: DeltaCa
   const asset = available.includes(selected) ? selected : available[0];
   if (!asset) return <p className="panel p-4 text-sm text-gray-400">No Delta sections are enabled.</p>;
   return <section>
-    <nav aria-label="Delta metals" className="mb-4 flex gap-3">
-      {available.map(key => <button key={key} aria-pressed={asset === key} onClick={() => setSelected(key)} className={`min-w-32 rounded-lg border px-6 py-3 text-left ${asset === key ? (key === 'gold' ? 'border-[#eab308]/60 bg-[#eab308]/10 text-[#fde68a]' : 'border-[#94a3b8] bg-[#94a3b8]/10 text-gray-100') : 'border-[#1f2937] text-gray-500 hover:text-gray-200'}`}>
-        <span className="block text-base font-semibold">{key === 'gold' ? 'Gold' : 'Silver'}</span>
-        <span className="mt-1 block text-[11px] opacity-70">{groups[key].enabled_timeframes.length} timeframes</span>
+    <nav aria-label="Delta metals" className="mb-2 flex gap-2">
+      {available.map(key => <button key={key} aria-pressed={asset === key} onClick={() => setSelected(key)} className={`rounded-md border px-4 py-2 text-left ${asset === key ? (key === 'gold' ? 'border-[#eab308]/60 bg-[#eab308]/10 text-[#fde68a]' : 'border-[#94a3b8] bg-[#94a3b8]/10 text-gray-100') : 'border-[#1f2937] text-gray-500 hover:text-gray-200'}`}>
+        <span className="text-sm font-semibold">{key === 'gold' ? 'Gold' : 'Silver'}</span>
+        <span className="ml-2 text-[11px] opacity-70">{groups[key].enabled_timeframes.length} TF</span>
       </button>)}
     </nav>
     <MetalWorkspace key={asset} asset={asset} group={groups[asset]} />
@@ -52,12 +52,12 @@ function MetalWorkspace({ asset, group }: { asset: DeltaAsset; group: Group }) {
   ];
   const tab = tabs.some(t => t.key === selected) ? selected : tabs[0]?.key;
   return <>
-    <div className="mb-4 flex flex-wrap items-end justify-between gap-3 border-b border-[#1f2937]">
-      <nav aria-label={`Delta ${metal} timeframes`} className="flex gap-6 overflow-x-auto whitespace-nowrap">
-        {tabs.map(item => <button key={item.key} aria-pressed={tab === item.key} onClick={() => setSelected(item.key)} className={`min-h-10 border-b-2 py-3 text-sm ${tab === item.key ? 'border-[#3b82f6] text-gray-100' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>{item.label}</button>)}
+    <div className="mb-3 flex flex-wrap items-end justify-between gap-2 border-b border-[#1f2937]">
+      <nav aria-label={`Delta ${metal} timeframes`} className="flex gap-5 overflow-x-auto whitespace-nowrap">
+        {tabs.map(item => <button key={item.key} aria-pressed={tab === item.key} onClick={() => setSelected(item.key)} className={`min-h-8 border-b-2 py-2 text-sm ${tab === item.key ? 'border-[#3b82f6] text-gray-100' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>{item.label}</button>)}
       </nav>
-      {asset === 'gold' && <div className="mb-2 flex rounded-lg border border-[#334155] bg-[#0a0e14] p-1">
-        {(['paper', 'live'] as const).map(value => <button key={value} aria-pressed={mode === value} onClick={() => setMode(value)} className={`rounded-md px-4 py-2 text-xs font-semibold uppercase tracking-wide ${mode === value ? (value === 'live' ? 'bg-[#ef4444]/20 text-[#f87171]' : 'bg-[#3b82f6]/20 text-[#93c5fd]') : 'text-gray-500 hover:text-gray-200'}`}>{value}</button>)}
+      {asset === 'gold' && <div className="mb-1 flex rounded-md border border-[#334155] bg-[#0a0e14] p-0.5">
+        {(['paper', 'live'] as const).map(value => <button key={value} aria-pressed={mode === value} onClick={() => setMode(value)} className={`rounded px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide ${mode === value ? (value === 'live' ? 'bg-[#ef4444]/20 text-[#f87171]' : 'bg-[#3b82f6]/20 text-[#93c5fd]') : 'text-gray-500 hover:text-gray-200'}`}>{value}</button>)}
       </div>}
     </div>
     <div key={`${asset}-${tab}`}>

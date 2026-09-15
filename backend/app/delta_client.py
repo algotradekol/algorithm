@@ -38,10 +38,13 @@ def positive(value) -> float:
 
 
 class DeltaClient:
-    def __init__(self, asset='gold'):
+    def __init__(self, asset='gold', credential_scope='read'):
         if asset not in {'gold', 'silver'}:
             raise ValueError('Unknown Delta asset')
+        if credential_scope not in {'read', 'live'}:
+            raise ValueError('Delta credential scope must be read or live')
         self.asset = asset
+        self.credential_scope = credential_scope
         self.region = os.getenv("DELTA_EXCHANGE", "india").strip().lower()
         default_symbol = "PAXGUSDT" if self.region == "global" else "PAXGUSD"
         default_symbol = default_symbol if asset == 'gold' else 'SLVONUSD'
@@ -50,8 +53,12 @@ class DeltaClient:
         self.live_enabled = os.getenv("DELTA_LIVE_ENABLED", "false").lower() == "true"
         self.base_url, self.ws_url = ENDPOINTS.get(self.region, ("", ""))
         self.proxy = os.getenv("DELTA_PROXY_URL", "").strip()
-        self.key = os.getenv("DELTA_API_KEY", "").strip()
-        self.secret = os.getenv("DELTA_API_SECRET", "").strip()
+        if credential_scope == "live":
+            self.key = os.getenv("DELTA_LIVE_API_KEY", "").strip()
+            self.secret = os.getenv("DELTA_LIVE_API_SECRET", "").strip()
+        else:
+            self.key = os.getenv("DELTA_API_KEY", "").strip()
+            self.secret = os.getenv("DELTA_API_SECRET", "").strip()
         self.session = requests.Session()
         self.session.trust_env = False
         if self.proxy:
@@ -88,6 +95,8 @@ class DeltaClient:
         headers = {}
         body = ""
         if private:
+            if method.upper() in {"POST", "PUT", "DELETE"} and self.credential_scope != "live":
+                raise ValueError("Delta trading endpoints require DELTA_LIVE_API_KEY / DELTA_LIVE_API_SECRET")
             allowed = {
                 ("GET", "/v2/wallet/balances"),
                 ("GET", "/v2/positions/margined"),

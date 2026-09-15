@@ -58,16 +58,28 @@ def run():
                 expected = hmac.new(b'test-secret', f'GET1234{request_path}'.encode(), hashlib.sha256).hexdigest()
                 assert request.call_args.kwargs['headers']['signature'] == expected
                 assert payload['meta']['after'] == 'next'
-            response.json.return_value = {'success': True, 'result': {'id': 1}}
-            client.post('/v2/orders', {'product_id': 1, 'size': 1}, private=True)
-            assert request.call_args.args[0] == 'POST'
-            assert request.call_args.kwargs['data'] == '{"product_id":1,"size":1}'
             before = request.call_count
             try:
                 client.get('/v2/positions/close_all', private=True)
                 raise AssertionError('non-allowlisted endpoint accepted')
             except ValueError:
                 assert request.call_count == before
+    with patch.dict(os.environ, {
+        'DELTA_API_KEY': 'read-key',
+        'DELTA_API_SECRET': 'read-secret',
+        'DELTA_LIVE_API_KEY': 'live-key',
+        'DELTA_LIVE_API_SECRET': 'live-secret',
+        'DELTA_EXCHANGE': 'india',
+        'DELTA_PROXY_URL': '',
+    }):
+        live_client = DeltaClient(credential_scope='live')
+        assert live_client.key == 'live-key'
+        response = MagicMock(status_code=200)
+        response.json.return_value = {'success': True, 'result': {'id': 1}}
+        with patch.object(live_client.session, 'request', return_value=response) as request, patch('app.delta_client.time.time', return_value=1234):
+            live_client.post('/v2/orders', {'product_id': 1, 'size': 1}, private=True)
+            assert request.call_args.args[0] == 'POST'
+            assert request.call_args.kwargs['data'] == '{"product_id":1,"size":1}'
 
     fake = MagicMock(region='india')
     fake.get.return_value = {'result': [{'id': 1, 'size': 1, 'side': 'buy', 'stop_order_type': None},

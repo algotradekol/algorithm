@@ -284,11 +284,25 @@ def run():
 
     service = DeltaService()
     service.strategies = {minutes: strategy(minutes) for minutes in DELTA_TIMEFRAMES}
+    service.client = type("Client", (), {"region": "india", "symbol": "PAXGUSD", "proxy": "", "key": "", "secret": ""})()
+    service.product = {"contract_value": "0.001", "quoting_asset": {"symbol": "USD"}, "settling_asset": {"symbol": "USD"}}
     service.save_settings(30, {"silver_lots": 2})
     assert all(
         item.settings["silver_lots"] == (2 if minutes == 30 else 1)
         for minutes, item in service.strategies.items()
     )
+    today_strategy = service.strategies[15]
+    today_strategy.broker.store.closed = [
+        {"side": "BUY", "exit_time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "gross_pnl": 5, "fees": 1, "net_pnl": 4},
+        {"side": "SELL", "exit_time": "2020-01-01T00:00:00+00:00", "gross_pnl": 100, "fees": 10, "net_pnl": 90},
+    ]
+    today_strategy.broker.state.update(closed_count=2, gross_pnl=105, fees=11)
+    service._overview_trade_cache.clear()
+    snapshot = service.snapshot(15)
+    assert snapshot["summary"]["closed_count"] == 2
+    assert snapshot["today_summary"]["closed_count"] == 1
+    assert snapshot["today_summary"]["gross_pnl"] == 5
+    assert snapshot["today_summary"]["fees"] == 1
 
     for invalid in (0, -1, float("nan"), float("inf")):
         try:
@@ -354,6 +368,21 @@ def run():
     with patch.dict(os.environ, {"DELTA_EXCHANGE": "india", "DELTA_PROXY_URL": "http://name:pass@proxy.example:3128"}):
         client = DeltaClient()
         assert client.websocket_options()["http_proxy_host"] == "proxy.example"
+    with patch.dict(os.environ, {
+        "DELTA_API_KEY": "read-key",
+        "DELTA_API_SECRET": "read-secret",
+        "DELTA_LIVE_API_KEY": "live-key",
+        "DELTA_LIVE_API_SECRET": "live-secret",
+    }, clear=True):
+        read_client = DeltaClient()
+        live_client = DeltaClient(credential_scope="live")
+        assert read_client.key == "read-key" and read_client.secret == "read-secret"
+        assert live_client.key == "live-key" and live_client.secret == "live-secret"
+        try:
+            read_client.post("/v2/orders", {"product_id": 1})
+            raise AssertionError("read credentials accepted for trading endpoint")
+        except ValueError:
+            pass
     print("smoke_delta_paper: all checks passed")
 
 

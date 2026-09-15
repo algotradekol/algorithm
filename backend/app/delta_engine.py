@@ -60,12 +60,17 @@ class DeltaService:
             self.error = "Delta is disabled by DELTA_HIDDEN_SECTIONS"
             self.initialized = True
             return
-        self.client = DeltaClient() if self.asset == 'gold' else DeltaClient(asset=self.asset)
+        credential_scope = "live" if self.mode == "live" else "read"
+        self.client = (
+            DeltaClient(credential_scope=credential_scope)
+            if self.asset == 'gold' else
+            DeltaClient(asset=self.asset, credential_scope=credential_scope)
+        )
         error = self.client.configuration_error()
         if error:
             raise ValueError(error)
         if self.mode == "live" and not self.client.live_enabled:
-            self.error = "Delta live is disabled. Set DELTA_LIVE_ENABLED=true only after the API key has Trading permission."
+            self.error = "Delta live is disabled. Set DELTA_LIVE_ENABLED=true only after DELTA_LIVE_API_KEY has Trading permission."
             self.initialized = True
             return
         if self.mode == "live" and self.asset != "gold":
@@ -226,9 +231,27 @@ class DeltaService:
             position = state.get("position")
             if position and self.last_price:
                 position["unrealized_pnl"] = strategy.broker.pnl(position, self.last_price)
+            today = datetime.datetime.now(datetime.timezone.utc).date()
+            today_rows = []
+            for row in self._all_closed_trades(minutes, strategy):
+                try:
+                    closed = datetime.datetime.fromisoformat(str(row.get("exit_time", "")).replace("Z", "+00:00"))
+                except (ValueError, TypeError):
+                    continue
+                closed_utc = closed if closed.tzinfo else closed.replace(tzinfo=datetime.timezone.utc)
+                if closed_utc.astimezone(datetime.timezone.utc).date() == today:
+                    today_rows.append(row)
+            today_stats = self._trade_stats(today_rows)
             result.update(
                 settings=strategy.settings, position=paper_row(position, self.client.region) if position else None,
                 summary={k: state[k] for k in ("gross_pnl", "fees", "closed_count", "buy_count", "sell_count")},
+                today_summary={
+                    "gross_pnl": today_stats["gross"],
+                    "fees": today_stats["fees"],
+                    "closed_count": today_stats["trades"],
+                    "buy_count": sum(1 for row in today_rows if row.get("side") == "BUY"),
+                    "sell_count": sum(1 for row in today_rows if row.get("side") == "SELL"),
+                },
                 history_error=strategy.data_error, ema20=strategy._ema20,
                 volume_ema20=strategy._volume_ema20,
                 current_candle_open=strategy._current_candle_open,

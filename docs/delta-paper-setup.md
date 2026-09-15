@@ -34,14 +34,16 @@ DELTA_GOLD_SYMBOL=PAXGUSD
 DELTA_SILVER_SYMBOL=SLVONUSD
 DELTA_PROXY_URL=http://PROXY_USERNAME:URL_ENCODED_PASSWORD@PROXY_HOST:PROXY_PORT
 
-# Optional read-only account credentials for Verify API connection and the
-# Positions & Orders live-account view.
+# Optional read-only account credentials for Verify API connection,
+# market/account reads, and the Positions & Orders live-account view.
 DELTA_API_KEY=YOUR_INDIA_API_KEY
 DELTA_API_SECRET=YOUR_INDIA_API_SECRET
 
 # Optional guarded live execution for Delta Gold only. Keep false unless the
 # API key has Trading permission and the deployment is intended to place orders.
 DELTA_LIVE_ENABLED=false
+DELTA_LIVE_API_KEY=YOUR_INDIA_TRADING_API_KEY
+DELTA_LIVE_API_SECRET=YOUR_INDIA_TRADING_API_SECRET
 
 # Optional comma-separated deployment gate. Empty = show everything.
 DELTA_HIDDEN_SECTIONS=
@@ -136,13 +138,15 @@ reservation.
 The Positions & Orders view can show paper simulation rows or read-only live
 account rows for the selected metal.
 
-Delta Gold has a Paper/Live switch. Live uses separate per-timeframe storage
-keys ending in `:live`, so live settings, positions, cooldowns and trades do
-not mix with paper. The live broker places market IOC entries, then creates
-reduce-only Delta stop-loss and take-profit trigger orders. Manual exits and
-app-managed target/SL exits submit reduce-only market closes. Stop amendments
-are saved in the app only after Delta accepts the order edit. Delta Silver
-remains paper-only.
+Delta Gold has a Paper/Live switch. Live uses `DELTA_LIVE_API_KEY` and
+`DELTA_LIVE_API_SECRET`; paper/data reads keep using `DELTA_API_KEY` and
+`DELTA_API_SECRET`. Live also uses separate per-timeframe storage keys ending
+in `:live`, so live settings, positions, cooldowns and trades do not mix with
+paper. The live broker places market IOC entries, then creates reduce-only
+Delta stop-loss and take-profit trigger orders. Manual exits and app-managed
+target/SL exits submit reduce-only market closes. Stop amendments are saved in
+the app only after Delta accepts the order edit. Delta Silver remains
+paper-only.
 
 ## Backtest
 

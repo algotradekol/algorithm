@@ -24,6 +24,7 @@ type Status = {
   position?: Trade; quote_currency?: string; settlement_currency?: string; contract_value?: number; contract_unit?: string;
   ema20?: number; volume_ema20?: number; current_candle_open?: number; buy_reference?: number; sell_reference?: number; inr_rate?: number;
   summary?: { gross_pnl: number; fees: number; closed_count: number; buy_count: number; sell_count: number };
+  today_summary?: { gross_pnl: number; fees: number; closed_count: number; buy_count: number; sell_count: number };
   cooldown?: { active: boolean; until?: number; remaining_seconds: number; reason?: string };
   references?: { side: string; time: string; open: number; high: number; low: number; close: number; volume: number; ema20: number; volume_ema20: number }[];
 };
@@ -38,6 +39,7 @@ const duration = (value?: number) => {
   return `${hours ? `${hours}h ` : ''}${minutes}m ${seconds % 60}s`;
 };
 const button = 'rounded border border-[#334155] px-3 py-2 text-sm text-gray-200 hover:border-[#60a5fa] disabled:opacity-40';
+const controlButton = 'rounded-md border px-3 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45';
 const silverDeltaDefaults = {
   silver_breakout_points: 0.10,
   sl_points: 0.30,
@@ -97,7 +99,7 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
 
   const settings = status?.settings;
   const currency = status?.quote_currency || 'quote currency';
-  const pnl = status?.summary;
+  const pnl = status?.today_summary || status?.summary;
   const cooldown = status?.cooldown;
   const selectedRestMinutes = restPreset === 'custom' ? customRestMinutes : Number(restPreset);
   async function download(kind: 'open' | 'closed') {
@@ -125,33 +127,33 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
       void action(() => api.deltaClose(minutes, row.id), `${mode === 'live' ? 'Live Delta' : 'Paper'} exit confirmed`);
     }
   }
-  return <div className="space-y-4">
-    <header className="flex flex-wrap items-center justify-between gap-3">
+  return <div className="space-y-3">
+    <header className="flex flex-wrap items-center justify-between gap-2">
       <div>
         <h1 className="text-lg font-semibold text-gray-100">Delta {metal} {timeframeLabel(minutes)} <span className={`ml-2 rounded px-2 py-1 text-xs ${mode === 'live' ? 'bg-[#ef4444]/20 text-[#f87171]' : 'bg-[#3b82f6]/20 text-[#93c5fd]'}`}>{mode === 'live' ? 'LIVE' : 'PAPER ONLY'}</span></h1>
-        <p className="mt-2 text-sm text-gray-400">{status?.symbol || `${metal} symbol not configured`} | 24/7 | {asset === 'gold' ? 'Price EMA20 + volume EMA20' : 'Normal Silver Micro: price EMA20 / red-chain SELL'} | No daily square-off</p>
+        <p className="mt-1 text-xs text-gray-500">{status?.symbol || `${metal} symbol not configured`} | 24/7 | {asset === 'gold' ? 'EMA20 + volume EMA20' : 'Normal Silver Micro'} | No square-off</p>
       </div>
-      <div className="flex flex-wrap gap-2">
+      <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-[#1f2937] bg-[#0b111a] p-1.5">
         {settings && <>
-          <button className={button} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { scan_enabled: !settings.scan_enabled }), 'Scan setting saved')}>Scan: {settings.scan_enabled ? 'ON' : 'OFF'}</button>
-          <button className={button} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { trading_enabled: !settings.trading_enabled }), `${mode === 'live' ? 'Live' : 'Paper'} trading setting saved`)}>Trading: {settings.trading_enabled ? 'ON' : 'OFF'}</button>
-          <button className={button} onClick={() => setDraft({ ...settings })}>Settings</button>
-          <select aria-label="Entry rest duration" className={`${button} bg-[#0a0e14]`} value={restPreset} disabled={busy} onChange={e => setRestPreset(e.target.value)}>
+          <button className={`${controlButton} ${settings.scan_enabled ? 'border-[#22c55e]/50 bg-[#22c55e]/10 text-[#22c55e]' : 'border-[#334155] text-gray-500'}`} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { scan_enabled: !settings.scan_enabled }), 'Scan setting saved')}>Scan {settings.scan_enabled ? 'ON' : 'OFF'}</button>
+          <button className={`${controlButton} ${settings.trading_enabled ? 'border-[#22c55e]/50 bg-[#22c55e]/10 text-[#22c55e]' : 'border-[#334155] text-gray-500'}`} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { trading_enabled: !settings.trading_enabled }), `${mode === 'live' ? 'Live' : 'Paper'} trading setting saved`)}>Trade {settings.trading_enabled ? 'ON' : 'OFF'}</button>
+          <button className={`${controlButton} border-[#3b82f6]/50 bg-[#3b82f6]/10 text-[#93c5fd]`} onClick={() => setDraft({ ...settings })}>Settings</button>
+          <select aria-label="Entry rest duration" className={`${controlButton} border-[#334155] bg-[#0a0e14] text-gray-200`} value={restPreset} disabled={busy} onChange={e => setRestPreset(e.target.value)}>
             <option value="0">No rest</option><option value="5">5 min rest</option><option value="15">15 min rest</option><option value="30">30 min rest</option>
             <option value="60">1 hr rest</option><option value="240">4 hr rest</option><option value="720">12 hr rest</option><option value="custom">Custom minutes</option>
           </select>
-          {restPreset === 'custom' && <input aria-label="Custom entry rest minutes" className={`${button} w-28 bg-[#0a0e14]`} type="number" min={0} max={10080} step={1} value={customRestMinutes} disabled={busy} onChange={e => setCustomRestMinutes(Number(e.target.value))} />}
-          <button className={`${button} border-[#f59e0b]/70 text-[#fbbf24]`} disabled={busy || !Number.isInteger(selectedRestMinutes) || selectedRestMinutes < 0 || selectedRestMinutes > 10080} onClick={() => action(() => api.deltaPause(minutes, selectedRestMinutes), selectedRestMinutes ? `New entries paused for ${selectedRestMinutes} minutes` : 'Entry rest cleared')}>{selectedRestMinutes ? 'Pause entries' : 'Clear rest'}</button>
-          <button className={`${button} border-[#22c55e]/70 text-[#22c55e]`} disabled={busy || !cooldown?.active} onClick={() => action(() => api.deltaResume(minutes), 'Entry rest cleared. The next qualifying crossing may trade.')}>Resume</button>
+          {restPreset === 'custom' && <input aria-label="Custom entry rest minutes" className={`${controlButton} w-24 border-[#334155] bg-[#0a0e14] text-gray-200`} type="number" min={0} max={10080} step={1} value={customRestMinutes} disabled={busy} onChange={e => setCustomRestMinutes(Number(e.target.value))} />}
+          <button className={`${controlButton} ${selectedRestMinutes ? 'border-[#f59e0b]/70 bg-[#f59e0b]/10 text-[#fbbf24]' : 'border-[#334155] text-gray-400'}`} disabled={busy || !Number.isInteger(selectedRestMinutes) || selectedRestMinutes < 0 || selectedRestMinutes > 10080} onClick={() => action(() => api.deltaPause(minutes, selectedRestMinutes), selectedRestMinutes ? `New entries paused for ${selectedRestMinutes} minutes` : 'Entry rest cleared')}>{selectedRestMinutes ? 'Pause' : 'Clear rest'}</button>
+          <button className={`${controlButton} border-[#22c55e]/60 bg-[#22c55e]/10 text-[#22c55e]`} disabled={busy || !cooldown?.active} onClick={() => action(() => api.deltaResume(minutes), 'Entry rest cleared. The next qualifying crossing may trade.')}>Resume</button>
         </>}
-        <button className={button} disabled={busy || !status?.credentials_configured} onClick={() => action(() => api.deltaCheckConnection(), 'Delta account verified')}>Verify API connection</button>
+        <button className={`${controlButton} border-[#334155] text-gray-300 hover:border-[#60a5fa]`} disabled={busy || !status?.credentials_configured} onClick={() => action(() => api.deltaCheckConnection(), 'Delta account verified')}>Verify API</button>
       </div>
     </header>
     {(error || notice || status?.error || status?.history_error) && <div role="status" className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 p-3 text-sm text-[#fbbf24]">{error || notice || status?.error || status?.history_error}</div>}
     {cooldown?.active && <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-[#f59e0b]/50 bg-[#f59e0b]/10 p-3">
       <div><div className="text-sm font-semibold text-[#fbbf24]">Entry rest active: {duration(cooldown.remaining_seconds)} remaining</div><p className="mt-1 text-xs text-gray-400">Started after {cooldown.reason?.replaceAll('_', ' ')}. New entries resume at {date(cooldown.until)} IST. Scanning, references, open-position exits, and EMA calculations continue.</p></div>
     </div>}
-    <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-6">
+    <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
       <Card label="Market data" value={status?.stale ? 'Waiting for fresh trade' : `${status?.source || '--'} active`} detail={`WS ${status?.ws_connected ? 'connected' : 'disconnected'} | ${status?.proxy_configured ? 'VM proxy' : 'Direct connection'}`} />
       <Card label={`LTP (${currency})`} value={number(status?.ltp)} detail={`Last trade: ${date(status?.last_tick_at)} IST`} />
       <Card label="EMA20" value={number(status?.ema20)} detail={`Last completed candle: ${date(status?.last_bar_at)} IST`} />
@@ -160,21 +162,21 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
       <Card label="Lots per trade" value={number(settings?.silver_lots)} detail={`1 lot = ${number(status?.contract_value)} ${status?.contract_unit || ''} | Same exchange quantity, renamed only`} />
     </div>
     {status?.ws_error && <p className="text-xs text-gray-400">{status.ws_error}</p>}
-    <div className="grid gap-3 md:grid-cols-2">
+    <div className="grid gap-2 md:grid-cols-2">
       {(['BUY', 'SELL'] as const).map(side => {
         const ref = side === 'BUY' ? status?.buy_reference : status?.sell_reference;
         const time = status?.references?.find(row => row.side === side)?.time;
         const trigger = ref != null && settings ? ref + (side === 'BUY' ? 1 : -1) * settings.silver_breakout_points : undefined;
-        return <div key={side} className={`rounded border p-4 ${side === 'BUY' ? 'border-[#22c55e]/40 bg-[#22c55e]/5' : 'border-[#ef4444]/40 bg-[#ef4444]/5'}`}>
-          <div className={side === 'BUY' ? 'text-sm text-[#22c55e]' : 'text-sm text-[#ef4444]'}>{side} reference: {side === 'BUY' ? 'green close > EMA20' : 'red close < EMA20'}{asset === 'gold' ? ' + volume > volume EMA20' : ' (no volume filter)'}</div>
-          <div className="mt-2 font-mono text-gray-100">Close {number(ref)} | Trigger {number(trigger)}</div>
-          <p className="mt-2 text-xs text-gray-400">{date(time)} IST | Volume {number(status?.references?.find(row => row.side === side)?.volume)} | Volume EMA20 {number(status?.references?.find(row => row.side === side)?.volume_ema20)}</p>
+        return <div key={side} className={`rounded border px-3 py-2.5 ${side === 'BUY' ? 'border-[#22c55e]/40 bg-[#22c55e]/5' : 'border-[#ef4444]/40 bg-[#ef4444]/5'}`}>
+          <div className={side === 'BUY' ? 'text-xs text-[#22c55e]' : 'text-xs text-[#ef4444]'}>{side} ref: {side === 'BUY' ? 'green close > EMA20' : 'red close < EMA20'}{asset === 'gold' ? ' + vol > vol EMA20' : ''}</div>
+          <div className="mt-1 font-mono text-sm text-gray-100">Close {number(ref)} | Trigger {number(trigger)}</div>
+          <p className="mt-1 text-[11px] text-gray-500">{date(time)} IST | Vol {number(status?.references?.find(row => row.side === side)?.volume)} | Vol EMA {number(status?.references?.find(row => row.side === side)?.volume_ema20)}</p>
         </div>;
       })}
     </div>
-    <div className="grid gap-3 sm:grid-cols-3">
-      <Card label="Closed trades (all time)" value={number(pnl?.closed_count)} detail={`${number(pnl?.buy_count)} BUY / ${number(pnl?.sell_count)} SELL entries, including open trades`} />
-      <Card label={`Realized gross (${currency})`} value={number(pnl?.gross_pnl)} detail="Closed paper trades only" />
+    <div className="grid gap-2 sm:grid-cols-3">
+      <Card label="Closed trades today" value={number(pnl?.closed_count)} detail={`${number(pnl?.buy_count)} BUY / ${number(pnl?.sell_count)} SELL closed today`} />
+      <Card label={`Today realized gross (${currency})`} value={number(pnl?.gross_pnl)} detail={`Closed ${mode} trades today only`} />
       <Card label={`Estimated net (${currency})`} value={pnl ? number(pnl.gross_pnl - pnl.fees) : '--'} detail="Product taker fees deducted; funding, taxes and slippage excluded" />
     </div>
     {draft && <form className="panel space-y-4 p-4" onSubmit={event => {
@@ -200,14 +202,10 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
         </label>)}
       </div>
       <label className="flex items-center gap-2 text-sm text-gray-300"><input type="checkbox" checked={draft.manual_exit_reentry_enabled} onChange={e => setDraft({ ...draft, manual_exit_reentry_enabled: e.target.checked })} /> Allow re-entry after manual exit when the signal qualifies</label>
-      <label className="block text-sm text-gray-300">Rest after manual, stop, or target exit
-        <input className="mt-1 block w-full rounded border border-[#334155] bg-[#0a0e14] p-2" type="number" required min={0} max={10080} step={1} value={draft.post_exit_cooldown_minutes} onChange={e => setDraft({ ...draft, post_exit_cooldown_minutes: Number(e.target.value) })} />
-        <span className="mt-2 flex flex-wrap gap-2">{[[0, '0m'], [5, '5m'], [15, '15m'], [30, '30m'], [60, '1h'], [240, '4h'], [720, '12h']].map(([value, label]) => <button key={value} type="button" className="rounded border border-[#334155] px-2 py-1 text-xs text-[#93c5fd]" onClick={() => setDraft({ ...draft, post_exit_cooldown_minutes: Number(value) })}>{label}</button>)}</span>
-        <span className="mt-1 block text-xs text-gray-500">Use 0 for no rest. Applies to manual exits, SL, trailing SL, and targets. Reversals bypass this rest.</span>
-      </label>
+      <p className="rounded border border-[#1f2937] bg-[#0a0e14] p-3 text-xs text-gray-500">Entry rest is controlled from the top bar so it can be changed quickly during live monitoring. Current saved default after manual/SL/target exits: {draft.post_exit_cooldown_minutes} min.</p>
       <div className="flex gap-2"><button className={button} disabled={busy}>Save</button><button className={button} type="button" onClick={() => setDraft(null)}>Cancel</button></div>
     </form>}
-    <p className="text-xs text-gray-400">Paper margin is an entry estimate using the product base initial-margin percentage, excluding size tiers, fees and account leverage. Older records without captured margin show --. {status?.inr_rate ? `INR uses Delta India's fixed rate: 1 USD = Rs ${status.inr_rate}.` : 'INR conversion unavailable for this currency.'}</p>
+    <p className="text-xs text-gray-400">{status?.inr_rate ? `INR uses Delta India's fixed rate: 1 USD = Rs ${status.inr_rate}.` : 'INR conversion unavailable for this currency.'}</p>
     <section>
       <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-gray-300">OPEN {mode.toUpperCase()} POSITION</h2><button className={`${button} border-[#22c55e]/60 text-[#22c55e]`} disabled={csvBusy !== null || !settings} onClick={() => download('open')}>{csvBusy === 'open' ? 'Exporting...' : 'Download open CSV'}</button></div>
       <TradeTable rows={status?.position ? [status.position] : []} mode={mode} disabled={busy || !status || status.stale || !!error} onEdit={row => { setEditing({ ...row }); setEditError(''); }} onExit={exit} />
@@ -225,18 +223,47 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
 }
 
 function Card({ label, value, detail }: { label: string; value: string; detail: string }) {
-  return <div className="rounded border border-[#1f2937] bg-[#111827] p-3"><div className="text-xs uppercase tracking-wide text-gray-400">{label}</div><div className="mt-2 font-mono text-lg text-gray-100">{value}</div><p className="mt-2 text-xs text-gray-500">{detail}</p></div>;
+  return <div className="rounded border border-[#1f2937] bg-[#111827] px-3 py-2"><div className="text-[10px] uppercase tracking-wide text-gray-500">{label}</div><div className="mt-1 font-mono text-base text-gray-100">{value}</div><p className="mt-1 text-[11px] leading-snug text-gray-500">{detail}</p></div>;
 }
 
 function TradeTable({ rows, closed = false, mode = 'paper', disabled, onEdit, onExit }: { rows: Trade[]; closed?: boolean; mode?: 'paper' | 'live'; disabled?: boolean; onEdit?: (row: Trade) => void; onExit?: (row: Trade) => void }) {
-  const headers = ['Side', 'Lots', 'Entry time (IST)', 'Entry', 'Reference time (IST)', 'Reference', 'Initial SL', 'Current SL', 'Target', ...(!closed ? ['Edit'] : []), 'TSL', 'Est. entry margin (quote)', 'Est. entry margin (INR)', ...(closed ? ['Exit time (IST)', 'Exit', 'Reason', 'Gross', 'Fees', 'Net', 'Net (INR)'] : ['Unrealized P&L', 'Unrealized (INR)', 'Exit'])];
-  return <div className="max-h-[32rem] overflow-auto rounded border border-[#1f2937]"><table className="w-full whitespace-nowrap text-left text-xs"><thead className="sticky top-0 bg-[#111827]"><tr>{headers.map(label => <th key={label} className="px-3 py-3 text-gray-400">{label}</th>)}</tr></thead><tbody>
-    {!rows.length && <tr><td colSpan={headers.length} className="p-4 text-gray-500">No {closed ? 'closed trades' : `open ${mode} position`}.</td></tr>}
-    {rows.map(row => <tr key={row.id} className="border-t border-[#1f2937] text-gray-200">
-      <td className={`p-3 ${row.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{row.side}</td>
-      {[number(row.qty), date(row.entry_time), number(row.entry_price), date(row.signal_snapshot.setup_time), number(row.signal_snapshot.setup_close), number(row.initial_sl), number(row.sl_price), number(row.target_price), ...(!closed ? [<button key="edit" className="min-h-9 rounded border border-[#3b82f6]/70 px-2.5 py-1.5 text-xs font-semibold text-[#3b82f6] disabled:opacity-40" disabled={disabled} onClick={() => onEdit?.(row)}>Edit</button>] : []), <TslAudit key="tsl" row={row} />, number(row.estimated_entry_margin), number(row.margin_inr), ...(closed ? [date(row.exit_time), number(row.exit_price), row.exit_reason, number(row.gross_pnl), number(row.fees), number(row.net_pnl), number(row.pnl_inr)] : [number(row.unrealized_pnl), number(row.pnl_inr), <button key="exit" className="min-h-9 rounded border border-[#ef4444]/70 px-2.5 py-1.5 text-xs font-semibold text-[#ef4444] disabled:opacity-40" disabled={disabled} onClick={() => onExit?.(row)}>Exit</button>])].map((value, index) => <td key={index} className="p-3 font-mono">{value}</td>)}
-    </tr>)}
-  </tbody></table></div>;
+  const headers = ['Side', 'Lots', 'Entry time (IST)', 'Entry', 'Reference time (IST)', 'Reference', 'Initial SL', 'Current SL', 'Target', ...(!closed ? ['Edit'] : []), 'TSL', ...(closed ? ['Exit time (IST)', 'Exit', 'Reason', 'Gross', 'Net', 'Net (INR)'] : ['Unrealized P&L', 'Unrealized (INR)', 'Exit'])];
+  return <div className="max-h-[32rem] overflow-auto rounded border border-[#1f2937]">
+    <table className="w-full whitespace-nowrap text-left text-xs">
+      <thead className="sticky top-0 bg-[#111827]">
+        <tr>{headers.map(label => <th key={label} className="px-3 py-3 text-gray-400">{label}</th>)}</tr>
+      </thead>
+      <tbody>
+        {!rows.length && <tr><td colSpan={headers.length} className="p-4 text-gray-500">No {closed ? 'closed trades' : `open ${mode} position`}.</td></tr>}
+        {rows.map(row => {
+          const baseCells = [
+            number(row.qty),
+            date(row.entry_time),
+            number(row.entry_price),
+            date(row.signal_snapshot.setup_time),
+            number(row.signal_snapshot.setup_close),
+            number(row.initial_sl),
+            number(row.sl_price),
+            number(row.target_price),
+          ];
+          const editCell = <button className="min-h-9 rounded border border-[#3b82f6]/70 px-2.5 py-1.5 text-xs font-semibold text-[#3b82f6] disabled:opacity-40" disabled={disabled} onClick={() => onEdit?.(row)}>Edit</button>;
+          const exitCell = <button className="min-h-9 rounded border border-[#ef4444]/70 px-2.5 py-1.5 text-xs font-semibold text-[#ef4444] disabled:opacity-40" disabled={disabled} onClick={() => onExit?.(row)}>Exit</button>;
+          const cells = [
+            ...baseCells,
+            ...(!closed ? [editCell] : []),
+            <TslAudit key="tsl" row={row} />,
+            ...(closed
+              ? [date(row.exit_time), number(row.exit_price), row.exit_reason, number(row.gross_pnl), number(row.net_pnl), number(row.pnl_inr)]
+              : [number(row.unrealized_pnl), number(row.pnl_inr), exitCell]),
+          ];
+          return <tr key={row.id} className="border-t border-[#1f2937] text-gray-200">
+            <td className={`p-3 ${row.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{row.side}</td>
+            {cells.map((value, index) => <td key={index} className="p-3 font-mono">{value}</td>)}
+          </tr>;
+        })}
+      </tbody>
+    </table>
+  </div>;
 }
 
 function TslAudit({ row }: { row: Trade }) {

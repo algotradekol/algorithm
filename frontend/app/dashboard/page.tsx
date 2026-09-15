@@ -332,7 +332,7 @@ function DashboardContent() {
           </div>
         )}
 
-        <header className="flex flex-col gap-3 border-b border-[#1f2937] pb-3 lg:flex-row lg:items-center lg:justify-between">
+        <header className={`flex flex-col border-b border-[#1f2937] lg:flex-row lg:items-center lg:justify-between ${isDelta ? 'gap-2 pb-2' : 'gap-3 pb-3'}`}>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2 sm:gap-x-5">
             <div className="font-mono text-sm font-semibold tracking-[0.18em] text-gray-100 sm:text-base">ALGO TRADING</div>
             {!isDelta && <>
@@ -391,7 +391,7 @@ function DashboardContent() {
           </div>
         </header>
 
-        <nav aria-label="Broker" className="mt-4 flex gap-2 border-b border-[#1f2937] pb-3">
+        <nav aria-label="Broker" className={`flex gap-2 border-b border-[#1f2937] ${isDelta ? 'mt-2 pb-2' : 'mt-4 pb-3'}`}>
           {[
             { label: 'FYERS', href: DASHBOARD_TAB_ROUTES[tab], active: !isDelta },
             ...(deltaCapabilities?.delta_enabled ? [{ label: 'Delta', href: '/delta', active: isDelta }] : []),
@@ -400,7 +400,7 @@ function DashboardContent() {
               key={broker.label}
               href={broker.href}
               aria-current={broker.active ? 'page' : undefined}
-              className={`min-w-28 rounded-md border px-5 py-2.5 text-center text-sm font-semibold transition-colors ${
+              className={`min-w-28 rounded-md border px-5 text-center text-sm font-semibold transition-colors ${isDelta ? 'py-2' : 'py-2.5'} ${
                 broker.active
                   ? 'border-[#3b82f6] bg-[#3b82f6]/15 text-[#93c5fd]'
                   : 'border-[#1f2937] bg-[#111827] text-gray-400 hover:border-gray-500 hover:text-gray-100'
