@@ -42,8 +42,28 @@ export default function DeltaWorkspace({ capabilities }: { capabilities: DeltaCa
 function MetalWorkspace({ asset, group }: { asset: DeltaAsset; group: Group }) {
   const [selected, setSelected] = useState('overview');
   const [mode, setMode] = useState<'paper' | 'live'>('paper');
+  const [liveConfirmOpen, setLiveConfirmOpen] = useState(false);
+  const [liveConfirmed, setLiveConfirmed] = useState(false);
   const metal = asset === 'gold' ? 'Gold' : 'Silver';
   const effectiveMode = asset === 'gold' ? mode : 'paper';
+  function chooseMode(nextMode: 'paper' | 'live') {
+    if (nextMode === 'paper') {
+      setMode('paper');
+      setLiveConfirmOpen(false);
+      setLiveConfirmed(false);
+      return;
+    }
+    if (mode !== 'live') {
+      setLiveConfirmOpen(true);
+      setLiveConfirmed(false);
+    }
+  }
+  function confirmLiveMode() {
+    if (!liveConfirmed) return;
+    setMode('live');
+    setLiveConfirmOpen(false);
+    setLiveConfirmed(false);
+  }
   const tabs = [
     ...(group.sections.overview ? [{ key: 'overview', label: `${metal} dashboard` }] : []),
     ...group.enabled_timeframes.map(minutes => ({ key: String(minutes), label: deltaTimeframeLabel(minutes) })),
@@ -57,9 +77,19 @@ function MetalWorkspace({ asset, group }: { asset: DeltaAsset; group: Group }) {
         {tabs.map(item => <button key={item.key} aria-pressed={tab === item.key} onClick={() => setSelected(item.key)} className={`min-h-8 border-b-2 py-2 text-sm ${tab === item.key ? 'border-[#3b82f6] text-gray-100' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>{item.label}</button>)}
       </nav>
       {asset === 'gold' && <div className="mb-1 flex rounded-md border border-[#334155] bg-[#0a0e14] p-0.5">
-        {(['paper', 'live'] as const).map(value => <button key={value} aria-pressed={mode === value} onClick={() => setMode(value)} className={`rounded px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide ${mode === value ? (value === 'live' ? 'bg-[#ef4444]/20 text-[#f87171]' : 'bg-[#3b82f6]/20 text-[#93c5fd]') : 'text-gray-500 hover:text-gray-200'}`}>{value}</button>)}
+        {(['paper', 'live'] as const).map(value => <button key={value} aria-pressed={mode === value} onClick={() => chooseMode(value)} className={`rounded px-3 py-1.5 text-[11px] font-semibold uppercase tracking-wide ${mode === value ? (value === 'live' ? 'bg-[#ef4444]/20 text-[#f87171]' : 'bg-[#3b82f6]/20 text-[#93c5fd]') : 'text-gray-500 hover:text-gray-200'}`}>{value}</button>)}
       </div>}
     </div>
+    {liveConfirmOpen && <div className="mb-3 flex flex-wrap items-center justify-between gap-3 rounded-lg border border-[#ef4444]/50 bg-[#ef4444]/10 p-3 text-sm text-[#fecaca]">
+      <label className="flex items-center gap-2">
+        <input type="checkbox" checked={liveConfirmed} onChange={event => setLiveConfirmed(event.target.checked)} />
+        I confirm I want to switch Delta Gold from paper to live controls.
+      </label>
+      <div className="flex gap-2">
+        <button className="rounded border border-[#334155] px-3 py-1.5 text-xs text-gray-200" type="button" onClick={() => { setLiveConfirmOpen(false); setLiveConfirmed(false); }}>Cancel</button>
+        <button className="rounded border border-[#ef4444] bg-[#ef4444]/20 px-3 py-1.5 text-xs font-semibold text-[#fecaca] disabled:opacity-40" type="button" disabled={!liveConfirmed} onClick={confirmLiveMode}>Enter live mode</button>
+      </div>
+    </div>}
     <div key={`${asset}-${tab}`}>
       {tab === 'overview' ? <DeltaOverviewTab asset={asset} mode={effectiveMode} />
         : tab === 'activity' ? <DeltaActivityTab asset={asset} enabledTimeframes={group.enabled_timeframes} />

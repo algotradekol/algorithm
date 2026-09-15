@@ -76,7 +76,10 @@ class DeltaPaperBroker:
             "contract_value": float(self.product["contract_value"]),
             "quote_currency": self.product.get("quoting_asset", {}).get("symbol"),
             "initial_margin_percent": self.product.get("initial_margin"),
-            "estimated_entry_margin": paper_margin(entry_price, qty, self.product["contract_value"], self.product.get("initial_margin")),
+            "leverage": snapshot.get("leverage"),
+            "size_mode": snapshot.get("size_mode", "lots"),
+            "configured_pax_size": snapshot.get("configured_pax_size"),
+            "estimated_entry_margin": paper_margin(entry_price, qty, self.product["contract_value"], self.product.get("initial_margin"), snapshot.get("leverage")),
             "fee_rate": float(self.product.get("taker_commission_rate") or 0),
             "trailing_sl_active": bool(three_candle and three_candle.get("events")),
         }

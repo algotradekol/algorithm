@@ -17,6 +17,7 @@ from app.strategies.delta_gold import (
     DELTA_STRATEGY_VERSION,
     DELTA_TIMEFRAMES,
     DeltaGold,
+    effective_delta_lots,
     normalize_stored_settings,
     validate_settings,
 )
@@ -119,11 +120,21 @@ def run():
     assert DELTA_DEFAULTS["sl_points"] == DELTA_DEFAULTS["tsl_activate_points"] == 15
     assert DELTA_DEFAULTS["target_points"] == 50 and DELTA_DEFAULTS["tsl_buffer_points"] == 3
     assert DELTA_DEFAULTS["post_exit_cooldown_minutes"] == 5
+    assert DELTA_DEFAULTS["size_mode"] == "lots" and DELTA_DEFAULTS["pax_size"] == 0.001
+    assert DELTA_DEFAULTS["leverage"] == 50
 
     legacy = normalize_stored_settings({"scan_enabled": False, "trading_enabled": True, "silver_breakout_points": 200})
     assert legacy["strategy_version"] == DELTA_STRATEGY_VERSION
     assert legacy["silver_breakout_points"] == 3 and legacy["sl_points"] == 15
     assert not legacy["scan_enabled"] and legacy["trading_enabled"]
+    assert effective_delta_lots({**DELTA_DEFAULTS, "size_mode": "pax", "pax_size": 0.02}, PRODUCT) == 20
+    pax = strategy(settings={"size_mode": "pax", "pax_size": 0.0201, "leverage": 50})
+    assert pax._enter("BUY", 1000, 1000)
+    pax_position = pax._open_position()
+    assert pax_position["qty"] == 21
+    assert pax_position["size_mode"] == "pax"
+    assert pax_position["configured_pax_size"] == 0.0201
+    assert abs(pax_position["estimated_entry_margin"] - 0.42) < 1e-9
 
     for minutes in DELTA_TIMEFRAMES:
         now = int(datetime.datetime(2026, 9, 12, tzinfo=datetime.timezone.utc).timestamp())

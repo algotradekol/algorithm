@@ -6,6 +6,7 @@ import { deltaApi, DeltaAsset } from '../lib/api';
 type Settings = {
   scan_enabled: boolean; trading_enabled: boolean; silver_breakout_points: number;
   sl_points: number; target_points: number; tsl_activate_points: number; tsl_buffer_points: number; silver_lots: number;
+  size_mode: 'lots' | 'pax'; pax_size: number; leverage: number;
   exit_mode: 'fixed_target_sl' | 'target_to_breakeven_sl' | 'three_candle_tsl'; manual_exit_reentry_enabled: boolean;
   post_exit_cooldown_minutes: number;
   strategy_version: string;
@@ -47,6 +48,9 @@ const silverDeltaDefaults = {
   tsl_activate_points: 0.30,
   tsl_buffer_points: 3,
   silver_lots: 1,
+  size_mode: 'lots' as const,
+  pax_size: 0.001,
+  leverage: 50,
   exit_mode: 'target_to_breakeven_sl' as const,
 };
 
@@ -102,6 +106,12 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
   const pnl = status?.today_summary || status?.summary;
   const cooldown = status?.cooldown;
   const selectedRestMinutes = restPreset === 'custom' ? customRestMinutes : Number(restPreset);
+  const estimatedLots = settings?.size_mode === 'pax' && status?.contract_value ? Math.max(1, Math.ceil(settings.pax_size / status.contract_value)) : settings?.silver_lots;
+  const sizingLabel = settings?.size_mode === 'pax' ? 'PAXG per trade' : 'Lots per trade';
+  const sizingValue = settings?.size_mode === 'pax' ? number(settings.pax_size) : number(settings?.silver_lots);
+  const sizingDetail = settings?.size_mode === 'pax'
+    ? `Approx ${number(estimatedLots)} lots | ${number(settings?.leverage)}x leverage`
+    : `1 lot = ${number(status?.contract_value)} ${status?.contract_unit || ''} | ${number(settings?.leverage)}x leverage`;
   async function download(kind: 'open' | 'closed') {
     setCsvBusy(kind); setNotice('');
     try {
@@ -159,7 +169,7 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
       <Card label="EMA20" value={number(status?.ema20)} detail={`Last completed candle: ${date(status?.last_bar_at)} IST`} />
       <Card label="Volume EMA20" value={number(status?.volume_ema20)} detail="Completed strategy candles" />
       <Card label="Active candle open" value={number(status?.current_candle_open)} detail="Must begin on the valid side of the trigger" />
-      <Card label="Lots per trade" value={number(settings?.silver_lots)} detail={`1 lot = ${number(status?.contract_value)} ${status?.contract_unit || ''} | Same exchange quantity, renamed only`} />
+      <Card label={sizingLabel} value={sizingValue} detail={sizingDetail} />
     </div>
     {status?.ws_error && <p className="text-xs text-gray-400">{status.ws_error}</p>}
     <div className="grid gap-2 md:grid-cols-2">
@@ -196,10 +206,33 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {([
           ['silver_breakout_points', 'Breakout offset'], ['sl_points', 'Initial stop loss'],
-          ['target_points', 'Final target'], ['tsl_activate_points', 'TSL activates at'], ['tsl_buffer_points', 'TSL buffer points'], ['silver_lots', 'Lots per trade'],
+          ['target_points', 'Final target'], ['tsl_activate_points', 'TSL activates at'], ['tsl_buffer_points', 'TSL buffer points'],
         ] as const).filter(([key]) => (key !== 'tsl_activate_points' || draft.exit_mode === 'target_to_breakeven_sl') && (key !== 'tsl_buffer_points' || draft.exit_mode === 'three_candle_tsl')).map(([key, label]) => <label key={key} className="text-sm text-gray-300">{label}
-          <input className="mt-1 w-full rounded border border-[#334155] bg-[#0a0e14] p-2" type="number" required min={key === 'silver_lots' ? 1 : 0.000001} step={key === 'silver_lots' ? 1 : 'any'} value={draft[key]} onChange={e => setDraft({ ...draft, [key]: Number(e.target.value) })} />
+          <input className="mt-1 w-full rounded border border-[#334155] bg-[#0a0e14] p-2" type="number" required min={0.000001} step="any" value={draft[key]} onChange={e => setDraft({ ...draft, [key]: Number(e.target.value) })} />
         </label>)}
+      </div>
+      <div className="rounded border border-[#1f2937] bg-[#0b111a] p-3">
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
+          <label className="text-sm text-gray-300">Size mode
+            <select className="mt-1 block w-full rounded border border-[#334155] bg-[#0a0e14] p-2" value={draft.size_mode} onChange={e => setDraft({ ...draft, size_mode: e.target.value as Settings['size_mode'] })}>
+              <option value="lots">By lots</option>
+              {asset === 'gold' && <option value="pax">By PAXG amount</option>}
+            </select>
+          </label>
+          {draft.size_mode === 'pax' && asset === 'gold' ? <label className="text-sm text-gray-300">PAXG per trade
+            <input className="mt-1 w-full rounded border border-[#334155] bg-[#0a0e14] p-2" type="number" required min={0.000001} step="any" value={draft.pax_size} onChange={e => setDraft({ ...draft, pax_size: Number(e.target.value) })} />
+          </label> : <label className="text-sm text-gray-300">Lots per trade
+            <input className="mt-1 w-full rounded border border-[#334155] bg-[#0a0e14] p-2" type="number" required min={1} step={1} value={draft.silver_lots} onChange={e => setDraft({ ...draft, silver_lots: Number(e.target.value) })} />
+          </label>}
+          <label className="text-sm text-gray-300">Leverage (x)
+            <input className="mt-1 w-full rounded border border-[#334155] bg-[#0a0e14] p-2" type="number" required min={0.000001} step="any" value={draft.leverage} onChange={e => setDraft({ ...draft, leverage: Number(e.target.value) })} />
+          </label>
+          <div className="rounded border border-[#334155]/60 bg-[#0a0e14] p-2 text-xs text-gray-400">
+            <div className="uppercase tracking-wide text-gray-500">Effective Delta size</div>
+            <div className="mt-1 font-mono text-sm text-gray-100">{draft.size_mode === 'pax' && asset === 'gold' && status?.contract_value ? `${number(Math.max(1, Math.ceil(draft.pax_size / status.contract_value)))} lots` : `${number(draft.silver_lots)} lots`}</div>
+            <div className="mt-1">Margin estimate uses {number(draft.leverage)}x leverage.</div>
+          </div>
+        </div>
       </div>
       <label className="flex items-center gap-2 text-sm text-gray-300"><input type="checkbox" checked={draft.manual_exit_reentry_enabled} onChange={e => setDraft({ ...draft, manual_exit_reentry_enabled: e.target.checked })} /> Allow re-entry after manual exit when the signal qualifies</label>
       <p className="rounded border border-[#1f2937] bg-[#0a0e14] p-3 text-xs text-gray-500">Entry rest is controlled from the top bar so it can be changed quickly during live monitoring. Current saved default after manual/SL/target exits: {draft.post_exit_cooldown_minutes} min.</p>
@@ -211,7 +244,7 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
       <TradeTable rows={status?.position ? [status.position] : []} mode={mode} disabled={busy || !status || status.stale || !!error} onEdit={row => { setEditing({ ...row }); setEditError(''); }} onExit={exit} />
     </section>
     <section>
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-gray-300">CLOSED {mode.toUpperCase()} TRADES</h2><button className={`${button} border-[#22c55e]/60 text-[#22c55e]`} disabled={csvBusy !== null || !settings} onClick={() => download('closed')}>{csvBusy === 'closed' ? 'Exporting all trades...' : 'Download closed CSV'}</button></div>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-gray-300">CLOSED {mode.toUpperCase()} TRADES TODAY <span className="text-xs font-normal text-gray-500">+ last previous row</span></h2><button className={`${button} border-[#22c55e]/60 text-[#22c55e]`} disabled={csvBusy !== null || !settings} onClick={() => download('closed')}>{csvBusy === 'closed' ? 'Exporting all trades...' : 'Download closed CSV'}</button></div>
       <TradeTable rows={trades} closed />
       <div className="mt-2 flex justify-end gap-2"><button className={button} disabled={offset === 0} onClick={() => setOffset(value => Math.max(0, value - 100))}>Previous</button><button className={button} disabled={trades.length < 100} onClick={() => setOffset(value => value + 100)}>Next</button></div>
     </section>

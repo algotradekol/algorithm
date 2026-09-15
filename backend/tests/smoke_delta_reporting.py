@@ -1,4 +1,5 @@
 """Offline reporting/account regression checks. Never contacts an exchange or DB."""
+import datetime
 import hashlib
 import hmac
 import os
@@ -16,6 +17,7 @@ from tests.smoke_delta_paper import strategy
 
 def run():
     assert paper_margin(4000, 10, .001, 1) == .4
+    assert paper_margin(4000, 10, .001, 1, leverage=50) == .8
     assert paper_margin(4000, 10, .001, None) is None
     assert paper_margin(4000, 10, .001, float('nan')) is None
     assert inr_rate('global', 'USDT') is None
@@ -29,22 +31,34 @@ def run():
         s.broker.product = {**s.broker.product, 'initial_margin': '1', 'quoting_asset': {'symbol': 'USD'}}
         s._enter(side, 1000, 1000)
         position = s._open_position()
-        assert position['qty'] == 1 and position['estimated_entry_margin'] == .01
+        assert position['qty'] == 1 and position['estimated_entry_margin'] == .02
         s.broker.product['initial_margin'] = '50'
         position['unrealized_pnl'] = -2
         display = paper_row(position, 'india')
-        assert display['margin_inr'] == .85 and display['pnl_inr'] == -170
+        assert display['margin_inr'] == 1.7 and display['pnl_inr'] == -170
         s.broker.close_trade(position, 1010 if side == 'BUY' else 990, 'TARGET')
         closed = s.broker.store.trades()[0]
         display = paper_row(closed, 'india')
         assert abs(display['pnl_inr'] - closed['net_pnl'] * 85) < 1e-9
-        assert display['estimated_entry_margin'] == .01
+        assert display['estimated_entry_margin'] == .02
 
     rows = account_rows([{'product_id': 1, 'product_symbol': 'PAXGUSD', 'size': '-3', 'margin': '2', 'user_id': 'private'},
                          {'size': 0}], 'positions', 'india')
     assert len(rows) == 1 and rows[0]['side'] == 'SELL' and rows[0]['lots'] == 3
     assert rows[0]['margin_inr'] == 170 and 'user_id' not in rows[0]
     assert account_rows([{'size': 1}], 'history', 'india')[0]['margin'] is None
+    today = datetime.datetime.now(datetime.timezone.utc)
+    yesterday = today - datetime.timedelta(days=1)
+    older = today - datetime.timedelta(days=2)
+    store = SimpleNamespace(trades=lambda offset=0, limit=100, before=None: [
+        {'id': 'today-2', 'exit_time': today.isoformat()},
+        {'id': 'today-1', 'exit_time': today.replace(hour=0, minute=1).isoformat()},
+        {'id': 'yesterday-context', 'exit_time': yesterday.isoformat()},
+        {'id': 'older-hidden', 'exit_time': older.isoformat()},
+    ][offset:offset + limit])
+    daily = delta_routes.daily_trades_with_previous_context(store, 0, 100)
+    assert [row['id'] for row in daily] == ['today-2', 'today-1', 'yesterday-context']
+    assert [row['id'] for row in delta_routes.daily_trades_with_previous_context(store, 1, 1)] == ['today-1']
 
     with patch.dict(os.environ, {'DELTA_API_KEY': 'test-key', 'DELTA_API_SECRET': 'test-secret', 'DELTA_EXCHANGE': 'india', 'DELTA_PROXY_URL': ''}):
         client = DeltaClient()

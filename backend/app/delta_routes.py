@@ -126,16 +126,56 @@ def status(minutes: int, asset: Asset = 'gold', mode: Mode = 'paper'):
 
 
 @router.get("/{minutes}/trades")
-def trades(minutes: int, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200), asset: Asset = 'gold', mode: Mode = 'paper'):
+def trades(
+    minutes: int,
+    offset: int = Query(0, ge=0),
+    limit: int = Query(100, ge=1, le=200),
+    asset: Asset = 'gold',
+    mode: Mode = 'paper',
+    today_only: bool = True,
+):
     require_delta(minutes=minutes, asset=asset)
     service = asset_service(asset, mode)
     try:
         strategy = service.strategy(minutes)
-        return {"trades": [paper_row(row, service.client.region) for row in strategy.broker.store.trades(offset, limit)]}
+        rows = (
+            daily_trades_with_previous_context(strategy.broker.store, offset, limit)
+            if today_only else
+            strategy.broker.store.trades(offset, limit)
+        )
+        return {"trades": [paper_row(row, service.client.region) for row in rows], "today_only": today_only}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     except Exception:
         raise HTTPException(503, "Delta trade history unavailable") from None
+
+
+def daily_trades_with_previous_context(store, offset=0, limit=100):
+    today = datetime.datetime.now(datetime.timezone.utc).date()
+    filtered = []
+    previous_context = None
+    page_offset = 0
+    while True:
+        page = store.trades(page_offset, 500)
+        if not page:
+            break
+        for row in page:
+            try:
+                closed = datetime.datetime.fromisoformat(str(row.get("exit_time", "")).replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            closed_utc = closed if closed.tzinfo else closed.replace(tzinfo=datetime.timezone.utc)
+            if closed_utc.astimezone(datetime.timezone.utc).date() == today:
+                filtered.append(row)
+                continue
+            previous_context = row
+            break
+        if previous_context is not None or len(page) < 500:
+            break
+        page_offset += len(page)
+    if previous_context is not None:
+        filtered.append(previous_context)
+    return filtered[offset:offset + limit]
 
 
 @router.put("/{minutes}/settings")

@@ -22,6 +22,9 @@ DELTA_DEFAULTS = {
     "target_points": 50.0,
     "tsl_buffer_points": 3.0,
     "silver_lots": 1,
+    "size_mode": "lots",
+    "pax_size": 0.001,
+    "leverage": 50.0,
     "exit_mode": "fixed_target_sl",
     "manual_exit_reentry_enabled": False,
     "post_exit_cooldown_minutes": 5,
@@ -58,6 +61,8 @@ def validate_settings(settings, asset='gold'):
         "target_points",
         "tsl_buffer_points",
         "silver_lots",
+        "pax_size",
+        "leverage",
         "post_exit_cooldown_minutes",
     ):
         if isinstance(settings[key], bool):
@@ -68,6 +73,11 @@ def validate_settings(settings, asset='gold'):
         settings[key] = value
     if not float(settings["silver_lots"]).is_integer():
         raise ValueError("Lots per trade must be a whole number")
+    settings["silver_lots"] = int(settings["silver_lots"])
+    if settings.get("size_mode") not in {"lots", "pax"}:
+        raise ValueError("Size mode must be lots or pax")
+    if asset != "gold" and settings["size_mode"] == "pax":
+        raise ValueError("PAXG sizing is available only for Delta Gold")
     if not float(settings["post_exit_cooldown_minutes"]).is_integer():
         raise ValueError("Post-exit rest must be a whole number of minutes")
     settings["post_exit_cooldown_minutes"] = int(settings["post_exit_cooldown_minutes"])
@@ -89,6 +99,20 @@ def validate_settings(settings, asset='gold'):
     ):
         raise ValueError("TSL activation must be below the final target")
     return settings
+
+
+def effective_delta_lots(settings, product, asset="gold"):
+    """Return whole Delta exchange quantity from the configured size mode."""
+    mode = settings.get("size_mode", "lots")
+    if mode == "pax" and asset == "gold":
+        contract_value = float(product.get("contract_value") or 0)
+        if not math.isfinite(contract_value) or contract_value <= 0:
+            raise ValueError("Delta contract value unavailable; cannot convert PAXG size")
+        pax_size = float(settings.get("pax_size") or 0)
+        if not math.isfinite(pax_size) or pax_size <= 0:
+            raise ValueError("PAXG per trade must be positive")
+        return max(1, int(math.ceil(pax_size / contract_value)))
+    return max(1, int(settings.get("silver_lots", 1) or 1))
 
 
 def normalize_stored_settings(settings, asset='gold'):
@@ -400,7 +424,7 @@ class DeltaGold(Algo3SilverMicro):
     def _enter(self, side, entry_price, trigger_level, event_time=None):
         if not self.symbol or not entry_price:
             return False
-        lots = max(1, int(self.settings.get("silver_lots", 1) or 1))
+        lots = effective_delta_lots(self.settings, getattr(self.broker, "product", {}), self.asset)
         direction = 1 if side == "BUY" else -1
         configured_sl = float(entry_price) - direction * float(self.settings["sl_points"])
         target = float(entry_price) + direction * float(self.settings["target_points"])
@@ -409,6 +433,11 @@ class DeltaGold(Algo3SilverMicro):
             return False
 
         snapshot = self._signal_snapshot(side, entry_price, trigger_level)
+        snapshot["size_mode"] = self.settings.get("size_mode", "lots")
+        snapshot["configured_lots"] = int(self.settings.get("silver_lots", 1) or 1)
+        snapshot["configured_pax_size"] = self.settings.get("pax_size")
+        snapshot["effective_lots"] = lots
+        snapshot["leverage"] = self.settings.get("leverage")
         mode = self.settings["exit_mode"]
         snapshot["silver_exit_policy"] = mode
         snapshot["configured_initial_sl_price"] = configured_sl

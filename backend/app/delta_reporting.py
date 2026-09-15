@@ -20,11 +20,18 @@ def inr_rate(region, currency):
     return INDIA_USD_INR if region == "india" and currency == "USD" else None
 
 
-def paper_margin(entry, qty, contract_value, margin_percent):
-    values = [finite(v) for v in (entry, qty, contract_value, margin_percent)]
-    if any(v is None or v <= 0 for v in values):
+def paper_margin(entry, qty, contract_value, margin_percent, leverage=None):
+    base_values = [finite(v) for v in (entry, qty, contract_value)]
+    if any(v is None or v <= 0 for v in base_values):
         return None
-    return values[0] * values[1] * values[2] * values[3] / 100
+    leverage_value = finite(leverage)
+    notional = base_values[0] * base_values[1] * base_values[2]
+    if leverage_value is not None and leverage_value > 0:
+        return notional / leverage_value
+    margin = finite(margin_percent)
+    if margin is None or margin <= 0:
+        return None
+    return notional * margin / 100
 
 
 def paper_row(row, region):
