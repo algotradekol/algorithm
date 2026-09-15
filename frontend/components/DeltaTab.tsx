@@ -137,13 +137,13 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
       void action(() => api.deltaClose(minutes, row.id), `${mode === 'live' ? 'Live Delta' : 'Paper'} exit confirmed`);
     }
   }
-  return <div className="space-y-3">
-    <header className="flex flex-wrap items-end justify-between gap-2">
+  return <div className="space-y-2">
+    <header className="sticky top-0 z-30 -mx-1 flex flex-wrap items-end justify-between gap-2 rounded-b-xl border-b border-[#1f2937] bg-[#080d13]/95 px-1 py-1.5 shadow-[0_10px_24px_rgba(0,0,0,0.28)] backdrop-blur">
       <div>
-        <h1 className="text-lg font-semibold text-gray-100">Delta {metal} {timeframeLabel(minutes)} <span className={`ml-2 rounded px-2 py-1 text-xs ${mode === 'live' ? 'bg-[#ef4444]/20 text-[#f87171]' : 'bg-[#3b82f6]/20 text-[#93c5fd]'}`}>{mode === 'live' ? 'LIVE' : 'PAPER ONLY'}</span></h1>
-        <p className="mt-1 text-xs text-gray-500">{status?.symbol || `${metal} symbol not configured`} | 24/7 | {asset === 'gold' ? 'EMA20 + volume EMA20' : 'Normal Silver Micro'} | No square-off</p>
+        <h1 className="text-base font-semibold text-gray-100">Delta {metal} {timeframeLabel(minutes)} <span className={`ml-2 rounded px-2 py-0.5 text-[10px] ${mode === 'live' ? 'bg-[#ef4444]/20 text-[#f87171]' : 'bg-[#3b82f6]/20 text-[#93c5fd]'}`}>{mode === 'live' ? 'LIVE' : 'PAPER ONLY'}</span></h1>
+        <p className="mt-0.5 text-[11px] text-gray-500">{status?.symbol || `${metal} symbol not configured`} | 24/7 | {asset === 'gold' ? 'EMA20 + volume EMA20' : 'Normal Silver Micro'} | No square-off</p>
       </div>
-      <div className="flex flex-wrap items-center gap-1 rounded-lg border border-[#1f2937] bg-[#0b111a] p-1 lg:-mt-12 lg:ml-auto lg:max-w-[calc(100%-34rem)] lg:justify-end">
+      <div className="flex flex-wrap items-center gap-1 rounded-lg border border-[#1f2937] bg-[#0b111a] p-1 lg:ml-auto lg:max-w-[calc(100%-28rem)] lg:justify-end">
         {settings && <>
           <button className={`${controlButton} ${settings.scan_enabled ? 'border-[#22c55e]/50 bg-[#22c55e]/10 text-[#22c55e]' : 'border-[#334155] text-gray-500'}`} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { scan_enabled: !settings.scan_enabled }), 'Scan setting saved')}>Scan {settings.scan_enabled ? 'ON' : 'OFF'}</button>
           <button className={`${controlButton} ${settings.trading_enabled ? 'border-[#22c55e]/50 bg-[#22c55e]/10 text-[#22c55e]' : 'border-[#334155] text-gray-500'}`} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { trading_enabled: !settings.trading_enabled }), `${mode === 'live' ? 'Live' : 'Paper'} trading setting saved`)}>Trade {settings.trading_enabled ? 'ON' : 'OFF'}</button>
