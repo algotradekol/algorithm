@@ -40,7 +40,7 @@ const duration = (value?: number) => {
   return `${hours ? `${hours}h ` : ''}${minutes}m ${seconds % 60}s`;
 };
 const button = 'rounded border border-[#334155] px-3 py-2 text-sm text-gray-200 hover:border-[#60a5fa] disabled:opacity-40';
-const controlButton = 'rounded-md border px-3 py-2 text-sm font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45';
+const controlButton = 'rounded-md border px-2.5 py-1.5 text-xs font-semibold transition-colors disabled:cursor-not-allowed disabled:opacity-45';
 const silverDeltaDefaults = {
   silver_breakout_points: 0.10,
   sl_points: 0.30,
@@ -138,12 +138,12 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
     }
   }
   return <div className="space-y-3">
-    <header className="flex flex-wrap items-center justify-between gap-2">
+    <header className="flex flex-wrap items-end justify-between gap-2">
       <div>
         <h1 className="text-lg font-semibold text-gray-100">Delta {metal} {timeframeLabel(minutes)} <span className={`ml-2 rounded px-2 py-1 text-xs ${mode === 'live' ? 'bg-[#ef4444]/20 text-[#f87171]' : 'bg-[#3b82f6]/20 text-[#93c5fd]'}`}>{mode === 'live' ? 'LIVE' : 'PAPER ONLY'}</span></h1>
         <p className="mt-1 text-xs text-gray-500">{status?.symbol || `${metal} symbol not configured`} | 24/7 | {asset === 'gold' ? 'EMA20 + volume EMA20' : 'Normal Silver Micro'} | No square-off</p>
       </div>
-      <div className="flex flex-wrap items-center gap-1.5 rounded-xl border border-[#1f2937] bg-[#0b111a] p-1.5">
+      <div className="flex flex-wrap items-center gap-1 rounded-lg border border-[#1f2937] bg-[#0b111a] p-1 lg:-mt-12 lg:ml-auto lg:max-w-[calc(100%-34rem)] lg:justify-end">
         {settings && <>
           <button className={`${controlButton} ${settings.scan_enabled ? 'border-[#22c55e]/50 bg-[#22c55e]/10 text-[#22c55e]' : 'border-[#334155] text-gray-500'}`} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { scan_enabled: !settings.scan_enabled }), 'Scan setting saved')}>Scan {settings.scan_enabled ? 'ON' : 'OFF'}</button>
           <button className={`${controlButton} ${settings.trading_enabled ? 'border-[#22c55e]/50 bg-[#22c55e]/10 text-[#22c55e]' : 'border-[#334155] text-gray-500'}`} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { trading_enabled: !settings.trading_enabled }), `${mode === 'live' ? 'Live' : 'Paper'} trading setting saved`)}>Trade {settings.trading_enabled ? 'ON' : 'OFF'}</button>
@@ -152,7 +152,7 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
             <option value="0">No rest</option><option value="5">5 min rest</option><option value="15">15 min rest</option><option value="30">30 min rest</option>
             <option value="60">1 hr rest</option><option value="240">4 hr rest</option><option value="720">12 hr rest</option><option value="custom">Custom minutes</option>
           </select>
-          {restPreset === 'custom' && <input aria-label="Custom entry rest minutes" className={`${controlButton} w-24 border-[#334155] bg-[#0a0e14] text-gray-200`} type="number" min={0} max={10080} step={1} value={customRestMinutes} disabled={busy} onChange={e => setCustomRestMinutes(Number(e.target.value))} />}
+          {restPreset === 'custom' && <input aria-label="Custom entry rest minutes" className={`${controlButton} w-20 border-[#334155] bg-[#0a0e14] text-gray-200`} type="number" min={0} max={10080} step={1} value={customRestMinutes} disabled={busy} onChange={e => setCustomRestMinutes(Number(e.target.value))} />}
           <button className={`${controlButton} ${selectedRestMinutes ? 'border-[#f59e0b]/70 bg-[#f59e0b]/10 text-[#fbbf24]' : 'border-[#334155] text-gray-400'}`} disabled={busy || !Number.isInteger(selectedRestMinutes) || selectedRestMinutes < 0 || selectedRestMinutes > 10080} onClick={() => action(() => api.deltaPause(minutes, selectedRestMinutes), selectedRestMinutes ? `New entries paused for ${selectedRestMinutes} minutes` : 'Entry rest cleared')}>{selectedRestMinutes ? 'Pause' : 'Clear rest'}</button>
           <button className={`${controlButton} border-[#22c55e]/60 bg-[#22c55e]/10 text-[#22c55e]`} disabled={busy || !cooldown?.active} onClick={() => action(() => api.deltaResume(minutes), 'Entry rest cleared. The next qualifying crossing may trade.')}>Resume</button>
         </>}
@@ -234,7 +234,6 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
           </div>
         </div>
       </div>
-      <label className="flex items-center gap-2 text-sm text-gray-300"><input type="checkbox" checked={draft.manual_exit_reentry_enabled} onChange={e => setDraft({ ...draft, manual_exit_reentry_enabled: e.target.checked })} /> Allow re-entry after manual exit when the signal qualifies</label>
       <p className="rounded border border-[#1f2937] bg-[#0a0e14] p-3 text-xs text-gray-500">Entry rest is controlled from the top bar so it can be changed quickly during live monitoring. Current saved default after manual/SL/target exits: {draft.post_exit_cooldown_minutes} min.</p>
       <div className="flex gap-2"><button className={button} disabled={busy}>Save</button><button className={button} type="button" onClick={() => setDraft(null)}>Cancel</button></div>
     </form>}
