@@ -41,7 +41,9 @@ export default function DeltaWorkspace({ capabilities }: { capabilities: DeltaCa
 
 function MetalWorkspace({ asset, group }: { asset: DeltaAsset; group: Group }) {
   const [selected, setSelected] = useState('overview');
+  const [mode, setMode] = useState<'paper' | 'live'>('paper');
   const metal = asset === 'gold' ? 'Gold' : 'Silver';
+  const effectiveMode = asset === 'gold' ? mode : 'paper';
   const tabs = [
     ...(group.sections.overview ? [{ key: 'overview', label: `${metal} dashboard` }] : []),
     ...group.enabled_timeframes.map(minutes => ({ key: String(minutes), label: deltaTimeframeLabel(minutes) })),
@@ -50,14 +52,19 @@ function MetalWorkspace({ asset, group }: { asset: DeltaAsset; group: Group }) {
   ];
   const tab = tabs.some(t => t.key === selected) ? selected : tabs[0]?.key;
   return <>
-    <nav aria-label={`Delta ${metal} timeframes`} className="mb-4 flex gap-6 overflow-x-auto whitespace-nowrap border-b border-[#1f2937]">
-      {tabs.map(item => <button key={item.key} aria-pressed={tab === item.key} onClick={() => setSelected(item.key)} className={`min-h-10 border-b-2 py-3 text-sm ${tab === item.key ? 'border-[#3b82f6] text-gray-100' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>{item.label}</button>)}
-    </nav>
+    <div className="mb-4 flex flex-wrap items-end justify-between gap-3 border-b border-[#1f2937]">
+      <nav aria-label={`Delta ${metal} timeframes`} className="flex gap-6 overflow-x-auto whitespace-nowrap">
+        {tabs.map(item => <button key={item.key} aria-pressed={tab === item.key} onClick={() => setSelected(item.key)} className={`min-h-10 border-b-2 py-3 text-sm ${tab === item.key ? 'border-[#3b82f6] text-gray-100' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>{item.label}</button>)}
+      </nav>
+      {asset === 'gold' && <div className="mb-2 flex rounded-lg border border-[#334155] bg-[#0a0e14] p-1">
+        {(['paper', 'live'] as const).map(value => <button key={value} aria-pressed={mode === value} onClick={() => setMode(value)} className={`rounded-md px-4 py-2 text-xs font-semibold uppercase tracking-wide ${mode === value ? (value === 'live' ? 'bg-[#ef4444]/20 text-[#f87171]' : 'bg-[#3b82f6]/20 text-[#93c5fd]') : 'text-gray-500 hover:text-gray-200'}`}>{value}</button>)}
+      </div>}
+    </div>
     <div key={`${asset}-${tab}`}>
-      {tab === 'overview' ? <DeltaOverviewTab asset={asset} />
+      {tab === 'overview' ? <DeltaOverviewTab asset={asset} mode={effectiveMode} />
         : tab === 'activity' ? <DeltaActivityTab asset={asset} enabledTimeframes={group.enabled_timeframes} />
         : tab === 'backtest' ? <DeltaBacktestTab asset={asset} enabledTimeframes={group.enabled_timeframes} />
-        : tab ? <DeltaTab asset={asset} minutes={Number(tab)} />
+        : tab ? <DeltaTab asset={asset} mode={effectiveMode} minutes={Number(tab)} />
         : <p className="panel p-4 text-sm text-gray-400">No {metal} sections are enabled.</p>}
     </div>
   </>;

@@ -4,7 +4,7 @@ import datetime
 from typing import Literal
 
 from .auth import require_auth
-from .delta_engine import delta_service, delta_silver_service
+from .delta_engine import service_for
 from .delta_config import delta_capabilities, asset_capabilities, timeframe_enabled
 from .delta_reporting import paper_row, account_rows, inr_rate
 import time
@@ -13,10 +13,11 @@ router = APIRouter(prefix="/api/delta", dependencies=[Depends(require_auth)])
 
 
 Asset = Literal['gold', 'silver']
+Mode = Literal['paper', 'live']
 
 
-def asset_service(asset):
-    return delta_silver_service if asset == 'silver' else delta_service
+def asset_service(asset, mode: Mode = 'paper'):
+    return service_for(asset, mode)
 
 
 class BacktestRequest(BaseModel):
@@ -45,9 +46,9 @@ def capabilities():
 
 
 @router.get('/overview')
-def overview(asset: Asset = 'gold'):
+def overview(asset: Asset = 'gold', mode: Mode = 'paper'):
     require_delta(section="overview", asset=asset)
-    service = asset_service(asset)
+    service = asset_service(asset, mode)
     try:
         return service.overview()
     except ValueError as exc:
@@ -116,18 +117,18 @@ def cancel_backtest(asset: Asset = 'gold'):
 
 
 @router.get("/{minutes}/status")
-def status(minutes: int, asset: Asset = 'gold'):
+def status(minutes: int, asset: Asset = 'gold', mode: Mode = 'paper'):
     if minutes not in (5, 7, 15, 30, 60, 120, 240):
         raise HTTPException(400, "Invalid Delta timeframe")
     require_delta(minutes=minutes, asset=asset)
-    service = asset_service(asset)
+    service = asset_service(asset, mode)
     return service.snapshot(minutes)
 
 
 @router.get("/{minutes}/trades")
-def trades(minutes: int, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200), asset: Asset = 'gold'):
+def trades(minutes: int, offset: int = Query(0, ge=0), limit: int = Query(100, ge=1, le=200), asset: Asset = 'gold', mode: Mode = 'paper'):
     require_delta(minutes=minutes, asset=asset)
-    service = asset_service(asset)
+    service = asset_service(asset, mode)
     try:
         strategy = service.strategy(minutes)
         return {"trades": [paper_row(row, service.client.region) for row in strategy.broker.store.trades(offset, limit)]}
@@ -138,9 +139,9 @@ def trades(minutes: int, offset: int = Query(0, ge=0), limit: int = Query(100, g
 
 
 @router.put("/{minutes}/settings")
-def settings(minutes: int, changes: dict, asset: Asset = 'gold'):
+def settings(minutes: int, changes: dict, asset: Asset = 'gold', mode: Mode = 'paper'):
     require_delta(minutes=minutes, asset=asset)
-    service = asset_service(asset)
+    service = asset_service(asset, mode)
     try:
         return service.save_settings(minutes, changes)
     except (ValueError, TypeError) as exc:
@@ -166,9 +167,9 @@ class ProtectionRequest(BaseModel):
 
 
 @router.put('/{minutes}/protection')
-def edit_protection(minutes: int, request: ProtectionRequest, asset: Asset = 'gold'):
+def edit_protection(minutes: int, request: ProtectionRequest, asset: Asset = 'gold', mode: Mode = 'paper'):
     require_delta(minutes=minutes, asset=asset)
-    service = asset_service(asset)
+    service = asset_service(asset, mode)
     try:
         position = service.edit_protection(minutes, request.position_id, request.sl_price, request.target_price, request.expected_sl, request.expected_target)
         return {'position': position}
@@ -179,9 +180,9 @@ def edit_protection(minutes: int, request: ProtectionRequest, asset: Asset = 'go
 
 
 @router.get('/{minutes}/export')
-def export(minutes: int, kind: Literal['open', 'closed'], asset: Asset = 'gold'):
+def export(minutes: int, kind: Literal['open', 'closed'], asset: Asset = 'gold', mode: Mode = 'paper'):
     require_delta(minutes=minutes, asset=asset)
-    service = asset_service(asset)
+    service = asset_service(asset, mode)
     from .delta_export import export_paper
     try:
         return export_paper(service, minutes, kind)
@@ -194,7 +195,7 @@ def export(minutes: int, kind: Literal['open', 'closed'], asset: Asset = 'gold')
 @router.get("/account/{kind}")
 def account(kind: str, after: str | None = Query(None, max_length=256), source: str = "paper", minutes: int = 15, offset: int = Query(0, ge=0), asset: Asset = 'gold'):
     require_delta(section="activity", minutes=minutes if source == "paper" else None, asset=asset)
-    service = asset_service(asset)
+    service = asset_service(asset, 'live' if source == 'live' else 'paper')
     if kind not in {"positions", "open_orders", "stop_orders", "history"}:
         raise HTTPException(400, "Invalid Delta account view")
     if source not in {"paper", "live"} or minutes not in {5, 7, 15, 30, 60, 120, 240}:
@@ -285,9 +286,9 @@ def paper_account(kind, minutes, offset, asset: Asset = 'gold'):
 
 
 @router.post("/{minutes}/close")
-def close(minutes: int, request: CloseRequest, asset: Asset = 'gold'):
+def close(minutes: int, request: CloseRequest, asset: Asset = 'gold', mode: Mode = 'paper'):
     require_delta(minutes=minutes, asset=asset)
-    service = asset_service(asset)
+    service = asset_service(asset, mode)
     try:
         service.close(minutes, request.position_id)
         return {"closed": True}
@@ -298,9 +299,9 @@ def close(minutes: int, request: CloseRequest, asset: Asset = 'gold'):
 
 
 @router.post("/{minutes}/resume")
-def resume(minutes: int, asset: Asset = 'gold'):
+def resume(minutes: int, asset: Asset = 'gold', mode: Mode = 'paper'):
     require_delta(minutes=minutes, asset=asset)
-    service = asset_service(asset)
+    service = asset_service(asset, mode)
     try:
         return {"cooldown": service.resume(minutes)}
     except ValueError as exc:
@@ -310,9 +311,9 @@ def resume(minutes: int, asset: Asset = 'gold'):
 
 
 @router.post("/{minutes}/pause")
-def pause(minutes: int, request: PauseRequest, asset: Asset = 'gold'):
+def pause(minutes: int, request: PauseRequest, asset: Asset = 'gold', mode: Mode = 'paper'):
     require_delta(minutes=minutes, asset=asset)
-    service = asset_service(asset)
+    service = asset_service(asset, mode)
     try:
         return {"cooldown": service.pause(minutes, request.duration_minutes)}
     except ValueError as exc:
@@ -322,14 +323,15 @@ def pause(minutes: int, request: PauseRequest, asset: Asset = 'gold'):
 
 
 @router.post("/connection/check")
-def connection_check(asset: Asset = 'gold'):
+def connection_check(asset: Asset = 'gold', mode: Mode = 'paper'):
     require_delta(asset=asset)
-    service = asset_service(asset)
+    service = asset_service(asset, mode)
     try:
         if not service.client:
             raise ValueError("Delta is not configured")
         service.client.get("/v2/wallet/balances", private=True)
-        return {"verified": True, "message": "Delta read-only account access verified. Execution remains paper only."}
+        message = "Delta account access verified. Live execution is enabled only when DELTA_LIVE_ENABLED=true and Trading permission is on."
+        return {"verified": True, "message": message}
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(400, str(exc)) from None
     except Exception:

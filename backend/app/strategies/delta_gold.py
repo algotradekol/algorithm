@@ -310,9 +310,10 @@ class DeltaGold(Algo3SilverMicro):
                 self._mark_fired("BUY", setup_bar_at=self._buy_setup_bar_at)
 
     def _entry_trigger(self, side, entry_price, trigger_level):
+        mode = getattr(self.broker, "mode", "paper")
         return (
             f"{self.minutes}m Delta {side} EMA20 + volume EMA20 reference breakout "
-            f"at {trigger_level:g}; paper fill {entry_price:g}"
+            f"at {trigger_level:g}; {mode} fill {entry_price:g}"
         )
 
     def _handle_broker_position_closed(self, **kwargs):
@@ -445,7 +446,7 @@ class DeltaGold(Algo3SilverMicro):
                 self.broker.open_trade(*args, entry_time=_entry_time_iso(event_time))
             return True
         except Exception as exc:
-            print(f"[delta-paper] entry failed for {self.symbol}: {exc}")
+            print(f"[delta-{getattr(self.broker, 'mode', 'paper')}] entry failed for {self.symbol}: {exc}")
             return False
 
     def _signal_snapshot(self, side, entry_price, trigger_level):
@@ -458,7 +459,7 @@ class DeltaGold(Algo3SilverMicro):
             "symbol": self.symbol,
             "timeframe": f"{self.minutes}m",
             "broker": "delta",
-            "execution": "paper",
+            "execution": getattr(self.broker, "mode", "paper"),
             "strategy_version": DELTA_STRATEGY_VERSION,
             "side": side,
             "entry_ltp": entry_price,

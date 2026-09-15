@@ -8,6 +8,7 @@ from unittest.mock import patch
 
 from app.delta_client import DeltaClient
 from app.delta_engine import DeltaService
+from app.delta_live import DeltaLiveBroker
 from app.delta_paper import DeltaPaperBroker
 from app.strategies.algo3_silver_micro import Algo3SilverMicro
 from app.strategies.delta_gold import (
@@ -42,6 +43,29 @@ class MemoryStore:
         self.state = copy.deepcopy(state)
         if trade:
             self.closed.append(copy.deepcopy(trade))
+
+
+class FakeLiveClient:
+    def __init__(self):
+        self.orders = []
+        self.edits = []
+        self.deletes = []
+        self.region = "india"
+
+    def post(self, path, payload=None, private=True):
+        assert path == "/v2/orders" and private
+        self.orders.append(copy.deepcopy(payload))
+        return {"id": len(self.orders), "average_fill_price": payload.get("stop_price") or "1000"}
+
+    def put(self, path, payload=None, private=True):
+        assert path == "/v2/orders" and private
+        self.edits.append(copy.deepcopy(payload))
+        return {"id": payload["id"], "state": "open"}
+
+    def delete(self, path, payload=None, private=True):
+        assert path == "/v2/orders" and private
+        self.deletes.append(copy.deepcopy(payload))
+        return {"id": payload["id"], "state": "cancelled"}
 
 
 def strategy(minutes=15, settings=None, store=None):
@@ -298,6 +322,23 @@ def run():
     assert reversal._enter("BUY", 1000, 1000)
     reversal.broker.close_trade(reversal._open_position(), 1000, "REVERSAL_CONTRA_SIGNAL")
     assert not reversal.broker.state.get("cooldown_until")
+
+    live_store = MemoryStore()
+    live_product = {**PRODUCT, "id": 123006, "quoting_asset": {"symbol": "USD"}, "initial_margin": "1"}
+    live_client = FakeLiveClient()
+    live_broker = DeltaLiveBroker(live_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, live_client)
+    live = DeltaGold(15, "PAXGUSD", live_broker)
+    assert live._enter("BUY", 1000, 1000)
+    live_pos = live._open_position()
+    assert live_pos["execution"] == "live" and live_pos["signal_snapshot"]["execution"] == "live"
+    assert live_client.orders[0]["order_type"] == "market_order" and not live_client.orders[0]["reduce_only"]
+    assert live_client.orders[1]["stop_order_type"] == "stop_loss_order" and live_client.orders[1]["reduce_only"]
+    assert live_client.orders[2]["stop_order_type"] == "take_profit_order" and live_client.orders[2]["reduce_only"]
+    live_broker.update_protection(live_pos, 990, 1050, 1005)
+    assert [edit["id"] for edit in live_client.edits[-2:]] == [2, 3]
+    live_broker.close_trade(live_broker.state["position"], 1005, "MANUAL_EXIT")
+    assert live_client.orders[-1]["reduce_only"] and live_client.orders[-1]["side"] == "sell"
+    assert live_store.closed[-1]["execution"] == "live"
 
     blocked = strategy()
     blocked.broker.state.update(cooldown_until=time.time() + 300, cooldown_reason="TARGET")

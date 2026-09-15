@@ -95,16 +95,18 @@ manager = ConnectionManager()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    from .delta_engine import delta_service, delta_silver_service
+    from .delta_engine import delta_live_service, delta_service, delta_silver_service
     from .broadcaster import set_manager
     set_manager(manager)
     # Start engine in a background thread so it doesn't block FastAPI startup
     engine_thread = threading.Thread(target=start_engine, daemon=True)
     engine_thread.start()
     delta_service.start()
+    delta_live_service.start()
     delta_silver_service.start()
     yield
     delta_service.stop()
+    delta_live_service.stop()
     delta_silver_service.stop()
 
 

@@ -48,8 +48,8 @@ const silverDeltaDefaults = {
   exit_mode: 'target_to_breakeven_sl' as const,
 };
 
-export default function DeltaTab({ minutes, asset = 'gold' }: { minutes: number; asset?: DeltaAsset }) {
-  const api = deltaApi(asset);
+export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { minutes: number; asset?: DeltaAsset; mode?: 'paper' | 'live' }) {
+  const api = deltaApi(asset, mode);
   const metal = asset === 'silver' ? 'Silver' : 'Gold';
   const [status, setStatus] = useState<Status | null>(null);
   const [trades, setTrades] = useState<Trade[]>([]);
@@ -107,7 +107,7 @@ export default function DeltaTab({ minutes, asset = 'gold' }: { minutes: number;
       const url = URL.createObjectURL(new Blob([result.csv], { type: 'text/csv;charset=utf-8' }));
       const link = document.createElement('a'); link.href = url; link.download = result.filename; link.click();
       setTimeout(() => URL.revokeObjectURL(url), 1000);
-      setNotice(`Exported ${result.count} ${kind} paper trades`);
+      setNotice(`Exported ${result.count} ${kind} ${mode} trades`);
     } catch (err) { setNotice(err instanceof Error ? err.message : 'CSV export failed'); }
     finally { setCsvBusy(null); }
   }
@@ -116,25 +116,25 @@ export default function DeltaTab({ minutes, asset = 'gold' }: { minutes: number;
     setBusy(true); setEditError('');
     try {
       await api.deltaProtection(minutes, { position_id: editing.id, sl_price: sl, target_price: target, expected_sl: editing.sl_price, expected_target: editing.target_price });
-      setEditing(null); setNotice('Paper SL / target saved'); setReload(v => v + 1);
+      setEditing(null); setNotice(`${mode === 'live' ? 'Live Delta' : 'Paper'} SL / target saved`); setReload(v => v + 1);
     } catch (err) { setEditError(err instanceof Error ? err.message : 'Protection was not saved'); }
     finally { setBusy(false); }
   }
   function exit(row: Trade) {
-    if (window.confirm(`Exit this ${row.side} paper position now at the latest Delta price?`)) {
-      void action(() => api.deltaClose(minutes, row.id), 'Paper exit confirmed');
+    if (window.confirm(`Exit this ${row.side} ${mode} position now at the latest Delta price?${mode === 'live' ? ' This will submit a reduce-only market close to Delta.' : ''}`)) {
+      void action(() => api.deltaClose(minutes, row.id), `${mode === 'live' ? 'Live Delta' : 'Paper'} exit confirmed`);
     }
   }
   return <div className="space-y-4">
     <header className="flex flex-wrap items-center justify-between gap-3">
       <div>
-        <h1 className="text-lg font-semibold text-gray-100">Delta {metal} {timeframeLabel(minutes)} <span className="ml-2 rounded bg-[#3b82f6]/20 px-2 py-1 text-xs text-[#93c5fd]">PAPER ONLY</span></h1>
+        <h1 className="text-lg font-semibold text-gray-100">Delta {metal} {timeframeLabel(minutes)} <span className={`ml-2 rounded px-2 py-1 text-xs ${mode === 'live' ? 'bg-[#ef4444]/20 text-[#f87171]' : 'bg-[#3b82f6]/20 text-[#93c5fd]'}`}>{mode === 'live' ? 'LIVE' : 'PAPER ONLY'}</span></h1>
         <p className="mt-2 text-sm text-gray-400">{status?.symbol || `${metal} symbol not configured`} | 24/7 | {asset === 'gold' ? 'Price EMA20 + volume EMA20' : 'Normal Silver Micro: price EMA20 / red-chain SELL'} | No daily square-off</p>
       </div>
       <div className="flex flex-wrap gap-2">
         {settings && <>
           <button className={button} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { scan_enabled: !settings.scan_enabled }), 'Scan setting saved')}>Scan: {settings.scan_enabled ? 'ON' : 'OFF'}</button>
-          <button className={button} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { trading_enabled: !settings.trading_enabled }), 'Paper trading setting saved')}>Trading: {settings.trading_enabled ? 'ON' : 'OFF'}</button>
+          <button className={button} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { trading_enabled: !settings.trading_enabled }), `${mode === 'live' ? 'Live' : 'Paper'} trading setting saved`)}>Trading: {settings.trading_enabled ? 'ON' : 'OFF'}</button>
           <button className={button} onClick={() => setDraft({ ...settings })}>Settings</button>
           <select aria-label="Entry rest duration" className={`${button} bg-[#0a0e14]`} value={restPreset} disabled={busy} onChange={e => setRestPreset(e.target.value)}>
             <option value="0">No rest</option><option value="5">5 min rest</option><option value="15">15 min rest</option><option value="30">30 min rest</option>
@@ -144,7 +144,7 @@ export default function DeltaTab({ minutes, asset = 'gold' }: { minutes: number;
           <button className={`${button} border-[#f59e0b]/70 text-[#fbbf24]`} disabled={busy || !Number.isInteger(selectedRestMinutes) || selectedRestMinutes < 0 || selectedRestMinutes > 10080} onClick={() => action(() => api.deltaPause(minutes, selectedRestMinutes), selectedRestMinutes ? `New entries paused for ${selectedRestMinutes} minutes` : 'Entry rest cleared')}>{selectedRestMinutes ? 'Pause entries' : 'Clear rest'}</button>
           <button className={`${button} border-[#22c55e]/70 text-[#22c55e]`} disabled={busy || !cooldown?.active} onClick={() => action(() => api.deltaResume(minutes), 'Entry rest cleared. The next qualifying crossing may trade.')}>Resume</button>
         </>}
-        <button className={button} disabled={busy || !status?.credentials_configured} onClick={() => action(() => api.deltaCheckConnection(), 'Delta account verified. Execution remains paper only.')}>Verify API connection</button>
+        <button className={button} disabled={busy || !status?.credentials_configured} onClick={() => action(() => api.deltaCheckConnection(), 'Delta account verified')}>Verify API connection</button>
       </div>
     </header>
     {(error || notice || status?.error || status?.history_error) && <div role="status" className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 p-3 text-sm text-[#fbbf24]">{error || notice || status?.error || status?.history_error}</div>}
@@ -181,7 +181,7 @@ export default function DeltaTab({ minutes, asset = 'gold' }: { minutes: number;
       event.preventDefault();
       void action(async () => { await api.deltaSettings(minutes, draft); setDraft(null); }, 'Delta settings saved');
     }}>
-      <h2 className="font-semibold text-gray-100">Paper risk settings</h2>
+      <h2 className="font-semibold text-gray-100">{mode === 'live' ? 'Live' : 'Paper'} risk settings</h2>
       <p className="text-xs text-gray-400">All distances are in the quoted {asset} price, not rupees. Existing positions retain their entry-time protection.</p>
       {asset === 'silver' && <button type="button" className={`${button} border-[#94a3b8] text-gray-100`} onClick={() => setDraft({ ...draft, ...silverDeltaDefaults })}>Use Delta Silver defaults</button>}
       <label className="block text-sm text-gray-300">Exit mode
@@ -209,18 +209,18 @@ export default function DeltaTab({ minutes, asset = 'gold' }: { minutes: number;
     </form>}
     <p className="text-xs text-gray-400">Paper margin is an entry estimate using the product base initial-margin percentage, excluding size tiers, fees and account leverage. Older records without captured margin show --. {status?.inr_rate ? `INR uses Delta India's fixed rate: 1 USD = Rs ${status.inr_rate}.` : 'INR conversion unavailable for this currency.'}</p>
     <section>
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-gray-300">OPEN PAPER POSITION</h2><button className={`${button} border-[#22c55e]/60 text-[#22c55e]`} disabled={csvBusy !== null || !settings} onClick={() => download('open')}>{csvBusy === 'open' ? 'Exporting...' : 'Download open CSV'}</button></div>
-      <TradeTable rows={status?.position ? [status.position] : []} disabled={busy || !status || status.stale || !!error} onEdit={row => { setEditing({ ...row }); setEditError(''); }} onExit={exit} />
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-gray-300">OPEN {mode.toUpperCase()} POSITION</h2><button className={`${button} border-[#22c55e]/60 text-[#22c55e]`} disabled={csvBusy !== null || !settings} onClick={() => download('open')}>{csvBusy === 'open' ? 'Exporting...' : 'Download open CSV'}</button></div>
+      <TradeTable rows={status?.position ? [status.position] : []} mode={mode} disabled={busy || !status || status.stale || !!error} onEdit={row => { setEditing({ ...row }); setEditError(''); }} onExit={exit} />
     </section>
     <section>
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-gray-300">CLOSED PAPER TRADES</h2><button className={`${button} border-[#22c55e]/60 text-[#22c55e]`} disabled={csvBusy !== null || !settings} onClick={() => download('closed')}>{csvBusy === 'closed' ? 'Exporting all trades...' : 'Download closed CSV'}</button></div>
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-gray-300">CLOSED {mode.toUpperCase()} TRADES</h2><button className={`${button} border-[#22c55e]/60 text-[#22c55e]`} disabled={csvBusy !== null || !settings} onClick={() => download('closed')}>{csvBusy === 'closed' ? 'Exporting all trades...' : 'Download closed CSV'}</button></div>
       <TradeTable rows={trades} closed />
       <div className="mt-2 flex justify-end gap-2"><button className={button} disabled={offset === 0} onClick={() => setOffset(value => Math.max(0, value - 100))}>Previous</button><button className={button} disabled={trades.length < 100} onClick={() => setOffset(value => value + 100)}>Next</button></div>
     </section>
     <details className="panel p-3"><summary className="cursor-pointer text-sm text-[#93c5fd]">Reference history</summary>
       <div className="mt-3 max-h-80 overflow-auto"><table className="w-full text-left text-xs"><thead><tr>{['Side', 'Candle time (IST)', 'Open', 'High', 'Low', 'Close', 'EMA20', 'Volume', 'Volume EMA20'].map(label => <th key={label} className="p-2 text-gray-400">{label}</th>)}</tr></thead><tbody>{status?.references?.map(row => <tr key={`${row.side}-${row.time}`} className="border-t border-[#1f2937] text-gray-200"><td className="p-2">{row.side}</td><td className="p-2">{date(row.time)}</td>{[row.open, row.high, row.low, row.close, row.ema20, row.volume, row.volume_ema20].map((value, index) => <td key={index} className="p-2 font-mono">{number(value)}</td>)}</tr>)}</tbody></table></div>
     </details>
-    {editing && <EditProtection key={editing.id} row={editing} ltp={status?.ltp} busy={busy} disabled={!status || status.stale || !!error || status.position?.id !== editing.id} error={editError} onClose={() => { if (!busy) setEditing(null); }} onSave={saveProtection} />}
+    {editing && <EditProtection key={editing.id} row={editing} mode={mode} ltp={status?.ltp} busy={busy} disabled={!status || status.stale || !!error || status.position?.id !== editing.id} error={editError} onClose={() => { if (!busy) setEditing(null); }} onSave={saveProtection} />}
   </div>;
 }
 
@@ -228,10 +228,10 @@ function Card({ label, value, detail }: { label: string; value: string; detail: 
   return <div className="rounded border border-[#1f2937] bg-[#111827] p-3"><div className="text-xs uppercase tracking-wide text-gray-400">{label}</div><div className="mt-2 font-mono text-lg text-gray-100">{value}</div><p className="mt-2 text-xs text-gray-500">{detail}</p></div>;
 }
 
-function TradeTable({ rows, closed = false, disabled, onEdit, onExit }: { rows: Trade[]; closed?: boolean; disabled?: boolean; onEdit?: (row: Trade) => void; onExit?: (row: Trade) => void }) {
+function TradeTable({ rows, closed = false, mode = 'paper', disabled, onEdit, onExit }: { rows: Trade[]; closed?: boolean; mode?: 'paper' | 'live'; disabled?: boolean; onEdit?: (row: Trade) => void; onExit?: (row: Trade) => void }) {
   const headers = ['Side', 'Lots', 'Entry time (IST)', 'Entry', 'Reference time (IST)', 'Reference', 'Initial SL', 'Current SL', 'Target', ...(!closed ? ['Edit'] : []), 'TSL', 'Est. entry margin (quote)', 'Est. entry margin (INR)', ...(closed ? ['Exit time (IST)', 'Exit', 'Reason', 'Gross', 'Fees', 'Net', 'Net (INR)'] : ['Unrealized P&L', 'Unrealized (INR)', 'Exit'])];
   return <div className="max-h-[32rem] overflow-auto rounded border border-[#1f2937]"><table className="w-full whitespace-nowrap text-left text-xs"><thead className="sticky top-0 bg-[#111827]"><tr>{headers.map(label => <th key={label} className="px-3 py-3 text-gray-400">{label}</th>)}</tr></thead><tbody>
-    {!rows.length && <tr><td colSpan={headers.length} className="p-4 text-gray-500">No {closed ? 'closed trades' : 'open position'}.</td></tr>}
+    {!rows.length && <tr><td colSpan={headers.length} className="p-4 text-gray-500">No {closed ? 'closed trades' : `open ${mode} position`}.</td></tr>}
     {rows.map(row => <tr key={row.id} className="border-t border-[#1f2937] text-gray-200">
       <td className={`p-3 ${row.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{row.side}</td>
       {[number(row.qty), date(row.entry_time), number(row.entry_price), date(row.signal_snapshot.setup_time), number(row.signal_snapshot.setup_close), number(row.initial_sl), number(row.sl_price), number(row.target_price), ...(!closed ? [<button key="edit" className="min-h-9 rounded border border-[#3b82f6]/70 px-2.5 py-1.5 text-xs font-semibold text-[#3b82f6] disabled:opacity-40" disabled={disabled} onClick={() => onEdit?.(row)}>Edit</button>] : []), <TslAudit key="tsl" row={row} />, number(row.estimated_entry_margin), number(row.margin_inr), ...(closed ? [date(row.exit_time), number(row.exit_price), row.exit_reason, number(row.gross_pnl), number(row.fees), number(row.net_pnl), number(row.pnl_inr)] : [number(row.unrealized_pnl), number(row.pnl_inr), <button key="exit" className="min-h-9 rounded border border-[#ef4444]/70 px-2.5 py-1.5 text-xs font-semibold text-[#ef4444] disabled:opacity-40" disabled={disabled} onClick={() => onExit?.(row)}>Exit</button>])].map((value, index) => <td key={index} className="p-3 font-mono">{value}</td>)}
@@ -252,7 +252,7 @@ function TslAudit({ row }: { row: Trade }) {
   return <>Fixed</>;
 }
 
-function EditProtection({ row, ltp, busy, disabled, error, onClose, onSave }: { row: Trade; ltp?: number; busy: boolean; disabled: boolean; error: string; onClose: () => void; onSave: (sl: number, target: number) => void }) {
+function EditProtection({ row, mode, ltp, busy, disabled, error, onClose, onSave }: { row: Trade; mode: 'paper' | 'live'; ltp?: number; busy: boolean; disabled: boolean; error: string; onClose: () => void; onSave: (sl: number, target: number) => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [sl, setSl] = useState(String(row.sl_price));
   const [target, setTarget] = useState(String(row.target_price));
@@ -260,7 +260,7 @@ function EditProtection({ row, ltp, busy, disabled, error, onClose, onSave }: { 
   return <dialog ref={dialog} onCancel={e => { e.preventDefault(); onClose(); }} aria-labelledby="delta-protection-title" className="w-[calc(100%_-_2rem)] max-w-md rounded border border-[#1f2937] bg-[#0d1117] p-4 text-gray-100 backdrop:bg-black/70">
     <form onSubmit={e => { e.preventDefault(); onSave(Number(sl), Number(target)); }}>
       <div className="flex items-start justify-between gap-3"><div><h3 id="delta-protection-title" className="font-semibold">Edit SL / Target</h3><p className="mt-1 text-xs text-gray-400">{row.symbol} | {row.side} | Entry {number(row.entry_price)} | LTP {number(ltp)}</p></div><button type="button" aria-label="Close editor" disabled={busy} onClick={onClose}>×</button></div>
-      <p className="mt-3 rounded border border-[#3b82f6]/40 p-2 text-xs text-[#93c5fd]">Paper position only. Enter absolute price levels, not distances. Settings and other positions are unchanged. TSL activation stays at its captured price and will not loosen a tighter manual stop.</p>
+      <p className="mt-3 rounded border border-[#3b82f6]/40 p-2 text-xs text-[#93c5fd]">{mode === 'live' ? 'Live Delta position. Saving will amend the tracked Delta stop/target orders first, then update the app.' : 'Paper position only.'} Enter absolute price levels, not distances. Settings and other positions are unchanged. TSL activation stays at its captured price and will not loosen a tighter manual stop.</p>
       <div className="mt-4 grid grid-cols-2 gap-3">{[['Stop loss', sl, setSl], ['Target', target, setTarget]].map(([label, value, setter]) => <label key={label as string} className="text-sm text-gray-300">{label as string}<input autoFocus={label === 'Stop loss'} type="number" min="0.000001" step="any" required value={value as string} disabled={busy} onChange={e => (setter as (value: string) => void)(e.target.value)} className="mt-1 w-full rounded border border-[#334155] bg-[#0a0e14] p-2" /></label>)}</div>
       {(error || disabled) && <p role="alert" className="mt-3 text-sm text-[#f87171]">{error || 'Fresh price or matching open position unavailable. Reload before editing.'}</p>}
       <div className="mt-4 flex justify-end gap-2"><button className={button} type="button" disabled={busy} onClick={onClose}>Cancel</button><button className={`${button} border-[#3b82f6] bg-[#3b82f6]/20`} disabled={busy || disabled}>{busy ? 'Saving...' : 'Save'}</button></div>

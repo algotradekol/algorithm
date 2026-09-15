@@ -50,21 +50,24 @@ def run():
         client = DeltaClient()
         response = MagicMock(status_code=200)
         response.json.return_value = {'success': True, 'result': [], 'meta': {'after': 'next'}}
-        with patch.object(client.session, 'get', return_value=response) as get, patch('app.delta_client.time.time', return_value=1234):
+        with patch.object(client.session, 'request', return_value=response) as request, patch('app.delta_client.time.time', return_value=1234):
             for path in ('/v2/orders', '/v2/orders/history', '/v2/positions/margined', '/v2/wallet/balances'):
                 params = {'states': 'open,pending', 'after': 'a+b/=='} if path == '/v2/orders' else {}
                 payload = client.get(path, params, private=True, envelope=True)
                 request_path = requests.Request('GET', client.base_url + path, params=params).prepare().path_url
                 expected = hmac.new(b'test-secret', f'GET1234{request_path}'.encode(), hashlib.sha256).hexdigest()
-                assert get.call_args.kwargs['headers']['signature'] == expected
+                assert request.call_args.kwargs['headers']['signature'] == expected
                 assert payload['meta']['after'] == 'next'
-            before = get.call_count
+            response.json.return_value = {'success': True, 'result': {'id': 1}}
+            client.post('/v2/orders', {'product_id': 1, 'size': 1}, private=True)
+            assert request.call_args.args[0] == 'POST'
+            assert request.call_args.kwargs['data'] == '{"product_id":1,"size":1}'
+            before = request.call_count
             try:
                 client.get('/v2/positions/close_all', private=True)
                 raise AssertionError('non-allowlisted endpoint accepted')
             except ValueError:
-                assert get.call_count == before
-        assert not hasattr(client, 'post') and not hasattr(client, 'delete')
+                assert request.call_count == before
 
     fake = MagicMock(region='india')
     fake.get.return_value = {'result': [{'id': 1, 'size': 1, 'side': 'buy', 'stop_order_type': None},
@@ -73,7 +76,7 @@ def run():
     s = strategy()
     s._enter('BUY', 1000, 1000)
     service = SimpleNamespace(client=fake, strategy=lambda minutes: s)
-    with patch.object(delta_routes, 'delta_service', service):
+    with patch.object(delta_routes, 'service_for', lambda asset='gold', mode='paper': service):
         for kind, expected in [('open_orders', '1'), ('stop_orders', '2')]:
             result = delta_routes.account(kind, None, 'live', 15, 0)
             assert len(result['rows']) == 1 and result['rows'][0]['id'] == expected

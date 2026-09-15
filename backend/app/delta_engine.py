@@ -10,6 +10,7 @@ import time
 from .delta_client import DeltaClient, epoch_seconds, positive
 from .delta_candles import aggregate_custom_minutes, delta_resolution
 from .delta_config import delta_capabilities, asset_capabilities, timeframe_enabled
+from .delta_live import DeltaLiveBroker
 from .delta_paper import DeltaPaperBroker, DeltaStore
 from .delta_reporting import paper_row, inr_rate
 from .strategies.delta_gold import DELTA_DEFAULTS, DELTA_TIMEFRAMES, DeltaGold, validate_settings, defaults_for
@@ -17,14 +18,17 @@ from .strategies.delta_silver import DeltaSilver
 
 
 class DeltaService:
-    def __init__(self, asset='gold'):
+    def __init__(self, asset='gold', mode='paper'):
+        if mode not in {'paper', 'live'}:
+            raise ValueError("Delta mode must be paper or live")
         self.asset = asset
+        self.mode = mode
         self.lock = threading.RLock()
         self.stop_event = threading.Event()
         self.client = None
         self.strategies = {}
         self.product = None
-        self.error = "Delta paper engine is starting"
+        self.error = f"Delta {mode} engine is starting"
         self.ws_error = None
         self.ws_connected = False
         self.last_price = None
@@ -39,7 +43,7 @@ class DeltaService:
         if self.started:
             return
         self.started = True
-        threading.Thread(target=self._run, name="delta-paper", daemon=True).start()
+        threading.Thread(target=self._run, name=f"delta-{self.mode}", daemon=True).start()
 
     def stop(self):
         self.stop_event.set()
@@ -60,13 +64,26 @@ class DeltaService:
         error = self.client.configuration_error()
         if error:
             raise ValueError(error)
+        if self.mode == "live" and not self.client.live_enabled:
+            self.error = "Delta live is disabled. Set DELTA_LIVE_ENABLED=true only after the API key has Trading permission."
+            self.initialized = True
+            return
+        if self.mode == "live" and self.asset != "gold":
+            self.error = "Delta live is enabled only for Gold right now."
+            self.initialized = True
+            return
         product = self.client.product()
         strategies = {}
         for minutes in capabilities["enabled_timeframes"]:
-            key = f"delta:{self.client.region}:{self.client.symbol}:{minutes}:paper"
+            key = f"delta:{self.client.region}:{self.client.symbol}:{minutes}:{self.mode}"
             if self.asset == 'silver':
-                key = f"delta:silver:{self.client.region}:{self.client.symbol}:{minutes}:paper"
-            broker = DeltaPaperBroker(DeltaStore(key), dict(defaults_for(self.asset)), product)
+                key = f"delta:silver:{self.client.region}:{self.client.symbol}:{minutes}:{self.mode}"
+            store = DeltaStore(key)
+            broker = (
+                DeltaLiveBroker(store, dict(defaults_for(self.asset)), product, self.client)
+                if self.mode == "live" else
+                DeltaPaperBroker(store, dict(defaults_for(self.asset)), product)
+            )
             strategy_class = DeltaSilver if self.asset == 'silver' else DeltaGold
             strategies[minutes] = strategy_class(minutes, self.client.symbol, broker)
         with self.lock:
@@ -74,7 +91,7 @@ class DeltaService:
             self.product = product
             self.error = None
             self.initialized = True
-        threading.Thread(target=self._websocket, name="delta-public-ws", daemon=True).start()
+        threading.Thread(target=self._websocket, name=f"delta-{self.mode}-public-ws", daemon=True).start()
 
     def _run(self):
         while not self.stop_event.is_set() and not self.initialized:
@@ -82,7 +99,7 @@ class DeltaService:
                 self._initialize()
             except Exception as exc:
                 self.error = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else "Delta storage unavailable; check Supabase migration and backend logs"
-                print(f"[delta-paper] startup: {self.error}")
+                print(f"[delta-{self.mode}] startup: {self.error}")
                 self.stop_event.wait(30)
         if not self.client:
             return
@@ -135,7 +152,7 @@ class DeltaService:
                 try:
                     strategy.process_price(price, stamp)
                 except Exception:
-                    self.error = "Delta paper processing/persistence failed; check database availability"
+                    self.error = f"Delta {self.mode} processing/persistence failed; check database availability"
                     # Do not continue submitting entries after a failed protection write.
                     strategy.data_error = self.error
 
@@ -194,7 +211,7 @@ class DeltaService:
     def snapshot(self, minutes):
         with self.lock:
             result = {
-                "asset": self.asset, "mode": "paper", "exchange": self.client.region if self.client else None,
+                "asset": self.asset, "mode": self.mode, "exchange": self.client.region if self.client else None,
                 "symbol": self.client.symbol if self.client else None, "minutes": minutes,
                 "error": self.error, "ws_connected": self.ws_connected, "ws_error": self.ws_error,
                 "ltp": self.last_price, "last_tick_at": self.last_event_at or None,
@@ -378,6 +395,8 @@ class DeltaService:
                 raise ValueError('An armed breakeven stop cannot be moved back into loss')
             if protection and not protection.get('armed') and (target <= protection['activation_price'] if buy else target >= protection['activation_price']):
                 raise ValueError('Final target must remain beyond the pending TSL activation level')
+            if hasattr(strategy.broker, "update_protection"):
+                return strategy.broker.update_protection(current, sl, target, self.last_price)
             state = copy.deepcopy(strategy.broker.state)
             position = state['position']
             position.setdefault('protection_edits', []).append({
@@ -393,12 +412,15 @@ class DeltaService:
 
 
 delta_service = DeltaService()
+delta_live_service = DeltaService(mode='live')
 delta_silver_service = DeltaService('silver')
 
 
-def service_for(asset='gold'):
+def service_for(asset='gold', mode='paper'):
     if asset == 'gold':
-        return delta_service
+        return delta_live_service if mode == 'live' else delta_service
     if asset == 'silver':
+        if mode == 'live':
+            raise ValueError('Delta Silver live is not enabled')
         return delta_silver_service
     raise ValueError('Unknown Delta asset')

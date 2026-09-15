@@ -227,9 +227,9 @@ export const api = {
 
 export type DeltaAsset = 'gold' | 'silver';
 
-export function deltaApi(asset: DeltaAsset = 'gold') {
+export function deltaApi(asset: DeltaAsset = 'gold', mode: TradingMode = 'paper') {
   const fetchAsset = (path: string, options?: RequestInit) => authedFetch(
-    `${path}${path.includes('?') ? '&' : '?'}asset=${asset}`, options,
+    `${path}${path.includes('?') ? '&' : '?'}asset=${asset}&mode=${mode}`, options,
   );
   return {
   deltaCapabilities: () => fetchAsset('/api/delta/capabilities'),

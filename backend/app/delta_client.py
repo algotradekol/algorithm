@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import json
 import math
 import os
 import time
@@ -46,6 +47,7 @@ class DeltaClient:
         default_symbol = default_symbol if asset == 'gold' else 'SLVONUSD'
         self.symbol = os.getenv(f"DELTA_{asset.upper()}_SYMBOL", default_symbol).strip().upper()
         self.enabled = os.getenv("DELTA_PAPER_ENABLED", "false").lower() == "true"
+        self.live_enabled = os.getenv("DELTA_LIVE_ENABLED", "false").lower() == "true"
         self.base_url, self.ws_url = ENDPOINTS.get(self.region, ("", ""))
         self.proxy = os.getenv("DELTA_PROXY_URL", "").strip()
         self.key = os.getenv("DELTA_API_KEY", "").strip()
@@ -68,22 +70,48 @@ class DeltaClient:
             return f"Set DELTA_{self.asset.upper()}_SYMBOL to the exact Delta perpetual symbol."
         return None
 
-    def get(self, path: str, params=None, *, private=False, envelope=False):
+    def _signed_headers(self, method: str, path: str, params=None, body: str = ""):
+        if not self.key or not self.secret:
+            raise ValueError("Both DELTA_API_KEY and DELTA_API_SECRET are required")
+        stamp = str(int(time.time()))
+        request_path = requests.Request(method, self.base_url + path, params=params).prepare().path_url
+        signature = hmac.new(
+            self.secret.encode(),
+            f"{method}{stamp}{request_path}{body}".encode(),
+            hashlib.sha256,
+        ).hexdigest()
+        return {"api-key": self.key, "timestamp": stamp, "signature": signature}
+
+    def request(self, method: str, path: str, params=None, payload=None, *, private=False, envelope=False):
         if not self.base_url:
             raise ValueError("Delta exchange is not configured")
         headers = {}
+        body = ""
         if private:
-            if path not in {"/v2/wallet/balances", "/v2/positions/margined", "/v2/orders", "/v2/orders/history"}:
-                raise ValueError("Only allowlisted read-only Delta account endpoints are supported")
-            if not self.key or not self.secret:
-                raise ValueError("Both DELTA_API_KEY and DELTA_API_SECRET are required")
-            stamp = str(int(time.time()))
-            # Sign the exact encoded query that requests will send, including '?'.
-            request_path = requests.Request("GET", self.base_url + path, params=params).prepare().path_url
-            signature = hmac.new(self.secret.encode(), f"GET{stamp}{request_path}".encode(), hashlib.sha256).hexdigest()
-            headers = {"api-key": self.key, "timestamp": stamp, "signature": signature}
+            allowed = {
+                ("GET", "/v2/wallet/balances"),
+                ("GET", "/v2/positions/margined"),
+                ("GET", "/v2/orders"),
+                ("GET", "/v2/orders/history"),
+                ("POST", "/v2/orders"),
+                ("PUT", "/v2/orders"),
+                ("DELETE", "/v2/orders"),
+            }
+            if (method.upper(), path) not in allowed:
+                raise ValueError("Delta private endpoint is not allowlisted")
+            if payload is not None:
+                body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
+            headers = self._signed_headers(method.upper(), path, params=params, body=body)
+            headers["Content-Type"] = "application/json"
         try:
-            response = self.session.get(self.base_url + path, params=params, headers=headers, timeout=(5, 10))
+            response = self.session.request(
+                method.upper(),
+                self.base_url + path,
+                params=params,
+                data=body if body else None,
+                headers=headers,
+                timeout=(5, 10),
+            )
         except requests.RequestException:
             # Requests exceptions can contain proxy credentials. Do not expose them.
             raise RuntimeError("Delta connection failed via configured proxy" if self.proxy else "Delta direct connection failed") from None
@@ -95,6 +123,18 @@ class DeltaClient:
             code = error.get("code", "unknown") if isinstance(error, dict) else "unknown"
             raise RuntimeError(f"Delta API error: {code}")
         return payload if envelope else payload["result"]
+
+    def get(self, path: str, params=None, *, private=False, envelope=False):
+        return self.request("GET", path, params=params, private=private, envelope=envelope)
+
+    def post(self, path: str, payload=None, *, private=True, envelope=False):
+        return self.request("POST", path, payload=payload or {}, private=private, envelope=envelope)
+
+    def put(self, path: str, payload=None, *, private=True, envelope=False):
+        return self.request("PUT", path, payload=payload or {}, private=private, envelope=envelope)
+
+    def delete(self, path: str, payload=None, *, private=True, envelope=False):
+        return self.request("DELETE", path, payload=payload or {}, private=private, envelope=envelope)
 
     def product(self):
         data = self.get(f"/v2/products/{quote(self.symbol, safe='')}")

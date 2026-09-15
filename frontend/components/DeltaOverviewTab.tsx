@@ -22,8 +22,8 @@ const tone = (value?: number) => (value || 0) > 0 ? 'text-[#22c55e]' : (value ||
 const time = (value?: number) => value ? new Date(value * 1000).toLocaleString('en-IN', { timeZone: 'UTC', hour12: false }) : '--';
 const rest = (seconds?: number) => `${Math.floor((seconds || 0) / 60)}m ${Math.ceil((seconds || 0) % 60)}s`;
 
-export default function DeltaOverviewTab({ asset = 'gold' }: { asset?: DeltaAsset }) {
-  const api = deltaApi(asset);
+export default function DeltaOverviewTab({ asset = 'gold', mode = 'paper' }: { asset?: DeltaAsset; mode?: 'paper' | 'live' }) {
+  const api = deltaApi(asset, mode);
   const metal = asset === 'silver' ? 'Silver' : 'Gold';
   const [data, setData] = useState<Overview | null>(null);
   const [error, setError] = useState('');
@@ -51,7 +51,7 @@ export default function DeltaOverviewTab({ asset = 'gold' }: { asset?: DeltaAsse
     <header className="relative overflow-hidden rounded-xl border border-[#1d3850] bg-[radial-gradient(circle_at_82%_12%,rgba(14,165,233,0.14),transparent_28%),linear-gradient(135deg,#0d1824,#091018_70%)] p-5">
       <div className="absolute -right-12 -top-16 h-40 w-40 rounded-full border border-[#38bdf8]/10" />
       <div className="relative flex flex-wrap items-end justify-between gap-4">
-        <div><p className="text-[10px] uppercase tracking-[0.3em] text-[#38bdf8]">{metal} paper dashboard</p><h1 className="mt-2 text-2xl font-semibold text-gray-100">Delta {metal} overview</h1><p className="mt-1 text-sm text-gray-400">{frames.length} enabled {asset} timeframes. Daily totals reset at 00:00 UTC.</p></div>
+        <div><p className="text-[10px] uppercase tracking-[0.3em] text-[#38bdf8]">{metal} {mode} dashboard</p><h1 className="mt-2 text-2xl font-semibold text-gray-100">Delta {metal} overview</h1><p className="mt-1 text-sm text-gray-400">{frames.length} enabled {asset} timeframes. Daily totals reset at 00:00 UTC.</p></div>
         <div className="text-right"><div className="font-mono text-2xl text-gray-100">{number(data?.ltp)}</div><div className="mt-1 text-[10px] uppercase tracking-widest text-gray-500">{data?.symbol || metal} last trade</div><div className="mt-2 text-xs text-gray-500">Updated {data ? time(data.generated_at) : '--'} UTC</div></div>
       </div>
     </header>

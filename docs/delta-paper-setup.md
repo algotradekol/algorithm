@@ -1,15 +1,16 @@
-# Delta paper setup
+# Delta setup
 
-Delta runs as paper-only strategies under the main Delta tab. The workspace is
-split into two metal groups:
+Delta runs paper strategies under the main Delta tab, with an optional guarded
+live path for Gold only. The workspace is split into two metal groups:
 
 - Gold: `PAXGUSD`, timeframes `5m`, `7m`, `15m`, `30m`, `1h`, and `4h`.
 - Silver: `SLVONUSD` by default, timeframes `5m`, `15m`, `30m`, `1h`, and `4h`.
 
 Gold uses the Delta PAXG EMA20 plus volume EMA20 strategy. Silver uses the
 normal Silver Micro EMA20/red-chain entry behavior on Delta silver candles.
-Both groups are continuous paper simulations with no daily square-off and no
-Delta live order placement.
+Both paper groups are continuous simulations with no daily square-off. Live
+Delta order placement is disabled unless Railway has `DELTA_LIVE_ENABLED=true`
+and the Delta API key has Trading permission.
 
 ## Supabase
 
@@ -34,9 +35,13 @@ DELTA_SILVER_SYMBOL=SLVONUSD
 DELTA_PROXY_URL=http://PROXY_USERNAME:URL_ENCODED_PASSWORD@PROXY_HOST:PROXY_PORT
 
 # Optional read-only account credentials for Verify API connection and the
-# Positions & Orders live-account view. These never enable live Delta trading.
+# Positions & Orders live-account view.
 DELTA_API_KEY=YOUR_INDIA_API_KEY
 DELTA_API_SECRET=YOUR_INDIA_API_SECRET
+
+# Optional guarded live execution for Delta Gold only. Keep false unless the
+# API key has Trading permission and the deployment is intended to place orders.
+DELTA_LIVE_ENABLED=false
 
 # Optional comma-separated deployment gate. Empty = show everything.
 DELTA_HIDDEN_SECTIONS=
@@ -129,7 +134,15 @@ captured at entry from product metadata; it is not an actual exchange margin
 reservation.
 
 The Positions & Orders view can show paper simulation rows or read-only live
-account rows for the selected metal. It never places or modifies Delta orders.
+account rows for the selected metal.
+
+Delta Gold has a Paper/Live switch. Live uses separate per-timeframe storage
+keys ending in `:live`, so live settings, positions, cooldowns and trades do
+not mix with paper. The live broker places market IOC entries, then creates
+reduce-only Delta stop-loss and take-profit trigger orders. Manual exits and
+app-managed target/SL exits submit reduce-only market closes. Stop amendments
+are saved in the app only after Delta accepts the order edit. Delta Silver
+remains paper-only.
 
 ## Backtest
 
