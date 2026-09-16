@@ -572,16 +572,18 @@ class Algo3SilverMicro(Strategy):
                 self.broker.close_trade(position, ltp, exit_reason)
                 self._arm_buy_reentry_after_exit(exit_reason)
             elif use_target and ltp >= target:
-                self.broker.close_trade(position, ltp, "TARGET")
-                self._arm_buy_reentry_after_exit("TARGET")
+                exit_reason = self._target_exit_reason(position)
+                self.broker.close_trade(position, ltp, exit_reason)
+                self._arm_buy_reentry_after_exit(exit_reason)
         else:
             if ltp >= sl:
                 exit_reason = self._stop_exit_reason(position)
                 self.broker.close_trade(position, ltp, exit_reason)
                 self._arm_sell_reentry_after_exit(exit_reason)
             elif use_target and ltp <= target:
-                self.broker.close_trade(position, ltp, "TARGET")
-                self._arm_sell_reentry_after_exit("TARGET")
+                exit_reason = self._target_exit_reason(position)
+                self.broker.close_trade(position, ltp, exit_reason)
+                self._arm_sell_reentry_after_exit(exit_reason)
 
     def _arm_sell_reentry_after_exit(self, exit_reason: str) -> None:
         """Allow a closed SELL to continue the same red-chain move.
@@ -595,9 +597,13 @@ class Algo3SilverMicro(Strategy):
         # Keep the reference alive for either protective exit. After a stop,
         # a qualifying downward tick can re-enter once it is at/below the
         # carried reference - n level; it cannot re-enter above that level.
-        if exit_reason not in {"SL", "TRAILING_SL", "TARGET"}:
+        # SL_EDITED / TARGET_EDITED are the manual-edit variants of the
+        # standard protective exits; they must arm re-entry and post-SL
+        # cooldown the same way so the algo doesn't diverge based on
+        # whether the operator moved the level or not.
+        if exit_reason not in {"SL", "TRAILING_SL", "TARGET", "SL_EDITED", "TARGET_EDITED"}:
             return
-        if exit_reason in {"SL", "TRAILING_SL"}:
+        if exit_reason in {"SL", "TRAILING_SL", "SL_EDITED"}:
             self._arm_post_sl_cooldown(exit_reason)
         if self._sell_setup_close is None or self._sell_setup_bar_at is None:
             self._sell_reentry_after_exit = None
@@ -617,9 +623,13 @@ class Algo3SilverMicro(Strategy):
         preceding tick. This prevents repeated orders on a flat/stale tick
         while allowing a renewed move above the same finalized reference.
         """
-        if exit_reason not in {"SL", "TRAILING_SL", "TARGET"}:
+        # SL_EDITED / TARGET_EDITED are the manual-edit variants of the
+        # standard protective exits; they must arm re-entry and post-SL
+        # cooldown the same way so the algo doesn't diverge based on
+        # whether the operator moved the level or not.
+        if exit_reason not in {"SL", "TRAILING_SL", "TARGET", "SL_EDITED", "TARGET_EDITED"}:
             return
-        if exit_reason in {"SL", "TRAILING_SL"}:
+        if exit_reason in {"SL", "TRAILING_SL", "SL_EDITED"}:
             self._arm_post_sl_cooldown(exit_reason)
         if self._buy_setup_close is None or self._buy_setup_bar_at is None:
             self._buy_reentry_after_exit = None
@@ -638,17 +648,31 @@ class Algo3SilverMicro(Strategy):
 
     @staticmethod
     def _stop_exit_reason(position: dict) -> str:
-        """Preserve whether the effective stop was a trailed stop.
+        """Preserve whether the effective stop was auto, trailed, or manual.
 
-        A point-lock TSL moves the stored SL only after activation. Recording
-        that distinction at the source makes paper, live, and UI audit rows
-        agree instead of relabeling a profitable trailing exit as a normal SL.
+        A point-lock TSL moves the stored SL only after activation. A manual
+        edit_protection call marks sl_source=manual. Distinguishing these at
+        the source makes paper, live, and UI audit rows agree instead of
+        relabeling a profitable trailing exit as a normal SL, or a stop the
+        operator moved as an anonymous protective SL.
         """
+        # A manual edit overrides the trailing distinction — once the user
+        # has moved the level, THEIR stop is the one that fired.
+        if position.get("sl_source") == "manual":
+            return "SL_EDITED"
         snapshot = position.get("signal_snapshot") or {}
         trailing = snapshot.get("trailing") if isinstance(snapshot, dict) else None
         if bool(position.get("trailing_sl_active")) or bool(isinstance(trailing, dict) and trailing.get("activated")):
             return "TRAILING_SL"
         return "SL"
+
+    @staticmethod
+    def _target_exit_reason(position: dict) -> str:
+        """Return TARGET_EDITED when the take-profit level was moved manually,
+        otherwise TARGET. Mirrors _stop_exit_reason so audit reads consistently."""
+        if position.get("target_source") == "manual":
+            return "TARGET_EDITED"
+        return "TARGET"
 
     # ── aggregation ──────────────────────────────────────────────────
     def _ingest_minute_candle(self, candle: dict, allow_signals: bool):

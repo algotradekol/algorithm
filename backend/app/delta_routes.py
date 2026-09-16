@@ -210,12 +210,24 @@ class ProtectionRequest(BaseModel):
 def edit_protection(minutes: int, request: ProtectionRequest, asset: Asset = 'gold', mode: Mode = 'paper'):
     require_delta(minutes=minutes, asset=asset)
     service = asset_service(asset, mode)
+    print(
+        f"[delta-{mode}] protection edit request asset={asset} minutes={minutes} "
+        f"pos={request.position_id} new_sl={request.sl_price} new_target={request.target_price} "
+        f"expected_sl={request.expected_sl} expected_target={request.expected_target}"
+    )
     try:
         position = service.edit_protection(minutes, request.position_id, request.sl_price, request.target_price, request.expected_sl, request.expected_target)
+        print(
+            f"[delta-{mode}] protection edit OK asset={asset} minutes={minutes} "
+            f"pos={request.position_id} sl={position.get('sl_price')} target={position.get('target_price')} "
+            f"sl_source={position.get('sl_source')} target_source={position.get('target_source')}"
+        )
         return {'position': position}
     except ValueError as exc:
+        print(f"[delta-{mode}] protection edit refused asset={asset} minutes={minutes} pos={request.position_id}: {exc}")
         raise HTTPException(409, str(exc)) from None
-    except Exception:
+    except Exception as exc:
+        print(f"[delta-{mode}] protection edit failed asset={asset} minutes={minutes} pos={request.position_id}: {exc!r}")
         raise HTTPException(503, 'Protection was not saved; reload before retrying') from None
 
 
@@ -355,12 +367,16 @@ def paper_account(kind, minutes, offset, asset: Asset = 'gold'):
 def close(minutes: int, request: CloseRequest, asset: Asset = 'gold', mode: Mode = 'paper'):
     require_delta(minutes=minutes, asset=asset)
     service = asset_service(asset, mode)
+    print(f"[delta-{mode}] close request asset={asset} minutes={minutes} pos={request.position_id}")
     try:
         service.close(minutes, request.position_id)
+        print(f"[delta-{mode}] close OK asset={asset} minutes={minutes} pos={request.position_id}")
         return {"closed": True}
     except (ValueError, RuntimeError) as exc:
+        print(f"[delta-{mode}] close refused asset={asset} minutes={minutes} pos={request.position_id}: {exc}")
         raise HTTPException(409, str(exc)) from None
-    except Exception:
+    except Exception as exc:
+        print(f"[delta-{mode}] close failed asset={asset} minutes={minutes} pos={request.position_id}: {exc!r}")
         raise HTTPException(503, f"Delta {mode} exit was not confirmed; reload position status") from None
 
 

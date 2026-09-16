@@ -255,7 +255,12 @@ class DeltaService:
                 if confirmations < 2:
                     continue
                 exit_price = self.last_price or position.get("entry_price")
-                if strategy.broker.record_external_close(exit_price, "MANUAL_EXTERNAL_EXIT"):
+                # Pass exit_reason=None so record_external_close can infer
+                # SL / TRAILING_SL / TARGET (and their _EDITED variants) from
+                # the most recent live_close_error, instead of always writing
+                # MANUAL_EXTERNAL_EXIT when Delta's own stop/target actually
+                # fired natively and just beat our reduce_only close.
+                if strategy.broker.record_external_close(exit_price):
                     self._live_flat_confirmations.pop(minutes, None)
 
     def _websocket(self):
@@ -519,12 +524,21 @@ class DeltaService:
                 return strategy.broker.update_protection(current, sl, target, self.last_price)
             state = copy.deepcopy(strategy.broker.state)
             position = state['position']
+            sl_changed = sl != current['sl_price']
+            target_changed = target != current['target_price']
             position.setdefault('protection_edits', []).append({
                 'time': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'source': 'manual_paper',
                 'previous_sl': current['sl_price'], 'previous_target': current['target_price'],
                 'new_sl': sl, 'new_target': target, 'ltp': self.last_price,
             })
             position.update(sl_price=sl, target_price=target)
+            # sl_source / target_source drive the SL_EDITED / TARGET_EDITED
+            # exit_reason so audit rows distinguish an original protective
+            # exit from one against a manually-moved level.
+            if sl_changed:
+                position['sl_source'] = 'manual'
+            if target_changed:
+                position['target_source'] = 'manual'
             if protection:
                 position['signal_snapshot']['silver_breakeven']['target_price'] = target
             strategy.broker.commit(state)

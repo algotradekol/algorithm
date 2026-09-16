@@ -236,7 +236,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
         state.update(position=None, gross_pnl=state["gross_pnl"] + gross,
                      fees=state["fees"] + fees, closed_count=state["closed_count"] + 1)
         state["live_close_error"] = None
-        if exit_reason in {"MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET"}:
+        if exit_reason in {"MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET", "SL_EDITED", "TARGET_EDITED"}:
             raw_minutes = state["settings"].get("post_exit_cooldown_minutes")
             cooldown_minutes = 5.0 if raw_minutes is None else float(raw_minutes)
             state["cooldown_until"] = time.time() + cooldown_minutes * 60 if cooldown_minutes > 0 else 0.0
@@ -248,10 +248,30 @@ class DeltaLiveBroker(DeltaPaperBroker):
         if self.on_position_closed:
             self.on_position_closed(position=current, exit_price=confirmed_exit, exit_reason=exit_reason, exit_time=trade["exit_time"])
 
-    def record_external_close(self, exit_price, exit_reason="MANUAL_EXTERNAL_EXIT", exit_time=None):
+    _INFERABLE_EXTERNAL_REASONS = {"SL", "TRAILING_SL", "TARGET"}
+
+    def record_external_close(self, exit_price, exit_reason=None, exit_time=None):
         current = self.state.get("position")
         if not current:
             return False
+        # Reconciler-triggered path passes exit_reason=None: infer the cause
+        # from any recent live_close_error so audit rows show WHY Delta went
+        # flat instead of the generic MANUAL_EXTERNAL_EXIT. Escalate to the
+        # _EDITED variant when the fired level was manually moved.
+        if exit_reason is None:
+            recent = self.state.get("live_close_error") or {}
+            attempted = recent.get("reason") if isinstance(recent, dict) else None
+            if attempted in self._INFERABLE_EXTERNAL_REASONS:
+                sl_edited = current.get("sl_source") == "manual"
+                target_edited = current.get("target_source") == "manual"
+                if attempted in {"SL", "TRAILING_SL"} and sl_edited:
+                    exit_reason = "SL_EDITED"
+                elif attempted == "TARGET" and target_edited:
+                    exit_reason = "TARGET_EDITED"
+                else:
+                    exit_reason = attempted
+            else:
+                exit_reason = "MANUAL_EXTERNAL_EXIT"
         confirmed_exit = positive(exit_price or current.get("entry_price"))
         gross = self.pnl(current, confirmed_exit)
         fees = (current["entry_price"] + confirmed_exit) * current["qty"] * current["contract_value"] * current["fee_rate"]
@@ -379,6 +399,8 @@ class DeltaLiveBroker(DeltaPaperBroker):
             "size": int(current["qty"]),
             "stop_price": _fmt_price(target),
         })
+        sl_changed = sl != current["sl_price"]
+        target_changed = target != current["target_price"]
         position.setdefault("protection_edits", []).append({
             "time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "source": "manual_live",
@@ -391,6 +413,10 @@ class DeltaLiveBroker(DeltaPaperBroker):
             "target_response": target_response,
         })
         position.update(sl_price=sl, target_price=target)
+        if sl_changed:
+            position["sl_source"] = "manual"
+        if target_changed:
+            position["target_source"] = "manual"
         protection = position["signal_snapshot"].get("silver_breakeven")
         if protection:
             position["signal_snapshot"]["silver_breakeven"]["target_price"] = target

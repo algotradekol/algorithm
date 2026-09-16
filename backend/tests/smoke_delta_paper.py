@@ -456,6 +456,70 @@ def run():
     assert external_store.closed[-1]["exit_reason"] == "MANUAL_EXTERNAL_EXIT"
     assert external_store.closed[-1]["external_close"] is True
 
+    # 2026-09-17: manual SL / target edits mark sl_source / target_source and
+    # yield SL_EDITED / TARGET_EDITED exit reasons instead of the generic
+    # SL / TARGET / MANUAL_EXTERNAL_EXIT. Audit rows read honestly for both
+    # paper (engine fires close_trade) and live (Delta stop fires natively,
+    # reconciler picks up via record_external_close with no explicit reason).
+    edited_paper = strategy()
+    edited_paper._enter("BUY", 1000, 1000)
+    pos = edited_paper._open_position()
+    pos["sl_price"] = 1004  # simulate engine edit_protection outcome
+    pos["sl_source"] = "manual"
+    reason = Algo3SilverMicro._stop_exit_reason(pos)
+    assert reason == "SL_EDITED", f"got {reason!r}"
+    pos["target_source"] = "manual"
+    assert Algo3SilverMicro._target_exit_reason(pos) == "TARGET_EDITED"
+    # Manual override wins over trailing marker.
+    pos["trailing_sl_active"] = True
+    assert Algo3SilverMicro._stop_exit_reason(pos) == "SL_EDITED"
+
+    # Live reconciler: record_external_close infers SL from the recent
+    # close-failure and upgrades to SL_EDITED when the SL was manually moved.
+    infer_store = MemoryStore()
+    infer_client = FakeLiveClient()
+    infer_broker = DeltaLiveBroker(infer_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, infer_client)
+    infer = DeltaGold(15, "PAXGUSD", infer_broker)
+    assert infer._enter("BUY", 1000, 1000)
+    infer_broker.state["position"]["sl_source"] = "manual"
+    infer_broker.state["live_close_error"] = {"reason": "SL", "message": "delta beat us"}
+    assert infer_broker.record_external_close(998)
+    assert infer_store.closed[-1]["exit_reason"] == "SL_EDITED"
+
+    # And plain SL (no manual edit) when sl_source is not manual.
+    plain_store = MemoryStore()
+    plain_client = FakeLiveClient()
+    plain_broker = DeltaLiveBroker(plain_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, plain_client)
+    plain = DeltaGold(15, "PAXGUSD", plain_broker)
+    assert plain._enter("BUY", 1000, 1000)
+    plain_broker.state["live_close_error"] = {"reason": "TARGET"}
+    assert plain_broker.record_external_close(1020)
+    assert plain_store.closed[-1]["exit_reason"] == "TARGET"
+
+    # Truly external exit (no close attempt recorded) stays as MANUAL_EXTERNAL_EXIT.
+    ext2_store = MemoryStore()
+    ext2_client = FakeLiveClient()
+    ext2_broker = DeltaLiveBroker(ext2_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, ext2_client)
+    ext2 = DeltaGold(15, "PAXGUSD", ext2_broker)
+    assert ext2._enter("BUY", 1000, 1000)
+    ext2_broker.state["live_close_error"] = None
+    assert ext2_broker.record_external_close(1002)
+    assert ext2_store.closed[-1]["exit_reason"] == "MANUAL_EXTERNAL_EXIT"
+
+    # update_protection stamps sl_source / target_source for the LIVE broker.
+    upd_store = MemoryStore()
+    upd_client = FakeLiveClient()
+    upd_broker = DeltaLiveBroker(upd_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, upd_client)
+    upd = DeltaGold(15, "PAXGUSD", upd_broker)
+    assert upd._enter("BUY", 1000, 1000)
+    original = copy.deepcopy(upd_broker.state["position"])
+    updated = upd_broker.update_protection(original, 995.0, original["target_price"], 1001.0)
+    assert updated["sl_source"] == "manual"
+    assert updated.get("target_source") is None  # target unchanged
+    updated2 = upd_broker.update_protection(updated, 995.0, updated["target_price"] + 5, 1001.0)
+    assert updated2["sl_source"] == "manual"
+    assert updated2["target_source"] == "manual"
+
     blocked = strategy()
     blocked.broker.state.update(cooldown_until=time.time() + 300, cooldown_reason="TARGET")
     assert not blocked._fire_entry("BUY", 1000, 1000)
