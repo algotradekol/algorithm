@@ -15,8 +15,8 @@ const num = (value?: number) => value == null ? '--' : value.toLocaleString('en-
 const date = (value?: string | number) => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) : '--';
 const timeframeLabel = (minutes: number) => minutes === 60 ? '1 hr' : minutes === 120 ? '2 hr' : minutes === 240 ? '4 hr' : `${minutes} min`;
 
-export default function DeltaActivityTab({ enabledTimeframes, asset = 'gold' }: { enabledTimeframes: number[]; asset?: DeltaAsset }) {
-  const [source, setSource] = useState(enabledTimeframes.length ? 'paper' : 'live');
+export default function DeltaActivityTab({ enabledTimeframes, asset = 'gold', mode = 'paper' }: { enabledTimeframes: number[]; asset?: DeltaAsset; mode?: 'paper' | 'live' }) {
+  const source = mode;
   const [minutes, setMinutes] = useState(enabledTimeframes[0] || 15);
   const [kind, setKind] = useState<keyof typeof views>('positions');
   // Remount on source/view changes so stale account rows never appear as paper.
@@ -24,7 +24,7 @@ export default function DeltaActivityTab({ enabledTimeframes, asset = 'gold' }: 
     <div className="flex flex-wrap items-center justify-between gap-3">
       <div><h1 className="text-lg font-semibold text-gray-100">Delta {asset === 'silver' ? 'Silver' : 'Gold'} activity</h1><p className="mt-1 text-sm text-gray-400">Paper simulation and actual Delta account records stay separate.</p></div>
       <div className="flex flex-wrap gap-2">
-        <label className="text-xs text-gray-400">Data source<select aria-label="Activity data source" className={`${control} ml-2`} value={source} onChange={e => setSource(e.target.value)}>{enabledTimeframes.length > 0 && <option value="paper">Paper</option>}<option value="live">Live account (read-only)</option></select></label>
+        <span className={`${control} border-[#3b82f6]/50 text-[#93c5fd]`}>{source === 'live' ? 'Live account' : 'Paper simulation'}</span>
         {source === 'paper' && <select aria-label="Paper timeframe" className={control} value={minutes} onChange={e => setMinutes(Number(e.target.value))}>{enabledTimeframes.map(value => <option key={value} value={value}>{asset === 'silver' ? 'Silver' : 'Gold'} {timeframeLabel(value)}</option>)}</select>}
       </div>
     </div>
@@ -37,7 +37,7 @@ export default function DeltaActivityTab({ enabledTimeframes, asset = 'gold' }: 
 }
 
 function ActivityRows({ source, minutes, kind, asset }: { source: string; minutes: number; kind: keyof typeof views; asset: DeltaAsset }) {
-  const api = deltaApi(asset);
+  const api = deltaApi(asset, source === 'live' ? 'live' : 'paper');
   const [page, setPage] = useState<Page | null>(null);
   const [cursors, setCursors] = useState<string[]>(['']);
   const [error, setError] = useState('');
