@@ -51,7 +51,16 @@ def paper_row(row, region):
 
 
 def account_rows(rows, kind, region):
-    """Expose only display fields; do not leak account identifiers or raw payloads."""
+    """Expose only display fields; do not leak account identifiers or raw payloads.
+
+    Delta's `/v2/orders/history` payload carries per-order realised cash and
+    fees under `cashflow`, `realized_pnl` and `paid_commission` (some responses
+    only include one of the first two). Prior code ignored all three, leaving
+    the Realized net (INR) column blank for every filled live-account row even
+    though Delta reported the number — visible in the 2026-09-16 order history
+    where filled fills showed --. Fill it through here without inventing data
+    when Delta genuinely omits the field.
+    """
     output = []
     for row in rows:
         size = finite(row.get("size"))
@@ -63,17 +72,53 @@ def account_rows(rows, kind, region):
         currency = currency or ("USD" if region == "india" else None)
         rate = inr_rate(region, currency)
         margin = finite(row.get("margin"))  # Never invent per-order margin.
+
+        # Fill price: prefer `average_fill_price` (weighted VWAP of the fills),
+        # fall back to `execution_price` on payloads that only surface the
+        # last-fill price (Delta bracket/stop responses).
+        fill_price = finite(row.get("average_fill_price"))
+        if fill_price is None:
+            fill_price = finite(row.get("execution_price"))
+
+        # Realised cash per order — reported net of fees where Delta computes it.
+        # `realized_pnl` is the settled net; `cashflow` is the raw quote-currency
+        # movement. Prefer realized_pnl when both are present so the column shows
+        # the same number the exchange settles to the wallet.
+        realized = finite(row.get("realized_pnl"))
+        if realized is None:
+            realized = finite(row.get("cashflow"))
+        pnl_inr = realized * rate if realized is not None and rate else None
+
+        commission = finite(row.get("paid_commission"))
+        if commission is None:
+            commission = finite(row.get("commission"))
+        fee_inr = commission * rate if commission is not None and rate else None
+
+        # Actual filled quantity (requested - unfilled). Displayed lots stays as
+        # requested size so the row matches the Delta UI "Qty" column even for
+        # cancelled orders that filled nothing.
+        unfilled = finite(row.get("unfilled_size"))
+        filled = None
+        if size is not None:
+            filled = abs(size) - abs(unfilled) if unfilled is not None else abs(size)
+
         output.append({
             "id": str(row.get("id") or row.get("product_id") or ""),
             "symbol": row.get("product_symbol") or product.get("symbol") or str(row.get("product_id", "--")),
             "side": ("--" if size is None else "BUY" if size > 0 else "SELL") if kind == "positions" else str(row.get("side", "--")).upper(),
             "lots": abs(size) if size is not None else None,
-            "entry_price": finite(row.get("entry_price") if kind == "positions" else row.get("average_fill_price")),
+            "entry_price": finite(row.get("entry_price")) if kind == "positions" else fill_price,
             "limit_price": finite(row.get("limit_price")), "stop_price": finite(row.get("stop_price")),
             "margin": margin, "margin_inr": margin * rate if margin is not None and rate else None,
             "currency": currency, "state": row.get("state") or "open",
             "order_type": row.get("stop_order_type") or row.get("order_type") or "position",
             "time": account_time(row.get("updated_at") or row.get("created_at")),
+            # New display-only fields; safe to add — the frontend already
+            # reads pnl_inr and simply ignores unknown keys.
+            "pnl_inr": pnl_inr,
+            "fee_inr": fee_inr,
+            "cashflow": realized,
+            "filled_size": filled,
         })
     return output
 
