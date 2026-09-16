@@ -262,21 +262,38 @@ def account(kind: str, after: str | None = Query(None, max_length=256), source: 
         if not isinstance(client_symbol, str) or not client_symbol:
             client_symbol = None
         if client_symbol or product_id is not None:
-            rows = [row for row in rows if
-                    (client_symbol and (row.get('product_symbol') or (row.get('product') or {}).get('symbol')) == client_symbol)
-                    or (product_id is not None and str(row.get('product_id')) == str(product_id))]
+            rows = _delta_product_rows(rows, client_symbol, product_id)
         if kind == "stop_orders":
             rows = [r for r in rows if r.get("stop_order_type")]
         elif kind == "open_orders":
             rows = [r for r in rows if not r.get("stop_order_type")]
-        return {"rows": account_rows(rows, kind, client.region),
+        formatted = account_rows(rows, kind, client.region)
+        note = None
+        if kind == "positions":
+            order_payload = client.get("/v2/orders", {"page_size": 100, "states": "open,pending"}, private=True, envelope=True)
+            order_rows = order_payload.get("result")
+            if not isinstance(order_rows, list):
+                raise ValueError("Unexpected Delta open orders response")
+            if client_symbol or product_id is not None:
+                order_rows = _delta_product_rows(order_rows, client_symbol, product_id)
+            formatted.extend(account_rows(order_rows, "open_orders", client.region))
+            note = "Positions view includes active account positions plus waiting open, stop-loss, and target orders for this product."
+        return {"rows": formatted,
                 "next_cursor": (payload.get("meta") or {}).get("after") if kind != "positions" else None,
                 "fetched_at": time.time(), "exchange": client.region, "mode": "account_read_only",
-                "inr_rate": inr_rate(client.region, "USD")}
+                "note": note, "inr_rate": inr_rate(client.region, "USD")}
     except (ValueError, RuntimeError) as exc:
         raise HTTPException(400, str(exc)) from None
     except Exception:
         raise HTTPException(503, "Delta account data unavailable; this is not an empty-account confirmation") from None
+
+
+def _delta_product_rows(rows, client_symbol, product_id):
+    return [
+        row for row in rows if
+        (client_symbol and (row.get('product_symbol') or (row.get('product') or {}).get('symbol')) == client_symbol)
+        or (product_id is not None and str(row.get('product_id')) == str(product_id))
+    ]
 
 
 def paper_account(kind, minutes, offset, asset: Asset = 'gold'):
@@ -288,8 +305,12 @@ def paper_account(kind, minutes, offset, asset: Asset = 'gold'):
         more = False
         note = "Simulated records only; no orders are submitted to Delta."
         if kind == "open_orders":
-            note = "Paper market entries fill immediately; there are no pending entry orders."
-        elif kind == "history":
+            note = "Paper target rows are virtual protection levels. Paper market entries fill immediately; there are no pending entry orders."
+        elif kind == "stop_orders":
+            note = "Paper stop rows are virtual engine protection levels, not exchange orders."
+        elif kind == "positions":
+            note = "Positions view includes active paper positions plus their virtual stop-loss and target levels."
+        if kind == "history":
             closed = strategy.broker.store.trades(offset, 101)
             more = len(closed) > 100
             for trade in closed[:100] + (positions if offset == 0 else []):
@@ -311,10 +332,15 @@ def paper_account(kind, minutes, offset, asset: Asset = 'gold'):
                         "entry_price": row["entry_price"], "time": row["entry_time"], "state": "simulated",
                         "currency": row.get("quote_currency"), "margin": row.get("estimated_entry_margin"),
                         "margin_inr": row.get("margin_inr"), "order_type": "Position"}
+                protection_rows = (("Virtual SL", row["sl_price"]), ("Virtual target", row["target_price"]))
                 if kind == "positions":
                     rows.append(base)
-                else:
-                    for label, value in (("Virtual SL", row["sl_price"]), ("Virtual target", row["target_price"])):
+                elif kind == "open_orders":
+                    protection_rows = (("Virtual target", row["target_price"]),)
+                elif kind == "stop_orders":
+                    protection_rows = (("Virtual SL", row["sl_price"]),)
+                for label, value in protection_rows:
+                    if kind != "history":
                         rows.append({**base, "id": row["id"] + label, "side": "SELL" if row["side"] == "BUY" else "BUY",
                                      "order_type": label, "stop_price": value, "margin": None, "margin_inr": None})
         return {"rows": rows, "has_more": more, "fetched_at": time.time(), "mode": "paper", "note": note,
@@ -332,10 +358,10 @@ def close(minutes: int, request: CloseRequest, asset: Asset = 'gold', mode: Mode
     try:
         service.close(minutes, request.position_id)
         return {"closed": True}
-    except ValueError as exc:
+    except (ValueError, RuntimeError) as exc:
         raise HTTPException(409, str(exc)) from None
     except Exception:
-        raise HTTPException(503, "Delta paper exit was not confirmed; reload position status") from None
+        raise HTTPException(503, f"Delta {mode} exit was not confirmed; reload position status") from None
 
 
 @router.post("/{minutes}/resume")
