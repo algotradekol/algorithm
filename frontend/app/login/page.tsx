@@ -23,7 +23,7 @@ export default function Login() {
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     setEmailLoading(false);
     if (error) setError(error.message);
-    else router.push('/dashboard');
+    else router.push('/delta');
   }
 
   async function handlePinLogin(e: React.FormEvent) {
@@ -52,7 +52,7 @@ export default function Login() {
 
     const data = await res.json() as { access_token: string };
     setPinToken(data.access_token);
-    router.push('/dashboard');
+    router.push('/delta');
   }
 
   return (

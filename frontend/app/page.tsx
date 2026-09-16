@@ -8,7 +8,7 @@ export default function Home() {
   const router = useRouter();
   useEffect(() => {
     supabase.auth.getSession().then(({ data: { session } }) => {
-      router.replace(session || getPinToken() ? '/dashboard' : '/login');
+      router.replace(session || getPinToken() ? '/delta' : '/login');
     });
   }, [router]);
   return null;

@@ -74,6 +74,11 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
+    setStatus(null);
+    setTrades([]);
+    setEditing(null);
+    setEditError('');
+    setNotice('');
     async function poll() {
       try {
         const next = await api.deltaStatus(minutes);
@@ -92,7 +97,22 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
     }
     void poll();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [asset, minutes, offset, reload]);
+  }, [asset, mode, minutes, offset, reload]);
+
+  useEffect(() => {
+    if (!editing) return;
+    const current = status?.position;
+    if (!current || current.id !== editing.id) {
+      setEditing(null);
+      setEditError('');
+      return;
+    }
+    if (current.sl_price !== editing.sl_price || current.target_price !== editing.target_price) {
+      setEditing(null);
+      setEditError('');
+      setNotice('Protection changed from the latest feed; reopen edit to use the current SL / target.');
+    }
+  }, [editing, status?.position]);
 
   async function action(work: () => Promise<unknown>, success: string) {
     setBusy(true); setNotice('');

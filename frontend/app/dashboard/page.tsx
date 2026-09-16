@@ -279,6 +279,7 @@ function DashboardContent() {
     api.deltaCapabilities().then((value) => {
       if (cancelled) return;
       setDeltaCapabilities(value);
+      if (pathname === '/dashboard' && value.delta_enabled) router.replace('/delta');
       if (pathname === '/delta' && !value.delta_enabled) router.replace(DASHBOARD_TAB_ROUTES[tab]);
     }).catch(() => {
       if (!cancelled) setDeltaCapabilities({ delta_enabled: false, enabled_timeframes: [], sections: { overview: false, activity: false, backtest: false }, config_error: 'Delta capabilities unavailable' });

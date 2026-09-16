@@ -30,6 +30,8 @@ export default function DeltaOverviewTab({ asset = 'gold', mode = 'paper' }: { a
   useEffect(() => {
     let cancelled = false;
     let timer: ReturnType<typeof setTimeout>;
+    setData(null);
+    setError('');
     async function poll() {
       try {
         const result = await api.deltaOverview();
@@ -42,7 +44,7 @@ export default function DeltaOverviewTab({ asset = 'gold', mode = 'paper' }: { a
     }
     void poll();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [asset]);
+  }, [asset, mode]);
   const currency = data?.currency || 'USD';
   const inr = (value?: number) => data?.inr_rate && value != null ? `Rs ${number(value * data.inr_rate)}` : '--';
   const frames = data?.timeframes || [];
