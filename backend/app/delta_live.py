@@ -19,6 +19,13 @@ def _order_id(row):
     return row.get("id") if isinstance(row, dict) else None
 
 
+def _number(value, default=None):
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return default
+
+
 class DeltaLiveBroker(DeltaPaperBroker):
     """Live Delta orders, while retaining the same state shape as paper.
 
@@ -30,6 +37,9 @@ class DeltaLiveBroker(DeltaPaperBroker):
         super().__init__(store, defaults, product)
         self.client = client
         self.mode = "live"
+        self.entry_guard = None
+        self._cancel_error_logged_at = {}
+        self._close_block_logged_at = {}
 
     def _side(self, side):
         return "buy" if side == "BUY" else "sell"
@@ -49,6 +59,23 @@ class DeltaLiveBroker(DeltaPaperBroker):
     def _place_order(self, payload):
         return self.client.post("/v2/orders", payload, private=True)
 
+    def _require_filled_order(self, order, purpose):
+        if not isinstance(order, dict):
+            raise RuntimeError(f"Delta live {purpose} did not return an order object")
+        fill_price = _number(order.get("average_fill_price"))
+        if fill_price is None or fill_price <= 0:
+            raise RuntimeError(f"Delta live {purpose} was not filled; order_id={_order_id(order)} state={order.get('state')}")
+        unfilled = _number(order.get("unfilled_size"), 0.0)
+        if unfilled and unfilled > 0:
+            raise RuntimeError(
+                f"Delta live {purpose} only partially filled; "
+                f"order_id={_order_id(order)} unfilled_size={unfilled:g}"
+            )
+        state = str(order.get("state") or "").lower()
+        if state in {"open", "pending"}:
+            raise RuntimeError(f"Delta live {purpose} is still {state}; order_id={_order_id(order)}")
+        return positive(fill_price)
+
     def _edit_order(self, order_id, payload):
         if not order_id:
             raise ValueError("Delta order id missing")
@@ -60,8 +87,47 @@ class DeltaLiveBroker(DeltaPaperBroker):
         try:
             return self.client.delete("/v2/orders", {"id": int(order_id), "product_id": self._product_id()}, private=True)
         except RuntimeError as exc:
-            print(f"[delta-live] cancel ignored for order {order_id}: {exc}")
+            key = (str(order_id), str(exc))
+            now = time.time()
+            if now - self._cancel_error_logged_at.get(key, 0) >= 60:
+                print(f"[delta-live] cancel ignored for order {order_id}: {exc}")
+                self._cancel_error_logged_at[key] = now
             return None
+
+    def _close_retry_blocked(self, current):
+        retry_after = float(current.get("live_close_retry_after") or 0)
+        if retry_after <= time.time():
+            return None
+        key = current.get("id")
+        now = time.time()
+        remaining = max(1, int(retry_after - now))
+        error = current.get("live_close_error", {}).get("message", "previous Delta live close failed")
+        if now - self._close_block_logged_at.get(key, 0) >= 60:
+            print(f"[delta-live] close retry paused for {remaining}s: {error}")
+            self._close_block_logged_at[key] = now
+        return f"Delta live close retry paused for {remaining}s after previous failure: {error}"
+
+    def _record_close_failure(self, current, exit_reason, exc):
+        now = time.time()
+        error = {
+            "time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+            "reason": exit_reason,
+            "message": str(exc),
+            "retry_after": now + 60,
+        }
+        state = copy.deepcopy(self.state)
+        if state.get("position") and state["position"].get("id") == current.get("id"):
+            attempts = int(state["position"].get("live_close_attempts") or 0) + 1
+            state["position"]["live_close_attempts"] = attempts
+            state["position"]["live_close_error"] = error
+            state["position"]["live_close_retry_after"] = error["retry_after"]
+            state["live_close_error"] = error
+            try:
+                self.commit(state)
+            except Exception as save_exc:
+                print(f"[delta-live] failed to persist close failure: {save_exc}")
+        print(f"[delta-live] close failed reason={exit_reason}: {exc}")
+        raise RuntimeError(f"Delta live close failed ({exit_reason}): {exc}") from exc
 
     def _protection_payload(self, side, qty, stop_price, kind):
         return {
@@ -80,6 +146,8 @@ class DeltaLiveBroker(DeltaPaperBroker):
     def open_trade(self, symbol, side, qty, entry_price, sl_price, target_price, trigger, snapshot, entry_time=None):
         if self.state.get("position"):
             raise ValueError("A Delta live position is already tracked")
+        if self.entry_guard:
+            self.entry_guard(side)
         if min(entry_price, sl_price, target_price) <= 0:
             raise ValueError("Entry, target and stop must remain positive")
         qty = int(qty)
@@ -95,7 +163,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
             "reduce_only": False,
             "client_order_id": self._client_order_id("dle"),
         })
-        fill_price = positive(entry.get("average_fill_price") or entry.get("limit_price") or entry_price)
+        fill_price = self._require_filled_order(entry, "entry")
         stop_order = self._place_order(self._protection_payload(side, qty, sl_price, "stop_loss_order"))
         target_order = self._place_order(self._protection_payload(side, qty, target_price, "take_profit_order"))
         state = copy.deepcopy(self.state)
@@ -137,19 +205,28 @@ class DeltaLiveBroker(DeltaPaperBroker):
         current = self.state.get("position")
         if not current or current["id"] != position["id"]:
             return
+        retry_block = self._close_retry_blocked(current)
+        if retry_block:
+            raise RuntimeError(retry_block)
         orders = current.get("live_orders") or {}
         self._cancel_order(orders.get("stop_order_id"))
         self._cancel_order(orders.get("target_order_id"))
-        close_order = self._place_order({
-            "product_id": self._product_id(),
-            "size": int(current["qty"]),
-            "side": self._opposite_side(current["side"]),
-            "order_type": "market_order",
-            "time_in_force": "ioc",
-            "reduce_only": True,
-            "client_order_id": self._client_order_id("dlc"),
-        })
-        confirmed_exit = positive(close_order.get("average_fill_price") or close_order.get("limit_price") or exit_price)
+        try:
+            close_order = self._place_order({
+                "product_id": self._product_id(),
+                "size": int(current["qty"]),
+                "side": self._opposite_side(current["side"]),
+                "order_type": "market_order",
+                "time_in_force": "ioc",
+                "reduce_only": True,
+                "client_order_id": self._client_order_id("dlc"),
+            })
+        except Exception as exc:
+            self._record_close_failure(current, exit_reason, exc)
+        try:
+            confirmed_exit = self._require_filled_order(close_order, "close")
+        except Exception as exc:
+            self._record_close_failure(current, exit_reason, exc)
         gross = self.pnl(current, confirmed_exit)
         fees = (current["entry_price"] + confirmed_exit) * current["qty"] * current["contract_value"] * current["fee_rate"]
         trade = {**copy.deepcopy(current), "exit_price": confirmed_exit, "exit_time": utc_now(),
@@ -158,6 +235,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
         state = copy.deepcopy(self.state)
         state.update(position=None, gross_pnl=state["gross_pnl"] + gross,
                      fees=state["fees"] + fees, closed_count=state["closed_count"] + 1)
+        state["live_close_error"] = None
         if exit_reason in {"MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET"}:
             raw_minutes = state["settings"].get("post_exit_cooldown_minutes")
             cooldown_minutes = 5.0 if raw_minutes is None else float(raw_minutes)
@@ -169,6 +247,41 @@ class DeltaLiveBroker(DeltaPaperBroker):
         print(f"[delta-live] closed {current['symbol']} {current['side']} reason={exit_reason} gross={gross:.6f}")
         if self.on_position_closed:
             self.on_position_closed(position=current, exit_price=confirmed_exit, exit_reason=exit_reason, exit_time=trade["exit_time"])
+
+    def record_external_close(self, exit_price, exit_reason="MANUAL_EXTERNAL_EXIT", exit_time=None):
+        current = self.state.get("position")
+        if not current:
+            return False
+        confirmed_exit = positive(exit_price or current.get("entry_price"))
+        gross = self.pnl(current, confirmed_exit)
+        fees = (current["entry_price"] + confirmed_exit) * current["qty"] * current["contract_value"] * current["fee_rate"]
+        trade = {
+            **copy.deepcopy(current),
+            "exit_price": confirmed_exit,
+            "exit_time": exit_time or utc_now(),
+            "exit_reason": exit_reason,
+            "gross_pnl": gross,
+            "fees": fees,
+            "net_pnl": gross - fees,
+            "external_close": True,
+        }
+        state = copy.deepcopy(self.state)
+        state.update(
+            position=None,
+            gross_pnl=state["gross_pnl"] + gross,
+            fees=state["fees"] + fees,
+            closed_count=state["closed_count"] + 1,
+        )
+        state["live_close_error"] = None
+        raw_minutes = state["settings"].get("post_exit_cooldown_minutes")
+        cooldown_minutes = 5.0 if raw_minutes is None else float(raw_minutes)
+        state["cooldown_until"] = time.time() + cooldown_minutes * 60 if cooldown_minutes > 0 else 0.0
+        state["cooldown_reason"] = exit_reason if cooldown_minutes > 0 else None
+        self.commit(state, trade)
+        print(f"[delta-live] external close recorded {current['symbol']} {current['side']} reason={exit_reason} gross={gross:.6f}")
+        if self.on_position_closed:
+            self.on_position_closed(position=current, exit_price=confirmed_exit, exit_reason=exit_reason, exit_time=trade["exit_time"])
+        return True
 
     def apply_trailing_stop(self, position, ltp, settings):
         snapshot = position["signal_snapshot"]

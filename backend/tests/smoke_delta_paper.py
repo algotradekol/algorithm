@@ -56,7 +56,7 @@ class FakeLiveClient:
     def post(self, path, payload=None, private=True):
         assert path == "/v2/orders" and private
         self.orders.append(copy.deepcopy(payload))
-        return {"id": len(self.orders), "average_fill_price": payload.get("stop_price") or "1000"}
+        return {"id": len(self.orders), "average_fill_price": payload.get("stop_price") or "1000", "unfilled_size": 0, "state": "closed"}
 
     def put(self, path, payload=None, private=True):
         assert path == "/v2/orders" and private
@@ -67,6 +67,24 @@ class FakeLiveClient:
         assert path == "/v2/orders" and private
         self.deletes.append(copy.deepcopy(payload))
         return {"id": payload["id"], "state": "cancelled"}
+
+
+class FakeCloseRejectClient(FakeLiveClient):
+    def post(self, path, payload=None, private=True):
+        assert path == "/v2/orders" and private
+        self.orders.append(copy.deepcopy(payload))
+        if payload.get("reduce_only") and not payload.get("stop_order_type"):
+            raise RuntimeError("Delta HTTP 400: code=position_not_found; message=no matching live position")
+        return {"id": len(self.orders), "average_fill_price": payload.get("stop_price") or "1000", "unfilled_size": 0, "state": "closed"}
+
+
+class FakeUnfilledCloseClient(FakeLiveClient):
+    def post(self, path, payload=None, private=True):
+        assert path == "/v2/orders" and private
+        self.orders.append(copy.deepcopy(payload))
+        if payload.get("reduce_only") and not payload.get("stop_order_type"):
+            return {"id": len(self.orders), "unfilled_size": payload.get("size"), "state": "cancelled"}
+        return {"id": len(self.orders), "average_fill_price": payload.get("stop_price") or "1000", "unfilled_size": 0, "state": "closed"}
 
 
 def strategy(minutes=15, settings=None, store=None):
@@ -364,6 +382,79 @@ def run():
     live_broker.close_trade(live_broker.state["position"], 1005, "MANUAL_EXIT")
     assert live_client.orders[-1]["reduce_only"] and live_client.orders[-1]["side"] == "sell"
     assert live_store.closed[-1]["execution"] == "live"
+
+    guarded_store = MemoryStore()
+    guarded_client = FakeLiveClient()
+    guarded_broker = DeltaLiveBroker(guarded_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, guarded_client)
+    guarded_broker.entry_guard = lambda side: (_ for _ in ()).throw(ValueError("live cap reached"))
+    guarded = DeltaGold(15, "PAXGUSD", guarded_broker)
+    assert not guarded._enter("BUY", 1000, 1000)
+    assert guarded.data_error == "live cap reached"
+    assert not guarded_client.orders
+
+    live_service = DeltaService(mode="live")
+    live_service.strategies = {
+        minutes: DeltaGold(minutes, "PAXGUSD", DeltaLiveBroker(MemoryStore(), {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, FakeLiveClient()))
+        for minutes in (5, 7, 15, 30)
+    }
+    for minutes, side in ((5, "BUY"), (7, "BUY"), (15, "BUY")):
+        live_service.strategies[minutes].broker.state["position"] = {"id": f"p{minutes}", "side": side}
+    try:
+        live_service._validate_live_entry(30, "BUY")
+        assert False, "fourth live timeframe entry should be blocked"
+    except ValueError as exc:
+        assert "maximum 3" in str(exc)
+    live_service.strategies[15].broker.state["position"] = None
+    try:
+        live_service._validate_live_entry(30, "SELL")
+        assert False, "opposite-side live entry should be blocked"
+    except ValueError as exc:
+        assert "opposite-side" in str(exc)
+    live_service._validate_live_entry(30, "BUY")
+
+    reject_store = MemoryStore()
+    reject_client = FakeCloseRejectClient()
+    reject_broker = DeltaLiveBroker(reject_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, reject_client)
+    reject = DeltaGold(15, "PAXGUSD", reject_broker)
+    assert reject._enter("BUY", 1000, 1000)
+    try:
+        reject_broker.close_trade(reject_broker.state["position"], 1005, "SL")
+        assert False, "live close rejection should bubble once with exact Delta detail"
+    except RuntimeError as exc:
+        assert "position_not_found" in str(exc)
+    first_order_count = len(reject_client.orders)
+    assert reject_broker.state["position"]["live_close_retry_after"] > time.time()
+    try:
+        reject_broker.close_trade(reject_broker.state["position"], 1005, "SL")
+        assert False, "retry-paused live close should not report success"
+    except RuntimeError as exc:
+        assert "retry paused" in str(exc)
+    assert len(reject_client.orders) == first_order_count
+
+    unfilled_store = MemoryStore()
+    unfilled_client = FakeUnfilledCloseClient()
+    unfilled_broker = DeltaLiveBroker(unfilled_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, unfilled_client)
+    unfilled = DeltaGold(15, "PAXGUSD", unfilled_broker)
+    assert unfilled._enter("BUY", 1000, 1000)
+    try:
+        unfilled_broker.close_trade(unfilled_broker.state["position"], 1005, "TARGET")
+        assert False, "unfilled live close must not create a fake closed trade"
+    except RuntimeError as exc:
+        assert "not filled" in str(exc) or "partially filled" in str(exc)
+    assert unfilled_broker.state["position"] is not None
+    assert not unfilled_store.closed
+
+    external_store = MemoryStore()
+    external_client = FakeLiveClient()
+    external_broker = DeltaLiveBroker(external_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, external_client)
+    external = DeltaGold(15, "PAXGUSD", external_broker)
+    assert external._enter("BUY", 1000, 1000)
+    orders_before_external_close = len(external_client.orders)
+    assert external_broker.record_external_close(1007, "MANUAL_EXTERNAL_EXIT")
+    assert len(external_client.orders) == orders_before_external_close
+    assert external_broker.state["position"] is None
+    assert external_store.closed[-1]["exit_reason"] == "MANUAL_EXTERNAL_EXIT"
+    assert external_store.closed[-1]["external_close"] is True
 
     blocked = strategy()
     blocked.broker.state.update(cooldown_until=time.time() + 300, cooldown_reason="TARGET")

@@ -473,9 +473,11 @@ class DeltaGold(Algo3SilverMicro):
                 self.broker.open_trade(*args)
             else:
                 self.broker.open_trade(*args, entry_time=_entry_time_iso(event_time))
+            self.data_error = None
             return True
         except Exception as exc:
-            print(f"[delta-{getattr(self.broker, 'mode', 'paper')}] entry failed for {self.symbol}: {exc}")
+            self.data_error = str(exc)
+            print(f"[delta-{getattr(self.broker, 'mode', 'paper')}] entry failed for {self.symbol}: {self.data_error}")
             return False
 
     def _signal_snapshot(self, side, entry_price, trigger_level):

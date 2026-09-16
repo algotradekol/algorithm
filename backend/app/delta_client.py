@@ -19,6 +19,26 @@ ENDPOINTS = {
 }
 
 
+def _compact_error_payload(response) -> str:
+    try:
+        payload = response.json()
+    except ValueError:
+        text = (response.text or "").strip()
+        return text[:500] if text else "empty response"
+    if not isinstance(payload, dict):
+        return str(payload)[:500]
+    error = payload.get("error")
+    if isinstance(error, dict):
+        parts = []
+        for key in ("code", "message", "context"):
+            value = error.get(key)
+            if value not in (None, ""):
+                parts.append(f"{key}={value}")
+        if parts:
+            return "; ".join(parts)[:500]
+    return json.dumps(payload, separators=(",", ":"), sort_keys=True)[:500]
+
+
 def epoch_seconds(value) -> float:
     result = float(value)
     if result > 1e14:
@@ -125,12 +145,14 @@ class DeltaClient:
             # Requests exceptions can contain proxy credentials. Do not expose them.
             raise RuntimeError("Delta connection failed via configured proxy" if self.proxy else "Delta direct connection failed") from None
         if response.status_code != 200:
-            raise RuntimeError(f"Delta HTTP {response.status_code}; check exchange, proxy/IP or API permissions")
+            detail = _compact_error_payload(response)
+            raise RuntimeError(f"Delta HTTP {response.status_code}: {detail}")
         payload = response.json()
         if not isinstance(payload, dict) or not payload.get("success"):
             error = payload.get("error", {}) if isinstance(payload, dict) else {}
             code = error.get("code", "unknown") if isinstance(error, dict) else "unknown"
-            raise RuntimeError(f"Delta API error: {code}")
+            detail = _compact_error_payload(response)
+            raise RuntimeError(f"Delta API error: {code}; {detail}")
         return payload if envelope else payload["result"]
 
     def get(self, path: str, params=None, *, private=False, envelope=False):

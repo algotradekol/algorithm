@@ -6,6 +6,7 @@ import datetime
 import json
 import threading
 import time
+import traceback
 
 from .delta_client import DeltaClient, epoch_seconds, positive
 from .delta_candles import aggregate_custom_minutes, delta_resolution
@@ -15,6 +16,9 @@ from .delta_paper import DeltaPaperBroker, DeltaStore
 from .delta_reporting import paper_row, inr_rate
 from .strategies.delta_gold import DELTA_DEFAULTS, DELTA_TIMEFRAMES, DeltaGold, validate_settings, defaults_for
 from .strategies.delta_silver import DeltaSilver
+
+
+DELTA_LIVE_MAX_TRACKED_TRADES = 3
 
 
 class DeltaService:
@@ -38,6 +42,7 @@ class DeltaService:
         self.started = False
         self.initialized = False
         self._overview_trade_cache = {}
+        self._live_flat_confirmations = {}
 
     def start(self):
         if self.started:
@@ -89,6 +94,8 @@ class DeltaService:
                 if self.mode == "live" else
                 DeltaPaperBroker(store, dict(defaults_for(self.asset)), product)
             )
+            if self.mode == "live":
+                broker.entry_guard = lambda side, minutes=minutes: self._validate_live_entry(minutes, side)
             strategy_class = DeltaSilver if self.asset == 'silver' else DeltaGold
             strategies[minutes] = strategy_class(minutes, self.client.symbol, broker)
         with self.lock:
@@ -110,6 +117,7 @@ class DeltaService:
             return
         next_history = {minutes: 0.0 for minutes in self.strategies}
         next_rest = 0.0
+        next_live_reconcile = 0.0
         while not self.stop_event.is_set():
             now = time.time()
             for minutes, strategy in self.strategies.items():
@@ -141,6 +149,12 @@ class DeltaService:
                     self.accept_price(price, stamp, "REST")
                 except Exception as exc:
                     self.error = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else "Delta REST data unavailable"
+            if self.mode == "live" and now >= next_live_reconcile:
+                next_live_reconcile = now + 5
+                try:
+                    self._reconcile_live_positions()
+                except Exception as exc:
+                    self.error = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else "Delta live reconciliation unavailable"
             self.stop_event.wait(0.5)
 
     def accept_price(self, price, stamp, source):
@@ -156,10 +170,93 @@ class DeltaService:
             for strategy in self.strategies.values():
                 try:
                     strategy.process_price(price, stamp)
-                except Exception:
-                    self.error = f"Delta {self.mode} processing/persistence failed; check database availability"
+                except Exception as exc:
+                    self.error = self._processing_error_message(exc)
+                    print(
+                        f"[delta-{self.mode}] processing failed "
+                        f"asset={self.asset} minutes={getattr(strategy, 'minutes', '?')} "
+                        f"symbol={getattr(strategy, 'symbol', '?')} error={exc!r}"
+                    )
+                    traceback.print_exc()
                     # Do not continue submitting entries after a failed protection write.
                     strategy.data_error = self.error
+                    break
+
+    def _processing_error_message(self, exc):
+        raw = str(exc).strip()
+        detail = raw if raw else exc.__class__.__name__
+        lowered = detail.lower()
+        if any(term in lowered for term in ("supabase", "postgrest", "save_delta_paper", "delta_paper_state", "delta_paper_trades", "database")):
+            return f"Delta {self.mode} state save failed: {detail}"
+        if self.mode == "live":
+            return f"Delta live order/protection update failed: {detail}"
+        return f"Delta {self.mode} processing failed: {detail}"
+
+    def _validate_live_entry(self, minutes, side):
+        if self.mode != "live":
+            return
+        current = self.strategies.get(minutes)
+        if current and current.broker.state.get("position"):
+            raise ValueError(f"Delta live {minutes}m already has an open tracked trade")
+        open_items = [
+            (tf, strategy.broker.state.get("position"))
+            for tf, strategy in self.strategies.items()
+            if strategy.broker.state.get("position")
+        ]
+        if len(open_items) >= DELTA_LIVE_MAX_TRACKED_TRADES:
+            raise ValueError(
+                f"Delta live entry blocked: maximum {DELTA_LIVE_MAX_TRACKED_TRADES} "
+                "active timeframe trades are already open"
+            )
+        opposite = [
+            (tf, position)
+            for tf, position in open_items
+            if position.get("side") != side
+        ]
+        if opposite:
+            frames = ", ".join(f"{tf}m {position.get('side')}" for tf, position in opposite)
+            raise ValueError(
+                "Delta live entry blocked: opposite-side live trade already exists "
+                f"({frames}). Delta nets PAXGUSD positions, so this would reduce or reverse it."
+            )
+
+    def _reconcile_live_positions(self):
+        if self.mode != "live" or not self.client or not self.product:
+            return
+        tracked = {minutes: strategy for minutes, strategy in self.strategies.items() if strategy.broker.state.get("position")}
+        if not tracked:
+            self._live_flat_confirmations.clear()
+            return
+        payload = self.client.get("/v2/positions/margined", private=True, envelope=True)
+        rows = payload.get("result")
+        if not isinstance(rows, list):
+            raise ValueError("Unexpected Delta positions response")
+        product_id = str(self.product.get("id"))
+        live_size = 0.0
+        for row in rows:
+            row_product = row.get("product") or {}
+            row_symbol = row.get("product_symbol") or row_product.get("symbol")
+            if str(row.get("product_id")) == product_id or row_symbol == self.client.symbol:
+                try:
+                    live_size += float(row.get("size") or 0)
+                except (TypeError, ValueError):
+                    continue
+        with self.lock:
+            if abs(live_size) > 0:
+                self._live_flat_confirmations.clear()
+                return
+            for minutes, strategy in tracked.items():
+                position = strategy.broker.state.get("position")
+                if not position:
+                    self._live_flat_confirmations.pop(minutes, None)
+                    continue
+                confirmations = self._live_flat_confirmations.get(minutes, 0) + 1
+                self._live_flat_confirmations[minutes] = confirmations
+                if confirmations < 2:
+                    continue
+                exit_price = self.last_price or position.get("entry_price")
+                if strategy.broker.record_external_close(exit_price, "MANUAL_EXTERNAL_EXIT"):
+                    self._live_flat_confirmations.pop(minutes, None)
 
     def _websocket(self):
         import websocket
