@@ -204,6 +204,10 @@ class ProtectionRequest(BaseModel):
     target_price: float = Field(gt=0, allow_inf_nan=False)
     expected_sl: float = Field(gt=0, allow_inf_nan=False)
     expected_target: float = Field(gt=0, allow_inf_nan=False)
+    # Optional mid-trade exit-mode switch. Omitted / None leaves the current
+    # mode intact. Validated exhaustively downstream in delta_gold's
+    # exit_mode_snapshot_patch so silver+three_candle still rejects.
+    exit_mode: Literal['fixed_target_sl', 'target_to_breakeven_sl', 'three_candle_tsl'] | None = None
 
 
 @router.put('/{minutes}/protection')
@@ -213,14 +217,16 @@ def edit_protection(minutes: int, request: ProtectionRequest, asset: Asset = 'go
     print(
         f"[delta-{mode}] protection edit request asset={asset} minutes={minutes} "
         f"pos={request.position_id} new_sl={request.sl_price} new_target={request.target_price} "
-        f"expected_sl={request.expected_sl} expected_target={request.expected_target}"
+        f"expected_sl={request.expected_sl} expected_target={request.expected_target} "
+        f"exit_mode={request.exit_mode}"
     )
     try:
-        position = service.edit_protection(minutes, request.position_id, request.sl_price, request.target_price, request.expected_sl, request.expected_target)
+        position = service.edit_protection(minutes, request.position_id, request.sl_price, request.target_price, request.expected_sl, request.expected_target, request.exit_mode)
         print(
             f"[delta-{mode}] protection edit OK asset={asset} minutes={minutes} "
             f"pos={request.position_id} sl={position.get('sl_price')} target={position.get('target_price')} "
-            f"sl_source={position.get('sl_source')} target_source={position.get('target_source')}"
+            f"sl_source={position.get('sl_source')} target_source={position.get('target_source')} "
+            f"exit_mode={(position.get('signal_snapshot') or {}).get('silver_exit_policy')}"
         )
         return {'position': position}
     except ValueError as exc:

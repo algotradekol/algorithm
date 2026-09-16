@@ -11,12 +11,14 @@ type Settings = {
   post_exit_cooldown_minutes: number;
   strategy_version: string;
 };
+type ExitMode = 'fixed_target_sl' | 'target_to_breakeven_sl' | 'three_candle_tsl';
 type Trade = {
   id: string; symbol: string; side: string; qty: number; entry_time: string; entry_price: number;
   sl_price: number; initial_sl: number; target_price: number; trailing_sl_active: boolean;
   exit_time?: string; exit_price?: number; exit_reason?: string; gross_pnl?: number; fees?: number;
   net_pnl?: number; unrealized_pnl?: number; estimated_entry_margin?: number; margin_inr?: number; pnl_inr?: number;
-  signal_snapshot: { setup_time?: string; setup_close?: number; trigger_level?: number; entry_candle_open?: number; silver_breakeven?: { activation_price: number; armed: boolean }; delta_three_candle_tsl?: { events?: any[]; evaluations?: any[] } };
+  exit_mode?: ExitMode;
+  signal_snapshot: { setup_time?: string; setup_close?: number; trigger_level?: number; entry_candle_open?: number; silver_breakeven?: { activation_price: number; armed: boolean }; delta_three_candle_tsl?: { events?: any[]; evaluations?: any[] }; silver_exit_policy?: ExitMode };
 };
 type Status = {
   settings?: Settings; symbol?: string; exchange?: string; error?: string; history_error?: string;
@@ -143,11 +145,19 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
     } catch (err) { setNotice(err instanceof Error ? err.message : 'CSV export failed'); }
     finally { setCsvBusy(null); }
   }
-  async function saveProtection(sl: number, target: number) {
+  async function saveProtection(sl: number, target: number, exitModeChoice?: ExitMode) {
     if (!editing) return;
     setBusy(true); setEditError('');
     try {
-      await api.deltaProtection(minutes, { position_id: editing.id, sl_price: sl, target_price: target, expected_sl: editing.sl_price, expected_target: editing.target_price });
+      // Only send exit_mode when the user actually changed it — omitting it
+      // leaves the position's current mode untouched on the backend.
+      const currentMode = editing.exit_mode || editing.signal_snapshot?.silver_exit_policy;
+      const payload: Record<string, unknown> = {
+        position_id: editing.id, sl_price: sl, target_price: target,
+        expected_sl: editing.sl_price, expected_target: editing.target_price,
+      };
+      if (exitModeChoice && exitModeChoice !== currentMode) payload.exit_mode = exitModeChoice;
+      await api.deltaProtection(minutes, payload);
       setEditing(null); setNotice(`${mode === 'live' ? 'Live Delta' : 'Paper'} SL / target saved`); setReload(v => v + 1);
     } catch (err) { setEditError(err instanceof Error ? err.message : 'Protection was not saved'); }
     finally { setBusy(false); }
@@ -270,7 +280,7 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
     <details className="panel p-3"><summary className="cursor-pointer text-sm text-[#93c5fd]">Reference history</summary>
       <div className="mt-3 max-h-80 overflow-auto"><table className="w-full text-left text-xs"><thead><tr>{['Side', 'Candle time (IST)', 'Open', 'High', 'Low', 'Close', 'EMA20', 'Volume', 'Volume EMA20'].map(label => <th key={label} className="p-2 text-gray-400">{label}</th>)}</tr></thead><tbody>{status?.references?.map(row => <tr key={`${row.side}-${row.time}`} className="border-t border-[#1f2937] text-gray-200"><td className="p-2">{row.side}</td><td className="p-2">{date(row.time)}</td>{[row.open, row.high, row.low, row.close, row.ema20, row.volume, row.volume_ema20].map((value, index) => <td key={index} className="p-2 font-mono">{number(value)}</td>)}</tr>)}</tbody></table></div>
     </details>
-    {editing && <EditProtection key={editing.id} row={editing} mode={mode} ltp={status?.ltp} busy={busy} disabled={!status || status.stale || !!error || status.position?.id !== editing.id} error={editError} onClose={() => { if (!busy) setEditing(null); }} onSave={saveProtection} />}
+    {editing && <EditProtection key={editing.id} row={editing} mode={mode} asset={asset} ltp={status?.ltp} busy={busy} disabled={!status || status.stale || !!error || status.position?.id !== editing.id} error={editError} onClose={() => { if (!busy) setEditing(null); }} onSave={saveProtection} />}
   </div>;
 }
 
@@ -331,15 +341,32 @@ function TslAudit({ row }: { row: Trade }) {
   return <>Fixed</>;
 }
 
-function EditProtection({ row, mode, ltp, busy, disabled, error, onClose, onSave }: { row: Trade; mode: 'paper' | 'live'; ltp?: number; busy: boolean; disabled: boolean; error: string; onClose: () => void; onSave: (sl: number, target: number) => void }) {
+function EditProtection({ row, mode, asset, ltp, busy, disabled, error, onClose, onSave }: { row: Trade; mode: 'paper' | 'live'; asset: DeltaAsset; ltp?: number; busy: boolean; disabled: boolean; error: string; onClose: () => void; onSave: (sl: number, target: number, exitMode?: ExitMode) => void }) {
   const dialog = useRef<HTMLDialogElement>(null);
   const [sl, setSl] = useState(String(row.sl_price));
   const [target, setTarget] = useState(String(row.target_price));
+  const currentMode: ExitMode = (row.exit_mode || row.signal_snapshot?.silver_exit_policy || 'fixed_target_sl') as ExitMode;
+  const [exitMode, setExitMode] = useState<ExitMode>(currentMode);
   useEffect(() => { dialog.current?.showModal(); }, []);
+  // Silver cannot use three_candle_tsl — validator blocks it server-side too.
+  const modeOptions: { value: ExitMode; label: string }[] = [
+    { value: 'fixed_target_sl', label: 'Fixed SL + target' },
+    { value: 'target_to_breakeven_sl', label: 'Target to breakeven SL' },
+    ...(asset === 'gold' ? [{ value: 'three_candle_tsl' as ExitMode, label: 'Three-candle TSL' }] : []),
+  ];
+  const modeChanged = exitMode !== currentMode;
   return <dialog ref={dialog} onCancel={e => { e.preventDefault(); onClose(); }} aria-labelledby="delta-protection-title" className="w-[calc(100%_-_2rem)] max-w-md rounded border border-[#1f2937] bg-[#0d1117] p-4 text-gray-100 backdrop:bg-black/70">
-    <form onSubmit={e => { e.preventDefault(); onSave(Number(sl), Number(target)); }}>
+    <form onSubmit={e => { e.preventDefault(); onSave(Number(sl), Number(target), exitMode); }}>
       <div className="flex items-start justify-between gap-3"><div><h3 id="delta-protection-title" className="font-semibold">Edit SL / Target</h3><p className="mt-1 text-xs text-gray-400">{row.symbol} | {row.side} | Entry {number(row.entry_price)} | LTP {number(ltp)}</p></div><button type="button" aria-label="Close editor" disabled={busy} onClick={onClose}>×</button></div>
       <p className="mt-3 rounded border border-[#3b82f6]/40 p-2 text-xs text-[#93c5fd]">{mode === 'live' ? 'Live Delta position. Saving will amend the tracked Delta stop/target orders first, then update the app.' : 'Paper position only.'} Enter absolute price levels, not distances. Settings and other positions are unchanged. TSL activation stays at its captured price and will not loosen a tighter manual stop.</p>
+      <label className="mt-4 block text-sm text-gray-300">TSL / exit mode
+        <select className="mt-1 block w-full rounded border border-[#334155] bg-[#0a0e14] p-2 text-sm" value={exitMode} disabled={busy} onChange={e => setExitMode(e.target.value as ExitMode)}>
+          {modeOptions.map(opt => <option key={opt.value} value={opt.value}>{opt.label}{opt.value === currentMode ? ' (current)' : ''}</option>)}
+        </select>
+      </label>
+      {modeChanged && <p className="mt-2 rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 p-2 text-xs text-[#fbbf24]">
+        Switching from <b>{currentMode}</b> to <b>{exitMode}</b> will rewrite this position&rsquo;s trail state. The new mode starts fresh from the current SL / target you save here.
+      </p>}
       <div className="mt-4 grid grid-cols-2 gap-3">{[['Stop loss', sl, setSl], ['Target', target, setTarget]].map(([label, value, setter]) => <label key={label as string} className="text-sm text-gray-300">{label as string}<input autoFocus={label === 'Stop loss'} type="number" min="0.000001" step="any" required value={value as string} disabled={busy} onChange={e => (setter as (value: string) => void)(e.target.value)} className="mt-1 w-full rounded border border-[#334155] bg-[#0a0e14] p-2" /></label>)}</div>
       {(error || disabled) && <p role="alert" className="mt-3 text-sm text-[#f87171]">{error || 'Fresh price or matching open position unavailable. Reload before editing.'}</p>}
       <div className="mt-4 flex justify-end gap-2"><button className={button} type="button" disabled={busy} onClick={onClose}>Cancel</button><button className={`${button} border-[#3b82f6] bg-[#3b82f6]/20`} disabled={busy || disabled}>{busy ? 'Saving...' : 'Save'}</button></div>

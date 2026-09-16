@@ -520,6 +520,86 @@ def run():
     assert updated2["sl_source"] == "manual"
     assert updated2["target_source"] == "manual"
 
+    # 2026-09-17 exit_mode-switching regression: the Edit dialog can flip the
+    # position's TSL policy between fixed / breakeven / three-candle mid-trade.
+    from app.strategies.delta_gold import exit_mode_snapshot_patch, apply_exit_mode_patch
+    import datetime as _dt
+    now_utc = _dt.datetime(2026, 9, 17, 12, 30, tzinfo=_dt.timezone.utc)
+
+    # Same-mode -> None (no-op) so callers can skip the write.
+    fixed_pos = {"side": "BUY", "entry_price": 1000, "sl_price": 985, "target_price": 1050,
+                 "signal_snapshot": {"silver_exit_policy": "fixed_target_sl"}}
+    assert exit_mode_snapshot_patch("fixed_target_sl", fixed_pos, DELTA_DEFAULTS, 15, "gold", now_utc) is None
+
+    # Fixed -> breakeven builds a fresh silver_breakeven from the current sl/target
+    # (activation_price derives from entry ± activation_points). Local var name
+    # deliberately NOT "patch" to avoid shadowing unittest.mock.patch elsewhere
+    # in run() — Python function-scoping compiles the whole body as one scope.
+    be_patch = exit_mode_snapshot_patch("target_to_breakeven_sl", fixed_pos, DELTA_DEFAULTS, 15, "gold", now_utc)
+    assert be_patch is not None
+    assert be_patch["silver_exit_policy"] == "target_to_breakeven_sl"
+    assert be_patch["silver_breakeven"]["armed"] is False
+    assert be_patch["silver_breakeven"]["activation_price"] == 1000 + DELTA_DEFAULTS["tsl_activate_points"]
+    assert be_patch["silver_breakeven"]["target_price"] == 1050
+    assert be_patch["silver_breakeven"]["initial_sl_price"] == 985
+    assert be_patch["delta_three_candle_tsl"] is None  # None means delete key
+
+    # Fixed -> three_candle builds a delta_three_candle_tsl bucketed at NOW,
+    # not at the original entry — the operator activates from this moment.
+    tc_patch = exit_mode_snapshot_patch(DELTA_EXIT_MODE_THREE_CANDLE, fixed_pos, DELTA_DEFAULTS, 15, "gold", now_utc)
+    assert tc_patch["silver_exit_policy"] == DELTA_EXIT_MODE_THREE_CANDLE
+    tc = tc_patch["delta_three_candle_tsl"]
+    assert tc["events"] == [] and tc["evaluations"] == []
+    assert tc["status"] == "waiting_for_three_post_entry_candles"
+    assert "after_edit" in tc["window_rule"]
+    # entry_bucket is aligned to the 15m boundary containing now_utc IST.
+    bucket_dt = _dt.datetime.fromisoformat(tc["entry_bucket"])
+    from app.timezone import IST
+    now_ist = now_utc.astimezone(IST)
+    assert bucket_dt <= now_ist < bucket_dt + _dt.timedelta(minutes=15)
+
+    # Silver never allows three-candle; strategy validator and this helper agree.
+    silver_pos = dict(fixed_pos)
+    try:
+        exit_mode_snapshot_patch(DELTA_EXIT_MODE_THREE_CANDLE, silver_pos, DELTA_DEFAULTS, 15, "silver", now_utc)
+        assert False, "silver + three_candle must raise"
+    except ValueError as exc:
+        assert "Silver" in str(exc)
+
+    # apply_exit_mode_patch merges + deletes correctly and clears trailing flag.
+    live_pos = {"side": "BUY", "entry_price": 1000, "sl_price": 985, "target_price": 1050,
+                "trailing_sl_active": True,
+                "signal_snapshot": {"silver_exit_policy": "target_to_breakeven_sl",
+                                     "silver_breakeven": {"armed": True, "activation_price": 1010}}}
+    tc_patch2 = exit_mode_snapshot_patch(DELTA_EXIT_MODE_THREE_CANDLE, live_pos, DELTA_DEFAULTS, 15, "gold", now_utc)
+    apply_exit_mode_patch(live_pos, tc_patch2)
+    assert live_pos["signal_snapshot"]["silver_exit_policy"] == DELTA_EXIT_MODE_THREE_CANDLE
+    assert "silver_breakeven" not in live_pos["signal_snapshot"]  # stripped
+    assert "delta_three_candle_tsl" in live_pos["signal_snapshot"]
+    assert "trailing_sl_active" not in live_pos  # cleared
+
+    # End-to-end via DeltaLiveBroker.update_protection: exit_mode_patch is
+    # applied AND Delta orders still edit (verified by client.orders growth).
+    switch_store = MemoryStore()
+    switch_client = FakeLiveClient()
+    switch_broker = DeltaLiveBroker(switch_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, switch_client)
+    switch = DeltaGold(15, "PAXGUSD", switch_broker)
+    assert switch._enter("BUY", 1000, 1000)
+    before_edits = len(switch_client.edits)
+    current_snapshot = copy.deepcopy(switch_broker.state["position"])
+    tc_patch_live = exit_mode_snapshot_patch(
+        DELTA_EXIT_MODE_THREE_CANDLE, current_snapshot, DELTA_DEFAULTS, 15, "gold", now_utc,
+    )
+    updated_live = switch_broker.update_protection(current_snapshot, 985.0, 1050.0, 1001.0, exit_mode_patch=tc_patch_live)
+    assert updated_live["signal_snapshot"]["silver_exit_policy"] == DELTA_EXIT_MODE_THREE_CANDLE
+    assert updated_live["signal_snapshot"]["delta_three_candle_tsl"]["events"] == []
+    # Delta stop + target orders both got PUT-edited with the new prices,
+    # even though the exit_mode also switched — the mode change is snapshot-only.
+    assert len(switch_client.edits) == before_edits + 2
+    latest_edit = updated_live["protection_edits"][-1]
+    assert latest_edit["exit_mode_from"] == "fixed_target_sl"
+    assert latest_edit["exit_mode_to"] == DELTA_EXIT_MODE_THREE_CANDLE
+
     blocked = strategy()
     blocked.broker.state.update(cooldown_until=time.time() + 300, cooldown_reason="TARGET")
     assert not blocked._fire_entry("BUY", 1000, 1000)

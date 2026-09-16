@@ -381,7 +381,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
         if state is None:
             self.commit(target_state)
 
-    def update_protection(self, current, sl, target, ltp):
+    def update_protection(self, current, sl, target, ltp, exit_mode_patch=None):
         orders = current.get("live_orders") or {}
         stop_order_id = orders.get("stop_order_id")
         target_order_id = orders.get("target_order_id")
@@ -401,7 +401,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
         })
         sl_changed = sl != current["sl_price"]
         target_changed = target != current["target_price"]
-        position.setdefault("protection_edits", []).append({
+        edit_event = {
             "time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
             "source": "manual_live",
             "previous_sl": current["sl_price"],
@@ -411,14 +411,22 @@ class DeltaLiveBroker(DeltaPaperBroker):
             "ltp": ltp,
             "stop_response": stop_response,
             "target_response": target_response,
-        })
+        }
+        if exit_mode_patch:
+            edit_event["exit_mode_from"] = (current.get("signal_snapshot") or {}).get("silver_exit_policy")
+            edit_event["exit_mode_to"] = exit_mode_patch.get("silver_exit_policy")
+        position.setdefault("protection_edits", []).append(edit_event)
         position.update(sl_price=sl, target_price=target)
         if sl_changed:
             position["sl_source"] = "manual"
         if target_changed:
             position["target_source"] = "manual"
-        protection = position["signal_snapshot"].get("silver_breakeven")
-        if protection:
-            position["signal_snapshot"]["silver_breakeven"]["target_price"] = target
+        if exit_mode_patch:
+            from .strategies.delta_gold import apply_exit_mode_patch
+            apply_exit_mode_patch(position, exit_mode_patch)
+        else:
+            protection = position["signal_snapshot"].get("silver_breakeven")
+            if protection:
+                position["signal_snapshot"]["silver_breakeven"]["target_price"] = target
         self.commit(state)
         return copy.deepcopy(position)

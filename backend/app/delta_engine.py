@@ -497,7 +497,7 @@ class DeltaService:
             strategy.broker.commit(state)
             return strategy.cooldown_status()
 
-    def edit_protection(self, minutes, position_id, sl_price, target_price, expected_sl, expected_target):
+    def edit_protection(self, minutes, position_id, sl_price, target_price, expected_sl, expected_target, new_exit_mode=None):
         with self.lock:
             strategy = self.strategy(minutes)
             if self.last_price is None or not -2 <= time.time() - self.last_event_at <= 15:
@@ -508,8 +508,10 @@ class DeltaService:
             if current['sl_price'] != expected_sl or current['target_price'] != expected_target:
                 raise ValueError('Protection changed while editing; reopen the editor')
             sl, target = positive(sl_price), positive(target_price)
-            if sl == current['sl_price'] and target == current['target_price']:
-                raise ValueError('Change at least one protection level')
+            current_mode = (current.get('signal_snapshot') or {}).get('silver_exit_policy')
+            mode_changing = new_exit_mode is not None and new_exit_mode != current_mode
+            if sl == current['sl_price'] and target == current['target_price'] and not mode_changing:
+                raise ValueError('Change at least one protection level or the exit mode')
             buy = current['side'] == 'BUY'
             if not (sl < self.last_price < target if buy else target < self.last_price < sl):
                 raise ValueError('BUY requires SL < current price < target; SELL requires target < current price < SL')
@@ -520,17 +522,34 @@ class DeltaService:
                 raise ValueError('An armed breakeven stop cannot be moved back into loss')
             if protection and not protection.get('armed') and (target <= protection['activation_price'] if buy else target >= protection['activation_price']):
                 raise ValueError('Final target must remain beyond the pending TSL activation level')
+            # Build the exit-mode patch on a hypothetical post-edit position
+            # (so the fresh silver_breakeven / delta_three_candle_tsl uses the
+            # NEW sl/target the user is saving, not the pre-edit values).
+            exit_mode_patch = None
+            if mode_changing:
+                from .strategies.delta_gold import exit_mode_snapshot_patch
+                projected = dict(current)
+                projected['sl_price'] = sl
+                projected['target_price'] = target
+                exit_mode_patch = exit_mode_snapshot_patch(
+                    new_exit_mode, projected, strategy.settings, minutes, self.asset,
+                    datetime.datetime.now(datetime.timezone.utc),
+                )
             if hasattr(strategy.broker, "update_protection"):
-                return strategy.broker.update_protection(current, sl, target, self.last_price)
+                return strategy.broker.update_protection(current, sl, target, self.last_price, exit_mode_patch=exit_mode_patch)
             state = copy.deepcopy(strategy.broker.state)
             position = state['position']
             sl_changed = sl != current['sl_price']
             target_changed = target != current['target_price']
-            position.setdefault('protection_edits', []).append({
+            edit_event = {
                 'time': datetime.datetime.now(datetime.timezone.utc).isoformat(), 'source': 'manual_paper',
                 'previous_sl': current['sl_price'], 'previous_target': current['target_price'],
                 'new_sl': sl, 'new_target': target, 'ltp': self.last_price,
-            })
+            }
+            if exit_mode_patch:
+                edit_event['exit_mode_from'] = current_mode
+                edit_event['exit_mode_to'] = new_exit_mode
+            position.setdefault('protection_edits', []).append(edit_event)
             position.update(sl_price=sl, target_price=target)
             # sl_source / target_source drive the SL_EDITED / TARGET_EDITED
             # exit_reason so audit rows distinguish an original protective
@@ -539,7 +558,10 @@ class DeltaService:
                 position['sl_source'] = 'manual'
             if target_changed:
                 position['target_source'] = 'manual'
-            if protection:
+            if exit_mode_patch:
+                from .strategies.delta_gold import apply_exit_mode_patch
+                apply_exit_mode_patch(position, exit_mode_patch)
+            elif protection:
                 position['signal_snapshot']['silver_breakeven']['target_price'] = target
             strategy.broker.commit(state)
             return copy.deepcopy(position)

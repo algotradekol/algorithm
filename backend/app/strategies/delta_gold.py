@@ -101,6 +101,88 @@ def validate_settings(settings, asset='gold'):
     return settings
 
 
+DELTA_EXIT_MODES = ("fixed_target_sl", "target_to_breakeven_sl", DELTA_EXIT_MODE_THREE_CANDLE)
+
+
+def exit_mode_snapshot_patch(new_mode, position, settings, minutes, asset, now_utc):
+    """Compute a signal_snapshot patch that switches an open position's
+    exit_mode without touching the entry, side or current sl/target prices.
+
+    Returns None when the position already uses `new_mode`. Raises ValueError
+    for an unknown mode or a Silver+three_candle combination that the
+    strategy validator also blocks.
+
+    None values in the returned dict mean "delete this key from the snapshot"
+    — the caller applies the patch via apply_exit_mode_patch which honours
+    that convention. Kept as a pure function so it can be unit-tested and so
+    both the paper (delta_engine.edit_protection) and live (DeltaLiveBroker
+    .update_protection) paths call the same code.
+    """
+    if asset == 'silver' and new_mode == DELTA_EXIT_MODE_THREE_CANDLE:
+        raise ValueError('Delta Silver does not support three-candle TSL')
+    if new_mode not in DELTA_EXIT_MODES:
+        raise ValueError(f'Invalid exit_mode: {new_mode!r}')
+    snapshot = position.get('signal_snapshot') or {}
+    if snapshot.get('silver_exit_policy') == new_mode:
+        return None
+    patch: dict = {
+        'silver_exit_policy': new_mode,
+        'exit_mode_previous': snapshot.get('silver_exit_policy'),
+        'exit_mode_edited_at': now_utc.isoformat(),
+        # Both keys reset by default; the branch below re-adds whichever one
+        # the new mode needs. Keeps the patch tiny and idempotent.
+        'silver_breakeven': None,
+        'delta_three_candle_tsl': None,
+    }
+    if new_mode == 'target_to_breakeven_sl':
+        side = position['side']
+        direction = 1 if side == 'BUY' else -1
+        activation_points = float(settings['tsl_activate_points'])
+        entry_price = float(position['entry_price'])
+        patch['silver_breakeven'] = {
+            'armed': False,
+            'activation_price': entry_price + direction * activation_points,
+            'activation_points': activation_points,
+            'target_price': float(position['target_price']),
+            'final_target_enabled': True,
+            'initial_sl_price': float(position['sl_price']),
+        }
+    elif new_mode == DELTA_EXIT_MODE_THREE_CANDLE:
+        # Three-candle window starts from NOW, not from the original entry —
+        # the operator consciously activated this policy at this moment, so
+        # any pre-edit candles must not retroactively drive the trail.
+        ist_stamp = now_utc.astimezone(IST).timestamp()
+        bucket_stamp = int(ist_stamp // (minutes * 60)) * minutes * 60
+        entry_bucket = datetime.datetime.fromtimestamp(bucket_stamp, IST).replace(tzinfo=None)
+        patch['delta_three_candle_tsl'] = {
+            'policy': DELTA_EXIT_MODE_THREE_CANDLE,
+            'entry_bucket': entry_bucket.replace(tzinfo=IST).isoformat(),
+            'status': 'waiting_for_three_post_entry_candles',
+            'window_rule': 'rolling_latest_3_closed_strategy_candles_after_edit',
+            'buffer_points': float(settings.get('tsl_buffer_points', 0) or 0),
+            'events': [],
+            'evaluations': [],
+        }
+    return patch
+
+
+def apply_exit_mode_patch(position, patch):
+    """Merge a patch returned by exit_mode_snapshot_patch into position in
+    place. `None` values in the patch delete their key from signal_snapshot.
+    Also clears any live trailing flag — the new mode restarts its own trail
+    logic from a clean slate so an old armed breakeven cannot leak forward.
+    """
+    if patch is None:
+        return
+    snapshot = position.setdefault('signal_snapshot', {})
+    for key, value in patch.items():
+        if value is None:
+            snapshot.pop(key, None)
+        else:
+            snapshot[key] = value
+    position.pop('trailing_sl_active', None)
+
+
 def effective_delta_lots(settings, product, asset="gold"):
     """Return whole Delta exchange quantity from the configured size mode."""
     mode = settings.get("size_mode", "lots")

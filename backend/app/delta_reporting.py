@@ -47,6 +47,14 @@ def paper_row(row, region):
         margin = finite(row.get("estimated_entry_margin"))
         result["pnl_inr"] = pnl * rate if pnl is not None else None
         result["margin_inr"] = margin * rate if margin is not None else None
+    # Surface the current exit mode as a top-level field so the frontend
+    # Edit dialog can pre-populate its TSL-type dropdown without having to
+    # dig into signal_snapshot on the client.
+    snapshot = row.get("signal_snapshot")
+    if isinstance(snapshot, dict):
+        mode = snapshot.get("silver_exit_policy")
+        if mode:
+            result["exit_mode"] = mode
     return result
 
 
