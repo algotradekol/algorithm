@@ -133,7 +133,11 @@ function MetalWorkspace({ asset, group }: { asset: DeltaAsset; group: Group }) {
         })}
       </div>}
     </div>
-    <div key={`${asset}-${tab}`}>
+    {/* Include effectiveMode in the key so a paper->live (or live->paper)
+        flip fully remounts the tab. Otherwise cached paper positions /
+        closed trades keep showing under the live view because the child
+        tabs only refetch on mount, not on prop change. */}
+    <div key={`${asset}-${tab}-${effectiveMode}`}>
       {tab === 'overview' ? <DeltaOverviewTab asset={asset} mode={effectiveMode} />
         : tab === 'activity' ? <DeltaActivityTab asset={asset} mode={effectiveMode} enabledTimeframes={group.enabled_timeframes} />
         : tab === 'backtest' ? <DeltaBacktestTab asset={asset} enabledTimeframes={group.enabled_timeframes} />
