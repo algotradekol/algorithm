@@ -6,10 +6,33 @@ Supabase auth token.
 """
 import datetime
 import asyncio
+import builtins
 import json
 import logging
 import math
+import os
 import threading
+
+_ORIGINAL_PRINT = builtins.print
+
+
+def _install_log_focus_filter():
+    """Keep Railway logs focused on Delta unless LOG_FOCUS=all is set."""
+    focus = os.environ.get("LOG_FOCUS", "delta").strip().lower()
+    if focus in {"", "all", "full", "debug"}:
+        return
+    if focus != "delta":
+        return
+
+    def focused_print(*args, **kwargs):
+        message = " ".join(str(arg) for arg in args)
+        if "[delta" in message.lower() or "delta " in message.lower() or "paxg" in message.lower():
+            _ORIGINAL_PRINT(*args, **kwargs)
+
+    builtins.print = focused_print
+
+
+_install_log_focus_filter()
 
 # Silence Uvicorn's per-request access log. The Next.js dashboard polls
 # ~10 endpoints every 1-2s (positions, trades, feed-status, summary,

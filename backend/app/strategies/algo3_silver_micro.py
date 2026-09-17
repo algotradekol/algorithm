@@ -1315,13 +1315,14 @@ class Algo3SilverMicro(Strategy):
         setup_bar_at_override: datetime.datetime | None = None,
         event_time=None,
     ) -> bool:
+        log_prefix = f"[{getattr(self, 'algo_id', 'algo3')}]"
         # trading_enabled is a kill-switch on the entry path only. Scan,
         # setup, reference, exit, and trailing-SL logic keep running; only
         # new entries (including reversals) are blocked while it is False.
         # Placed BEFORE any state mutation so the setup is not consumed —
         # flipping the switch back ON re-arms the very next qualifying tick.
         if not bool(self.settings.get("trading_enabled", True)):
-            print(f"[algo3] entry SKIPPED for {side}: trading_enabled is OFF (scan still runs)")
+            print(f"{log_prefix} entry SKIPPED for {side}: trading_enabled is OFF (scan still runs)")
             return False
         # Never submit an entry on the wrong side of its breakout level. This
         # is especially important for SELL re-entry after an exit: a renewed
@@ -1329,34 +1330,34 @@ class Algo3SilverMicro(Strategy):
         # than the previous tick while still above the trigger.
         if side == "SELL" and float(ltp) > float(trigger_level):
             print(
-                f"[algo3] entry SKIPPED for SELL: LTP {float(ltp):.2f} "
+                f"{log_prefix} entry SKIPPED for SELL: LTP {float(ltp):.2f} "
                 f"is above trigger {float(trigger_level):.2f}"
             )
             return False
         if side == "BUY" and float(ltp) < float(trigger_level):
             print(
-                f"[algo3] entry SKIPPED for BUY: LTP {float(ltp):.2f} "
+                f"{log_prefix} entry SKIPPED for BUY: LTP {float(ltp):.2f} "
                 f"is below trigger {float(trigger_level):.2f}"
             )
             return False
         current = self._open_position()
         if current and current["side"] == side:
             # Log so "trigger fired but no entry" is answerable from logs.
-            print(f"[algo3] entry SKIPPED for {side}: already positioned same-side (qty={current.get('qty')})")
+            print(f"{log_prefix} entry SKIPPED for {side}: already positioned same-side (qty={current.get('qty')})")
             return False
         with self._entry_guard_lock:
             if self._entry_attempt_in_flight:
-                print(f"[algo3] entry SKIPPED for {side}: another Silver entry attempt is already in flight")
+                print(f"{log_prefix} entry SKIPPED for {side}: another entry attempt is already in flight")
                 return False
             if self._failed_attempt_blocks_setup(side, setup_bar_at_override):
-                print(f"[algo3] entry SKIPPED for {side}: previous order attempt failed for this setup")
+                print(f"{log_prefix} entry SKIPPED for {side}: previous order attempt failed for this setup")
                 return False
             if self._live_broker_symbol_busy(current):
                 self._mark_attempted(side, setup_bar_at_override)
                 return False
             cooldown_left = self._entry_cooldown_remaining()
             if cooldown_left > 0:
-                print(f"[algo3] entry SKIPPED for {side}: cooldown active ({cooldown_left:.0f}s remaining)")
+                print(f"{log_prefix} entry SKIPPED for {side}: cooldown active ({cooldown_left:.0f}s remaining)")
                 return False
             # Post-SL cooldown: block normal entries for 30s after an SL /
             # TRAILING_SL exit. Reversal (contra-signal while a position
@@ -1366,7 +1367,7 @@ class Algo3SilverMicro(Strategy):
             sl_cooldown_left = self._post_sl_cooldown_remaining()
             if sl_cooldown_left > 0 and not is_reversal:
                 print(
-                    f"[algo3] entry SKIPPED for {side}: post-SL cooldown active "
+                    f"{log_prefix} entry SKIPPED for {side}: post-SL cooldown active "
                     f"({sl_cooldown_left:.0f}s remaining)"
                 )
                 return False
@@ -1374,7 +1375,7 @@ class Algo3SilverMicro(Strategy):
             self._entry_attempt_in_flight = True
         try:
             if current and current["side"] != side:
-                print(f"[algo3] REVERSAL: closing existing {current['side']} at {ltp:.2f} before opening {side}")
+                print(f"{log_prefix} REVERSAL: closing existing {current['side']} at {ltp:.2f} before opening {side}")
                 self.broker.close_trade(current, ltp, "REVERSAL_CONTRA_SIGNAL")
 
             entered = self._enter(side, ltp, trigger_level, event_time=event_time)

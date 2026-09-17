@@ -6,6 +6,7 @@ import datetime
 import time
 import uuid
 
+from .delta_log import delta_log
 from .storage_namespace import namespaced_value
 from .supabase_client import run_with_supabase
 from .delta_reporting import paper_margin
@@ -64,6 +65,18 @@ class DeltaPaperBroker:
             raise ValueError("A Delta paper position is already open")
         if min(entry_price, sl_price, target_price) <= 0:
             raise ValueError("Entry, target and stop must remain positive")
+        delta_log(
+            "paper_open_start",
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            entry=entry_price,
+            sl=sl_price,
+            target=target_price,
+            trigger=trigger,
+            setup_time=(snapshot or {}).get("setup_time"),
+            exit_mode=(snapshot or {}).get("silver_exit_policy"),
+        )
         state = copy.deepcopy(self.state)
         state["manual_guard"] = None
         configured_initial_sl = snapshot.get("configured_initial_sl_price", sl_price)
@@ -85,6 +98,7 @@ class DeltaPaperBroker:
         }
         state[f"{side.lower()}_count"] += 1
         self.commit(state)
+        delta_log("paper_open_committed", symbol=symbol, side=side, qty=qty, entry=entry_price, sl=sl_price, target=target_price)
 
     @staticmethod
     def pnl(position, price):
@@ -110,6 +124,18 @@ class DeltaPaperBroker:
         if exit_reason == "MANUAL_EXIT" and not state["settings"].get("manual_exit_reentry_enabled"):
             state["manual_guard"] = {"side": current["side"], "setup_time": current["signal_snapshot"].get("setup_time")}
         self.commit(state, trade)
+        delta_log(
+            "paper_close_committed",
+            symbol=current.get("symbol"),
+            side=current.get("side"),
+            reason=exit_reason,
+            exit=exit_price,
+            gross=gross,
+            fees=fees,
+            net=gross - fees,
+            cooldown_until=state.get("cooldown_until"),
+            cooldown_reason=state.get("cooldown_reason"),
+        )
         cooldown_note = (
             f" cooldown={state['settings'].get('post_exit_cooldown_minutes')}m"
             if exit_reason in {"MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET"}
@@ -136,6 +162,14 @@ class DeltaPaperBroker:
         updated["trailing_sl_active"] = True
         updated["signal_snapshot"]["silver_breakeven"].update(armed=True, armed_at=utc_now())
         self.commit(state)
+        delta_log(
+            "paper_breakeven_armed",
+            symbol=updated.get("symbol"),
+            side=updated.get("side"),
+            ltp=ltp,
+            new_sl=updated.get("sl_price"),
+            activation=activation,
+        )
         return copy.deepcopy(updated)
 
     def apply_three_candle_stop(self, position, details, completed_close):
@@ -168,6 +202,16 @@ class DeltaPaperBroker:
             updated["sl_price"] = candidate
             updated["trailing_sl_active"] = True
         self.commit(state)
+        delta_log(
+            "paper_three_candle_tsl_evaluated",
+            symbol=updated.get("symbol"),
+            side=updated.get("side"),
+            status=status,
+            candidate_sl=candidate,
+            previous_sl=current_sl,
+            completed_close=close,
+            candles=details.get("candles"),
+        )
         if tighter and breached:
             self.close_trade(updated, close, "TRAILING_SL")
             return None

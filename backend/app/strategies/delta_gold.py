@@ -7,6 +7,7 @@ import math
 import time
 
 from .algo3_silver_micro import Algo3SilverMicro, _ema_step, _entry_time_iso
+from ..delta_log import delta_log
 from ..timezone import IST
 
 
@@ -249,6 +250,23 @@ class DeltaGold(Algo3SilverMicro):
         return False
 
     def _persist_setup_event(self, side, bar, source, ema20_override=None):
+        delta_log(
+            "reference_saved",
+            strategy=self.algo_id,
+            asset=self.asset,
+            minutes=self.minutes,
+            side=side,
+            source=source,
+            candle_time=bar["time"].replace(tzinfo=IST).isoformat(),
+            close=bar["close"],
+            open=bar["open"],
+            high=bar["high"],
+            low=bar["low"],
+            volume=bar["volume"],
+            ema20=self._ema20,
+            volume_ema20=self._volume_ema20,
+            trigger=(float(bar["close"]) + float(self.settings["silver_breakout_points"]) if side == "BUY" else float(bar["close"]) - float(self.settings["silver_breakout_points"])),
+        )
         self.reference_history.insert(
             0,
             {
@@ -344,6 +362,22 @@ class DeltaGold(Algo3SilverMicro):
             self._volume_ema20 = _ema_step(self._volume_ema20, bar["volume"])
             bar.update(ema20=self._ema20, volume_ema20=self._volume_ema20)
             self._bars.append(bar)
+            delta_log(
+                "completed_candle",
+                strategy=self.algo_id,
+                asset=self.asset,
+                minutes=self.minutes,
+                candle_time=bar["time"].replace(tzinfo=IST).isoformat(),
+                open=bar["open"],
+                high=bar["high"],
+                low=bar["low"],
+                close=bar["close"],
+                volume=bar["volume"],
+                ema20=self._ema20,
+                volume_ema20=self._volume_ema20,
+                buy_qualifies=self._qualifies_as_buy_setup(bar),
+                sell_qualifies=self._qualifies_as_sell_setup(bar),
+            )
             if live_completed_bars and self.asset == 'silver' and self.scan_enabled():
                 self._check_candle_close_trigger(bar)
             old_buy, old_sell = self._buy_setup_bar_at, self._sell_setup_bar_at
@@ -365,6 +399,15 @@ class DeltaGold(Algo3SilverMicro):
             self._current_bucket = bucket_at
             self._current_candle_open = open_price
             self._minute_buffer = [{"open": open_price}]
+            delta_log(
+                "forming_candle",
+                strategy=self.algo_id,
+                asset=self.asset,
+                minutes=self.minutes,
+                bucket=bucket_at.replace(tzinfo=IST).isoformat(),
+                open=open_price,
+                current_bucket=current_bucket,
+            )
         self._history_ready = True
         self.data_error = None
 
@@ -377,21 +420,81 @@ class DeltaGold(Algo3SilverMicro):
         bucket = int(timestamp // interval) * interval
         bucket_at = datetime.datetime.fromtimestamp(bucket, IST).replace(tzinfo=None)
         if self._current_bucket != bucket_at:
+            delta_log(
+                "bucket_changed_on_tick",
+                strategy=self.algo_id,
+                asset=self.asset,
+                minutes=self.minutes,
+                previous_bucket=self._current_bucket.replace(tzinfo=IST).isoformat() if self._current_bucket else None,
+                new_bucket=bucket_at.replace(tzinfo=IST).isoformat(),
+                price=price,
+                timestamp=timestamp,
+            )
             self._current_bucket = bucket_at
             self._current_candle_open = None
             self._minute_buffer = []
             self._prev_ltp = None
-        if self.last_candle_epoch == bucket - interval and not self.data_error and self.scan_enabled():
+        ready_for_triggers = self.last_candle_epoch == bucket - interval and not self.data_error and self.scan_enabled()
+        delta_log(
+            "price_seen_by_strategy",
+            strategy=self.algo_id,
+            asset=self.asset,
+            minutes=self.minutes,
+            price=price,
+            timestamp=timestamp,
+            bucket=bucket_at.replace(tzinfo=IST).isoformat(),
+            previous_ltp=self._prev_ltp,
+            current_candle_open=self._current_candle_open,
+            last_candle_epoch=self.last_candle_epoch,
+            scan_enabled=self.scan_enabled(),
+            trading_enabled=bool(self.settings.get("trading_enabled", True)),
+            data_error=self.data_error,
+            ready_for_triggers=ready_for_triggers,
+        )
+        if ready_for_triggers:
             self._check_triggers(price, event_time=datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc))
         self._prev_ltp = price
 
     def _check_triggers(self, ltp, event_time=None):
         if self._current_candle_open is None:
+            delta_log("trigger_check_skipped_no_open", strategy=self.algo_id, minutes=self.minutes, ltp=ltp)
             return
         n = float(self.settings["silver_breakout_points"])
         baseline = self._prev_ltp if self._prev_ltp is not None else self._current_candle_open
         sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
         buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
+        sell_checks = {
+            "has_level": sell_level is not None,
+            "has_reference": self._sell_setup_bar_at is not None,
+            "after_reference": bool(self._sell_setup_bar_at is not None and self._current_bucket > self._sell_setup_bar_at),
+            "opened_valid_side": bool(sell_level is not None and self._current_candle_open > sell_level),
+            "crossed": bool(sell_level is not None and baseline > sell_level >= ltp),
+            "failed_attempt_block": bool(self._sell_setup_bar_at is not None and self._failed_attempt_blocks_setup("SELL", self._sell_setup_bar_at)),
+        }
+        buy_checks = {
+            "has_level": buy_level is not None,
+            "has_reference": self._buy_setup_bar_at is not None,
+            "after_reference": bool(self._buy_setup_bar_at is not None and self._current_bucket > self._buy_setup_bar_at),
+            "opened_valid_side": bool(buy_level is not None and self._current_candle_open < buy_level),
+            "crossed": bool(buy_level is not None and baseline < buy_level <= ltp),
+            "failed_attempt_block": bool(self._buy_setup_bar_at is not None and self._failed_attempt_blocks_setup("BUY", self._buy_setup_bar_at)),
+        }
+        delta_log(
+            "trigger_check",
+            strategy=self.algo_id,
+            asset=self.asset,
+            minutes=self.minutes,
+            ltp=ltp,
+            baseline=baseline,
+            current_candle_open=self._current_candle_open,
+            current_bucket=self._current_bucket.replace(tzinfo=IST).isoformat() if self._current_bucket else None,
+            sell_level=sell_level,
+            sell_reference_time=self._sell_setup_bar_at.replace(tzinfo=IST).isoformat() if self._sell_setup_bar_at else None,
+            sell_checks=sell_checks,
+            buy_level=buy_level,
+            buy_reference_time=self._buy_setup_bar_at.replace(tzinfo=IST).isoformat() if self._buy_setup_bar_at else None,
+            buy_checks=buy_checks,
+        )
 
         if (
             sell_level is not None
@@ -449,12 +552,27 @@ class DeltaGold(Algo3SilverMicro):
         guard = self.broker.state.get("manual_guard")
         reference = self._buy_setup_bar_at if side == "BUY" else self._sell_setup_bar_at
         reference_time = reference.replace(tzinfo=IST).isoformat() if reference else None
+        delta_log(
+            "entry_fire_attempt",
+            strategy=self.algo_id,
+            asset=self.asset,
+            minutes=self.minutes,
+            side=side,
+            ltp=ltp,
+            trigger_level=trigger_level,
+            setup_time=reference_time,
+            manual_guard=guard,
+            current_position=bool(self._open_position()),
+            cooldown=self.cooldown_status(),
+            trading_enabled=bool(self.settings.get("trading_enabled", True)),
+        )
         if guard and guard["side"] == side and guard["setup_time"] == reference_time:
             previous = self._prev_ltp
             crossed = previous is not None and (
                 previous < trigger_level <= ltp if side == "BUY" else previous > trigger_level >= ltp
             )
             if not crossed:
+                delta_log("entry_blocked_manual_guard", strategy=self.algo_id, minutes=self.minutes, side=side, previous_ltp=previous, trigger_level=trigger_level, ltp=ltp)
                 return False
         return super()._fire_entry(side, ltp, trigger_level, setup_bar_at_override, event_time)
 
@@ -505,6 +623,7 @@ class DeltaGold(Algo3SilverMicro):
 
     def _enter(self, side, entry_price, trigger_level, event_time=None):
         if not self.symbol or not entry_price:
+            delta_log("entry_aborted_missing_symbol_or_price", strategy=self.algo_id, symbol=self.symbol, entry_price=entry_price)
             return False
         lots = effective_delta_lots(self.settings, getattr(self.broker, "product", {}), self.asset)
         direction = 1 if side == "BUY" else -1
@@ -512,6 +631,7 @@ class DeltaGold(Algo3SilverMicro):
         target = float(entry_price) + direction * float(self.settings["target_points"])
         activation = float(entry_price) + direction * float(self.settings["tsl_activate_points"])
         if min(configured_sl, target) <= 0:
+            delta_log("entry_aborted_invalid_prices", strategy=self.algo_id, side=side, entry_price=entry_price, sl=configured_sl, target=target)
             return False
 
         snapshot = self._signal_snapshot(side, entry_price, trigger_level)
@@ -551,14 +671,31 @@ class DeltaGold(Algo3SilverMicro):
 
         try:
             args = (self.symbol, side, lots, float(entry_price), effective_sl, target, self._entry_trigger(side, entry_price, trigger_level), snapshot)
+            delta_log(
+                "entry_submit",
+                strategy=self.algo_id,
+                asset=self.asset,
+                mode=getattr(self.broker, "mode", "paper"),
+                symbol=self.symbol,
+                side=side,
+                lots=lots,
+                entry_price=float(entry_price),
+                sl=effective_sl,
+                target=target,
+                trigger_level=trigger_level,
+                exit_mode=mode,
+                setup_time=snapshot.get("setup_time"),
+            )
             if event_time is None:
                 self.broker.open_trade(*args)
             else:
                 self.broker.open_trade(*args, entry_time=_entry_time_iso(event_time))
             self.data_error = None
+            delta_log("entry_submit_ok", strategy=self.algo_id, side=side, mode=getattr(self.broker, "mode", "paper"))
             return True
         except Exception as exc:
             self.data_error = str(exc)
+            delta_log("entry_submit_failed", strategy=self.algo_id, side=side, error=self.data_error, mode=getattr(self.broker, "mode", "paper"))
             print(f"[delta-{getattr(self.broker, 'mode', 'paper')}] entry failed for {self.symbol}: {self.data_error}")
             return False
 

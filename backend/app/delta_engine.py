@@ -12,6 +12,7 @@ from .delta_client import DeltaClient, epoch_seconds, positive
 from .delta_candles import aggregate_custom_minutes, delta_resolution
 from .delta_config import delta_capabilities, asset_capabilities, timeframe_enabled
 from .delta_live import DeltaLiveBroker
+from .delta_log import delta_log
 from .delta_paper import DeltaPaperBroker, DeltaStore
 from .delta_reporting import paper_row, inr_rate
 from .strategies.delta_gold import DELTA_DEFAULTS, DELTA_TIMEFRAMES, DeltaGold, validate_settings, defaults_for
@@ -83,6 +84,15 @@ class DeltaService:
             self.initialized = True
             return
         product = self.client.product()
+        delta_log(
+            "service_initialized",
+            mode=self.mode,
+            asset=self.asset,
+            symbol=self.client.symbol,
+            product_id=product.get("id"),
+            enabled_timeframes=capabilities["enabled_timeframes"],
+            live_enabled=getattr(self.client, "live_enabled", False),
+        )
         strategies = {}
         for minutes in capabilities["enabled_timeframes"]:
             key = f"delta:{self.client.region}:{self.client.symbol}:{minutes}:{self.mode}"
@@ -138,35 +148,64 @@ class DeltaService:
                         rows = aggregate_custom_minutes(rows, minutes, current_time=now)
                     with self.lock:
                         strategy.ingest_history(rows, now)
+                        delta_log(
+                            "history_refresh_ok",
+                            mode=self.mode,
+                            asset=self.asset,
+                            minutes=minutes,
+                            resolution=resolution,
+                            rows=len(rows),
+                            start=start,
+                            end=int(now),
+                            last_candle_epoch=strategy.last_candle_epoch,
+                            current_candle_open=strategy._current_candle_open,
+                            data_error=strategy.data_error,
+                        )
                         next_history[minutes] = min(bucket + interval + 1, now + 60)
                 except Exception as exc:
                     with self.lock:
                         strategy.data_error = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else "Delta candle refresh failed"
+                        delta_log(
+                            "history_refresh_failed",
+                            mode=self.mode,
+                            asset=self.asset,
+                            minutes=minutes,
+                            start=start,
+                            end=int(now),
+                            error=strategy.data_error,
+                        )
             if now >= next_rest and now - self.last_event_at > 5:
                 next_rest = now + 2
                 try:
                     price, stamp = self.client.recent_trade()
+                    delta_log("rest_trade", mode=self.mode, asset=self.asset, price=price, stamp=stamp)
                     self.accept_price(price, stamp, "REST")
                 except Exception as exc:
                     self.error = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else "Delta REST data unavailable"
+                    delta_log("rest_trade_failed", mode=self.mode, asset=self.asset, error=self.error)
             if self.mode == "live" and now >= next_live_reconcile:
                 next_live_reconcile = now + 5
                 try:
                     self._reconcile_live_positions()
                 except Exception as exc:
                     self.error = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else "Delta live reconciliation unavailable"
+                    delta_log("live_reconcile_failed", mode=self.mode, asset=self.asset, error=self.error)
             self.stop_event.wait(0.5)
 
     def accept_price(self, price, stamp, source):
         price = positive(price)
         stamp = epoch_seconds(stamp)
-        if not -2 <= time.time() - stamp <= 15:
+        age = time.time() - stamp
+        if not -2 <= age <= 15:
+            delta_log("price_ignored_stale", mode=self.mode, asset=self.asset, source=source, price=price, stamp=stamp, age_seconds=age)
             return  # Old last-trade prices must not masquerade as fresh ticks.
         with self.lock:
             if stamp <= self.last_event_at:
+                delta_log("price_ignored_duplicate", mode=self.mode, asset=self.asset, source=source, price=price, stamp=stamp, last_event_at=self.last_event_at)
                 return
             self.last_price, self.last_event_at, self.last_source = price, stamp, source
             self.error = None
+            delta_log("price_accepted", mode=self.mode, asset=self.asset, source=source, price=price, stamp=stamp, strategies=list(self.strategies))
             for strategy in self.strategies.values():
                 try:
                     strategy.process_price(price, stamp)
@@ -176,6 +215,16 @@ class DeltaService:
                         f"[delta-{self.mode}] processing failed "
                         f"asset={self.asset} minutes={getattr(strategy, 'minutes', '?')} "
                         f"symbol={getattr(strategy, 'symbol', '?')} error={exc!r}"
+                    )
+                    delta_log(
+                        "strategy_processing_failed",
+                        mode=self.mode,
+                        asset=self.asset,
+                        minutes=getattr(strategy, "minutes", None),
+                        symbol=getattr(strategy, "symbol", None),
+                        price=price,
+                        stamp=stamp,
+                        error=repr(exc),
                     )
                     traceback.print_exc()
                     # Do not continue submitting entries after a failed protection write.
@@ -197,6 +246,7 @@ class DeltaService:
             return
         current = self.strategies.get(minutes)
         if current and current.broker.state.get("position"):
+            delta_log("live_entry_blocked_same_timeframe", minutes=minutes, side=side)
             raise ValueError(f"Delta live {minutes}m already has an open tracked trade")
         open_items = [
             (tf, strategy.broker.state.get("position"))
@@ -204,6 +254,7 @@ class DeltaService:
             if strategy.broker.state.get("position")
         ]
         if len(open_items) >= DELTA_LIVE_MAX_TRACKED_TRADES:
+            delta_log("live_entry_blocked_max_trades", minutes=minutes, side=side, open_items=[(tf, p.get("side")) for tf, p in open_items])
             raise ValueError(
                 f"Delta live entry blocked: maximum {DELTA_LIVE_MAX_TRACKED_TRADES} "
                 "active timeframe trades are already open"
@@ -215,6 +266,7 @@ class DeltaService:
         ]
         if opposite:
             frames = ", ".join(f"{tf}m {position.get('side')}" for tf, position in opposite)
+            delta_log("live_entry_blocked_opposite_side", minutes=minutes, side=side, opposite=frames)
             raise ValueError(
                 "Delta live entry blocked: opposite-side live trade already exists "
                 f"({frames}). Delta nets PAXGUSD positions, so this would reduce or reverse it."
@@ -226,6 +278,7 @@ class DeltaService:
         tracked = {minutes: strategy for minutes, strategy in self.strategies.items() if strategy.broker.state.get("position")}
         if not tracked:
             self._live_flat_confirmations.clear()
+            delta_log("live_reconcile_no_tracked_positions", asset=self.asset)
             return
         payload = self.client.get("/v2/positions/margined", private=True, envelope=True)
         rows = payload.get("result")
@@ -242,6 +295,13 @@ class DeltaService:
                 except (TypeError, ValueError):
                     continue
         with self.lock:
+            delta_log(
+                "live_reconcile_snapshot",
+                asset=self.asset,
+                tracked_minutes=list(tracked),
+                live_size=live_size,
+                last_price=self.last_price,
+            )
             if abs(live_size) > 0:
                 self._live_flat_confirmations.clear()
                 return
@@ -252,6 +312,14 @@ class DeltaService:
                     continue
                 confirmations = self._live_flat_confirmations.get(minutes, 0) + 1
                 self._live_flat_confirmations[minutes] = confirmations
+                delta_log(
+                    "live_flat_confirmation",
+                    minutes=minutes,
+                    confirmations=confirmations,
+                    position_id=position.get("id"),
+                    side=position.get("side"),
+                    exit_price=self.last_price or position.get("entry_price"),
+                )
                 if confirmations < 2:
                     continue
                 exit_price = self.last_price or position.get("entry_price")

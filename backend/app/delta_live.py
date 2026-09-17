@@ -7,6 +7,7 @@ import time
 import uuid
 
 from .delta_client import positive
+from .delta_log import delta_log
 from .delta_paper import DeltaPaperBroker, utc_now
 from .delta_reporting import paper_margin
 
@@ -57,6 +58,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
         return f"{prefix}_{uuid.uuid4().hex}"[:32]
 
     def _place_order(self, payload):
+        delta_log("live_order_submit", path="/v2/orders", payload={k: v for k, v in payload.items() if k != "client_order_id"})
         return self.client.post("/v2/orders", payload, private=True)
 
     def _place_bracket_order(self, side, stop_price, target_price):
@@ -72,6 +74,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
             },
             "bracket_stop_trigger_method": "last_traded_price",
         }
+        delta_log("live_bracket_submit", side=side, payload=payload)
         return self.client.post("/v2/orders/bracket", payload, private=True, envelope=True)
 
     def _product_row(self, row):
@@ -89,7 +92,28 @@ class DeltaLiveBroker(DeltaPaperBroker):
         rows = payload.get("result")
         if not isinstance(rows, list):
             raise RuntimeError("Delta active orders response was invalid")
-        return [row for row in rows if isinstance(row, dict) and self._product_row(row)]
+        filtered = [row for row in rows if isinstance(row, dict) and self._product_row(row)]
+        delta_log(
+            "live_active_orders",
+            symbol=self.client.symbol,
+            total_rows=len(rows),
+            product_rows=len(filtered),
+            orders=[
+                {
+                    "id": row.get("id"),
+                    "state": row.get("state"),
+                    "side": row.get("side"),
+                    "size": row.get("size"),
+                    "order_type": row.get("order_type"),
+                    "stop_order_type": row.get("stop_order_type"),
+                    "stop_price": row.get("stop_price"),
+                    "limit_price": row.get("limit_price"),
+                    "reduce_only": row.get("reduce_only"),
+                }
+                for row in filtered
+            ],
+        )
+        return filtered
 
     def _live_product_size(self):
         payload = self.client.get("/v2/positions/margined", private=True, envelope=True)
@@ -104,6 +128,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
                 total += float(row.get("size") or 0)
             except (TypeError, ValueError):
                 continue
+        delta_log("live_product_size", symbol=self.client.symbol, size=total, rows=len(rows))
         return total
 
     def _is_protection_order(self, row):
@@ -123,6 +148,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
                 cancelled.append(order_id)
         if cancelled:
             print(f"[delta-live] cancelled orphan protection orders for {self.client.symbol}: {cancelled}")
+        delta_log("live_orphan_cleanup", symbol=self.client.symbol, cancelled=cancelled)
         return cancelled
 
     def _bracket_children(self):
@@ -134,11 +160,19 @@ class DeltaLiveBroker(DeltaPaperBroker):
             elif stop_type == "take_profit_order" and not children["target_order"]:
                 children["target_order"] = row
         if not children["stop_order"] or not children["target_order"]:
+            delta_log("live_bracket_children_missing", symbol=self.client.symbol, children=children)
             raise RuntimeError("Delta bracket did not expose both stop-loss and target child orders")
+        delta_log(
+            "live_bracket_children_ok",
+            symbol=self.client.symbol,
+            stop_order_id=_order_id(children["stop_order"]),
+            target_order_id=_order_id(children["target_order"]),
+        )
         return children
 
     def _emergency_close_unprotected_entry(self, side, qty, cause):
         try:
+            delta_log("live_emergency_close_start", side=side, qty=qty, cause=str(cause))
             close_order = self._place_order({
                 "product_id": self._product_id(),
                 "size": int(qty),
@@ -150,9 +184,11 @@ class DeltaLiveBroker(DeltaPaperBroker):
             })
             self._require_filled_order(close_order, "emergency close")
         except Exception as close_exc:
+            delta_log("live_emergency_close_failed", side=side, qty=qty, cause=str(cause), close_error=str(close_exc))
             raise RuntimeError(
                 f"Delta live entry filled but bracket protection failed ({cause}) and emergency close also failed: {close_exc}"
             ) from close_exc
+        delta_log("live_emergency_close_sent", side=side, qty=qty, cause=str(cause))
         raise RuntimeError(f"Delta live entry filled but bracket protection failed; emergency close sent: {cause}") from cause
 
     def _require_filled_order(self, order, purpose):
@@ -249,6 +285,17 @@ class DeltaLiveBroker(DeltaPaperBroker):
         qty = int(qty)
         if qty < 1:
             raise ValueError("Delta live size must be at least 1 lot")
+        delta_log(
+            "live_open_start",
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            requested_entry=entry_price,
+            sl=sl_price,
+            target=target_price,
+            trigger=trigger,
+            setup_time=(snapshot or {}).get("setup_time"),
+        )
         self._cancel_orphan_protection_orders()
         product_id = self._product_id()
         entry = self._place_order({
@@ -261,6 +308,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
             "client_order_id": self._client_order_id("dle"),
         })
         fill_price = self._require_filled_order(entry, "entry")
+        delta_log("live_entry_filled", symbol=symbol, side=side, qty=qty, fill_price=fill_price, order_id=_order_id(entry))
         try:
             bracket_response = self._place_bracket_order(side, sl_price, target_price)
             bracket_children = self._bracket_children()
@@ -303,6 +351,17 @@ class DeltaLiveBroker(DeltaPaperBroker):
         }
         state[f"{side.lower()}_count"] += 1
         self.commit(state)
+        delta_log(
+            "live_open_committed",
+            symbol=symbol,
+            side=side,
+            qty=qty,
+            entry=fill_price,
+            sl=sl_price,
+            target=target_price,
+            stop_order_id=_order_id(stop_order),
+            target_order_id=_order_id(target_order),
+        )
         print(f"[delta-live] opened {symbol} {side} qty={qty} entry={fill_price:g} sl={sl_price:g} target={target_price:g}")
 
     def close_trade(self, position, exit_price, exit_reason):
@@ -313,6 +372,16 @@ class DeltaLiveBroker(DeltaPaperBroker):
         if retry_block:
             raise RuntimeError(retry_block)
         orders = current.get("live_orders") or {}
+        delta_log(
+            "live_close_start",
+            symbol=current.get("symbol"),
+            side=current.get("side"),
+            qty=current.get("qty"),
+            requested_exit=exit_price,
+            reason=exit_reason,
+            stop_order_id=orders.get("stop_order_id"),
+            target_order_id=orders.get("target_order_id"),
+        )
         self._cancel_order(orders.get("stop_order_id"))
         self._cancel_order(orders.get("target_order_id"))
         try:
@@ -349,6 +418,16 @@ class DeltaLiveBroker(DeltaPaperBroker):
             state["manual_guard"] = {"side": current["side"], "setup_time": current["signal_snapshot"].get("setup_time")}
         self.commit(state, trade)
         self._cancel_orphan_protection_orders()
+        delta_log(
+            "live_close_committed",
+            symbol=current.get("symbol"),
+            side=current.get("side"),
+            reason=exit_reason,
+            exit=confirmed_exit,
+            gross=gross,
+            fees=fees,
+            net=gross - fees,
+        )
         print(f"[delta-live] closed {current['symbol']} {current['side']} reason={exit_reason} gross={gross:.6f}")
         if self.on_position_closed:
             self.on_position_closed(position=current, exit_price=confirmed_exit, exit_reason=exit_reason, exit_time=trade["exit_time"])
@@ -403,6 +482,16 @@ class DeltaLiveBroker(DeltaPaperBroker):
         state["cooldown_until"] = time.time() + cooldown_minutes * 60 if cooldown_minutes > 0 else 0.0
         state["cooldown_reason"] = exit_reason if cooldown_minutes > 0 else None
         self.commit(state, trade)
+        delta_log(
+            "live_external_close_committed",
+            symbol=current.get("symbol"),
+            side=current.get("side"),
+            reason=exit_reason,
+            exit=confirmed_exit,
+            gross=gross,
+            fees=fees,
+            net=gross - fees,
+        )
         print(f"[delta-live] external close recorded {current['symbol']} {current['side']} reason={exit_reason} gross={gross:.6f}")
         if self.on_position_closed:
             self.on_position_closed(position=current, exit_price=confirmed_exit, exit_reason=exit_reason, exit_time=trade["exit_time"])
@@ -486,6 +575,14 @@ class DeltaLiveBroker(DeltaPaperBroker):
             "stop_price": stop_price,
             "response": amended,
         })
+        delta_log(
+            "live_stop_amended",
+            symbol=position.get("symbol"),
+            side=position.get("side"),
+            order_id=order_id,
+            stop_price=stop_price,
+            bracket=bool(orders.get("bracket_order")),
+        )
         if state is None:
             self.commit(target_state)
 
@@ -494,13 +591,15 @@ class DeltaLiveBroker(DeltaPaperBroker):
         stop_order_id = orders.get("stop_order_id")
         if not stop_order_id:
             raise ValueError("Live Delta bracket stop id is missing; cannot edit bracket")
-        return self.client.put("/v2/orders/bracket", {
+        payload = {
             "id": int(stop_order_id),
             "product_id": self._product_id(),
             "bracket_stop_loss_price": _fmt_price(sl),
             "bracket_take_profit_price": _fmt_price(target),
             "bracket_stop_trigger_method": "last_traded_price",
-        }, private=True, envelope=True)
+        }
+        delta_log("live_bracket_edit", symbol=position.get("symbol"), side=position.get("side"), payload=payload)
+        return self.client.put("/v2/orders/bracket", payload, private=True, envelope=True)
 
     def update_protection(self, current, sl, target, ltp, exit_mode_patch=None):
         orders = current.get("live_orders") or {}
