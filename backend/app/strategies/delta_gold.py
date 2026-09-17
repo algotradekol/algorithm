@@ -455,12 +455,12 @@ class DeltaGold(Algo3SilverMicro):
             self._check_triggers(price, event_time=datetime.datetime.fromtimestamp(timestamp, datetime.timezone.utc))
         self._prev_ltp = price
 
-    def _check_triggers(self, ltp, event_time=None):
+    def _check_triggers(self, ltp, event_time=None, baseline_override=None, reason="tick"):
         if self._current_candle_open is None:
             delta_log("trigger_check_skipped_no_open", strategy=self.algo_id, minutes=self.minutes, ltp=ltp)
             return
         n = float(self.settings["silver_breakout_points"])
-        baseline = self._prev_ltp if self._prev_ltp is not None else self._current_candle_open
+        baseline = baseline_override if baseline_override is not None else (self._prev_ltp if self._prev_ltp is not None else self._current_candle_open)
         sell_level = self._sell_setup_close - n if self._sell_setup_close is not None else None
         buy_level = self._buy_setup_close + n if self._buy_setup_close is not None else None
         sell_checks = {
@@ -484,6 +484,7 @@ class DeltaGold(Algo3SilverMicro):
             strategy=self.algo_id,
             asset=self.asset,
             minutes=self.minutes,
+            reason=reason,
             ltp=ltp,
             baseline=baseline,
             current_candle_open=self._current_candle_open,
@@ -517,6 +518,17 @@ class DeltaGold(Algo3SilverMicro):
         ):
             if self._fire_entry("BUY", buy_level, buy_level, self._buy_setup_bar_at, event_time):
                 self._mark_fired("BUY", setup_bar_at=self._buy_setup_bar_at)
+
+    def recheck_triggers_after_settings_change(self, ltp, event_time=None):
+        """Re-evaluate the active candle when a new offset moves a trigger."""
+        if ltp is None:
+            return
+        self._check_triggers(
+            float(ltp),
+            event_time=event_time,
+            baseline_override=self._current_candle_open,
+            reason="settings_change",
+        )
 
     def _entry_trigger(self, side, entry_price, trigger_level):
         mode = getattr(self.broker, "mode", "paper")

@@ -394,6 +394,20 @@ def run():
         item.settings["silver_lots"] == (2 if minutes == 30 else 1)
         for minutes, item in service.strategies.items()
     )
+    recheck_now = int(datetime.datetime(2026, 9, 12, tzinfo=datetime.timezone.utc).timestamp())
+    recheck_now = recheck_now // (5 * 60) * 5 * 60
+    recheck_strategy = service.strategies[5]
+    recheck_rows = history(5, recheck_now)
+    recheck_rows[-1].update(open=1000, high=1031, low=999, close=1030, volume=300)
+    recheck_rows.append({"time": recheck_now, "open": 1031, "high": 1036, "low": 1030, "close": 1036, "volume": 10})
+    recheck_strategy.ingest_history(recheck_rows, recheck_now + 5)
+    recheck_strategy.process_price(1036, recheck_now + 6)
+    assert not recheck_strategy._open_position()
+    service.last_price = 1036
+    service.last_event_at = time.time()
+    service.save_settings(5, {"silver_breakout_points": 5})
+    assert recheck_strategy._open_position()["entry_price"] == 1035
+
     today_strategy = service.strategies[15]
     today_strategy.broker.store.closed = [
         {"side": "BUY", "exit_time": datetime.datetime.now(datetime.timezone.utc).isoformat(), "gross_pnl": 5, "fees": 1, "net_pnl": 4},
@@ -459,6 +473,10 @@ def run():
     assert live_client.edits[-1]["id"] == 2
     assert live_client.edits[-1]["bracket_stop_loss_price"] == "990"
     assert live_client.edits[-1]["bracket_take_profit_price"] == "1050"
+    live_broker.update_protection(live_broker.state["position"], 990, 1060, 1005)
+    assert live_client.edits[-1]["id"] == 3, "target-only bracket edits should start with the target child id"
+    assert live_client.edits[-1]["bracket_stop_loss_price"] == "990"
+    assert live_client.edits[-1]["bracket_take_profit_price"] == "1060"
     live_broker.close_trade(live_broker.state["position"], 1005, "MANUAL_EXIT")
     assert live_client.orders[-1]["reduce_only"] and live_client.orders[-1]["side"] == "sell"
     assert live_store.closed[-1]["execution"] == "live"

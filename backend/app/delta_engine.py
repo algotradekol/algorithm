@@ -529,6 +529,15 @@ class DeltaService:
             state["settings"] = settings
             strategy.broker.commit(state)
             strategy.settings = settings
+            if (
+                self.last_price is not None
+                and self.last_event_at
+                and time.time() - self.last_event_at <= 15
+            ):
+                strategy.recheck_triggers_after_settings_change(
+                    self.last_price,
+                    datetime.datetime.fromtimestamp(self.last_event_at, datetime.timezone.utc),
+                )
             return settings
 
     def close(self, minutes, position_id):
