@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
+import type { ReactNode } from 'react';
 import { deltaApi, DeltaAsset } from '../lib/api';
 
 type Settings = {
@@ -20,6 +21,7 @@ type Trade = {
   exit_mode?: ExitMode;
   signal_snapshot: { setup_time?: string; setup_close?: number; trigger_level?: number; entry_candle_open?: number; silver_breakeven?: { activation_price: number; armed: boolean }; delta_three_candle_tsl?: { events?: any[]; evaluations?: any[] }; silver_exit_policy?: ExitMode };
 };
+type TradeCell = { value: ReactNode; className?: string };
 type Status = {
   settings?: Settings; symbol?: string; exchange?: string; error?: string; history_error?: string;
   ltp?: number; last_tick_at?: number; last_bar_at?: number; stale: boolean; source?: string;
@@ -34,6 +36,10 @@ type Status = {
 
 const number = (value?: number | null) => value == null ? '--' : value.toLocaleString('en-IN', { maximumFractionDigits: 6 });
 const date = (value?: string | number) => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) : '--';
+const pnlClass = (value?: number | null) => {
+  if (value == null || Number(value) === 0) return 'text-gray-200';
+  return Number(value) > 0 ? 'text-[#22c55e]' : 'text-[#ef4444]';
+};
 const timeframeLabel = (minutes: number) => minutes === 60 ? '1 hr' : minutes === 120 ? '2 hr' : minutes === 240 ? '4 hr' : `${minutes} min`;
 const duration = (value?: number) => {
   const seconds = Math.max(0, Math.ceil(value || 0));
@@ -298,29 +304,40 @@ function TradeTable({ rows, closed = false, mode = 'paper', disabled, onEdit, on
       <tbody>
         {!rows.length && <tr><td colSpan={headers.length} className="p-4 text-gray-500">No {closed ? 'closed trades' : `open ${mode} position`}.</td></tr>}
         {rows.map(row => {
-          const baseCells = [
-            number(row.qty),
-            date(row.entry_time),
-            number(row.entry_price),
-            date(row.signal_snapshot.setup_time),
-            number(row.signal_snapshot.setup_close),
-            number(row.initial_sl),
-            number(row.sl_price),
-            number(row.target_price),
+          const baseCells: TradeCell[] = [
+            { value: number(row.qty) },
+            { value: date(row.entry_time) },
+            { value: number(row.entry_price) },
+            { value: date(row.signal_snapshot.setup_time) },
+            { value: number(row.signal_snapshot.setup_close) },
+            { value: number(row.initial_sl) },
+            { value: number(row.sl_price) },
+            { value: number(row.target_price) },
           ];
-          const editCell = <button className="min-h-9 rounded border border-[#3b82f6]/70 px-2.5 py-1.5 text-xs font-semibold text-[#3b82f6] disabled:opacity-40" disabled={disabled} onClick={() => onEdit?.(row)}>Edit</button>;
-          const exitCell = <button className="min-h-9 rounded border border-[#ef4444]/70 px-2.5 py-1.5 text-xs font-semibold text-[#ef4444] disabled:opacity-40" disabled={disabled} onClick={() => onExit?.(row)}>Exit</button>;
-          const cells = [
+          const editCell: TradeCell = { value: <button className="min-h-9 rounded border border-[#3b82f6]/70 px-2.5 py-1.5 text-xs font-semibold text-[#3b82f6] disabled:opacity-40" disabled={disabled} onClick={() => onEdit?.(row)}>Edit</button> };
+          const exitCell: TradeCell = { value: <button className="min-h-9 rounded border border-[#ef4444]/70 px-2.5 py-1.5 text-xs font-semibold text-[#ef4444] disabled:opacity-40" disabled={disabled} onClick={() => onExit?.(row)}>Exit</button> };
+          const cells: TradeCell[] = [
             ...baseCells,
             ...(!closed ? [editCell] : []),
-            <TslAudit key="tsl" row={row} />,
+            { value: <TslAudit key="tsl" row={row} /> },
             ...(closed
-              ? [date(row.exit_time), number(row.exit_price), row.exit_reason, number(row.gross_pnl), number(row.net_pnl), number(row.pnl_inr)]
-              : [number(row.unrealized_pnl), number(row.pnl_inr), exitCell]),
+              ? [
+                { value: date(row.exit_time) },
+                { value: number(row.exit_price) },
+                { value: row.exit_reason },
+                { value: number(row.gross_pnl), className: pnlClass(row.gross_pnl) },
+                { value: number(row.net_pnl), className: pnlClass(row.net_pnl) },
+                { value: number(row.pnl_inr), className: pnlClass(row.pnl_inr) },
+              ]
+              : [
+                { value: number(row.unrealized_pnl), className: pnlClass(row.unrealized_pnl) },
+                { value: number(row.pnl_inr), className: pnlClass(row.pnl_inr) },
+                exitCell,
+              ]),
           ];
           return <tr key={row.id} className="border-t border-[#1f2937] text-gray-200">
             <td className={`p-3 ${row.side === 'BUY' ? 'text-[#22c55e]' : 'text-[#ef4444]'}`}>{row.side}</td>
-            {cells.map((value, index) => <td key={index} className="p-3 font-mono">{value}</td>)}
+            {cells.map((cell, index) => <td key={index} className={`p-3 font-mono ${cell.className || ''}`}>{cell.value}</td>)}
           </tr>;
         })}
       </tbody>
