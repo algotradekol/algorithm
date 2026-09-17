@@ -36,10 +36,13 @@ type Status = {
 
 const number = (value?: number | null) => value == null ? '--' : value.toLocaleString('en-IN', { maximumFractionDigits: 6 });
 const date = (value?: string | number) => value ? new Date(typeof value === 'number' ? value * 1000 : value).toLocaleString('en-IN', { timeZone: 'Asia/Kolkata', hour12: false }) : '--';
-const pnlClass = (value?: number | null) => {
+const pnlClass = (value?: number | string | null) => {
   if (value == null || Number(value) === 0) return 'text-gray-200';
   return Number(value) > 0 ? 'text-[#22c55e]' : 'text-[#ef4444]';
 };
+const PnlValue = ({ value }: { value?: number | string | null }) => (
+  <span className={`font-semibold ${pnlClass(value)}`}>{number(value == null ? null : Number(value))}</span>
+);
 const timeframeLabel = (minutes: number) => minutes === 60 ? '1 hr' : minutes === 120 ? '2 hr' : minutes === 240 ? '4 hr' : `${minutes} min`;
 const duration = (value?: number) => {
   const seconds = Math.max(0, Math.ceil(value || 0));
@@ -325,13 +328,13 @@ function TradeTable({ rows, closed = false, mode = 'paper', disabled, onEdit, on
                 { value: date(row.exit_time) },
                 { value: number(row.exit_price) },
                 { value: row.exit_reason },
-                { value: number(row.gross_pnl), className: pnlClass(row.gross_pnl) },
-                { value: number(row.net_pnl), className: pnlClass(row.net_pnl) },
-                { value: number(row.pnl_inr), className: pnlClass(row.pnl_inr) },
+                { value: <PnlValue value={row.gross_pnl} /> },
+                { value: <PnlValue value={row.net_pnl} /> },
+                { value: <PnlValue value={row.pnl_inr} /> },
               ]
               : [
-                { value: number(row.unrealized_pnl), className: pnlClass(row.unrealized_pnl) },
-                { value: number(row.pnl_inr), className: pnlClass(row.pnl_inr) },
+                { value: <PnlValue value={row.unrealized_pnl} /> },
+                { value: <PnlValue value={row.pnl_inr} /> },
                 exitCell,
               ]),
           ];
