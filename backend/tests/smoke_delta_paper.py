@@ -49,42 +49,116 @@ class MemoryStore:
 class FakeLiveClient:
     def __init__(self):
         self.orders = []
+        self.brackets = []
         self.edits = []
         self.deletes = []
+        self.active_orders = []
+        self.live_size = 0
         self.region = "india"
+        self.symbol = "PAXGUSD"
 
-    def post(self, path, payload=None, private=True):
-        assert path == "/v2/orders" and private
+    def post(self, path, payload=None, private=True, envelope=False):
+        assert path in {"/v2/orders", "/v2/orders/bracket"} and private
+        if path == "/v2/orders/bracket":
+            self.brackets.append(copy.deepcopy(payload))
+            self.active_orders = [
+                {
+                    "id": 2,
+                    "product_id": payload["product_id"],
+                    "product_symbol": self.symbol,
+                    "size": 1,
+                    "side": "sell",
+                    "order_type": payload["stop_loss_order"]["order_type"],
+                    "stop_order_type": "stop_loss_order",
+                    "stop_price": payload["stop_loss_order"]["stop_price"],
+                    "state": "pending",
+                    "reduce_only": True,
+                    "bracket_order": True,
+                },
+                {
+                    "id": 3,
+                    "product_id": payload["product_id"],
+                    "product_symbol": self.symbol,
+                    "size": 1,
+                    "side": "sell",
+                    "order_type": payload["take_profit_order"]["order_type"],
+                    "stop_order_type": "take_profit_order",
+                    "stop_price": payload["take_profit_order"]["stop_price"],
+                    "state": "pending",
+                    "reduce_only": True,
+                    "bracket_order": True,
+                },
+            ]
+            return {"success": True, "result": None} if envelope else None
         self.orders.append(copy.deepcopy(payload))
+        if payload.get("reduce_only"):
+            self.live_size = 0
+        else:
+            self.live_size = payload.get("size") or 0
         return {"id": len(self.orders), "average_fill_price": payload.get("stop_price") or "1000", "unfilled_size": 0, "state": "closed"}
 
-    def put(self, path, payload=None, private=True):
-        assert path == "/v2/orders" and private
+    def put(self, path, payload=None, private=True, envelope=False):
+        assert path in {"/v2/orders", "/v2/orders/bracket"} and private
         self.edits.append(copy.deepcopy(payload))
+        if path == "/v2/orders/bracket":
+            return {"success": True, "result": None} if envelope else None
         return {"id": payload["id"], "state": "open"}
 
     def delete(self, path, payload=None, private=True):
         assert path == "/v2/orders" and private
         self.deletes.append(copy.deepcopy(payload))
+        self.active_orders = [row for row in self.active_orders if str(row.get("id")) != str(payload.get("id"))]
         return {"id": payload["id"], "state": "cancelled"}
+
+    def get(self, path, params=None, private=True, envelope=False):
+        assert path in {"/v2/orders", "/v2/positions/margined"} and private
+        if path == "/v2/positions/margined":
+            rows = []
+            if self.live_size:
+                rows.append({"product_id": 123006, "product_symbol": self.symbol, "size": self.live_size})
+            return {"result": rows, "meta": {}} if envelope else rows
+        return {"result": copy.deepcopy(self.active_orders), "meta": {"after": None}} if envelope else copy.deepcopy(self.active_orders)
 
 
 class FakeCloseRejectClient(FakeLiveClient):
-    def post(self, path, payload=None, private=True):
+    def post(self, path, payload=None, private=True, envelope=False):
+        if path == "/v2/orders/bracket":
+            return super().post(path, payload, private=private, envelope=envelope)
         assert path == "/v2/orders" and private
         self.orders.append(copy.deepcopy(payload))
         if payload.get("reduce_only") and not payload.get("stop_order_type"):
+            self.live_size = payload.get("size") or self.live_size
             raise RuntimeError("Delta HTTP 400: code=position_not_found; message=no matching live position")
+        if payload.get("reduce_only"):
+            self.live_size = 0
+        else:
+            self.live_size = payload.get("size") or 0
         return {"id": len(self.orders), "average_fill_price": payload.get("stop_price") or "1000", "unfilled_size": 0, "state": "closed"}
 
 
 class FakeUnfilledCloseClient(FakeLiveClient):
-    def post(self, path, payload=None, private=True):
+    def post(self, path, payload=None, private=True, envelope=False):
+        if path == "/v2/orders/bracket":
+            return super().post(path, payload, private=private, envelope=envelope)
         assert path == "/v2/orders" and private
         self.orders.append(copy.deepcopy(payload))
         if payload.get("reduce_only") and not payload.get("stop_order_type"):
+            self.live_size = payload.get("size") or self.live_size
             return {"id": len(self.orders), "unfilled_size": payload.get("size"), "state": "cancelled"}
+        if payload.get("reduce_only"):
+            self.live_size = 0
+        else:
+            self.live_size = payload.get("size") or 0
         return {"id": len(self.orders), "average_fill_price": payload.get("stop_price") or "1000", "unfilled_size": 0, "state": "closed"}
+
+
+class FakeBracketMissingClient(FakeLiveClient):
+    def post(self, path, payload=None, private=True, envelope=False):
+        if path == "/v2/orders/bracket":
+            self.brackets.append(copy.deepcopy(payload))
+            self.active_orders = []
+            return {"success": True, "result": None} if envelope else None
+        return super().post(path, payload, private=private, envelope=envelope)
 
 
 def strategy(minutes=15, settings=None, store=None):
@@ -375,13 +449,41 @@ def run():
     live_pos = live._open_position()
     assert live_pos["execution"] == "live" and live_pos["signal_snapshot"]["execution"] == "live"
     assert live_client.orders[0]["order_type"] == "market_order" and not live_client.orders[0]["reduce_only"]
-    assert live_client.orders[1]["stop_order_type"] == "stop_loss_order" and live_client.orders[1]["reduce_only"]
-    assert live_client.orders[2]["stop_order_type"] == "take_profit_order" and live_client.orders[2]["reduce_only"]
+    assert len(live_client.orders) == 1, "SL/target must be placed as a Delta bracket, not standalone orders"
+    assert live_client.brackets[0]["stop_loss_order"]["stop_price"] == "985"
+    assert live_client.brackets[0]["take_profit_order"]["stop_price"] == "1050"
+    assert live_pos["live_orders"]["bracket_order"] is True
+    assert live_pos["live_orders"]["stop_order_id"] == 2
+    assert live_pos["live_orders"]["target_order_id"] == 3
     live_broker.update_protection(live_pos, 990, 1050, 1005)
-    assert [edit["id"] for edit in live_client.edits[-2:]] == [2, 3]
+    assert live_client.edits[-1]["id"] == 2
+    assert live_client.edits[-1]["bracket_stop_loss_price"] == "990"
+    assert live_client.edits[-1]["bracket_take_profit_price"] == "1050"
     live_broker.close_trade(live_broker.state["position"], 1005, "MANUAL_EXIT")
     assert live_client.orders[-1]["reduce_only"] and live_client.orders[-1]["side"] == "sell"
     assert live_store.closed[-1]["execution"] == "live"
+
+    orphan_store = MemoryStore()
+    orphan_client = FakeLiveClient()
+    orphan_client.active_orders = [
+        {"id": 91, "product_id": 123006, "product_symbol": "PAXGUSD", "stop_order_type": "stop_loss_order", "reduce_only": True},
+        {"id": 92, "product_id": 123006, "product_symbol": "PAXGUSD", "stop_order_type": "take_profit_order", "reduce_only": True},
+        {"id": 93, "product_id": 123006, "product_symbol": "PAXGUSD", "order_type": "limit_order", "reduce_only": False},
+    ]
+    orphan_broker = DeltaLiveBroker(orphan_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, orphan_client)
+    orphan = DeltaGold(15, "PAXGUSD", orphan_broker)
+    assert orphan._enter("BUY", 1000, 1000)
+    assert [row["id"] for row in orphan_client.deletes[:2]] == [91, 92]
+    assert 93 not in [row["id"] for row in orphan_client.deletes]
+
+    missing_store = MemoryStore()
+    missing_client = FakeBracketMissingClient()
+    missing_broker = DeltaLiveBroker(missing_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, missing_client)
+    missing = DeltaGold(15, "PAXGUSD", missing_broker)
+    assert not missing._enter("BUY", 1000, 1000)
+    assert missing.data_error and "bracket protection failed" in missing.data_error
+    assert missing_broker.state["position"] is None
+    assert missing_client.orders[-1]["reduce_only"] and missing_client.orders[-1]["side"] == "sell"
 
     guarded_store = MemoryStore()
     guarded_client = FakeLiveClient()
@@ -593,9 +695,11 @@ def run():
     updated_live = switch_broker.update_protection(current_snapshot, 985.0, 1050.0, 1001.0, exit_mode_patch=tc_patch_live)
     assert updated_live["signal_snapshot"]["silver_exit_policy"] == DELTA_EXIT_MODE_THREE_CANDLE
     assert updated_live["signal_snapshot"]["delta_three_candle_tsl"]["events"] == []
-    # Delta stop + target orders both got PUT-edited with the new prices,
-    # even though the exit_mode also switched — the mode change is snapshot-only.
-    assert len(switch_client.edits) == before_edits + 2
+    # Delta bracket got PUT-edited with the new prices, even though the
+    # exit_mode also switched — the mode change is snapshot-only.
+    assert len(switch_client.edits) == before_edits + 1
+    assert switch_client.edits[-1]["bracket_stop_loss_price"] == "985"
+    assert switch_client.edits[-1]["bracket_take_profit_price"] == "1050"
     latest_edit = updated_live["protection_edits"][-1]
     assert latest_edit["exit_mode_from"] == "fixed_target_sl"
     assert latest_edit["exit_mode_to"] == DELTA_EXIT_MODE_THREE_CANDLE

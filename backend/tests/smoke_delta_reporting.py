@@ -154,7 +154,7 @@ def run():
     fake = MagicMock(region='india', symbol='PAXGUSD')
     def fake_delta_get(path, params=None, private=True, envelope=True):
         if path == '/v2/positions/margined':
-            return {'result': [{'id': 'pos', 'product_id': 123006, 'product_symbol': 'PAXGUSD', 'size': 1, 'entry_price': 1000}],
+            return {'result': [{'id': 'pos', 'product': {'id': 123006}, 'size': 1, 'entry_price': 1000}],
                     'meta': {'after': 'ignored'}}
         if path == '/v2/orders':
             return {'result': [{'id': 1, 'product_id': 123006, 'product_symbol': 'PAXGUSD', 'size': 1, 'side': 'sell', 'stop_order_type': None, 'limit_price': 1050},
@@ -169,6 +169,16 @@ def run():
         result = delta_routes.account('positions', None, 'live', 15, 0)
         assert [row['id'] for row in result['rows']] == ['pos', '1', '2']
         assert 'waiting' in result['note']
+        original_fake_delta_get = fake_delta_get
+        def orphan_delta_get(path, params=None, private=True, envelope=True):
+            if path == '/v2/positions/margined':
+                return {'result': [], 'meta': {'after': None}}
+            return original_fake_delta_get(path, params, private, envelope)
+        fake.get.side_effect = orphan_delta_get
+        result = delta_routes.account('positions', None, 'live', 15, 0)
+        assert [row['id'] for row in result['rows']] == ['1', '2']
+        assert 'orphan' in result['note'].lower()
+        fake.get.side_effect = fake_delta_get
         for kind, expected in [('open_orders', '1'), ('stop_orders', '2')]:
             result = delta_routes.account(kind, None, 'live', 15, 0)
             assert len(result['rows']) == 1 and result['rows'][0]['id'] == expected

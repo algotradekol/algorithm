@@ -123,7 +123,9 @@ class DeltaClient:
                 ("GET", "/v2/orders"),
                 ("GET", "/v2/orders/history"),
                 ("POST", "/v2/orders"),
+                ("POST", "/v2/orders/bracket"),
                 ("PUT", "/v2/orders"),
+                ("PUT", "/v2/orders/bracket"),
                 ("DELETE", "/v2/orders"),
             }
             if (method.upper(), path) not in allowed:

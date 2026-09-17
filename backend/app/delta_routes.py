@@ -288,6 +288,7 @@ def account(kind: str, after: str | None = Query(None, max_length=256), source: 
         formatted = account_rows(rows, kind, client.region)
         note = None
         if kind == "positions":
+            position_row_count = len(formatted)
             order_payload = client.get("/v2/orders", {"page_size": 100, "states": "open,pending"}, private=True, envelope=True)
             order_rows = order_payload.get("result")
             if not isinstance(order_rows, list):
@@ -295,7 +296,13 @@ def account(kind: str, after: str | None = Query(None, max_length=256), source: 
             if client_symbol or product_id is not None:
                 order_rows = _delta_product_rows(order_rows, client_symbol, product_id)
             formatted.extend(account_rows(order_rows, "open_orders", client.region))
-            note = "Positions view includes active account positions plus waiting open, stop-loss, and target orders for this product."
+            if position_row_count == 0 and order_rows:
+                note = (
+                    "Warning: Delta shows waiting orders for this product but no matching open net position. "
+                    "These may be orphan stop-loss/target orders left after the position was closed."
+                )
+            else:
+                note = "Positions view includes active account positions plus waiting open, stop-loss, and target orders for this product."
         return {"rows": formatted,
                 "next_cursor": (payload.get("meta") or {}).get("after") if kind != "positions" else None,
                 "fetched_at": time.time(), "exchange": client.region, "mode": "account_read_only",
@@ -309,8 +316,20 @@ def account(kind: str, after: str | None = Query(None, max_length=256), source: 
 def _delta_product_rows(rows, client_symbol, product_id):
     return [
         row for row in rows if
-        (client_symbol and (row.get('product_symbol') or (row.get('product') or {}).get('symbol')) == client_symbol)
-        or (product_id is not None and str(row.get('product_id')) == str(product_id))
+        (
+            client_symbol and (
+                row.get('product_symbol')
+                or row.get('symbol')
+                or (row.get('product') or {}).get('symbol')
+            ) == client_symbol
+        )
+        or (
+            product_id is not None and str(
+                row.get('product_id')
+                or (row.get('product') or {}).get('id')
+                or ''
+            ) == str(product_id)
+        )
     ]
 
 

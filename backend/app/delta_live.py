@@ -59,6 +59,102 @@ class DeltaLiveBroker(DeltaPaperBroker):
     def _place_order(self, payload):
         return self.client.post("/v2/orders", payload, private=True)
 
+    def _place_bracket_order(self, side, stop_price, target_price):
+        payload = {
+            "product_id": self._product_id(),
+            "stop_loss_order": {
+                "order_type": "market_order",
+                "stop_price": _fmt_price(stop_price),
+            },
+            "take_profit_order": {
+                "order_type": "market_order",
+                "stop_price": _fmt_price(target_price),
+            },
+            "bracket_stop_trigger_method": "last_traded_price",
+        }
+        return self.client.post("/v2/orders/bracket", payload, private=True, envelope=True)
+
+    def _product_row(self, row):
+        product = row.get("product") or {}
+        product_id = row.get("product_id") or product.get("id")
+        return str(product_id) == str(self._product_id()) or row.get("product_symbol") == self.client.symbol or product.get("symbol") == self.client.symbol
+
+    def _active_product_orders(self):
+        payload = self.client.get(
+            "/v2/orders",
+            {"page_size": 100, "states": "open,pending", "product_ids": str(self._product_id())},
+            private=True,
+            envelope=True,
+        )
+        rows = payload.get("result")
+        if not isinstance(rows, list):
+            raise RuntimeError("Delta active orders response was invalid")
+        return [row for row in rows if isinstance(row, dict) and self._product_row(row)]
+
+    def _live_product_size(self):
+        payload = self.client.get("/v2/positions/margined", private=True, envelope=True)
+        rows = payload.get("result")
+        if not isinstance(rows, list):
+            raise RuntimeError("Delta positions response was invalid")
+        total = 0.0
+        for row in rows:
+            if not isinstance(row, dict) or not self._product_row(row):
+                continue
+            try:
+                total += float(row.get("size") or 0)
+            except (TypeError, ValueError):
+                continue
+        return total
+
+    def _is_protection_order(self, row):
+        stop_type = row.get("stop_order_type")
+        return stop_type in {"stop_loss_order", "take_profit_order"} or bool(row.get("reduce_only"))
+
+    def _cancel_orphan_protection_orders(self):
+        if abs(self._live_product_size()) > 0:
+            return []
+        cancelled = []
+        for row in self._active_product_orders():
+            if not self._is_protection_order(row):
+                continue
+            order_id = _order_id(row)
+            if order_id:
+                self._cancel_order(order_id)
+                cancelled.append(order_id)
+        if cancelled:
+            print(f"[delta-live] cancelled orphan protection orders for {self.client.symbol}: {cancelled}")
+        return cancelled
+
+    def _bracket_children(self):
+        children = {"stop_order": None, "target_order": None}
+        for row in self._active_product_orders():
+            stop_type = row.get("stop_order_type")
+            if stop_type == "stop_loss_order" and not children["stop_order"]:
+                children["stop_order"] = row
+            elif stop_type == "take_profit_order" and not children["target_order"]:
+                children["target_order"] = row
+        if not children["stop_order"] or not children["target_order"]:
+            raise RuntimeError("Delta bracket did not expose both stop-loss and target child orders")
+        return children
+
+    def _emergency_close_unprotected_entry(self, side, qty, cause):
+        try:
+            close_order = self._place_order({
+                "product_id": self._product_id(),
+                "size": int(qty),
+                "side": self._opposite_side(side),
+                "order_type": "market_order",
+                "time_in_force": "ioc",
+                "reduce_only": True,
+                "client_order_id": self._client_order_id("dle_fail"),
+            })
+            self._require_filled_order(close_order, "emergency close")
+        except Exception as close_exc:
+            raise RuntimeError(
+                f"Delta live entry filled but bracket protection failed ({cause}) and emergency close also failed: {close_exc}"
+            ) from close_exc
+        raise RuntimeError(f"Delta live entry filled but bracket protection failed; emergency close sent: {cause}") from cause
+
     def _require_filled_order(self, order, purpose):
         if not isinstance(order, dict):
             raise RuntimeError(f"Delta live {purpose} did not return an order object")
@@ -153,6 +249,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
         qty = int(qty)
         if qty < 1:
             raise ValueError("Delta live size must be at least 1 lot")
+        self._cancel_orphan_protection_orders()
         product_id = self._product_id()
         entry = self._place_order({
             "product_id": product_id,
@@ -164,12 +261,17 @@ class DeltaLiveBroker(DeltaPaperBroker):
             "client_order_id": self._client_order_id("dle"),
         })
         fill_price = self._require_filled_order(entry, "entry")
-        stop_order = self._place_order(self._protection_payload(side, qty, sl_price, "stop_loss_order"))
-        target_order = self._place_order(self._protection_payload(side, qty, target_price, "take_profit_order"))
+        try:
+            bracket_response = self._place_bracket_order(side, sl_price, target_price)
+            bracket_children = self._bracket_children()
+        except Exception as exc:
+            self._emergency_close_unprotected_entry(side, qty, exc)
         state = copy.deepcopy(self.state)
         state["manual_guard"] = None
         configured_initial_sl = snapshot.get("configured_initial_sl_price", sl_price)
         three_candle = snapshot.get("delta_three_candle_tsl")
+        stop_order = bracket_children["stop_order"]
+        target_order = bracket_children["target_order"]
         live_orders = {
             "entry_order_id": _order_id(entry),
             "stop_order_id": _order_id(stop_order),
@@ -177,6 +279,8 @@ class DeltaLiveBroker(DeltaPaperBroker):
             "entry_order": entry,
             "stop_order": stop_order,
             "target_order": target_order,
+            "bracket_order": True,
+            "bracket_response": bracket_response,
         }
         snapshot = copy.deepcopy(snapshot)
         snapshot.update(execution="live", live_orders=copy.deepcopy(live_orders))
@@ -244,6 +348,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
         if exit_reason == "MANUAL_EXIT" and not state["settings"].get("manual_exit_reentry_enabled"):
             state["manual_guard"] = {"side": current["side"], "setup_time": current["signal_snapshot"].get("setup_time")}
         self.commit(state, trade)
+        self._cancel_orphan_protection_orders()
         print(f"[delta-live] closed {current['symbol']} {current['side']} reason={exit_reason} gross={gross:.6f}")
         if self.on_position_closed:
             self.on_position_closed(position=current, exit_price=confirmed_exit, exit_reason=exit_reason, exit_time=trade["exit_time"])
@@ -366,11 +471,14 @@ class DeltaLiveBroker(DeltaPaperBroker):
         order_id = orders.get("stop_order_id")
         if not order_id:
             raise ValueError("Live Delta stop order is missing; cannot amend tracked stop")
-        amended = self._edit_order(order_id, {
-            "product_id": self._product_id(),
-            "size": int(position["qty"]),
-            "stop_price": _fmt_price(stop_price),
-        })
+        if orders.get("bracket_order"):
+            amended = self._edit_bracket(position, stop_price, position["target_price"])
+        else:
+            amended = self._edit_order(order_id, {
+                "product_id": self._product_id(),
+                "size": int(position["qty"]),
+                "stop_price": _fmt_price(stop_price),
+            })
         target_state = state if state is not None else copy.deepcopy(self.state)
         target_state["position"].setdefault("live_stop_amends", []).append({
             "time": datetime.datetime.now(datetime.timezone.utc).isoformat(),
@@ -381,6 +489,19 @@ class DeltaLiveBroker(DeltaPaperBroker):
         if state is None:
             self.commit(target_state)
 
+    def _edit_bracket(self, position, sl, target):
+        orders = position.get("live_orders") or {}
+        stop_order_id = orders.get("stop_order_id")
+        if not stop_order_id:
+            raise ValueError("Live Delta bracket stop id is missing; cannot edit bracket")
+        return self.client.put("/v2/orders/bracket", {
+            "id": int(stop_order_id),
+            "product_id": self._product_id(),
+            "bracket_stop_loss_price": _fmt_price(sl),
+            "bracket_take_profit_price": _fmt_price(target),
+            "bracket_stop_trigger_method": "last_traded_price",
+        }, private=True, envelope=True)
+
     def update_protection(self, current, sl, target, ltp, exit_mode_patch=None):
         orders = current.get("live_orders") or {}
         stop_order_id = orders.get("stop_order_id")
@@ -389,16 +510,20 @@ class DeltaLiveBroker(DeltaPaperBroker):
             raise ValueError("Tracked Delta protection orders are missing; reload account/orders before editing")
         state = copy.deepcopy(self.state)
         position = state["position"]
-        stop_response = self._edit_order(stop_order_id, {
-            "product_id": self._product_id(),
-            "size": int(current["qty"]),
-            "stop_price": _fmt_price(sl),
-        })
-        target_response = self._edit_order(target_order_id, {
-            "product_id": self._product_id(),
-            "size": int(current["qty"]),
-            "stop_price": _fmt_price(target),
-        })
+        if orders.get("bracket_order"):
+            stop_response = self._edit_bracket(current, sl, target)
+            target_response = stop_response
+        else:
+            stop_response = self._edit_order(stop_order_id, {
+                "product_id": self._product_id(),
+                "size": int(current["qty"]),
+                "stop_price": _fmt_price(sl),
+            })
+            target_response = self._edit_order(target_order_id, {
+                "product_id": self._product_id(),
+                "size": int(current["qty"]),
+                "stop_price": _fmt_price(target),
+            })
         sl_changed = sl != current["sl_price"]
         target_changed = target != current["target_price"]
         edit_event = {
