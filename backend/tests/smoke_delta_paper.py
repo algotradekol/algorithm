@@ -91,6 +91,21 @@ class FakeLiveClient:
             ]
             return {"success": True, "result": None} if envelope else None
         self.orders.append(copy.deepcopy(payload))
+        if payload.get("stop_order_type"):
+            row = {
+                "id": len(self.orders),
+                "product_id": payload["product_id"],
+                "product_symbol": self.symbol,
+                "size": payload.get("size"),
+                "side": payload.get("side"),
+                "order_type": payload.get("order_type"),
+                "stop_order_type": payload.get("stop_order_type"),
+                "stop_price": payload.get("stop_price"),
+                "state": "pending",
+                "reduce_only": bool(payload.get("reduce_only")),
+            }
+            self.active_orders.append(row)
+            return copy.deepcopy(row)
         if payload.get("reduce_only"):
             self.live_size = 0
         else:
@@ -126,6 +141,8 @@ class FakeCloseRejectClient(FakeLiveClient):
     def post(self, path, payload=None, private=True, envelope=False):
         if path == "/v2/orders/bracket":
             return super().post(path, payload, private=private, envelope=envelope)
+        if payload and payload.get("stop_order_type"):
+            return super().post(path, payload, private=private, envelope=envelope)
         assert path == "/v2/orders" and private
         self.orders.append(copy.deepcopy(payload))
         if payload.get("reduce_only") and not payload.get("stop_order_type"):
@@ -142,6 +159,8 @@ class FakeUnfilledCloseClient(FakeLiveClient):
     def post(self, path, payload=None, private=True, envelope=False):
         if path == "/v2/orders/bracket":
             return super().post(path, payload, private=private, envelope=envelope)
+        if payload and payload.get("stop_order_type"):
+            return super().post(path, payload, private=private, envelope=envelope)
         assert path == "/v2/orders" and private
         self.orders.append(copy.deepcopy(payload))
         if payload.get("reduce_only") and not payload.get("stop_order_type"):
@@ -156,11 +175,57 @@ class FakeUnfilledCloseClient(FakeLiveClient):
 
 class FakeBracketMissingClient(FakeLiveClient):
     def post(self, path, payload=None, private=True, envelope=False):
+        if payload and payload.get("stop_order_type"):
+            self.active_orders = []
+            raise RuntimeError("Delta protection order rejected")
         if path == "/v2/orders/bracket":
             self.brackets.append(copy.deepcopy(payload))
             self.active_orders = []
             return {"success": True, "result": None} if envelope else None
         return super().post(path, payload, private=private, envelope=envelope)
+
+
+class FakeExistingBracketClient(FakeLiveClient):
+    def __init__(self):
+        super().__init__()
+        self.active_orders = [
+            {
+                "id": 21,
+                "product_id": 123006,
+                "product_symbol": self.symbol,
+                "size": 1,
+                "side": "sell",
+                "order_type": "market_order",
+                "stop_order_type": "stop_loss_order",
+                "stop_price": "900",
+                "state": "pending",
+                "reduce_only": True,
+                "bracket_order": True,
+            },
+            {
+                "id": 22,
+                "product_id": 123006,
+                "product_symbol": self.symbol,
+                "size": 1,
+                "side": "sell",
+                "order_type": "market_order",
+                "stop_order_type": "take_profit_order",
+                "stop_price": "1100",
+                "state": "pending",
+                "reduce_only": True,
+                "bracket_order": True,
+            },
+        ]
+
+    def post(self, path, payload=None, private=True, envelope=False):
+        if path == "/v2/orders/bracket":
+            self.brackets.append(copy.deepcopy(payload))
+            raise RuntimeError("Delta HTTP 400: code=bracket_order_exists")
+        return super().post(path, payload, private=private, envelope=envelope)
+
+    def delete(self, path, payload=None, private=True):
+        self.deletes.append(copy.deepcopy(payload))
+        raise RuntimeError("Delta HTTP 400: code=open_order_not_found")
 
 
 def strategy(minutes=15, settings=None, store=None):
@@ -475,10 +540,13 @@ def run():
     live_pos = live._open_position()
     assert live_pos["execution"] == "live" and live_pos["signal_snapshot"]["execution"] == "live"
     assert live_client.orders[0]["order_type"] == "market_order" and not live_client.orders[0]["reduce_only"]
-    assert len(live_client.orders) == 1, "SL/target must be placed as a Delta bracket, not standalone orders"
-    assert live_client.brackets[0]["stop_loss_order"]["stop_price"] == "985"
-    assert live_client.brackets[0]["take_profit_order"]["stop_price"] == "1050"
-    assert live_pos["live_orders"]["bracket_order"] is True
+    assert len(live_client.orders) == 3, "entry plus per-timeframe SL/target protection should be submitted"
+    assert not live_client.brackets, "live timeframe protection must not use Delta's shared product bracket"
+    assert live_client.orders[1]["stop_order_type"] == "stop_loss_order"
+    assert live_client.orders[1]["stop_price"] == "985"
+    assert live_client.orders[2]["stop_order_type"] == "take_profit_order"
+    assert live_client.orders[2]["stop_price"] == "1050"
+    assert live_pos["live_orders"]["bracket_order"] is False
     assert live_pos["live_orders"]["stop_order_id"] == 2
     assert live_pos["live_orders"]["target_order_id"] == 3
     live_broker.update_protection(live_pos, 990, 1050, 1005)
@@ -564,6 +632,20 @@ def run():
     assert [row["id"] for row in orphan_client.deletes[:2]] == [91, 92]
     assert 93 not in [row["id"] for row in orphan_client.deletes]
 
+    existing_store = MemoryStore()
+    existing_client = FakeExistingBracketClient()
+    existing_broker = DeltaLiveBroker(existing_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, existing_client)
+    existing = DeltaGold(15, "PAXGUSD", existing_broker)
+    assert existing._enter("BUY", 1000, 1000)
+    existing_pos = existing_broker.state["position"]
+    assert existing_pos and existing_pos["execution"] == "live"
+    assert existing_pos["live_orders"]["stop_order_id"] == 2
+    assert existing_pos["live_orders"]["target_order_id"] == 3
+    assert not existing_client.brackets
+    assert existing_client.orders[1]["stop_order_type"] == "stop_loss_order"
+    assert existing_client.orders[2]["stop_order_type"] == "take_profit_order"
+    assert not [order for order in existing_client.orders if order.get("reduce_only") and not order.get("stop_order_type")]
+
     missing_store = MemoryStore()
     missing_client = FakeBracketMissingClient()
     missing_broker = DeltaLiveBroker(missing_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, missing_client)
@@ -587,19 +669,18 @@ def run():
         minutes: DeltaGold(minutes, "PAXGUSD", DeltaLiveBroker(MemoryStore(), {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, FakeLiveClient()))
         for minutes in (5, 7, 15, 30)
     }
-    for minutes, side in ((5, "BUY"), (7, "BUY"), (15, "BUY")):
-        live_service.strategies[minutes].broker.state["position"] = {"id": f"p{minutes}", "side": side}
+    live_service.strategies[5].broker.state["position"] = {"id": "p5", "side": "BUY"}
     try:
-        live_service._validate_live_entry(30, "BUY")
-        assert False, "fourth live timeframe entry should be blocked"
+        live_service._validate_live_entry(7, "BUY")
+        assert False, "second live timeframe entry should be blocked"
     except ValueError as exc:
-        assert "maximum 3" in str(exc)
-    live_service.strategies[15].broker.state["position"] = None
+        assert "one active live timeframe trade" in str(exc)
     try:
         live_service._validate_live_entry(30, "SELL")
         assert False, "opposite-side live entry should be blocked"
     except ValueError as exc:
-        assert "opposite-side" in str(exc)
+        assert "one active live timeframe trade" in str(exc)
+    live_service.strategies[5].broker.state["position"] = None
     live_service._validate_live_entry(30, "BUY")
 
     reject_store = MemoryStore()

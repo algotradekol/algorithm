@@ -58,13 +58,13 @@ export default function DeltaOverviewTab({ asset = 'gold', mode = 'paper' }: { a
       </div>
     </header>
     {error && <p role="alert" className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 p-3 text-sm text-[#f87171]">{error}</p>}
-    <div className="grid gap-3 lg:grid-cols-[0.9fr_1.6fr]">
+    <div className="grid gap-3">
       <div className="rounded-xl border border-[#1f2937] bg-[#0d131e] p-4">
-        <div className="mb-4"><p className="text-[10px] uppercase tracking-[0.2em] text-gray-500">Relative contribution</p><h2 className="mt-1 text-sm font-semibold text-gray-200">Today realized + open</h2></div>
-        <div className="space-y-4">{frames.map(row => <OutcomeBar key={row.minutes} row={row} max={maxOutcome} currency={currency} />)}</div>
+        <div className="mb-3 flex flex-wrap items-end justify-between gap-2"><div><p className="text-[10px] uppercase tracking-[0.2em] text-gray-500">Relative contribution</p><h2 className="mt-1 text-sm font-semibold text-gray-200">Today realized + open</h2></div><p className="text-[10px] uppercase tracking-wide text-gray-600">{mode} view</p></div>
+        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{frames.map(row => <OutcomeBar key={row.minutes} row={row} max={maxOutcome} currency={currency} mode={mode} />)}</div>
         {!frames.length && <p className="text-sm text-gray-500">No enabled timeframes.</p>}
       </div>
-      <div className="grid gap-3 sm:grid-cols-2">{frames.map(row => <TimeframeCard key={row.minutes} row={row} ltp={data?.ltp} currency={currency} inr={inr} />)}</div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">{frames.map(row => <TimeframeCard key={row.minutes} row={row} ltp={data?.ltp} currency={currency} inr={inr} />)}</div>
     </div>
     <details className="overflow-hidden rounded-xl border border-[#1f2937] bg-[#0d131e]">
       <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-[#93c5fd] hover:bg-[#111827]">Detailed metrics and exact values</summary>
@@ -90,10 +90,15 @@ export default function DeltaOverviewTab({ asset = 'gold', mode = 'paper' }: { a
   </section>;
 }
 
-function OutcomeBar({ row, max, currency }: { row: Outcome; max: number; currency: string }) {
+function OutcomeBar({ row, max, currency, mode }: { row: Outcome; max: number; currency: string; mode: 'paper' | 'live' }) {
   const width = `${Math.max(row.combined_today === 0 ? 0 : 3, Math.abs(row.combined_today) / max * 50)}%`;
   const positive = row.combined_today >= 0;
-  return <div><div className="mb-1.5 flex items-center justify-between text-xs"><span className="font-semibold text-[#93c5fd]">{row.label.replace(/^Delta (Gold|Silver) /, '')}</span><span className={`font-mono ${tone(row.combined_today)}`}>{number(row.combined_today)} {currency}</span></div><div className="relative h-2 overflow-hidden rounded-full bg-[#182231]"><div className="absolute left-1/2 top-0 h-full w-px bg-gray-500/40" /><div className={`absolute top-0 h-full rounded-full ${positive ? 'left-1/2 bg-[#22c55e]' : 'right-1/2 bg-[#ef4444]'}`} style={{ width }} /></div></div>;
+  const livePositionTone = mode === 'live' && row.position?.side === 'BUY'
+    ? 'text-[#22c55e]'
+    : mode === 'live' && row.position?.side === 'SELL'
+      ? 'text-[#ef4444]'
+      : 'text-[#93c5fd]';
+  return <div><div className="mb-1 flex items-center justify-between gap-3 text-xs"><span className={`font-semibold ${livePositionTone}`}>{row.label.replace(/^Delta (Gold|Silver) /, '')}</span><span className={`shrink-0 font-mono ${tone(row.combined_today)}`}>{number(row.combined_today)} {currency}</span></div><div className="relative h-1.5 overflow-hidden rounded-full bg-[#182231]"><div className="absolute left-1/2 top-0 h-full w-px bg-gray-500/40" /><div className={`absolute top-0 h-full rounded-full ${positive ? 'left-1/2 bg-[#22c55e]' : 'right-1/2 bg-[#ef4444]'}`} style={{ width }} /></div></div>;
 }
 
 function TimeframeCard({ row, ltp, currency, inr }: { row: Outcome; ltp?: number; currency: string; inr: (value?: number) => string }) {

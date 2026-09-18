@@ -3,6 +3,36 @@
 @tailwind utilities;
 
 @layer base {
+  :root {
+    --accent-50: #eff6ff;
+    --accent-100: #dbeafe;
+    --accent-200: #bfdbfe;
+    --accent-300: #93c5fd;
+    --accent-400: #60a5fa;
+    --accent-500: #3b82f6;
+    --accent-600: #2563eb;
+    --accent-700: #1d4ed8;
+    --accent-900: #172554;
+    --accent-sky-300: #7dd3fc;
+    --accent-sky-400: #38bdf8;
+    --accent-sky-500: #0ea5e9;
+  }
+
+  :root[data-accent-theme="green"] {
+    --accent-50: #f0fdf4;
+    --accent-100: #dcfce7;
+    --accent-200: #bbf7d0;
+    --accent-300: #86efac;
+    --accent-400: #4ade80;
+    --accent-500: #22c55e;
+    --accent-600: #16a34a;
+    --accent-700: #15803d;
+    --accent-900: #052e16;
+    --accent-sky-300: #86efac;
+    --accent-sky-400: #4ade80;
+    --accent-sky-500: #22c55e;
+  }
+
   html,
   body {
     margin: 0;
@@ -19,6 +49,119 @@
   input,
   select {
     font: inherit;
+  }
+}
+
+@layer utilities {
+  [data-accent-theme="green"] .border-\[\#0ea5e9\],
+  [data-accent-theme="green"] .border-\[\#38bdf8\],
+  [data-accent-theme="green"] .border-\[\#3b82f6\] {
+    border-color: var(--accent-500);
+  }
+
+  [data-accent-theme="green"] .border-\[\#1d4ed8\],
+  [data-accent-theme="green"] .border-\[\#2563eb\] {
+    border-color: var(--accent-700);
+  }
+
+  [data-accent-theme="green"] .border-\[\#60a5fa\] {
+    border-color: var(--accent-400);
+  }
+
+  [data-accent-theme="green"] .border-\[\#0ea5e9\]\/30,
+  [data-accent-theme="green"] .border-\[\#38bdf8\]\/30,
+  [data-accent-theme="green"] .border-\[\#3b82f6\]\/30 {
+    border-color: rgb(34 197 94 / 0.3);
+  }
+
+  [data-accent-theme="green"] .border-\[\#0ea5e9\]\/40,
+  [data-accent-theme="green"] .border-\[\#38bdf8\]\/40,
+  [data-accent-theme="green"] .border-\[\#3b82f6\]\/40,
+  [data-accent-theme="green"] .border-\[\#60a5fa\]\/40,
+  [data-accent-theme="green"] .border-\[\#2563eb\]\/40 {
+    border-color: rgb(34 197 94 / 0.4);
+  }
+
+  [data-accent-theme="green"] .border-\[\#3b82f6\]\/50 {
+    border-color: rgb(34 197 94 / 0.5);
+  }
+
+  [data-accent-theme="green"] .border-\[\#3b82f6\]\/60 {
+    border-color: rgb(34 197 94 / 0.6);
+  }
+
+  [data-accent-theme="green"] .border-\[\#3b82f6\]\/70,
+  [data-accent-theme="green"] .border-\[\#60a5fa\]\/70 {
+    border-color: rgb(34 197 94 / 0.7);
+  }
+
+  [data-accent-theme="green"] .text-\[\#0ea5e9\],
+  [data-accent-theme="green"] .text-\[\#38bdf8\],
+  [data-accent-theme="green"] .text-\[\#3b82f6\] {
+    color: var(--accent-500);
+  }
+
+  [data-accent-theme="green"] .text-\[\#60a5fa\],
+  [data-accent-theme="green"] .text-\[\#7dd3fc\] {
+    color: var(--accent-400);
+  }
+
+  [data-accent-theme="green"] .text-\[\#93c5fd\],
+  [data-accent-theme="green"] .text-\[\#bfdbfe\] {
+    color: var(--accent-300);
+  }
+
+  [data-accent-theme="green"] .bg-\[\#0ea5e9\],
+  [data-accent-theme="green"] .bg-\[\#38bdf8\],
+  [data-accent-theme="green"] .bg-\[\#3b82f6\] {
+    background-color: var(--accent-500);
+  }
+
+  [data-accent-theme="green"] .bg-\[\#1d4ed8\]\/10,
+  [data-accent-theme="green"] .bg-\[\#2563eb\]\/10,
+  [data-accent-theme="green"] .bg-\[\#3b82f6\]\/10,
+  [data-accent-theme="green"] .bg-\[\#38bdf8\]\/10 {
+    background-color: rgb(34 197 94 / 0.1);
+  }
+
+  [data-accent-theme="green"] .bg-\[\#2563eb\]\/15,
+  [data-accent-theme="green"] .bg-\[\#3b82f6\]\/15 {
+    background-color: rgb(34 197 94 / 0.15);
+  }
+
+  [data-accent-theme="green"] .bg-\[\#2563eb\]\/20,
+  [data-accent-theme="green"] .bg-\[\#3b82f6\]\/20 {
+    background-color: rgb(34 197 94 / 0.2);
+  }
+
+  [data-accent-theme="green"] .bg-\[\#2563eb\]\/25 {
+    background-color: rgb(34 197 94 / 0.25);
+  }
+
+  [data-accent-theme="green"] .bg-\[\#172554\] {
+    background-color: var(--accent-900);
+  }
+
+  [data-accent-theme="green"] .focus\:border-\[\#3b82f6\]:focus,
+  [data-accent-theme="green"] .hover\:border-\[\#3b82f6\]\/70:hover,
+  [data-accent-theme="green"] .hover\:border-\[\#60a5fa\]:hover {
+    border-color: var(--accent-500);
+  }
+
+  [data-accent-theme="green"] .hover\:bg-\[\#3b82f6\]:hover {
+    background-color: var(--accent-500);
+  }
+
+  [data-accent-theme="green"] .hover\:bg-\[\#3b82f6\]\/10:hover {
+    background-color: rgb(34 197 94 / 0.1);
+  }
+
+  [data-accent-theme="green"] .peer:checked ~ .peer-checked\:bg-\[\#3b82f6\] {
+    background-color: var(--accent-500);
+  }
+
+  [data-accent-theme="green"] .outline-\[\#3b82f6\]\/60 {
+    outline-color: rgb(34 197 94 / 0.6);
   }
 }
 

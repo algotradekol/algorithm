@@ -19,7 +19,7 @@ from .strategies.delta_gold import DELTA_DEFAULTS, DELTA_TIMEFRAMES, DeltaGold, 
 from .strategies.delta_silver import DeltaSilver
 
 
-DELTA_LIVE_MAX_TRACKED_TRADES = 3
+DELTA_LIVE_MAX_TRACKED_TRADES = 1
 
 
 class DeltaService:
@@ -253,11 +253,11 @@ class DeltaService:
             for tf, strategy in self.strategies.items()
             if strategy.broker.state.get("position")
         ]
-        if len(open_items) >= DELTA_LIVE_MAX_TRACKED_TRADES:
-            delta_log("live_entry_blocked_max_trades", minutes=minutes, side=side, open_items=[(tf, p.get("side")) for tf, p in open_items])
+        if open_items:
+            delta_log("live_entry_blocked_existing_trade", minutes=minutes, side=side, open_items=[(tf, p.get("side")) for tf, p in open_items])
             raise ValueError(
-                f"Delta live entry blocked: maximum {DELTA_LIVE_MAX_TRACKED_TRADES} "
-                "active timeframe trades are already open"
+                "Delta live entry blocked: one active live timeframe trade is already open. "
+                "Close it before allowing another Delta live trade through."
             )
         opposite = [
             (tf, position)
