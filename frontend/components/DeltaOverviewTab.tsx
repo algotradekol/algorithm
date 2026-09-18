@@ -64,7 +64,7 @@ export default function DeltaOverviewTab({ asset = 'gold', mode = 'paper' }: { a
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">{frames.map(row => <OutcomeBar key={row.minutes} row={row} max={maxOutcome} currency={currency} mode={mode} />)}</div>
         {!frames.length && <p className="text-sm text-gray-500">No enabled timeframes.</p>}
       </div>
-      <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">{frames.map(row => <TimeframeCard key={row.minutes} row={row} ltp={data?.ltp} currency={currency} inr={inr} />)}</div>
+      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">{frames.map(row => <TimeframeCard key={row.minutes} row={row} ltp={data?.ltp} currency={currency} inr={inr} />)}</div>
     </div>
     <details className="overflow-hidden rounded-xl border border-[#1f2937] bg-[#0d131e]">
       <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-[#93c5fd] hover:bg-[#111827]">Detailed metrics and exact values</summary>
