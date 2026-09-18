@@ -234,7 +234,7 @@ def edit_protection(minutes: int, request: ProtectionRequest, asset: Asset = 'go
         raise HTTPException(409, str(exc)) from None
     except Exception as exc:
         print(f"[delta-{mode}] protection edit failed asset={asset} minutes={minutes} pos={request.position_id}: {exc!r}")
-        raise HTTPException(503, 'Protection was not saved; reload before retrying') from None
+        raise HTTPException(503, 'Protection update could not be fully confirmed; reload to check the actual Delta levels before retrying') from None
 
 
 @router.get('/{minutes}/export')

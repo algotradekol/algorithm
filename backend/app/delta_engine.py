@@ -304,6 +304,9 @@ class DeltaService:
             )
             if abs(live_size) > 0:
                 self._live_flat_confirmations.clear()
+                active_orders = next(iter(tracked.values())).broker._active_product_orders()
+                for strategy in tracked.values():
+                    strategy.broker.sync_protection(active_orders)
                 return
             for minutes, strategy in tracked.items():
                 position = strategy.broker.state.get("position")
@@ -524,11 +527,20 @@ class DeltaService:
     def save_settings(self, minutes, changes):
         with self.lock:
             strategy = self.strategy(minutes)
+            previous_settings = copy.deepcopy(strategy.settings)
             settings = validate_settings({**strategy.settings, **changes}, self.asset)
             state = copy.deepcopy(strategy.broker.state)
             state["settings"] = settings
             strategy.broker.commit(state)
             strategy.settings = settings
+            delta_log(
+                "settings_saved", mode=self.mode, asset=self.asset, minutes=minutes,
+                changes={key: {"before": previous_settings.get(key), "after": value}
+                         for key, value in settings.items() if previous_settings.get(key) != value},
+                settings=settings, cooldown=strategy.cooldown_status(),
+                position_id=(state.get("position") or {}).get("id"),
+                ltp=self.last_price, last_tick_at=self.last_event_at,
+            )
             if (
                 self.last_price is not None
                 and self.last_event_at
@@ -558,6 +570,8 @@ class DeltaService:
             state["cooldown_reason"] = None
             strategy.broker.commit(state)
             strategy._sl_cooldown_until_monotonic = 0.0
+            delta_log("entries_resumed", mode=self.mode, asset=self.asset, minutes=minutes,
+                      settings=strategy.settings, cooldown=strategy.cooldown_status())
             return strategy.cooldown_status()
 
     def pause(self, minutes, duration_minutes):
@@ -572,6 +586,9 @@ class DeltaService:
             state["cooldown_until"] = time.time() + int(duration) * 60
             state["cooldown_reason"] = "MANUAL_PAUSE"
             strategy.broker.commit(state)
+            delta_log("entries_paused", mode=self.mode, asset=self.asset, minutes=minutes,
+                      duration_minutes=int(duration), settings=strategy.settings,
+                      cooldown=strategy.cooldown_status())
             return strategy.cooldown_status()
 
     def edit_protection(self, minutes, position_id, sl_price, target_price, expected_sl, expected_target, new_exit_mode=None):
@@ -579,6 +596,8 @@ class DeltaService:
             strategy = self.strategy(minutes)
             if self.last_price is None or not -2 <= time.time() - self.last_event_at <= 15:
                 raise ValueError('Fresh Delta price unavailable; reload before editing protection')
+            if self.mode == "live":
+                strategy.broker.sync_protection()
             current = strategy._open_position()
             if not current or current['id'] != position_id:
                 raise ValueError('That position has closed or changed; reload before editing')

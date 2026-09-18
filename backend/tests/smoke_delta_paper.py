@@ -101,8 +101,10 @@ class FakeLiveClient:
         assert path in {"/v2/orders", "/v2/orders/bracket"} and private
         self.edits.append(copy.deepcopy(payload))
         if path == "/v2/orders/bracket":
-            return {"success": True, "result": None} if envelope else None
-        return {"id": payload["id"], "state": "open"}
+            raise RuntimeError("Delta HTTP 400: code=open_order_not_found")
+        row = next(row for row in self.active_orders if row["id"] == payload["id"])
+        row.update(payload)
+        return copy.deepcopy(row)
 
     def delete(self, path, payload=None, private=True):
         assert path == "/v2/orders" and private
@@ -272,6 +274,16 @@ def run():
         ], now + 5)
         gap.process_price(1050, now + 6)
         assert not gap._open_position()
+
+        sell_gap = strategy(minutes)
+        sell_gap.ingest_history([
+            *history(minutes, now)[:-1],
+            {**history(minutes, now)[-1], "open": 1000, "high": 1001, "low": 969, "close": 970, "volume": 300},
+            {"time": now, "open": 959, "high": 965, "low": 950, "close": 955, "volume": 10},
+        ], now + 5)
+        sell_gap.process_price(961, now + 6)
+        sell_gap.process_price(955, now + 7)
+        assert not sell_gap._open_position(), "SELL needs a candle open above its trigger, even on a later recross"
 
         strict = strategy(minutes)
         strict._ema20 = strict._volume_ema20 = 100
@@ -471,15 +483,73 @@ def run():
     assert live_pos["live_orders"]["target_order_id"] == 3
     live_broker.update_protection(live_pos, 990, 1050, 1005)
     assert live_client.edits[-1]["id"] == 2
-    assert live_client.edits[-1]["bracket_stop_loss_price"] == "990"
-    assert live_client.edits[-1]["bracket_take_profit_price"] == "1050"
+    assert live_client.edits[-1]["stop_price"] == "990"
     live_broker.update_protection(live_broker.state["position"], 990, 1060, 1005)
-    assert live_client.edits[-1]["id"] == 3, "target-only bracket edits should start with the target child id"
-    assert live_client.edits[-1]["bracket_stop_loss_price"] == "990"
-    assert live_client.edits[-1]["bracket_take_profit_price"] == "1060"
+    assert live_client.edits[-1]["id"] == 3, "target-only edits must edit only the target leg"
+    assert live_client.edits[-1]["stop_price"] == "1060"
     live_broker.close_trade(live_broker.state["position"], 1005, "MANUAL_EXIT")
     assert live_client.orders[-1]["reduce_only"] and live_client.orders[-1]["side"] == "sell"
     assert live_store.closed[-1]["execution"] == "live"
+
+    sync_client = FakeLiveClient()
+    sync_store = MemoryStore()
+    sync_broker = DeltaLiveBroker(sync_store, {**DELTA_DEFAULTS, "trading_enabled": True}, live_product, sync_client)
+    sync_strategy = DeltaGold(5, "PAXGUSD", sync_broker)
+    assert sync_strategy._enter("BUY", 1000, 1000)
+    sync_client.active_orders[0]["stop_price"] = "992"
+    sync_client.active_orders[1]["stop_price"] = "1075"
+    service_sync = DeltaService(mode="live")
+    service_sync.client = sync_client
+    service_sync.product = live_product
+    service_sync.strategies = {5: sync_strategy}
+    service_sync._reconcile_live_positions()
+    assert sync_broker.state["position"]["sl_price"] == 992
+    assert sync_broker.state["position"]["target_price"] == 1075
+    assert sync_store.state["position"]["target_price"] == 1075
+    assert not sync_client.edits, "Importing external edits must not place or modify orders"
+
+    before_external = copy.deepcopy(sync_broker.state["position"])
+    sync_client.active_orders[1]["stop_price"] = "1080"
+    try:
+        sync_broker.update_protection(before_external, 992, 1090, 1005)
+        raise AssertionError("stale edit overwrote an external target")
+    except ValueError as exc:
+        assert "changed on Delta" in str(exc)
+    assert sync_broker.state["position"]["target_price"] == 1080
+    assert not sync_client.edits
+
+    real_put = sync_client.put
+    def fail_target(path, payload=None, **kwargs):
+        if payload["id"] == 3:
+            raise RuntimeError("target edit rejected")
+        return real_put(path, payload, **kwargs)
+    with patch.object(sync_client, "put", side_effect=fail_target):
+        try:
+            sync_broker.update_protection(sync_broker.state["position"], 995, 1090, 1005)
+            raise AssertionError("partial failure reported as success")
+        except RuntimeError as exc:
+            assert "target edit rejected" in str(exc)
+    assert sync_broker.state["position"]["sl_price"] == 995
+    assert sync_broker.state["position"]["target_price"] == 1080
+    # Automatic TSL follows the same leg endpoint and preserves Delta's size.
+    sync_client.active_orders[0]["size"] = 3
+    sync_broker._amend_stop(sync_broker.state["position"], 996)
+    assert sync_client.edits[-1]["id"] == 2
+    assert sync_client.edits[-1]["stop_price"] == "996"
+    assert sync_client.edits[-1]["size"] == 3
+    sync_broker.sync_protection()
+    assert sync_broker.state["position"]["sl_price"] == 996
+    sync_client.active_orders[0]["id"] = 99
+    sync_client.active_orders[0]["stop_price"] = "999"
+    sync_broker.sync_protection()
+    assert sync_broker.state["position"]["sl_price"] == 996, "Never adopt another timeframe's untracked order"
+    before_missing = len(sync_client.edits)
+    try:
+        sync_broker.update_protection(sync_broker.state["position"], 996, 1090, 1005)
+        raise AssertionError("missing protection was silently replaced")
+    except ValueError as exc:
+        assert "no longer active" in str(exc)
+    assert len(sync_client.edits) == before_missing
 
     orphan_store = MemoryStore()
     orphan_client = FakeLiveClient()
@@ -713,11 +783,8 @@ def run():
     updated_live = switch_broker.update_protection(current_snapshot, 985.0, 1050.0, 1001.0, exit_mode_patch=tc_patch_live)
     assert updated_live["signal_snapshot"]["silver_exit_policy"] == DELTA_EXIT_MODE_THREE_CANDLE
     assert updated_live["signal_snapshot"]["delta_three_candle_tsl"]["events"] == []
-    # Delta bracket got PUT-edited with the new prices, even though the
-    # exit_mode also switched — the mode change is snapshot-only.
-    assert len(switch_client.edits) == before_edits + 1
-    assert switch_client.edits[-1]["bracket_stop_loss_price"] == "985"
-    assert switch_client.edits[-1]["bracket_take_profit_price"] == "1050"
+    # A mode-only change does not rewrite unchanged exchange orders.
+    assert len(switch_client.edits) == before_edits
     latest_edit = updated_live["protection_edits"][-1]
     assert latest_edit["exit_mode_from"] == "fixed_target_sl"
     assert latest_edit["exit_mode_to"] == DELTA_EXIT_MODE_THREE_CANDLE

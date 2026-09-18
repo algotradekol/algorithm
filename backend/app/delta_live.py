@@ -586,56 +586,69 @@ class DeltaLiveBroker(DeltaPaperBroker):
         if state is None:
             self.commit(target_state)
 
-    def _bracket_edit_ids(self, position, sl, target):
+    def sync_protection(self, rows=None):
+        """Import exchange prices only for this position's tracked order IDs."""
+        if not self.state.get("position"):
+            return
+        rows = self._active_product_orders() if rows is None else rows
+        state = copy.deepcopy(self.state)
+        position = state["position"]
         orders = position.get("live_orders") or {}
-        ids = []
-        sl_changed = sl != position.get("sl_price")
-        target_changed = target != position.get("target_price")
-
-        # Delta can require different tracked ids for bracket edits depending
-        # on whether the edit is aimed at the stop, target, or whole bracket.
-        if target_changed and not sl_changed:
-            ids.extend([orders.get("target_order_id"), orders.get("entry_order_id"), orders.get("stop_order_id")])
-        elif sl_changed and not target_changed:
-            ids.extend([orders.get("stop_order_id"), orders.get("entry_order_id"), orders.get("target_order_id")])
-        else:
-            ids.extend([orders.get("entry_order_id"), orders.get("stop_order_id"), orders.get("target_order_id")])
-
-        unique = []
-        for order_id in ids:
-            if order_id and order_id not in unique:
-                unique.append(order_id)
-        return unique
+        changes = {}
+        for key, field, kind in (
+            ("stop_order_id", "sl_price", "stop_loss_order"),
+            ("target_order_id", "target_price", "take_profit_order"),
+        ):
+            row = next((row for row in rows if str(row.get("id")) == str(orders.get(key))
+                        and self._product_row(row)
+                        and row.get("side") == self._opposite_side(position["side"])
+                        and row.get("stop_order_type") == kind), None)
+            price = _number(row.get("stop_price")) if row else None
+            if price is not None and price > 0 and price != position.get(field):
+                changes[field] = {"previous": position.get(field), "new": price}
+                position[field] = price
+                position["sl_source" if field == "sl_price" else "target_source"] = "manual_external"
+        if changes:
+            event = {"time": utc_now(), "source": "delta_exchange", "changes": changes}
+            position.setdefault("protection_edits", []).append(event)
+            self.commit(state)
+            delta_log("live_protection_synced", position_id=position.get("id"), **event)
 
     def _edit_bracket(self, position, sl, target):
-        candidate_ids = self._bracket_edit_ids(position, sl, target)
-        if not candidate_ids:
-            raise ValueError("Live Delta bracket ids are missing; cannot edit bracket")
-
-        last_error = None
-        for order_id in candidate_ids:
-            payload = {
-                "id": int(order_id),
-                "product_id": self._product_id(),
-                "bracket_stop_loss_price": _fmt_price(sl),
-                "bracket_take_profit_price": _fmt_price(target),
-                "bracket_stop_trigger_method": "last_traded_price",
-            }
-            delta_log("live_bracket_edit", symbol=position.get("symbol"), side=position.get("side"), payload=payload)
+        # PUT /orders/bracket edits an unfilled entry's attached parameters.
+        # A filled position's bracket has real child orders: edit those legs.
+        rows = self._active_product_orders()
+        orders = position.get("live_orders") or {}
+        edits = []
+        for key, field, kind, desired in (
+            ("stop_order_id", "sl_price", "stop_loss_order", sl),
+            ("target_order_id", "target_price", "take_profit_order", target),
+        ):
+            row = next((row for row in rows if str(row.get("id")) == str(orders.get(key))), None)
+            if not row or row.get("stop_order_type") != kind or row.get("side") != self._opposite_side(position["side"]):
+                raise ValueError("Tracked Delta protection order is no longer active; reload account/orders")
+            actual = _number(row.get("stop_price"))
+            if actual != position.get(field):
+                self.sync_protection(rows)
+                raise ValueError("Protection changed on Delta while editing; reopen the editor")
+            if desired != actual:
+                edits.append((row, desired))
+        responses = []
+        try:
+            for row, desired in edits:
+                payload = {"product_id": self._product_id(), "size": int(row["size"]),
+                           "stop_price": _fmt_price(desired)}
+                delta_log("live_protection_leg_edit", order_id=row["id"], payload=payload)
+                responses.append(self._edit_order(row["id"], payload))
+        except Exception:
+            # One leg may have succeeded. Refresh reality instead of claiming
+            # an atomic failure or reverting a stop already accepted by Delta.
             try:
-                response = self.client.put("/v2/orders/bracket", payload, private=True, envelope=True)
-                delta_log("live_bracket_edit_ok", symbol=position.get("symbol"), side=position.get("side"), order_id=order_id)
-                return response
-            except Exception as exc:
-                last_error = exc
-                delta_log(
-                    "live_bracket_edit_failed",
-                    symbol=position.get("symbol"),
-                    side=position.get("side"),
-                    order_id=order_id,
-                    error=str(exc),
-                )
-        raise RuntimeError(f"Delta bracket edit failed for tracked ids {candidate_ids}: {last_error}") from last_error
+                self.sync_protection()
+            except Exception as sync_error:
+                delta_log("live_protection_sync_failed", error=str(sync_error))
+            raise
+        return responses
 
     def update_protection(self, current, sl, target, ltp, exit_mode_patch=None):
         orders = current.get("live_orders") or {}

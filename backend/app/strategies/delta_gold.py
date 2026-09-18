@@ -437,6 +437,7 @@ class DeltaGold(Algo3SilverMicro):
         ready_for_triggers = self.last_candle_epoch == bucket - interval and not self.data_error and self.scan_enabled()
         delta_log(
             "price_seen_by_strategy",
+            mode=getattr(self.broker, "mode", "paper"),
             strategy=self.algo_id,
             asset=self.asset,
             minutes=self.minutes,
@@ -481,10 +482,12 @@ class DeltaGold(Algo3SilverMicro):
         }
         delta_log(
             "trigger_check",
+            mode=getattr(self.broker, "mode", "paper"),
             strategy=self.algo_id,
             asset=self.asset,
             minutes=self.minutes,
             reason=reason,
+            settings=self.settings,
             ltp=ltp,
             baseline=baseline,
             current_candle_open=self._current_candle_open,
@@ -566,6 +569,8 @@ class DeltaGold(Algo3SilverMicro):
         reference_time = reference.replace(tzinfo=IST).isoformat() if reference else None
         delta_log(
             "entry_fire_attempt",
+            mode=getattr(self.broker, "mode", "paper"),
+            settings=self.settings,
             strategy=self.algo_id,
             asset=self.asset,
             minutes=self.minutes,
