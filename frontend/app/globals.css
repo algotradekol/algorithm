@@ -217,3 +217,116 @@
     background: #64748b;
   }
 }
+
+/* Deployment theme shim for existing hard-coded Tailwind accent classes. */
+[data-accent-theme="green"] [class~="border-[#1d3850]"],
+[data-accent-theme="green"] [class~="border-[#1d4ed8]"],
+[data-accent-theme="green"] [class~="border-[#2563eb]"],
+[data-accent-theme="green"] [class~="border-[#38bdf8]"],
+[data-accent-theme="green"] [class~="border-[#3b82f6]"],
+[data-accent-theme="green"] [class~="border-[#60a5fa]"] {
+  border-color: var(--accent-500) !important;
+}
+
+[data-accent-theme="green"] [class~="border-[#38bdf8]/10"] {
+  border-color: rgb(34 197 94 / 0.1) !important;
+}
+
+[data-accent-theme="green"] [class~="border-[#3b82f6]/30"] {
+  border-color: rgb(34 197 94 / 0.3) !important;
+}
+
+[data-accent-theme="green"] [class~="border-[#2563eb]/40"],
+[data-accent-theme="green"] [class~="border-[#38bdf8]/40"],
+[data-accent-theme="green"] [class~="border-[#3b82f6]/40"],
+[data-accent-theme="green"] [class~="border-[#60a5fa]/40"] {
+  border-color: rgb(34 197 94 / 0.4) !important;
+}
+
+[data-accent-theme="green"] [class~="border-[#3b82f6]/50"] {
+  border-color: rgb(34 197 94 / 0.5) !important;
+}
+
+[data-accent-theme="green"] [class~="border-[#3b82f6]/60"] {
+  border-color: rgb(34 197 94 / 0.6) !important;
+}
+
+[data-accent-theme="green"] [class~="border-[#3b82f6]/70"],
+[data-accent-theme="green"] [class~="border-[#60a5fa]/70"] {
+  border-color: rgb(34 197 94 / 0.7) !important;
+}
+
+[data-accent-theme="green"] [class~="text-[#0ea5e9]"],
+[data-accent-theme="green"] [class~="text-[#38bdf8]"],
+[data-accent-theme="green"] [class~="text-[#3b82f6]"] {
+  color: var(--accent-500) !important;
+}
+
+[data-accent-theme="green"] [class~="text-[#60a5fa]"],
+[data-accent-theme="green"] [class~="text-[#7dd3fc]"] {
+  color: var(--accent-400) !important;
+}
+
+[data-accent-theme="green"] [class~="text-[#93c5fd]"],
+[data-accent-theme="green"] [class~="text-[#bfdbfe]"] {
+  color: var(--accent-300) !important;
+}
+
+[data-accent-theme="green"] [class~="bg-[#0ea5e9]"],
+[data-accent-theme="green"] [class~="bg-[#38bdf8]"],
+[data-accent-theme="green"] [class~="bg-[#3b82f6]"] {
+  background-color: var(--accent-500) !important;
+}
+
+[data-accent-theme="green"] [class~="bg-[#1d4ed8]/10"],
+[data-accent-theme="green"] [class~="bg-[#2563eb]/10"],
+[data-accent-theme="green"] [class~="bg-[#38bdf8]/10"],
+[data-accent-theme="green"] [class~="bg-[#3b82f6]/10"] {
+  background-color: rgb(34 197 94 / 0.1) !important;
+}
+
+[data-accent-theme="green"] [class~="bg-[#2563eb]/15"],
+[data-accent-theme="green"] [class~="bg-[#3b82f6]/15"] {
+  background-color: rgb(34 197 94 / 0.15) !important;
+}
+
+[data-accent-theme="green"] [class~="bg-[#2563eb]/20"],
+[data-accent-theme="green"] [class~="bg-[#3b82f6]/20"] {
+  background-color: rgb(34 197 94 / 0.2) !important;
+}
+
+[data-accent-theme="green"] [class~="bg-[#2563eb]/25"] {
+  background-color: rgb(34 197 94 / 0.25) !important;
+}
+
+[data-accent-theme="green"] [class~="bg-[#172554]"] {
+  background-color: var(--accent-900) !important;
+}
+
+[data-accent-theme="green"] [class~="focus:border-[#3b82f6]"]:focus,
+[data-accent-theme="green"] [class~="hover:border-[#3b82f6]/70"]:hover,
+[data-accent-theme="green"] [class~="hover:border-[#60a5fa]"]:hover {
+  border-color: var(--accent-500) !important;
+}
+
+[data-accent-theme="green"] [class~="hover:bg-[#3b82f6]"]:hover {
+  background-color: var(--accent-500) !important;
+}
+
+[data-accent-theme="green"] [class~="hover:bg-[#3b82f6]/10"]:hover {
+  background-color: rgb(34 197 94 / 0.1) !important;
+}
+
+[data-accent-theme="green"] .peer:checked ~ [class~="peer-checked:bg-[#3b82f6]"] {
+  background-color: var(--accent-500) !important;
+}
+
+[data-accent-theme="green"] [class~="outline-[#3b82f6]/60"] {
+  outline-color: rgb(34 197 94 / 0.6) !important;
+}
+
+[data-accent-theme="green"] [class*="14,165,233"] {
+  background-image:
+    radial-gradient(circle at 82% 12%, rgb(34 197 94 / 0.14), transparent 28%),
+    linear-gradient(135deg, #0d1824, #091018 70%) !important;
+}
