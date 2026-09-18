@@ -50,7 +50,7 @@ export default function DeltaOverviewTab({ asset = 'gold', mode = 'paper' }: { a
   const frames = data?.timeframes || [];
   const maxOutcome = Math.max(1, ...frames.map(row => Math.abs(row.combined_today)));
   return <section className="space-y-4">
-    <header className="relative overflow-hidden rounded-xl border border-[#1d3850] bg-[radial-gradient(circle_at_82%_12%,rgba(14,165,233,0.14),transparent_28%),linear-gradient(135deg,#0d1824,#091018_70%)] p-5">
+    <header className="relative overflow-hidden rounded-xl border border-[#1d3850] p-5" style={{ background: 'radial-gradient(circle at 82% 12%, var(--accent-hero-glow), transparent 28%), linear-gradient(135deg, var(--accent-hero-from), var(--accent-hero-to) 70%)' }}>
       <div className="absolute -right-12 -top-16 h-40 w-40 rounded-full border border-[#38bdf8]/10" />
       <div className="relative flex flex-wrap items-end justify-between gap-4">
         <div><p className="text-[10px] uppercase tracking-[0.3em] text-[#38bdf8]">{metal} {mode} dashboard</p><h1 className="mt-2 text-2xl font-semibold text-gray-100">Delta {metal} overview</h1><p className="mt-1 text-sm text-gray-400">{frames.length} enabled {asset} timeframes. Daily totals reset at 00:00 UTC.</p></div>
@@ -58,13 +58,13 @@ export default function DeltaOverviewTab({ asset = 'gold', mode = 'paper' }: { a
       </div>
     </header>
     {error && <p role="alert" className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 p-3 text-sm text-[#f87171]">{error}</p>}
-    <div className="grid gap-3">
+    <div className="grid gap-3 xl:grid-cols-[0.36fr_1.64fr]">
       <div className="rounded-xl border border-[#1f2937] bg-[#0d131e] p-4">
         <div className="mb-3 flex flex-wrap items-end justify-between gap-2"><div><p className="text-[10px] uppercase tracking-[0.2em] text-gray-500">Relative contribution</p><h2 className="mt-1 text-sm font-semibold text-gray-200">Today realized + open</h2></div><p className="text-[10px] uppercase tracking-wide text-gray-600">{mode} view</p></div>
-        <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">{frames.map(row => <OutcomeBar key={row.minutes} row={row} max={maxOutcome} currency={currency} mode={mode} />)}</div>
+        <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">{frames.map(row => <OutcomeBar key={row.minutes} row={row} max={maxOutcome} currency={currency} mode={mode} />)}</div>
         {!frames.length && <p className="text-sm text-gray-500">No enabled timeframes.</p>}
       </div>
-      <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">{frames.map(row => <TimeframeCard key={row.minutes} row={row} ltp={data?.ltp} currency={currency} inr={inr} />)}</div>
+      <div className="grid gap-3 md:grid-cols-2 2xl:grid-cols-4">{frames.map(row => <TimeframeCard key={row.minutes} row={row} ltp={data?.ltp} currency={currency} inr={inr} />)}</div>
     </div>
     <details className="overflow-hidden rounded-xl border border-[#1f2937] bg-[#0d131e]">
       <summary className="cursor-pointer px-4 py-3 text-sm font-semibold text-[#93c5fd] hover:bg-[#111827]">Detailed metrics and exact values</summary>
@@ -108,8 +108,7 @@ function TimeframeCard({ row, ltp, currency, inr }: { row: Outcome; ltp?: number
     <div className="flex items-start justify-between gap-3"><div><div className="text-lg font-semibold text-gray-100">{row.label.replace(/^Delta (Gold|Silver) /, '')}</div><div className="mt-1 flex gap-2 text-[10px] uppercase tracking-wide"><span className={row.stale ? 'text-[#f59e0b]' : 'text-[#22c55e]'}>{row.stale ? 'Stale feed' : 'Fresh feed'}</span><span className={row.cooldown?.active ? 'text-[#f59e0b]' : 'text-gray-500'}>{row.cooldown?.active ? `Rest ${rest(row.cooldown.remaining_seconds)}` : 'Entry ready'}</span></div></div><div className={`rounded-md border px-2 py-1 text-xs font-semibold ${row.position?.side === 'BUY' ? 'border-[#22c55e]/40 bg-[#22c55e]/10 text-[#22c55e]' : row.position?.side === 'SELL' ? 'border-[#ef4444]/40 bg-[#ef4444]/10 text-[#ef4444]' : 'border-[#334155] text-gray-500'}`}>{row.position?.side || 'FLAT'}</div></div>
     <div className="mt-4 flex items-end justify-between gap-3"><div><div className="text-[10px] uppercase tracking-wide text-gray-500">Today + open</div><div className={`mt-1 font-mono text-2xl ${tone(row.combined_today)}`}>{number(row.combined_today)} <span className="text-xs text-gray-500">{currency}</span></div><div className="mt-1 text-xs text-gray-500">{inr(row.combined_today)}</div></div><div className="text-right text-xs text-gray-500">{row.position ? <>Entry <span className="font-mono text-gray-300">{number(row.position.entry_price)}</span><br/>LTP <span className="font-mono text-gray-300">{number(ltp)}</span></> : 'No open exposure'}</div></div>
     <div className="mt-4 grid grid-cols-3 gap-2 border-t border-[#1f2937] pt-3 text-xs"><Mini label="Today W/L" value={`${row.today.wins}/${row.today.losses}`} /><Mini label="All-time net" value={number(row.all_time.net)} valueClass={tone(row.all_time.net)} /><Mini label="Win rate" value={`${number(row.all_time.win_rate)}%`} /></div>
-    <div className="mt-3 h-1.5 overflow-hidden rounded-full bg-[#182231]"><div className="h-full bg-[#38bdf8]" style={{ width: `${Math.min(100, Math.max(0, row.all_time.win_rate))}%` }} /></div>
-    <div className="mt-3 flex justify-between text-[10px] text-gray-600"><span>EMA {number(row.ema20)}</span><span>Vol EMA {number(row.volume_ema20)}</span><span>{row.scan_enabled && row.trading_enabled ? 'Active' : row.scan_enabled ? 'Scan only' : 'Disabled'}</span></div>
+    <div className="mt-3 flex justify-between text-[10px] text-gray-600"><span>EMA {number(row.ema20)}</span><span>{row.scan_enabled && row.trading_enabled ? 'Active' : row.scan_enabled ? 'Scan only' : 'Disabled'}</span></div>
   </article>;
 }
 

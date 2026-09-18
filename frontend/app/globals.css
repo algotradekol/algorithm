@@ -16,6 +16,9 @@
     --accent-sky-300: #7dd3fc;
     --accent-sky-400: #38bdf8;
     --accent-sky-500: #0ea5e9;
+    --accent-hero-glow: rgb(14 165 233 / 0.14);
+    --accent-hero-from: #0d1824;
+    --accent-hero-to: #091018;
   }
 
   :root[data-accent-theme="green"] {
@@ -31,6 +34,9 @@
     --accent-sky-300: #86efac;
     --accent-sky-400: #4ade80;
     --accent-sky-500: #22c55e;
+    --accent-hero-glow: rgb(34 197 94 / 0.16);
+    --accent-hero-from: #0b1c14;
+    --accent-hero-to: #07110c;
   }
 
   html,
