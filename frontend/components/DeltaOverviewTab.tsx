@@ -93,12 +93,13 @@ export default function DeltaOverviewTab({ asset = 'gold', mode = 'paper' }: { a
 function OutcomeBar({ row, max, currency, mode }: { row: Outcome; max: number; currency: string; mode: 'paper' | 'live' }) {
   const width = `${Math.max(row.combined_today === 0 ? 0 : 3, Math.abs(row.combined_today) / max * 50)}%`;
   const positive = row.combined_today >= 0;
-  const livePositionTone = mode === 'live' && row.position?.side === 'BUY'
-    ? 'text-[#22c55e]'
-    : mode === 'live' && row.position?.side === 'SELL'
-      ? 'text-[#ef4444]'
-      : 'text-[#93c5fd]';
-  return <div><div className="mb-1 flex items-center justify-between gap-3 text-xs"><span className={`font-semibold ${livePositionTone}`}>{row.label.replace(/^Delta (Gold|Silver) /, '')}</span><span className={`shrink-0 font-mono ${tone(row.combined_today)}`}>{number(row.combined_today)} {currency}</span></div><div className="relative h-1.5 overflow-hidden rounded-full bg-[#182231]"><div className="absolute left-1/2 top-0 h-full w-px bg-gray-500/40" /><div className={`absolute top-0 h-full rounded-full ${positive ? 'left-1/2 bg-[#22c55e]' : 'right-1/2 bg-[#ef4444]'}`} style={{ width }} /></div></div>;
+  const hasOpenTrade = mode === 'live' && !!row.position;
+  const openTradePositive = row.unrealized >= 0;
+  const livePositionTone = hasOpenTrade ? (openTradePositive ? 'text-[#22c55e]' : 'text-[#ef4444]') : 'text-[#93c5fd]';
+  const blinkClass = hasOpenTrade
+    ? (openTradePositive ? 'delta-trade-blink-green' : 'delta-trade-blink-red')
+    : '';
+  return <div><div className="mb-1 flex items-center justify-between gap-3 text-xs"><span className={`inline-flex items-center gap-1.5 font-semibold ${livePositionTone}`}>{hasOpenTrade && <span className={`h-2 w-2 rounded-full ${blinkClass}`} aria-hidden="true" />}{row.label.replace(/^Delta (Gold|Silver) /, '')}</span><span className={`shrink-0 font-mono ${tone(row.combined_today)}`}>{number(row.combined_today)} {currency}</span></div><div className="relative h-1.5 overflow-hidden rounded-full bg-[#182231]"><div className="absolute left-1/2 top-0 h-full w-px bg-gray-500/40" /><div className={`absolute top-0 h-full rounded-full ${positive ? 'left-1/2 bg-[#22c55e]' : 'right-1/2 bg-[#ef4444]'}`} style={{ width }} /></div></div>;
 }
 
 function TimeframeCard({ row, ltp, currency, inr }: { row: Outcome; ltp?: number; currency: string; inr: (value?: number) => string }) {
