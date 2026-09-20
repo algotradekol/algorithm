@@ -1,5 +1,4 @@
 import './globals.css';
-import AIAssistant from '../components/AIAssistant';
 
 const accentTheme = (process.env.NEXT_PUBLIC_APP_THEME_COLOR || process.env.APP_THEME_COLOR || '').trim().toLowerCase();
 const supportedAccentTheme = accentTheme === 'green' ? 'green' : 'blue';
@@ -23,7 +22,6 @@ export default function RootLayout({
       </head>
       <body className="min-h-screen font-sans antialiased">
         {children}
-        <AIAssistant />
       </body>
     </html>
   );
