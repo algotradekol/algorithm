@@ -194,7 +194,7 @@ function DayModal({ day, mode, previousTrade, onClose }: { day: CalendarDay; mod
       if (!map.has(trade.minutes)) map.set(trade.minutes, []);
       map.get(trade.minutes)!.push(trade);
     }
-    return [...map.entries()].sort((a, b) => a[0] - b[0]);
+    return Array.from(map.entries()).sort((a, b) => a[0] - b[0]);
   }, [day]);
   return <div role="dialog" aria-modal="true" aria-label={`Trades on ${day.date}`}
     onClick={onClose}
