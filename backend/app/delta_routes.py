@@ -429,6 +429,183 @@ def pause(minutes: int, request: PauseRequest, asset: Asset = 'gold', mode: Mode
         raise HTTPException(503, "Delta rest timer could not be started; retry after reloading") from None
 
 
+@router.get("/calendar")
+def calendar(year: int, month: int, asset: Asset = 'gold', mode: Mode = 'paper'):
+    """Per-IST-date roll-up of closed trades across every enabled timeframe.
+
+    Same source as the timeframe tabs' trade history — just grouped by IST
+    calendar date so the frontend can render a month grid without pulling
+    each timeframe separately.
+    """
+    if not 1 <= month <= 12:
+        raise HTTPException(400, "month must be between 1 and 12")
+    require_delta(asset=asset)
+    service = asset_service(asset, mode)
+    capabilities = asset_capabilities(asset)
+    ist = datetime.timezone(datetime.timedelta(hours=5, minutes=30))
+    month_start = datetime.datetime(year, month, 1, tzinfo=ist)
+    if month == 12:
+        month_end = datetime.datetime(year + 1, 1, 1, tzinfo=ist)
+    else:
+        month_end = datetime.datetime(year, month + 1, 1, tzinfo=ist)
+
+    days: dict[str, dict] = {}
+    for minutes in capabilities['enabled_timeframes']:
+        try:
+            strategy = service.strategy(minutes)
+        except Exception:
+            continue
+        closed = service._all_closed_trades(minutes, strategy)
+        for raw in closed:
+            row = paper_row(raw, service.client.region if service.client else 'india')
+            exit_time = row.get("exit_time")
+            if not exit_time:
+                continue
+            try:
+                dt = datetime.datetime.fromisoformat(str(exit_time).replace("Z", "+00:00"))
+            except (ValueError, TypeError):
+                continue
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=datetime.timezone.utc)
+            local = dt.astimezone(ist)
+            if not (month_start <= local < month_end):
+                continue
+            key = local.date().isoformat()
+            bucket = days.setdefault(key, {"date": key, "trades": [], "wins": 0, "losses": 0, "net_pnl_inr": 0.0})
+            pnl = row.get("pnl_inr")
+            if pnl is not None:
+                bucket["net_pnl_inr"] += float(pnl)
+                if pnl > 0:
+                    bucket["wins"] += 1
+                elif pnl < 0:
+                    bucket["losses"] += 1
+            bucket["trades"].append({
+                "minutes": minutes,
+                "symbol": row.get("symbol"),
+                "side": row.get("side"),
+                "entry_time": row.get("entry_time"),
+                "exit_time": row.get("exit_time"),
+                "entry_price": row.get("entry_price"),
+                "exit_price": row.get("exit_price"),
+                "exit_reason": row.get("exit_reason"),
+                "pnl_inr": pnl,
+            })
+    return {
+        "year": year,
+        "month": month,
+        "asset": asset,
+        "mode": mode,
+        "days": sorted(days.values(), key=lambda d: d["date"]),
+    }
+
+
+@router.get("/wallet")
+def wallet(asset: Asset = 'gold'):
+    """USD wallet snapshot from Delta, displayed as INR (× fixed 85 conversion).
+    Live-only: paper mode has no exchange balance to fetch."""
+    require_delta(asset=asset)
+    service = asset_service(asset, 'live')
+    if not service.client:
+        raise HTTPException(400, "Delta live client is not configured")
+    try:
+        rows = service.client.get("/v2/wallet/balances", private=True)
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(400, str(exc)) from None
+    except Exception:
+        raise HTTPException(503, "Delta wallet snapshot unavailable") from None
+
+    def _finite(value):
+        try:
+            result = float(value)
+            return result if result == result else None  # NaN guard
+        except (ValueError, TypeError):
+            return None
+
+    entries = rows if isinstance(rows, list) else []
+    # Prefer the USD wallet; India margin is denominated in USD. Fall back to
+    # whichever wallet reports the largest balance so a renamed asset still shows.
+    usd = next((r for r in entries if (r.get("asset_symbol") or "").upper() == "USD"), None)
+    if usd is None and entries:
+        usd = max(entries, key=lambda r: _finite(r.get("balance")) or 0.0)
+    if usd is None:
+        raise HTTPException(400, "Delta wallet has no USD balance to display")
+
+    balance_usd = _finite(usd.get("balance"))
+    available_usd = _finite(usd.get("available_balance"))
+    blocked_usd = _finite(usd.get("blocked_margin")) or _finite(usd.get("position_margin"))
+    unrealized_usd = _finite(usd.get("unrealized_pnl"))
+    rate = inr_rate("india", "USD")
+
+    def _inr(value):
+        return value * rate if value is not None and rate else None
+
+    return {
+        "asset_symbol": usd.get("asset_symbol") or "USD",
+        "balance_usd": balance_usd,
+        "available_usd": available_usd,
+        "blocked_usd": blocked_usd,
+        "unrealized_usd": unrealized_usd,
+        "balance_inr": _inr(balance_usd),
+        "available_inr": _inr(available_usd),
+        "blocked_inr": _inr(blocked_usd),
+        "unrealized_inr": _inr(unrealized_usd),
+        "usd_inr_rate": rate,
+        "fetched_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+    }
+
+
+@router.get("/wallet/transactions")
+def wallet_transactions(asset: Asset = 'gold', limit: int = 100):
+    """Deposits and withdrawals from the Delta USD wallet, IST-newest first.
+
+    Live-only. Delta's raw payload includes internal margin/fee ledger rows we
+    do not surface here — we filter to real fund movements (deposit /
+    withdrawal / user_credit / user_debit) so the tab matches what the user
+    sees in the Delta app under 'Add Funds' history.
+    """
+    require_delta(asset=asset)
+    service = asset_service(asset, 'live')
+    if not service.client:
+        raise HTTPException(400, "Delta live client is not configured")
+    try:
+        rows = service.client.get(
+            "/v2/wallet/transactions",
+            {"page_size": max(1, min(limit, 500))},
+            private=True,
+        )
+    except (ValueError, RuntimeError) as exc:
+        raise HTTPException(400, str(exc)) from None
+    except Exception:
+        raise HTTPException(503, "Delta wallet history unavailable") from None
+
+    def _finite(value):
+        try:
+            result = float(value)
+            return result if result == result else None
+        except (ValueError, TypeError):
+            return None
+
+    fund_kinds = {"deposit", "withdrawal", "user_credit", "user_debit"}
+    rate = inr_rate("india", "USD")
+    output = []
+    for raw in rows or []:
+        kind = (raw.get("transaction_type") or "").lower()
+        if kind not in fund_kinds:
+            continue
+        amount_usd = _finite(raw.get("amount"))
+        output.append({
+            "id": raw.get("uuid") or raw.get("id"),
+            "transaction_type": kind,
+            "amount_usd": amount_usd,
+            "amount_inr": amount_usd * rate if amount_usd is not None and rate else None,
+            "asset_symbol": raw.get("asset_symbol") or "USD",
+            "balance_after_usd": _finite(raw.get("balance")),
+            "reference": raw.get("meta_data", {}).get("reference") if isinstance(raw.get("meta_data"), dict) else None,
+            "created_at": raw.get("created_at"),
+        })
+    return {"transactions": output, "usd_inr_rate": rate}
+
+
 @router.post("/connection/check")
 def connection_check(asset: Asset = 'gold', mode: Mode = 'paper'):
     require_delta(asset=asset)

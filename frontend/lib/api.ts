@@ -249,5 +249,13 @@ export function deltaApi(asset: DeltaAsset = 'gold', mode: TradingMode = 'paper'
   deltaBacktest: (request: Record<string, unknown>) => fetchAsset('/api/delta/backtest/run', { method: 'POST', body: JSON.stringify({ ...request, asset }) }),
   deltaCancelBacktest: () => fetchAsset('/api/delta/backtest/cancel', { method: 'POST' }),
   deltaAccount: (kind: string, source: string, minutes: number, offset = 0, after = '') => fetchAsset(`/api/delta/account/${kind}?source=${source}&minutes=${minutes}&offset=${offset}${after ? `&after=${encodeURIComponent(after)}` : ''}`),
+  // Live-only USD wallet snapshot from Delta. Backend converts to INR at the
+  // fixed 85 rate Delta India uses for display, so the frontend does not need
+  // its own conversion.
+  deltaWallet: () => fetchAsset('/api/delta/wallet'),
+  // Live-only deposit / withdrawal history for the Funds tab.
+  deltaWalletTransactions: (limit = 100) => fetchAsset(`/api/delta/wallet/transactions?limit=${limit}`),
+  // Per-IST-date roll-up of closed trades for the Calendar tab.
+  deltaCalendar: (year: number, month: number) => fetchAsset(`/api/delta/calendar?year=${year}&month=${month}`),
   };
 }

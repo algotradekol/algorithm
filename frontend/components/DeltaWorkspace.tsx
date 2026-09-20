@@ -1,11 +1,30 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { DeltaAsset } from '../lib/api';
+import { DeltaAsset, deltaApi } from '../lib/api';
 import DeltaTab from './DeltaTab';
 import DeltaOverviewTab from './DeltaOverviewTab';
 import DeltaActivityTab from './DeltaActivityTab';
 import DeltaBacktestTab from './DeltaBacktestTab';
+import DeltaFundsTab from './DeltaFundsTab';
+import DeltaCalendarTab from './DeltaCalendarTab';
+
+type DeltaWallet = {
+  asset_symbol: string;
+  balance_usd: number | null;
+  available_usd: number | null;
+  blocked_usd: number | null;
+  unrealized_usd: number | null;
+  balance_inr: number | null;
+  available_inr: number | null;
+  blocked_inr: number | null;
+  unrealized_inr: number | null;
+  usd_inr_rate: number | null;
+  fetched_at: string;
+};
+
+const INR = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 });
+const USD = new Intl.NumberFormat('en-US', { maximumFractionDigits: 2 });
 
 type Group = { enabled: boolean; enabled_timeframes: number[]; sections: { overview: boolean; activity: boolean; backtest: boolean } };
 export type DeltaCapabilities = {
@@ -65,6 +84,8 @@ function MetalWorkspace({ asset, group }: { asset: DeltaAsset; group: Group }) {
   // (button shows "Confirm?"); second click within the arming window flips to
   // live. Auto-clears after 4s so a stray click can't leave the button armed.
   const [liveArmed, setLiveArmed] = useState(false);
+  const [wallet, setWallet] = useState<DeltaWallet | null>(null);
+  const [walletError, setWalletError] = useState<string | null>(null);
   const metal = asset === 'gold' ? 'Gold' : 'Silver';
   const effectiveMode = asset === 'gold' ? mode : 'paper';
   function persistMode(next: 'paper' | 'live') {
@@ -92,10 +113,24 @@ function MetalWorkspace({ asset, group }: { asset: DeltaAsset; group: Group }) {
     const timer = window.setTimeout(() => setLiveArmed(false), 4000);
     return () => window.clearTimeout(timer);
   }, [liveArmed]);
+  useEffect(() => {
+    if (asset !== 'gold' || effectiveMode !== 'live') {
+      setWallet(null); setWalletError(null); return;
+    }
+    let cancelled = false;
+    const load = () => deltaApi(asset, 'live').deltaWallet()
+      .then((data: DeltaWallet) => { if (!cancelled) { setWallet(data); setWalletError(null); } })
+      .catch((err: Error) => { if (!cancelled) setWalletError(err.message || 'Wallet fetch failed'); });
+    load();
+    const timer = window.setInterval(load, 30000);
+    return () => { cancelled = true; window.clearInterval(timer); };
+  }, [asset, effectiveMode]);
   const tabs = [
     ...(group.sections.overview ? [{ key: 'overview', label: `${metal} dashboard` }] : []),
     ...group.enabled_timeframes.map(minutes => ({ key: String(minutes), label: deltaTimeframeLabel(minutes) })),
     ...(group.sections.activity ? [{ key: 'activity', label: 'Positions & Orders' }] : []),
+    { key: 'calendar', label: 'Calendar' },
+    ...(asset === 'gold' && effectiveMode === 'live' ? [{ key: 'funds', label: 'Funds' }] : []),
     ...(group.sections.backtest ? [{ key: 'backtest', label: `${metal} backtest` }] : []),
   ];
   const tab = tabs.some(t => t.key === selected) ? selected : tabs[0]?.key;
@@ -114,6 +149,16 @@ function MetalWorkspace({ asset, group }: { asset: DeltaAsset; group: Group }) {
       <nav aria-label={`Delta ${metal} timeframes`} className="flex gap-5 overflow-x-auto whitespace-nowrap">
         {tabs.map(item => <button key={item.key} aria-pressed={tab === item.key} onClick={() => selectTab(item.key)} className={`min-h-8 border-b-2 py-2 text-sm ${tab === item.key ? 'border-[#3b82f6] text-gray-100' : 'border-transparent text-gray-500 hover:text-gray-300'}`}>{item.label}</button>)}
       </nav>
+      {asset === 'gold' && effectiveMode === 'live' && <div className="mb-1 flex items-center gap-2 rounded-md border border-[#334155] bg-[#0a0e14] px-2 py-1 text-[11px]" title={walletError || (wallet ? `Delta USD wallet · fetched ${new Date(wallet.fetched_at).toLocaleTimeString()}` : 'Loading Delta wallet…')}>
+        <span className="uppercase tracking-wide text-gray-500">Balance</span>
+        {wallet ? <>
+          <span className="font-semibold text-[#fde68a]">₹{wallet.balance_inr != null ? INR.format(wallet.balance_inr) : '--'}</span>
+          <span className="text-gray-500">${wallet.balance_usd != null ? USD.format(wallet.balance_usd) : '--'}</span>
+          {wallet.available_inr != null && wallet.balance_inr != null && wallet.available_inr !== wallet.balance_inr && (
+            <span className="text-gray-500">· free ₹{INR.format(wallet.available_inr)}</span>
+          )}
+        </> : walletError ? <span className="text-[#f87171]">{walletError}</span> : <span className="text-gray-500">…</span>}
+      </div>}
       {asset === 'gold' && <div className="mb-1 flex rounded-md border border-[#334155] bg-[#0a0e14] p-0.5">
         {(['paper', 'live'] as const).map(value => {
           const isActive = mode === value;
@@ -140,6 +185,8 @@ function MetalWorkspace({ asset, group }: { asset: DeltaAsset; group: Group }) {
     <div key={`${asset}-${tab}-${effectiveMode}`}>
       {tab === 'overview' ? <DeltaOverviewTab asset={asset} mode={effectiveMode} />
         : tab === 'activity' ? <DeltaActivityTab asset={asset} mode={effectiveMode} enabledTimeframes={group.enabled_timeframes} />
+        : tab === 'calendar' ? <DeltaCalendarTab asset={asset} mode={effectiveMode} />
+        : tab === 'funds' ? <DeltaFundsTab asset={asset} mode={effectiveMode} />
         : tab === 'backtest' ? <DeltaBacktestTab asset={asset} enabledTimeframes={group.enabled_timeframes} />
         : tab ? <DeltaTab asset={asset} mode={effectiveMode} minutes={Number(tab)} />
         : <p className="panel p-4 text-sm text-gray-400">No {metal} sections are enabled.</p>}

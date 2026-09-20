@@ -119,6 +119,7 @@ class DeltaClient:
                 raise ValueError("Delta trading endpoints require DELTA_LIVE_API_KEY / DELTA_LIVE_API_SECRET")
             allowed = {
                 ("GET", "/v2/wallet/balances"),
+                ("GET", "/v2/wallet/transactions"),
                 ("GET", "/v2/positions/margined"),
                 ("GET", "/v2/orders"),
                 ("GET", "/v2/orders/history"),

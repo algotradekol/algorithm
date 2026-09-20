@@ -346,7 +346,11 @@ class DeltaGold(Algo3SilverMicro):
         else:
             stamps = [stamp for stamp in stamps if stamp > self.last_candle_epoch]
             if stamps and stamps[0] != self.last_candle_epoch + interval:
-                raise ValueError("Delta history gap; new entries paused")
+                # Delta may drop a bucket that had zero trades (common around the
+                # IST-midnight contract rollover). The "latest completed" guard
+                # above already confirmed the feed is live, so bump forward past
+                # the empty bucket instead of pausing the strategy forever.
+                self.last_candle_epoch = stamps[0] - interval
         if any(right - left != interval for left, right in zip(stamps, stamps[1:])):
             raise ValueError("Delta history contains missing candles; new entries paused")
 
