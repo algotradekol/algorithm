@@ -12,8 +12,8 @@ type Settings = {
   post_exit_cooldown_minutes: number;
   strategy_version: string;
 };
-type ExitMode = 'fixed_target_sl' | 'target_to_breakeven_sl' | 'three_candle_tsl';
-type Trade = {
+export type ExitMode = 'fixed_target_sl' | 'target_to_breakeven_sl' | 'three_candle_tsl';
+export type Trade = {
   id: string; symbol: string; side: string; qty: number; entry_time: string; entry_price: number;
   sl_price: number; initial_sl: number; target_price: number; trailing_sl_active: boolean;
   exit_time?: string; exit_price?: number; exit_reason?: string; gross_pnl?: number; fees?: number;
@@ -297,7 +297,7 @@ function Card({ label, value, detail }: { label: string; value: string; detail: 
   return <div className="rounded border border-[#1f2937] bg-[#111827] px-3 py-2"><div className="text-[10px] uppercase tracking-wide text-gray-500">{label}</div><div className="mt-1 font-mono text-base text-gray-100">{value}</div><p className="mt-1 text-[11px] leading-snug text-gray-500">{detail}</p></div>;
 }
 
-function TradeTable({ rows, closed = false, mode = 'paper', disabled, onEdit, onExit }: { rows: Trade[]; closed?: boolean; mode?: 'paper' | 'live'; disabled?: boolean; onEdit?: (row: Trade) => void; onExit?: (row: Trade) => void }) {
+export function TradeTable({ rows, closed = false, mode = 'paper', disabled, onEdit, onExit }: { rows: Trade[]; closed?: boolean; mode?: 'paper' | 'live'; disabled?: boolean; onEdit?: (row: Trade) => void; onExit?: (row: Trade) => void }) {
   const headers = ['Side', 'Lots', 'Entry time (IST)', 'Entry', 'Reference time (IST)', 'Reference', 'Initial SL', 'Current SL', 'Target', ...(!closed ? ['Edit'] : []), 'TSL', ...(closed ? ['Exit time (IST)', 'Exit', 'Reason', 'Gross', 'Net', 'Net (INR)'] : ['Unrealized P&L', 'Unrealized (INR)', 'Exit'])];
   return <div className="max-h-[32rem] overflow-auto rounded border border-[#1f2937]">
     <table className="w-full whitespace-nowrap text-left text-xs">

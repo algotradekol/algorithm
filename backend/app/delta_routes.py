@@ -450,6 +450,10 @@ def calendar(year: int, month: int, asset: Asset = 'gold', mode: Mode = 'paper')
         month_end = datetime.datetime(year, month + 1, 1, tzinfo=ist)
 
     days: dict[str, dict] = {}
+    # Track the closest trade whose exit_time falls BEFORE month_start so the
+    # frontend can show "+ last previous row" context for the earliest day the
+    # user opens, matching the DeltaTab closed-trades table.
+    previous_candidates: list[tuple[datetime.datetime, dict, int]] = []
     for minutes in capabilities['enabled_timeframes']:
         try:
             strategy = service.strategy(minutes)
@@ -468,7 +472,10 @@ def calendar(year: int, month: int, asset: Asset = 'gold', mode: Mode = 'paper')
             if dt.tzinfo is None:
                 dt = dt.replace(tzinfo=datetime.timezone.utc)
             local = dt.astimezone(ist)
-            if not (month_start <= local < month_end):
+            if local < month_start:
+                previous_candidates.append((local, dict(row), minutes))
+                continue
+            if local >= month_end:
                 continue
             key = local.date().isoformat()
             bucket = days.setdefault(key, {"date": key, "trades": [], "wins": 0, "losses": 0, "net_pnl_inr": 0.0})
@@ -479,22 +486,29 @@ def calendar(year: int, month: int, asset: Asset = 'gold', mode: Mode = 'paper')
                     bucket["wins"] += 1
                 elif pnl < 0:
                     bucket["losses"] += 1
-            bucket["trades"].append({
-                "minutes": minutes,
-                "symbol": row.get("symbol"),
-                "side": row.get("side"),
-                "entry_time": row.get("entry_time"),
-                "exit_time": row.get("exit_time"),
-                "entry_price": row.get("entry_price"),
-                "exit_price": row.get("exit_price"),
-                "exit_reason": row.get("exit_reason"),
-                "pnl_inr": pnl,
-            })
+            # Ship the whole paper_row so the frontend can reuse the timeframe
+            # tab's TradeTable directly — no column whitelist to keep in sync.
+            trade = dict(row)
+            trade["minutes"] = minutes
+            bucket["trades"].append(trade)
+
+    # Sort trades inside each day newest-exit first, same as the timeframe tab.
+    for bucket in days.values():
+        bucket["trades"].sort(key=lambda r: r.get("exit_time") or "", reverse=True)
+
+    previous_candidates.sort(key=lambda item: item[0], reverse=True)
+    previous_row = None
+    if previous_candidates:
+        _, raw_prev, minutes_prev = previous_candidates[0]
+        previous_row = dict(raw_prev)
+        previous_row["minutes"] = minutes_prev
+
     return {
         "year": year,
         "month": month,
         "asset": asset,
         "mode": mode,
+        "previous_trade": previous_row,
         "days": sorted(days.values(), key=lambda d: d["date"]),
     }
 

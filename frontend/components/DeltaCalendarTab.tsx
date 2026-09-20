@@ -2,18 +2,9 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { DeltaAsset, deltaApi } from '../lib/api';
+import { TradeTable, Trade } from './DeltaTab';
 
-type CalendarTrade = {
-  minutes: number;
-  symbol: string;
-  side: string;
-  entry_time: string | null;
-  exit_time: string | null;
-  entry_price: number | null;
-  exit_price: number | null;
-  exit_reason: string | null;
-  pnl_inr: number | null;
-};
+type CalendarTrade = Trade & { minutes: number };
 type CalendarDay = {
   date: string;
   trades: CalendarTrade[];
@@ -21,19 +12,19 @@ type CalendarDay = {
   losses: number;
   net_pnl_inr: number;
 };
+type CalendarResponse = {
+  year: number;
+  month: number;
+  asset: DeltaAsset;
+  mode: 'paper' | 'live';
+  previous_trade: CalendarTrade | null;
+  days: CalendarDay[];
+};
 
 const INR = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 });
 const WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
-function istTime(iso: string | null) {
-  if (!iso) return '--';
-  try {
-    return new Date(iso).toLocaleTimeString('en-IN', { timeZone: 'Asia/Kolkata', hour: '2-digit', minute: '2-digit' });
-  } catch { return iso; }
-}
-
-// Same convention as the top-of-tab labels: > 60 min renders as hours.
 function tfLabel(minutes: number) {
   if (minutes % 60 === 0 && minutes >= 60) return `${minutes / 60} hr`;
   return `${minutes} min`;
@@ -41,8 +32,6 @@ function tfLabel(minutes: number) {
 
 function longDate(iso: string) {
   try {
-    // Interpret the IST-day key as noon IST so the local formatter doesn't
-    // shift it into the previous calendar day for viewers west of IST.
     const d = new Date(`${iso}T12:00:00+05:30`);
     return d.toLocaleDateString('en-IN', { timeZone: 'Asia/Kolkata', weekday: 'long', day: 'numeric', month: 'long', year: 'numeric' });
   } catch { return iso; }
@@ -62,36 +51,72 @@ function daysGrid(year: number, month: number) {
   return cells;
 }
 
+function csvEscape(value: unknown) {
+  if (value === null || value === undefined) return '';
+  const text = String(value);
+  if (/[",\n]/.test(text)) return `"${text.replace(/"/g, '""')}"`;
+  return text;
+}
+
+function downloadClosedCsv(day: CalendarDay, mode: 'paper' | 'live') {
+  const headers = ['Timeframe', 'Side', 'Lots', 'Entry time (IST)', 'Entry', 'Reference time (IST)', 'Reference', 'Initial SL', 'Current SL', 'Target', 'Exit time (IST)', 'Exit', 'Reason', 'Gross', 'Net', 'Net (INR)'];
+  const rows = day.trades.map(row => [
+    tfLabel(row.minutes),
+    row.side,
+    row.qty,
+    row.entry_time,
+    row.entry_price,
+    row.signal_snapshot?.setup_time || '',
+    row.signal_snapshot?.setup_close ?? '',
+    row.initial_sl,
+    row.sl_price,
+    row.target_price,
+    row.exit_time || '',
+    row.exit_price ?? '',
+    row.exit_reason || '',
+    row.gross_pnl ?? '',
+    row.net_pnl ?? '',
+    row.pnl_inr ?? '',
+  ]);
+  const csv = [headers, ...rows].map(cols => cols.map(csvEscape).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = `delta-${mode}-closed-${day.date}.csv`;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 1000);
+}
+
 export default function DeltaCalendarTab({ asset, mode }: { asset: DeltaAsset; mode: 'paper' | 'live' }) {
   const now = new Date();
   const [year, setYear] = useState(now.getUTCFullYear());
   const [month, setMonth] = useState(now.getUTCMonth() + 1);
-  const [days, setDays] = useState<Record<string, CalendarDay> | null>(null);
+  const [payload, setPayload] = useState<CalendarResponse | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [selectedDate, setSelectedDate] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
-    setDays(null); setError(null);
+    setPayload(null); setError(null);
     deltaApi(asset, mode).deltaCalendar(year, month)
-      .then((data: { days: CalendarDay[] }) => {
-        if (cancelled) return;
-        const map: Record<string, CalendarDay> = {};
-        for (const d of data.days) map[d.date] = d;
-        setDays(map);
-      })
+      .then((data: CalendarResponse) => { if (!cancelled) setPayload(data); })
       .catch((err: Error) => { if (!cancelled) setError(err.message || 'Calendar fetch failed'); });
     return () => { cancelled = true; };
   }, [asset, mode, year, month]);
+  const dayMap = useMemo(() => {
+    const map: Record<string, CalendarDay> = {};
+    (payload?.days || []).forEach(d => { map[d.date] = d; });
+    return map;
+  }, [payload]);
   const cells = useMemo(() => daysGrid(year, month), [year, month]);
   const monthTotal = useMemo(() => {
-    if (!days) return 0;
-    return Object.values(days).reduce((acc, d) => acc + (d.net_pnl_inr || 0), 0);
-  }, [days]);
+    return Object.values(dayMap).reduce((acc, d) => acc + (d.net_pnl_inr || 0), 0);
+  }, [dayMap]);
   function shiftMonth(delta: number) {
     const next = new Date(Date.UTC(year, month - 1 + delta, 1));
     setYear(next.getUTCFullYear()); setMonth(next.getUTCMonth() + 1); setSelectedDate(null);
   }
-  const selectedDay = selectedDate && days ? days[selectedDate] : null;
+  const selectedDay = selectedDate ? dayMap[selectedDate] : null;
   useEffect(() => {
     if (!selectedDay) return;
     function onKey(e: KeyboardEvent) { if (e.key === 'Escape') setSelectedDate(null); }
@@ -119,7 +144,7 @@ export default function DeltaCalendarTab({ asset, mode }: { asset: DeltaAsset; m
       <div className="mt-1 grid grid-cols-7 gap-1">
         {cells.map((iso, index) => {
           if (!iso) return <div key={`empty-${index}`} className="h-20 rounded border border-transparent" />;
-          const day = days?.[iso];
+          const day = dayMap[iso];
           const dayNum = Number(iso.slice(-2));
           const isSelected = iso === selectedDate;
           const hasTrades = !!day && day.trades.length > 0;
@@ -142,23 +167,44 @@ export default function DeltaCalendarTab({ asset, mode }: { asset: DeltaAsset; m
         })}
       </div>
     </div>
-    {selectedDay && <DayModal day={selectedDay} onClose={() => setSelectedDate(null)} />}
+    {selectedDay && <DayModal day={selectedDay} mode={mode}
+      previousTrade={pickPrevious(payload, dayMap, selectedDay)}
+      onClose={() => setSelectedDate(null)} />}
   </div>;
 }
 
-function DayModal({ day, onClose }: { day: CalendarDay; onClose: () => void }) {
+// The "+ last previous row" context in DeltaTab shows the trade immediately
+// before the visible window. For the selected day, that's the newest trade
+// with an earlier exit — either from an earlier day this month or, if this is
+// the first traded day of the month, the month-boundary previous_trade the
+// backend supplies.
+function pickPrevious(payload: CalendarResponse | null, dayMap: Record<string, CalendarDay>, day: CalendarDay): CalendarTrade | null {
+  const earlier = Object.values(dayMap).filter(d => d.date < day.date).sort((a, b) => b.date.localeCompare(a.date));
+  const trade = earlier[0]?.trades?.[0];
+  if (trade) return trade;
+  return payload?.previous_trade || null;
+}
+
+function DayModal({ day, mode, previousTrade, onClose }: { day: CalendarDay; mode: 'paper' | 'live'; previousTrade: CalendarTrade | null; onClose: () => void }) {
   const pnl = day.net_pnl_inr || 0;
   const winRate = day.trades.length > 0 ? Math.round((day.wins / day.trades.length) * 100) : 0;
   const best = day.trades.reduce((a, t) => Math.max(a, t.pnl_inr ?? -Infinity), -Infinity);
   const worst = day.trades.reduce((a, t) => Math.min(a, t.pnl_inr ?? Infinity), Infinity);
-  const maxAbs = Math.max(Math.abs(best === -Infinity ? 0 : best), Math.abs(worst === Infinity ? 0 : worst), 1);
-  // Sort by exit_time desc so the most recent trade is on top.
-  const trades = [...day.trades].sort((a, b) => (b.exit_time || '').localeCompare(a.exit_time || ''));
+  // Group trades by timeframe so the drill-down mirrors the per-timeframe
+  // tabs' closed-trades table exactly, one section per TF, newest first.
+  const grouped = useMemo(() => {
+    const map = new Map<number, CalendarTrade[]>();
+    for (const trade of day.trades) {
+      if (!map.has(trade.minutes)) map.set(trade.minutes, []);
+      map.get(trade.minutes)!.push(trade);
+    }
+    return [...map.entries()].sort((a, b) => a[0] - b[0]);
+  }, [day]);
   return <div role="dialog" aria-modal="true" aria-label={`Trades on ${day.date}`}
     onClick={onClose}
     className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
     <div onClick={e => e.stopPropagation()}
-      className="flex max-h-[85vh] w-full max-w-3xl flex-col overflow-hidden rounded-xl border border-[#1f2937] bg-[#0b1220] shadow-2xl">
+      className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-[#1f2937] bg-[#0b1220] shadow-2xl">
       <header className="border-b border-[#1f2937] bg-gradient-to-r from-[#0f172a] to-[#111827] px-5 py-4">
         <div className="flex items-start justify-between gap-3">
           <div>
@@ -178,38 +224,23 @@ function DayModal({ day, onClose }: { day: CalendarDay; onClose: () => void }) {
             tone="neutral" small />
         </div>
       </header>
-      <div className="flex-1 overflow-y-auto p-4">
-        <ol className="space-y-2">
-          {trades.map((trade, index) => {
-            const p = trade.pnl_inr ?? 0;
-            const positive = p >= 0;
-            const barPct = Math.min(100, Math.round((Math.abs(p) / maxAbs) * 100));
-            return <li key={index} className={`overflow-hidden rounded-lg border ${positive ? 'border-[#22c55e]/30 bg-[#22c55e]/5' : 'border-[#ef4444]/30 bg-[#ef4444]/5'}`}>
-              <div className="grid grid-cols-12 items-center gap-3 px-3 py-2">
-                <div className="col-span-2 flex items-center gap-2">
-                  <span className={`inline-flex items-center rounded px-1.5 py-0.5 text-[10px] font-bold uppercase tracking-wide ${trade.side === 'BUY' ? 'bg-[#22c55e]/20 text-[#4ade80]' : 'bg-[#ef4444]/20 text-[#f87171]'}`}>{trade.side}</span>
-                  <span className="rounded bg-[#1f2937] px-1.5 py-0.5 text-[10px] font-semibold text-gray-300">{tfLabel(trade.minutes)}</span>
-                </div>
-                <div className="col-span-5 text-xs text-gray-400">
-                  <span className="text-gray-500">{istTime(trade.entry_time)}</span>
-                  <span className="mx-2 text-gray-600">→</span>
-                  <span className="text-gray-300">{istTime(trade.exit_time)}</span>
-                  {trade.exit_reason && <span className="ml-2 rounded bg-[#111827] px-1.5 py-0.5 text-[10px] uppercase tracking-wide text-gray-400">{trade.exit_reason}</span>}
-                </div>
-                <div className="col-span-3 text-xs text-gray-500">
-                  {trade.entry_price != null && <>@ {trade.entry_price}
-                    {trade.exit_price != null && <span className="text-gray-600"> → {trade.exit_price}</span>}</>}
-                </div>
-                <div className={`col-span-2 text-right text-sm font-semibold ${positive ? 'text-[#4ade80]' : 'text-[#f87171]'}`}>
-                  {trade.pnl_inr != null ? `${positive ? '+' : ''}₹${INR.format(p)}` : '--'}
-                </div>
-              </div>
-              <div className="h-1 w-full bg-[#0a0e14]">
-                <div className={`h-full ${positive ? 'bg-[#4ade80]' : 'bg-[#f87171]'}`} style={{ width: `${barPct}%` }} />
-              </div>
-            </li>;
-          })}
-        </ol>
+      <div className="flex-1 space-y-5 overflow-y-auto p-4">
+        {grouped.map(([minutes, trades]) => {
+          const rowsForTable: Trade[] = previousTrade ? [...trades, previousTrade] : trades;
+          return <section key={minutes} className="space-y-2">
+            <div className="flex flex-wrap items-center justify-between gap-2">
+              <h4 className="text-sm font-semibold text-gray-200">
+                CLOSED {mode.toUpperCase()} TRADES · {tfLabel(minutes)}
+                {previousTrade && <span className="ml-2 text-xs font-normal text-gray-500">+ last previous row</span>}
+              </h4>
+              <button onClick={() => downloadClosedCsv(day, mode)}
+                className="rounded border border-[#22c55e]/60 px-3 py-1.5 text-xs font-semibold text-[#22c55e] hover:bg-[#22c55e]/10">
+                Download closed CSV
+              </button>
+            </div>
+            <TradeTable rows={rowsForTable} closed mode={mode} />
+          </section>;
+        })}
       </div>
       <footer className="border-t border-[#1f2937] px-5 py-2 text-[11px] text-gray-500">
         Times are IST · P&L converted at Delta India's ₹85/USD reference rate · Press <kbd className="rounded border border-[#334155] bg-[#111827] px-1 text-gray-400">Esc</kbd> to close
