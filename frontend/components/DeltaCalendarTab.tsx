@@ -186,10 +186,6 @@ function pickPrevious(payload: CalendarResponse | null, dayMap: Record<string, C
 }
 
 function DayModal({ day, mode, previousTrade, onClose }: { day: CalendarDay; mode: 'paper' | 'live'; previousTrade: CalendarTrade | null; onClose: () => void }) {
-  const pnl = day.net_pnl_inr || 0;
-  const winRate = day.trades.length > 0 ? Math.round((day.wins / day.trades.length) * 100) : 0;
-  const best = day.trades.reduce((a, t) => Math.max(a, t.pnl_inr ?? -Infinity), -Infinity);
-  const worst = day.trades.reduce((a, t) => Math.min(a, t.pnl_inr ?? Infinity), Infinity);
   // Group trades by timeframe so the drill-down mirrors the per-timeframe
   // tabs' closed-trades table exactly, one section per TF, newest first.
   const grouped = useMemo(() => {
@@ -205,24 +201,11 @@ function DayModal({ day, mode, previousTrade, onClose }: { day: CalendarDay; mod
     className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-sm">
     <div onClick={e => e.stopPropagation()}
       className="flex max-h-[92vh] w-full max-w-6xl flex-col overflow-hidden rounded-xl border border-[#1f2937] bg-[#0b1220] shadow-2xl">
-      <header className="border-b border-[#1f2937] bg-gradient-to-r from-[#0f172a] to-[#111827] px-5 py-4">
-        <div className="flex items-start justify-between gap-3">
-          <div>
-            <div className="text-[11px] uppercase tracking-widest text-gray-500">Trading day</div>
-            <h3 className="mt-0.5 text-lg font-semibold text-gray-100">{longDate(day.date)}</h3>
-          </div>
-          <button onClick={onClose} aria-label="Close" className="rounded-full border border-[#334155] p-1.5 text-gray-400 hover:border-gray-500 hover:text-gray-100">
-            <svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
-          </button>
-        </div>
-        <div className="mt-3 grid grid-cols-2 gap-2 sm:grid-cols-4">
-          <StatBlock label="Net P&L" value={`${pnl >= 0 ? '+' : ''}₹${INR.format(pnl)}`} tone={pnl >= 0 ? 'good' : 'bad'} />
-          <StatBlock label="Trades" value={String(day.trades.length)} tone="neutral" />
-          <StatBlock label="Win rate" value={`${winRate}%`} tone={winRate >= 50 ? 'good' : 'bad'} sub={`${day.wins}W · ${day.losses}L`} />
-          <StatBlock label="Best / Worst"
-            value={`${best === -Infinity ? '--' : `₹${INR.format(best)}`} · ${worst === Infinity ? '--' : `₹${INR.format(worst)}`}`}
-            tone="neutral" small />
-        </div>
+      <header className="flex items-center justify-between border-b border-[#1f2937] px-5 py-3">
+        <h3 className="text-base font-semibold text-gray-100">{longDate(day.date)}</h3>
+        <button onClick={onClose} aria-label="Close" className="rounded-full border border-[#334155] p-1.5 text-gray-400 hover:border-gray-500 hover:text-gray-100">
+          <svg width="14" height="14" viewBox="0 0 20 20" fill="none" aria-hidden="true"><path d="M5 5l10 10M15 5L5 15" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>
+        </button>
       </header>
       <div className="flex-1 space-y-5 overflow-y-auto p-4">
         {grouped.map(([minutes, trades]) => {
@@ -242,18 +225,6 @@ function DayModal({ day, mode, previousTrade, onClose }: { day: CalendarDay; mod
           </section>;
         })}
       </div>
-      <footer className="border-t border-[#1f2937] px-5 py-2 text-[11px] text-gray-500">
-        Times are IST · P&L converted at Delta India's ₹85/USD reference rate · Press <kbd className="rounded border border-[#334155] bg-[#111827] px-1 text-gray-400">Esc</kbd> to close
-      </footer>
     </div>
-  </div>;
-}
-
-function StatBlock({ label, value, tone, sub, small }: { label: string; value: string; tone: 'good' | 'bad' | 'neutral'; sub?: string; small?: boolean }) {
-  const valueTone = tone === 'good' ? 'text-[#4ade80]' : tone === 'bad' ? 'text-[#f87171]' : 'text-gray-100';
-  return <div className="rounded-md border border-[#1f2937] bg-[#0a0e14] px-3 py-2">
-    <div className="text-[10px] uppercase tracking-widest text-gray-500">{label}</div>
-    <div className={`mt-0.5 font-semibold ${small ? 'text-xs' : 'text-base'} ${valueTone}`}>{value}</div>
-    {sub && <div className="mt-0.5 text-[10px] text-gray-500">{sub}</div>}
   </div>;
 }
