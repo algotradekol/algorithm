@@ -338,8 +338,15 @@ class DeltaGold(Algo3SilverMicro):
                 raise ValueError("Invalid Delta OHLCV history")
             by_time[stamp] = {**raw, "volume": volume}
         stamps = sorted(by_time)
-        if not stamps or stamps[-1] != current_bucket - interval:
-            raise ValueError("Delta latest completed candle is missing; new entries paused")
+        if not stamps:
+            raise ValueError("Delta returned no completed candles; new entries paused")
+        if stamps[-1] != current_bucket - interval:
+            # Custom-aggregated timeframes (7m, 120m) drop a bucket when Delta
+            # is briefly missing one of its source 1m candles, and even native
+            # timeframes see a fresh bar arrive a tick late. Silently skip
+            # this refresh — nothing new to ingest — and let the next poll
+            # pick up the completed bucket once Delta delivers it.
+            return
         if self.last_candle_epoch is None:
             if len(stamps) < 20:
                 raise ValueError("Need at least 20 completed Delta candles for EMA20")
@@ -352,7 +359,20 @@ class DeltaGold(Algo3SilverMicro):
                 # the empty bucket instead of pausing the strategy forever.
                 self.last_candle_epoch = stamps[0] - interval
         if any(right - left != interval for left, right in zip(stamps, stamps[1:])):
-            raise ValueError("Delta history contains missing candles; new entries paused")
+            # On the very first ingest we still refuse a gappy warmup — the
+            # 20-bar EMA seed must be clean. Once last_candle_epoch is set,
+            # incremental refreshes should tolerate an interior hole (usually
+            # a 7m/120m aggregation dropping a bucket for a missing 1m bar);
+            # keep only the contiguous suffix ending at the newest stamp so
+            # we still advance state on the fresh candles and skip the gap.
+            if self.last_candle_epoch is None:
+                raise ValueError("Delta history contains missing candles; new entries paused")
+            contiguous_start = len(stamps) - 1
+            while contiguous_start > 0 and stamps[contiguous_start] - stamps[contiguous_start - 1] == interval:
+                contiguous_start -= 1
+            stamps = stamps[contiguous_start:]
+            if stamps and stamps[0] != self.last_candle_epoch + interval:
+                self.last_candle_epoch = stamps[0] - interval
 
         live_completed_bars = self.last_candle_epoch is not None
         for stamp in stamps:
