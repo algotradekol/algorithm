@@ -274,7 +274,7 @@ def run():
     assert DeltaGold._check_triggers is not Algo3SilverMicro._check_triggers
     assert DeltaGold._update_setups is not Algo3SilverMicro._update_setups
     assert DeltaGold.check_exits is Algo3SilverMicro.check_exits
-    assert DELTA_TIMEFRAMES == (5, 7, 15, 30, 60, 120, 240)
+    assert DELTA_TIMEFRAMES == (1, 3, 5, 7, 15, 30, 60, 120, 240)
     assert DELTA_DEFAULTS["silver_breakout_points"] == 3
     assert DELTA_DEFAULTS["sl_points"] == DELTA_DEFAULTS["tsl_activate_points"] == 15
     assert DELTA_DEFAULTS["target_points"] == 50 and DELTA_DEFAULTS["tsl_buffer_points"] == 3

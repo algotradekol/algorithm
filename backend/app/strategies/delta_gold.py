@@ -13,7 +13,7 @@ from ..timezone import IST
 
 DELTA_STRATEGY_VERSION = "paxg_ema_volume_v1"
 DELTA_EXIT_MODE_THREE_CANDLE = "three_candle_tsl"
-DELTA_TIMEFRAMES = (5, 7, 15, 30, 60, 120, 240)
+DELTA_TIMEFRAMES = (1, 3, 5, 7, 15, 30, 60, 120, 240)
 DELTA_DEFAULTS = {
     "scan_enabled": True,
     "trading_enabled": False,
