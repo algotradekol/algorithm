@@ -22,6 +22,18 @@ type CalendarResponse = {
 };
 
 const INR = new Intl.NumberFormat('en-IN', { maximumFractionDigits: 2 });
+
+// Compact INR for narrow calendar cells: ₹44.9K / ₹1.23L / ₹2.8Cr with 1
+// decimal so a big number still fits inside a mobile day-cell without
+// overflowing into its neighbour.
+function compactInr(value: number): string {
+  const sign = value < 0 ? '-' : '';
+  const abs = Math.abs(value);
+  if (abs < 1000) return `${sign}₹${abs.toFixed(0)}`;
+  if (abs < 100_000) return `${sign}₹${(abs / 1000).toFixed(abs < 10_000 ? 1 : 0)}K`;
+  if (abs < 10_000_000) return `${sign}₹${(abs / 100_000).toFixed(abs < 1_000_000 ? 2 : 1)}L`;
+  return `${sign}₹${(abs / 10_000_000).toFixed(2)}Cr`;
+}
 const WEEK = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
 const MONTH_NAMES = ['January', 'February', 'March', 'April', 'May', 'June', 'July', 'August', 'September', 'October', 'November', 'December'];
 
@@ -124,26 +136,27 @@ export default function DeltaCalendarTab({ asset, mode }: { asset: DeltaAsset; m
     return () => window.removeEventListener('keydown', onKey);
   }, [selectedDay]);
   return <div className="space-y-3">
-    <div className="panel flex items-center justify-between p-3">
+    <div className="panel flex flex-wrap items-center justify-between gap-2 p-2 sm:p-3">
       <div className="flex items-center gap-2">
         <button onClick={() => shiftMonth(-1)} className="rounded border border-[#334155] px-2 py-1 text-sm text-gray-300 hover:text-gray-100" aria-label="Previous month">◀</button>
-        <span className="min-w-[10ch] text-center text-sm font-semibold text-gray-100">{MONTH_NAMES[month - 1]} {year}</span>
+        <span className="min-w-[9ch] text-center text-sm font-semibold text-gray-100">{MONTH_NAMES[month - 1].slice(0, 3)} {year}</span>
         <button onClick={() => shiftMonth(1)} className="rounded border border-[#334155] px-2 py-1 text-sm text-gray-300 hover:text-gray-100" aria-label="Next month">▶</button>
       </div>
-      <div className="text-sm">
-        <span className="text-gray-500">Month total (INR): </span>
+      <div className="flex items-baseline gap-2 text-sm tabular-nums">
+        <span className="hidden text-gray-500 sm:inline">Month total (INR):</span>
+        <span className="text-gray-500 sm:hidden">Total:</span>
         <span className={monthTotal >= 0 ? 'font-semibold text-[#4ade80]' : 'font-semibold text-[#f87171]'}>{monthTotal >= 0 ? '+' : ''}₹{INR.format(monthTotal)}</span>
-        <span className="ml-3 text-[11px] uppercase tracking-wide text-gray-500">{mode}</span>
+        <span className="text-[11px] uppercase tracking-wide text-gray-500">{mode}</span>
       </div>
     </div>
     {error && <p role="alert" className="panel p-3 text-sm text-[#f87171]">{error}</p>}
-    <div className="panel p-3">
-      <div className="grid grid-cols-7 gap-1 text-[11px] uppercase tracking-wide text-gray-500">
-        {WEEK.map(day => <div key={day} className="px-2 py-1 text-center">{day}</div>)}
+    <div className="panel p-2 sm:p-3">
+      <div className="grid grid-cols-7 gap-0.5 text-[10px] uppercase tracking-wide text-gray-500 sm:gap-1 sm:text-[11px]">
+        {WEEK.map(day => <div key={day} className="px-1 py-1 text-center">{day.slice(0, 1)}<span className="hidden sm:inline">{day.slice(1)}</span></div>)}
       </div>
-      <div className="mt-1 grid grid-cols-7 gap-1">
+      <div className="mt-1 grid grid-cols-7 gap-0.5 sm:gap-1">
         {cells.map((iso, index) => {
-          if (!iso) return <div key={`empty-${index}`} className="h-20 rounded border border-transparent" />;
+          if (!iso) return <div key={`empty-${index}`} className="aspect-square rounded border border-transparent sm:aspect-auto sm:h-20" />;
           const day = dayMap[iso];
           const dayNum = Number(iso.slice(-2));
           const isSelected = iso === selectedDate;
@@ -154,14 +167,14 @@ export default function DeltaCalendarTab({ asset, mode }: { asset: DeltaAsset; m
             : pnl < 0 ? 'border-[#ef4444]/50 bg-[#ef4444]/10 text-[#fecaca]'
             : 'border-[#334155] text-gray-300';
           return <button key={iso} onClick={() => hasTrades && setSelectedDate(iso === selectedDate ? null : iso)}
-            className={`h-20 rounded border p-2 text-left ${tone} ${isSelected ? 'ring-2 ring-[#3b82f6]' : ''} ${hasTrades ? 'cursor-pointer hover:brightness-125' : 'cursor-default'}`}>
-            <div className="flex items-center justify-between text-xs font-semibold">
+            className={`flex aspect-square min-w-0 flex-col overflow-hidden rounded border p-1 text-left tabular-nums sm:aspect-auto sm:h-20 sm:p-2 ${tone} ${isSelected ? 'ring-2 ring-[#3b82f6]' : ''} ${hasTrades ? 'cursor-pointer hover:brightness-125' : 'cursor-default'}`}>
+            <div className="flex items-baseline justify-between gap-1 text-[11px] font-semibold sm:text-xs">
               <span>{dayNum}</span>
-              {hasTrades && <span className="text-[10px] text-gray-400">{day!.trades.length}</span>}
+              {hasTrades && <span className="shrink-0 rounded bg-black/30 px-1 text-[9px] font-semibold text-gray-300 sm:bg-transparent sm:px-0 sm:text-[10px] sm:text-gray-400">{day!.trades.length}</span>}
             </div>
-            {hasTrades && <div className="mt-1 text-xs">
-              <div className={pnl >= 0 ? 'text-[#4ade80]' : 'text-[#f87171]'}>{pnl >= 0 ? '+' : ''}₹{INR.format(pnl)}</div>
-              <div className="text-[10px] text-gray-500">{day!.wins}W · {day!.losses}L</div>
+            {hasTrades && <div className="mt-auto min-w-0 space-y-0.5">
+              <div className={`truncate text-[10px] font-semibold sm:text-xs ${pnl >= 0 ? 'text-[#4ade80]' : 'text-[#f87171]'}`}>{compactInr(pnl)}</div>
+              <div className="hidden text-[10px] text-gray-500 sm:block">{day!.wins}W · {day!.losses}L</div>
             </div>}
           </button>;
         })}
