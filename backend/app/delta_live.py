@@ -483,8 +483,13 @@ class DeltaLiveBroker(DeltaPaperBroker):
         if exit_reason in {"MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET", "SL_EDITED", "TARGET_EDITED"}:
             raw_minutes = state["settings"].get("post_exit_cooldown_minutes")
             cooldown_minutes = 5.0 if raw_minutes is None else float(raw_minutes)
-            state["cooldown_until"] = time.time() + cooldown_minutes * 60 if cooldown_minutes > 0 else 0.0
-            state["cooldown_reason"] = exit_reason if cooldown_minutes > 0 else None
+            # Do not shorten an existing cooldown — a user-set MANUAL_PAUSE
+            # must not be replaced by the shorter post-exit rest.
+            auto_until = time.time() + cooldown_minutes * 60 if cooldown_minutes > 0 else 0.0
+            existing_until = float(state.get("cooldown_until") or 0)
+            if auto_until > existing_until:
+                state["cooldown_until"] = auto_until
+                state["cooldown_reason"] = exit_reason if cooldown_minutes > 0 else None
         if exit_reason == "MANUAL_EXIT" and not state["settings"].get("manual_exit_reentry_enabled"):
             state["manual_guard"] = {"side": current["side"], "setup_time": current["signal_snapshot"].get("setup_time")}
         self.commit(state, trade)
@@ -550,8 +555,13 @@ class DeltaLiveBroker(DeltaPaperBroker):
         state["live_close_error"] = None
         raw_minutes = state["settings"].get("post_exit_cooldown_minutes")
         cooldown_minutes = 5.0 if raw_minutes is None else float(raw_minutes)
-        state["cooldown_until"] = time.time() + cooldown_minutes * 60 if cooldown_minutes > 0 else 0.0
-        state["cooldown_reason"] = exit_reason if cooldown_minutes > 0 else None
+        # Do not shorten an existing cooldown — external Delta-side closes
+        # must not clobber a longer user-set MANUAL_PAUSE.
+        auto_until = time.time() + cooldown_minutes * 60 if cooldown_minutes > 0 else 0.0
+        existing_until = float(state.get("cooldown_until") or 0)
+        if auto_until > existing_until:
+            state["cooldown_until"] = auto_until
+            state["cooldown_reason"] = exit_reason if cooldown_minutes > 0 else None
         self.commit(state, trade)
         delta_log(
             "live_external_close_committed",
