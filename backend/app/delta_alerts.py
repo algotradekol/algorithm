@@ -150,6 +150,43 @@ def send_telegram_alert(message: str, *, event: str = "telegram_alert", parse_mo
             )
             if response.status_code != 200:
                 detail = response.text[:300]
+                try:
+                    response_json = response.json()
+                except ValueError:
+                    response_json = {}
+                migrate_to = (response_json.get("parameters") or {}).get("migrate_to_chat_id")
+                if migrate_to:
+                    migrated_payload = {**payload, "chat_id": str(migrate_to)}
+                    migrated = requests.post(
+                        url,
+                        json=migrated_payload,
+                        timeout=(4, 8),
+                    )
+                    if migrated.status_code == 200:
+                        results.append({
+                            "chat_id": str(migrate_to),
+                            "ok": True,
+                            "http_status": migrated.status_code,
+                            "migrated_from": chat_id,
+                        })
+                        delta_log(event, status="sent_after_chat_migration", chat_id=str(migrate_to), migrated_from=chat_id)
+                        continue
+                    results.append({
+                        "chat_id": str(migrate_to),
+                        "ok": False,
+                        "http_status": migrated.status_code,
+                        "response": migrated.text[:300],
+                        "migrated_from": chat_id,
+                    })
+                    delta_log(
+                        event,
+                        status="failed_after_chat_migration",
+                        chat_id=str(migrate_to),
+                        migrated_from=chat_id,
+                        http_status=migrated.status_code,
+                        response=migrated.text[:300],
+                    )
+                    continue
                 results.append({"chat_id": chat_id, "ok": False, "http_status": response.status_code, "response": detail})
                 delta_log(event, status="failed", chat_id=chat_id, http_status=response.status_code, response=detail)
             else:
