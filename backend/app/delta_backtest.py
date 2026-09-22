@@ -131,6 +131,9 @@ class ReplayBroker(DeltaPaperBroker):
                 protection['armed_at'] = iso(self.now)
         self.state = state
 
+    def now_iso(self):
+        return iso(self.now)
+
     def close_trade(self, position, exit_price, exit_reason):
         current = self.state.get('position')
         if not current or current['id'] != position['id']:
@@ -208,6 +211,16 @@ class ReplayGold(DeltaGold):
                 protection = position['signal_snapshot'].get('silver_breakeven')
                 if protection and not protection.get('armed'):
                     levels.append(protection['activation_price'])
+                ladder = position['signal_snapshot'].get('delta_ladder_tsl')
+                if isinstance(ladder, dict):
+                    if not ladder.get('armed'):
+                        levels.append(ladder.get('activation_price'))
+                    else:
+                        entry = float(position['entry_price'])
+                        step = int(ladder.get('step_index', 0)) + 1
+                        gain = float(ladder.get('activation_points') or 0) + step * float(ladder.get('profit_step_points') or 0)
+                        if gain > 0:
+                            levels.append(entry + gain if position['side'] == 'BUY' else entry - gain)
             else:
                 cooldown = float(self.broker.state.get('cooldown_until') or 0)
                 if start_time < cooldown < end_time:

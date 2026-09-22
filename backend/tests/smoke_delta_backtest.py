@@ -16,7 +16,7 @@ META = {**PRODUCT, 'initial_margin': '1', 'quoting_asset': {'symbol': 'USD'}}
 def run():
     for minutes in (5, 7, 15, 30, 60, 120, 240):
         for side in ('BUY', 'SELL'):
-            for mode in ('fixed_target_sl', 'target_to_breakeven_sl', 'three_candle_tsl'):
+            for mode in ('fixed_target_sl', 'target_to_breakeven_sl', 'three_candle_tsl', 'continuous_ladder_tsl'):
                 for outcome in ('target', 'stop', 'breakeven'):
                     settings = {**SETTINGS, 'exit_mode': mode}
                     live = strategy(minutes, settings)

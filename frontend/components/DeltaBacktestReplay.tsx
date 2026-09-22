@@ -5,6 +5,7 @@ import SilverBacktestChart from './SilverBacktestChart';
 
 type Candle = { time: string; open: number; high: number; low: number; close: number; volume: number; ema20: number; volume_ema20: number; partial?: boolean };
 type Move = { status?: string; calculated_at?: string; candidate_sl?: number };
+type LadderMove = { time?: string; new_sl?: number; status?: string };
 type Trade = {
   id: string; side: string; qty: number; entry_time: string; entry_price: number;
   exit_time?: string; exit_price?: number; exit_reason?: string; initial_sl: number;
@@ -12,7 +13,8 @@ type Trade = {
   gross_pnl?: number; fees?: number; pnl_inr?: number; estimated_entry_margin?: number;
   signal_snapshot: { setup_time?: string; setup_close?: number; trigger_level?: number;
     silver_breakeven?: { armed: boolean; armed_at?: string };
-    delta_three_candle_tsl?: { events?: unknown[] } };
+    delta_three_candle_tsl?: { events?: unknown[] };
+    delta_ladder_tsl?: { events?: unknown[] } };
 };
 type Result = { symbol: string; minutes: number; currency: string; start: number; end: number; candles?: Candle[]; trades: Trade[]; open_position?: Trade | null };
 const format = (value?: number) => value == null ? '--' : value.toLocaleString('en-IN', { maximumFractionDigits: 4 });
@@ -38,6 +40,10 @@ export default function DeltaBacktestReplay({ result }: { result: Result }) {
       new_sl: move.candidate_sl,
     }));
     if (snap.silver_breakeven?.armed && snap.silver_breakeven.armed_at) trailing.push({ time: snap.silver_breakeven.armed_at, new_sl: trade.sl_price });
+    const ladderMoves = (snap.delta_ladder_tsl?.events || []) as LadderMove[];
+    for (const move of ladderMoves) {
+      if (move.time && move.new_sl != null) trailing.push({ time: move.time, new_sl: move.new_sl });
+    }
     return { ...trade, trade_id: trade.id, is_open: !trade.exit_time,
       exit_time: trade.exit_time || new Date((result.end - 1) * 1000).toISOString(),
       exit_price: trade.exit_price ?? candles[candles.length - 1]?.close ?? trade.entry_price,

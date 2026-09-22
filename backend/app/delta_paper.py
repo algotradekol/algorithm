@@ -10,6 +10,7 @@ from .delta_log import delta_log
 from .storage_namespace import namespaced_value
 from .supabase_client import run_with_supabase
 from .delta_reporting import paper_margin
+from .trailing_stop import calculate_point_trailing
 
 
 def utc_now():
@@ -56,6 +57,9 @@ class DeltaPaperBroker:
         self.store.save(state, trade)
         self.state = state
 
+    def now_iso(self):
+        return utc_now()
+
     def open_positions(self):
         position = self.state.get("position")
         return [copy.deepcopy(position)] if position else []
@@ -81,6 +85,7 @@ class DeltaPaperBroker:
         state["manual_guard"] = None
         configured_initial_sl = snapshot.get("configured_initial_sl_price", sl_price)
         three_candle = snapshot.get("delta_three_candle_tsl")
+        ladder = snapshot.get("delta_ladder_tsl")
         state["position"] = {
             "id": uuid.uuid4().hex, "symbol": symbol, "side": side, "qty": qty,
             "entry_price": entry_price, "entry_time": entry_time or utc_now(),
@@ -94,7 +99,7 @@ class DeltaPaperBroker:
             "configured_pax_size": snapshot.get("configured_pax_size"),
             "estimated_entry_margin": paper_margin(entry_price, qty, self.product["contract_value"], self.product.get("initial_margin"), snapshot.get("leverage")),
             "fee_rate": float(self.product.get("taker_commission_rate") or 0),
-            "trailing_sl_active": bool(three_candle and three_candle.get("events")),
+            "trailing_sl_active": bool((three_candle and three_candle.get("events")) or (ladder and ladder.get("events"))),
         }
         state[f"{side.lower()}_count"] += 1
         self.commit(state)
@@ -152,6 +157,9 @@ class DeltaPaperBroker:
 
     def apply_trailing_stop(self, position, ltp, settings):
         snapshot = position["signal_snapshot"]
+        ladder = snapshot.get("delta_ladder_tsl")
+        if isinstance(ladder, dict):
+            return self._apply_ladder_stop(position, ltp, settings)
         protection = snapshot.get("silver_breakeven")
         if not protection or protection.get("armed"):
             return position
@@ -165,7 +173,7 @@ class DeltaPaperBroker:
         updated["sl_price"] = (max(updated['sl_price'], updated['entry_price']) if updated['side'] == 'BUY'
                                else min(updated['sl_price'], updated['entry_price']))
         updated["trailing_sl_active"] = True
-        updated["signal_snapshot"]["silver_breakeven"].update(armed=True, armed_at=utc_now())
+        updated["signal_snapshot"]["silver_breakeven"].update(armed=True, armed_at=self.now_iso())
         self.commit(state)
         delta_log(
             "paper_breakeven_armed",
@@ -176,6 +184,75 @@ class DeltaPaperBroker:
             activation=activation,
         )
         return copy.deepcopy(updated)
+
+    def _apply_ladder_stop(self, position, ltp, settings):
+        current = self.state.get("position")
+        if not current or current["id"] != position["id"]:
+            return position
+        state = copy.deepcopy(self.state)
+        updated = state["position"]
+        snapshot = updated["signal_snapshot"]
+        ladder = snapshot.get("delta_ladder_tsl")
+        if not isinstance(ladder, dict):
+            return copy.deepcopy(updated)
+        highest = max(float(ladder.get("highest") or updated["entry_price"]), float(ltp), float(updated["entry_price"]))
+        lowest = min(float(ladder.get("lowest") or updated["entry_price"]), float(ltp), float(updated["entry_price"]))
+        result = calculate_point_trailing(
+            entry=float(updated["entry_price"]),
+            side=updated["side"],
+            current_sl=float(updated["sl_price"]),
+            highest=highest,
+            lowest=lowest,
+            activate_points=float(ladder.get("activation_points") or settings.get("tsl_activate_points") or 0),
+            profit_step_points=float(ladder.get("profit_step_points") or settings.get("tsl_profit_step_points") or settings.get("tsl_activate_points") or 0),
+            lock_step_points=float(ladder.get("lock_step_points") or settings.get("tsl_lock_step_points") or 0),
+        )
+        previous_step = int(ladder.get("step_index", -1))
+        step_changed = result["trailing_active"] and int(result["step_index"]) > previous_step
+        state_changed = False
+        ladder.update(
+            highest=result["highest"],
+            lowest=result["lowest"],
+            step_index=int(result["step_index"]) if result["trailing_active"] else previous_step,
+            protected_points=result["protected_points"],
+            armed=bool(ladder.get("armed") or result["trailing_active"]),
+            status=("breakeven_locked" if result["trailing_active"] and int(result["step_index"]) == 0 else
+                    "ladder_locked" if result["trailing_active"] else "waiting_for_initial_target"),
+        )
+        if result["trailing_active"] and (step_changed or result["sl_moved"]):
+            event = {
+                "time": self.now_iso(),
+                "ltp": float(ltp),
+                "previous_sl": result["previous_sl"],
+                "new_sl": result["sl_price"],
+                "gain_points": result["gain_points"],
+                "protected_points": result["protected_points"],
+                "step_index": int(result["step_index"]),
+                "status": "breakeven_locked" if int(result["step_index"]) == 0 else "ladder_locked",
+            }
+            ladder.setdefault("evaluations", []).append(event)
+            ladder["evaluations"] = ladder["evaluations"][-200:]
+            if result["sl_moved"]:
+                ladder.setdefault("events", []).append(event)
+                ladder["events"] = ladder["events"][-200:]
+                updated["sl_price"] = result["sl_price"]
+                state_changed = True
+            else:
+                state_changed = True
+            updated["trailing_sl_active"] = True
+        if state_changed:
+            self.commit(state)
+            delta_log(
+                "paper_ladder_tsl_evaluated",
+                symbol=updated.get("symbol"),
+                side=updated.get("side"),
+                ltp=ltp,
+                new_sl=updated.get("sl_price"),
+                step_index=ladder.get("step_index"),
+                protected_points=ladder.get("protected_points"),
+            )
+            return copy.deepcopy(updated)
+        return position
 
     def apply_three_candle_stop(self, position, details, completed_close):
         current = self.state.get("position")

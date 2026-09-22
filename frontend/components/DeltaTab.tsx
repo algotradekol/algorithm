@@ -6,20 +6,21 @@ import { deltaApi, DeltaAsset } from '../lib/api';
 
 type Settings = {
   scan_enabled: boolean; trading_enabled: boolean; silver_breakout_points: number;
-  sl_points: number; target_points: number; tsl_activate_points: number; tsl_buffer_points: number; silver_lots: number;
+  sl_points: number; target_points: number; tsl_activate_points: number; tsl_buffer_points: number;
+  tsl_profit_step_points: number; tsl_lock_step_points: number; silver_lots: number;
   size_mode: 'lots' | 'pax'; pax_size: number; leverage: number;
-  exit_mode: 'fixed_target_sl' | 'target_to_breakeven_sl' | 'three_candle_tsl'; manual_exit_reentry_enabled: boolean;
+  exit_mode: ExitMode; manual_exit_reentry_enabled: boolean;
   post_exit_cooldown_minutes: number;
   strategy_version: string;
 };
-export type ExitMode = 'fixed_target_sl' | 'target_to_breakeven_sl' | 'three_candle_tsl';
+export type ExitMode = 'fixed_target_sl' | 'target_to_breakeven_sl' | 'three_candle_tsl' | 'continuous_ladder_tsl';
 export type Trade = {
   id: string; symbol: string; side: string; qty: number; entry_time: string; entry_price: number;
   sl_price: number; initial_sl: number; target_price: number; trailing_sl_active: boolean;
   exit_time?: string; exit_price?: number; exit_reason?: string; gross_pnl?: number; fees?: number;
   net_pnl?: number; unrealized_pnl?: number; estimated_entry_margin?: number; margin_inr?: number; pnl_inr?: number;
   exit_mode?: ExitMode;
-  signal_snapshot: { setup_time?: string; setup_close?: number; trigger_level?: number; entry_candle_open?: number; silver_breakeven?: { activation_price: number; armed: boolean }; delta_three_candle_tsl?: { events?: any[]; evaluations?: any[] }; silver_exit_policy?: ExitMode };
+  signal_snapshot: { setup_time?: string; setup_close?: number; trigger_level?: number; entry_candle_open?: number; silver_breakeven?: { activation_price: number; armed: boolean }; delta_three_candle_tsl?: { events?: any[]; evaluations?: any[] }; delta_ladder_tsl?: { status?: string; armed?: boolean; activation_price?: number; step_index?: number; protected_points?: number; events?: any[]; evaluations?: any[] }; silver_exit_policy?: ExitMode };
 };
 type TradeCell = { value: ReactNode; className?: string };
 type Status = {
@@ -58,6 +59,8 @@ const silverDeltaDefaults = {
   target_points: 1.0,
   tsl_activate_points: 0.30,
   tsl_buffer_points: 3,
+  tsl_profit_step_points: 15,
+  tsl_lock_step_points: 15,
   silver_lots: 1,
   size_mode: 'lots' as const,
   pax_size: 0.001,
@@ -240,13 +243,15 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
           <option value="fixed_target_sl">Fixed Target + Fixed Stop Loss</option>
           <option value="target_to_breakeven_sl">Target + Breakeven Stop Loss</option>
           {asset === 'gold' && <option value="three_candle_tsl">Three-Candle TSL</option>}
+          {asset === 'gold' && <option value="continuous_ladder_tsl">Continuous Ladder TSL</option>}
         </select>
       </label>
       <div className="grid gap-3 sm:grid-cols-2 lg:grid-cols-4">
         {([
           ['silver_breakout_points', 'Breakout offset'], ['sl_points', 'Initial stop loss'],
-          ['target_points', 'Final target'], ['tsl_activate_points', 'TSL activates at'], ['tsl_buffer_points', 'TSL buffer points'],
-        ] as const).filter(([key]) => (key !== 'tsl_activate_points' || draft.exit_mode === 'target_to_breakeven_sl') && (key !== 'tsl_buffer_points' || draft.exit_mode === 'three_candle_tsl')).map(([key, label]) => <label key={key} className="text-sm text-gray-300">{label}
+          ['target_points', 'Final target'], ['tsl_activate_points', draft.exit_mode === 'continuous_ladder_tsl' ? 'Target initial / breakeven at' : 'TSL activates at'], ['tsl_buffer_points', 'TSL buffer points'],
+          ['tsl_profit_step_points', 'Target trailing step'], ['tsl_lock_step_points', 'SL trailing step'],
+        ] as const).filter(([key]) => (key !== 'tsl_activate_points' || draft.exit_mode === 'target_to_breakeven_sl' || draft.exit_mode === 'continuous_ladder_tsl') && (key !== 'tsl_buffer_points' || draft.exit_mode === 'three_candle_tsl') && (key !== 'tsl_profit_step_points' || draft.exit_mode === 'continuous_ladder_tsl') && (key !== 'tsl_lock_step_points' || draft.exit_mode === 'continuous_ladder_tsl')).map(([key, label]) => <label key={key} className="text-sm text-gray-300">{label}
           <input className="mt-1 w-full rounded border border-[#334155] bg-[#0a0e14] p-2" type="number" required min={0.000001} step="any" value={draft[key]} onChange={e => setDraft({ ...draft, [key]: Number(e.target.value) })} />
         </label>)}
       </div>
@@ -356,6 +361,16 @@ function TslAudit({ row }: { row: Trade }) {
     const latest = evaluations[evaluations.length - 1] || events[events.length - 1];
     return <details><summary className="cursor-pointer text-[#a78bfa]">Three-candle {evaluations.length ? `${evaluations.length} check(s)` : 'waiting'}{events.length ? ` / ${events.length} move(s)` : ''}</summary>{latest && <div className="mt-2 min-w-80 space-y-1 text-[11px] text-gray-400"><div>Status {latest.status || 'checked'} | Candidate {number(latest.candidate_sl)} from {number(latest.reference_price)} with buffer {number(latest.buffer_points)}</div>{latest.candles?.map((candle: any) => <div key={candle.time}>{date(candle.time)} | O {number(candle.open)} H {number(candle.high)} L {number(candle.low)} C {number(candle.close)}</div>)}</div>}</details>;
   }
+  const ladder = row.signal_snapshot.delta_ladder_tsl;
+  if (ladder) {
+    const events = ladder.events || [];
+    const evaluations = ladder.evaluations || [];
+    const latest = evaluations[evaluations.length - 1] || events[events.length - 1];
+    const label = ladder.armed
+      ? `Ladder step ${Math.max(0, Number(ladder.step_index ?? 0))} / locked ${number(ladder.protected_points)}`
+      : `Ladder waits at ${number(ladder.activation_price)}`;
+    return <details><summary className="cursor-pointer text-[#fbbf24]">{label}</summary>{latest && <div className="mt-2 min-w-72 space-y-1 text-[11px] text-gray-400"><div>Status {latest.status || ladder.status || 'checked'} | LTP {number(latest.ltp)} | SL {number(latest.previous_sl)} → {number(latest.new_sl)}</div><div>Gain {number(latest.gain_points)} | Locked {number(latest.protected_points)} | Step {number(latest.step_index)}</div></div>}</details>;
+  }
   if (row.trailing_sl_active) return <>Breakeven armed</>;
   if (row.signal_snapshot.silver_breakeven) return <>Arms at {number(row.signal_snapshot.silver_breakeven.activation_price)}</>;
   return <>Fixed</>;
@@ -373,6 +388,7 @@ function EditProtection({ row, mode, asset, ltp, busy, disabled, error, onClose,
     { value: 'fixed_target_sl', label: 'Fixed SL + target' },
     { value: 'target_to_breakeven_sl', label: 'Target to breakeven SL' },
     ...(asset === 'gold' ? [{ value: 'three_candle_tsl' as ExitMode, label: 'Three-candle TSL' }] : []),
+    ...(asset === 'gold' ? [{ value: 'continuous_ladder_tsl' as ExitMode, label: 'Continuous Ladder TSL' }] : []),
   ];
   const modeChanged = exitMode !== currentMode;
   return <dialog ref={dialog} onCancel={e => { e.preventDefault(); onClose(); }} aria-labelledby="delta-protection-title" className="w-[calc(100%_-_2rem)] max-w-md rounded border border-[#1f2937] bg-[#0d1117] p-4 text-gray-100 backdrop:bg-black/70">

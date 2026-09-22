@@ -13,6 +13,13 @@ from ..timezone import IST
 
 DELTA_STRATEGY_VERSION = "paxg_ema_volume_v1"
 DELTA_EXIT_MODE_THREE_CANDLE = "three_candle_tsl"
+DELTA_EXIT_MODE_CONTINUOUS_LADDER = "continuous_ladder_tsl"
+DELTA_EXIT_MODES = (
+    "fixed_target_sl",
+    "target_to_breakeven_sl",
+    DELTA_EXIT_MODE_THREE_CANDLE,
+    DELTA_EXIT_MODE_CONTINUOUS_LADDER,
+)
 DELTA_TIMEFRAMES = (1, 3, 5, 7, 15, 30, 60, 120, 240)
 DELTA_DEFAULTS = {
     "scan_enabled": True,
@@ -22,6 +29,8 @@ DELTA_DEFAULTS = {
     "tsl_activate_points": 15.0,
     "target_points": 50.0,
     "tsl_buffer_points": 3.0,
+    "tsl_profit_step_points": 15.0,
+    "tsl_lock_step_points": 15.0,
     "silver_lots": 1,
     "size_mode": "lots",
     "pax_size": 0.001,
@@ -61,6 +70,8 @@ def validate_settings(settings, asset='gold'):
         "tsl_activate_points",
         "target_points",
         "tsl_buffer_points",
+        "tsl_profit_step_points",
+        "tsl_lock_step_points",
         "silver_lots",
         "pax_size",
         "leverage",
@@ -86,23 +97,41 @@ def validate_settings(settings, asset='gold'):
         raise ValueError("Post-exit rest must be between 0 minutes and 7 days")
     if settings["strategy_version"] != defaults_for(asset)['strategy_version']:
         raise ValueError("Invalid Delta strategy version")
-    if settings["exit_mode"] not in {
-        "fixed_target_sl",
-        "target_to_breakeven_sl",
-        DELTA_EXIT_MODE_THREE_CANDLE,
-    }:
+    if settings["exit_mode"] not in DELTA_EXIT_MODES:
         raise ValueError("Invalid Delta exit mode")
-    if asset == 'silver' and settings['exit_mode'] == DELTA_EXIT_MODE_THREE_CANDLE:
+    if asset == 'silver' and settings['exit_mode'] in {DELTA_EXIT_MODE_THREE_CANDLE, DELTA_EXIT_MODE_CONTINUOUS_LADDER}:
         raise ValueError('Delta Silver uses normal Silver Micro fixed or breakeven exits')
     if (
-        settings["exit_mode"] == "target_to_breakeven_sl"
+        settings["exit_mode"] in {"target_to_breakeven_sl", DELTA_EXIT_MODE_CONTINUOUS_LADDER}
         and settings["tsl_activate_points"] >= settings["target_points"]
     ):
         raise ValueError("TSL activation must be below the final target")
     return settings
 
 
-DELTA_EXIT_MODES = ("fixed_target_sl", "target_to_breakeven_sl", DELTA_EXIT_MODE_THREE_CANDLE)
+def delta_ladder_snapshot(position, settings):
+    side = position['side']
+    direction = 1 if side == 'BUY' else -1
+    entry_price = float(position['entry_price'])
+    activation_points = float(settings['tsl_activate_points'])
+    return {
+        'policy': DELTA_EXIT_MODE_CONTINUOUS_LADDER,
+        'armed': False,
+        'status': 'waiting_for_initial_target',
+        'activation_price': entry_price + direction * activation_points,
+        'activation_points': activation_points,
+        'target_price': float(position['target_price']),
+        'final_target_enabled': True,
+        'initial_sl_price': float(position['sl_price']),
+        'profit_step_points': float(settings.get('tsl_profit_step_points') or activation_points),
+        'lock_step_points': float(settings.get('tsl_lock_step_points') or 0),
+        'highest': entry_price,
+        'lowest': entry_price,
+        'step_index': -1,
+        'protected_points': 0.0,
+        'events': [],
+        'evaluations': [],
+    }
 
 
 def exit_mode_snapshot_patch(new_mode, position, settings, minutes, asset, now_utc):
@@ -119,8 +148,8 @@ def exit_mode_snapshot_patch(new_mode, position, settings, minutes, asset, now_u
     both the paper (delta_engine.edit_protection) and live (DeltaLiveBroker
     .update_protection) paths call the same code.
     """
-    if asset == 'silver' and new_mode == DELTA_EXIT_MODE_THREE_CANDLE:
-        raise ValueError('Delta Silver does not support three-candle TSL')
+    if asset == 'silver' and new_mode in {DELTA_EXIT_MODE_THREE_CANDLE, DELTA_EXIT_MODE_CONTINUOUS_LADDER}:
+        raise ValueError('Delta Silver does not support this TSL mode')
     if new_mode not in DELTA_EXIT_MODES:
         raise ValueError(f'Invalid exit_mode: {new_mode!r}')
     snapshot = position.get('signal_snapshot') or {}
@@ -134,6 +163,7 @@ def exit_mode_snapshot_patch(new_mode, position, settings, minutes, asset, now_u
         # the new mode needs. Keeps the patch tiny and idempotent.
         'silver_breakeven': None,
         'delta_three_candle_tsl': None,
+        'delta_ladder_tsl': None,
     }
     if new_mode == 'target_to_breakeven_sl':
         side = position['side']
@@ -164,6 +194,8 @@ def exit_mode_snapshot_patch(new_mode, position, settings, minutes, asset, now_u
             'events': [],
             'evaluations': [],
         }
+    elif new_mode == DELTA_EXIT_MODE_CONTINUOUS_LADDER:
+        patch['delta_ladder_tsl'] = delta_ladder_snapshot(position, settings)
     return patch
 
 
@@ -207,7 +239,7 @@ def normalize_stored_settings(settings, asset='gold'):
         for key in ("scan_enabled", "trading_enabled", "manual_exit_reentry_enabled"):
             if isinstance(raw.get(key), bool):
                 normalized[key] = raw[key]
-        if raw.get("exit_mode") in {"fixed_target_sl", "target_to_breakeven_sl"}:
+        if raw.get("exit_mode") in DELTA_EXIT_MODES:
             normalized["exit_mode"] = raw["exit_mode"]
         return validate_settings(normalized, asset)
     return validate_settings({**defaults, **raw}, asset)
@@ -550,12 +582,17 @@ class DeltaGold(Algo3SilverMicro):
         """Re-evaluate the active candle when a new offset moves a trigger."""
         if ltp is None:
             return
-        self._check_triggers(
-            float(ltp),
-            event_time=event_time,
-            baseline_override=self._current_candle_open,
-            reason="settings_change",
-        )
+        try:
+            self._check_triggers(
+                float(ltp),
+                event_time=event_time,
+                baseline_override=self._current_candle_open,
+                reason="settings_change",
+            )
+        except TypeError as exc:
+            if "baseline_override" not in str(exc) and "reason" not in str(exc):
+                raise
+            self._check_triggers(float(ltp), event_time=event_time)
 
     def _entry_trigger(self, side, entry_price, trigger_level):
         mode = getattr(self.broker, "mode", "paper")
@@ -695,6 +732,12 @@ class DeltaGold(Algo3SilverMicro):
             }
 
         effective_sl = configured_sl
+        if mode == DELTA_EXIT_MODE_CONTINUOUS_LADDER:
+            snapshot["delta_ladder_tsl"] = delta_ladder_snapshot(
+                {"side": side, "entry_price": float(entry_price), "sl_price": configured_sl, "target_price": target},
+                self.settings,
+            )
+
         if mode == DELTA_EXIT_MODE_THREE_CANDLE:
             event = event_time or datetime.datetime.now(datetime.timezone.utc)
             event_stamp = event.timestamp() if event.tzinfo else event.replace(tzinfo=IST).timestamp()

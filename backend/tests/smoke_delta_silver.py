@@ -107,10 +107,15 @@ def run():
         raise AssertionError('Silver accepted Gold three-candle policy')
     except ValueError:
         pass
+    try:
+        validate_settings({**SETTINGS, 'exit_mode': 'continuous_ladder_tsl'}, 'silver')
+        raise AssertionError('Silver accepted Gold ladder policy')
+    except ValueError:
+        pass
 
     with patch.dict(os.environ, {'DELTA_HIDDEN_SECTIONS': ''}):
         keys = []
-        def client(asset='gold'):
+        def client(asset='gold', **_kwargs):
             product = PRODUCT if asset == 'silver' else {**PRODUCT, 'symbol': 'PAXGUSD'}
             return SimpleNamespace(region='india', symbol=product['symbol'], configuration_error=lambda: None, product=lambda: product)
         with patch('app.delta_engine.DeltaClient', side_effect=client), patch('app.delta_engine.DeltaStore', side_effect=lambda key: keys.append(key) or MemoryStore()), patch('app.delta_engine.threading.Thread'):

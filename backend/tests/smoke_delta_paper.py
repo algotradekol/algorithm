@@ -13,6 +13,7 @@ from app.delta_paper import DeltaPaperBroker
 from app.strategies.algo3_silver_micro import Algo3SilverMicro
 from app.strategies.delta_gold import (
     DELTA_DEFAULTS,
+    DELTA_EXIT_MODE_CONTINUOUS_LADDER,
     DELTA_EXIT_MODE_THREE_CANDLE,
     DELTA_STRATEGY_VERSION,
     DELTA_TIMEFRAMES,
@@ -374,6 +375,55 @@ def run():
                 tsl._last_tick_ltp = (1100 if side == "BUY" else 900) if outcome == "TARGET" else 1000
                 tsl.check_exits()
                 assert tsl.broker.store.closed[-1]["exit_reason"] == outcome
+
+        for side in ("BUY", "SELL"):
+            ladder = strategy(minutes, {
+                "exit_mode": DELTA_EXIT_MODE_CONTINUOUS_LADDER,
+                "sl_points": 15,
+                "tsl_activate_points": 15,
+                "tsl_profit_step_points": 15,
+                "tsl_lock_step_points": 15,
+                "target_points": 60,
+            })
+            assert ladder._enter(side, 1000, 1000)
+            direction = 1 if side == "BUY" else -1
+            pos = ladder._open_position()
+            assert pos["sl_price"] == 1000 - direction * 15
+            assert pos["target_price"] == 1000 + direction * 60
+            assert pos["signal_snapshot"]["delta_ladder_tsl"]["status"] == "waiting_for_initial_target"
+            ladder._last_tick_ltp = 1000 + direction * 14
+            ladder.check_exits()
+            assert ladder._open_position()["sl_price"] == 1000 - direction * 15
+            ladder._last_tick_ltp = 1000 + direction * 15
+            ladder.check_exits()
+            pos = ladder._open_position()
+            assert pos["sl_price"] == 1000 and pos["trailing_sl_active"]
+            assert pos["signal_snapshot"]["delta_ladder_tsl"]["step_index"] == 0
+            ladder._last_tick_ltp = 1000 + direction * 30
+            ladder.check_exits()
+            pos = ladder._open_position()
+            assert pos["sl_price"] == 1000 + direction * 15
+            assert pos["signal_snapshot"]["delta_ladder_tsl"]["step_index"] == 1
+            ladder._last_tick_ltp = 1000 + direction * 45
+            ladder.check_exits()
+            pos = ladder._open_position()
+            assert pos["sl_price"] == 1000 + direction * 30
+            ladder._last_tick_ltp = pos["sl_price"]
+            ladder.check_exits()
+            assert ladder.broker.store.closed[-1]["exit_reason"] == "TRAILING_SL"
+
+            ladder_target = strategy(minutes, {
+                "exit_mode": DELTA_EXIT_MODE_CONTINUOUS_LADDER,
+                "sl_points": 15,
+                "tsl_activate_points": 15,
+                "tsl_profit_step_points": 15,
+                "tsl_lock_step_points": 15,
+                "target_points": 60,
+            })
+            assert ladder_target._enter(side, 1000, 1000)
+            ladder_target._last_tick_ltp = 1000 + direction * 60
+            ladder_target.check_exits()
+            assert ladder_target.broker.store.closed[-1]["exit_reason"] == "TARGET"
 
         broken = strategy(minutes)
         missing = history(minutes, now)
@@ -814,6 +864,7 @@ def run():
     assert be_patch["silver_breakeven"]["target_price"] == 1050
     assert be_patch["silver_breakeven"]["initial_sl_price"] == 985
     assert be_patch["delta_three_candle_tsl"] is None  # None means delete key
+    assert be_patch["delta_ladder_tsl"] is None
 
     # Fixed -> three_candle builds a delta_three_candle_tsl bucketed at NOW,
     # not at the original entry — the operator activates from this moment.
@@ -829,11 +880,27 @@ def run():
     now_ist = now_utc.astimezone(IST)
     assert bucket_dt <= now_ist < bucket_dt + _dt.timedelta(minutes=15)
 
+    # Fixed -> continuous ladder builds a fresh profit staircase while keeping
+    # the regular final target active.
+    ladder_patch = exit_mode_snapshot_patch(DELTA_EXIT_MODE_CONTINUOUS_LADDER, fixed_pos, DELTA_DEFAULTS, 15, "gold", now_utc)
+    ladder_policy = ladder_patch["delta_ladder_tsl"]
+    assert ladder_patch["silver_exit_policy"] == DELTA_EXIT_MODE_CONTINUOUS_LADDER
+    assert ladder_policy["activation_price"] == 1000 + DELTA_DEFAULTS["tsl_activate_points"]
+    assert ladder_policy["target_price"] == 1050
+    assert ladder_policy["profit_step_points"] == DELTA_DEFAULTS["tsl_profit_step_points"]
+    assert ladder_policy["lock_step_points"] == DELTA_DEFAULTS["tsl_lock_step_points"]
+    assert ladder_policy["events"] == [] and ladder_policy["status"] == "waiting_for_initial_target"
+
     # Silver never allows three-candle; strategy validator and this helper agree.
     silver_pos = dict(fixed_pos)
     try:
         exit_mode_snapshot_patch(DELTA_EXIT_MODE_THREE_CANDLE, silver_pos, DELTA_DEFAULTS, 15, "silver", now_utc)
         assert False, "silver + three_candle must raise"
+    except ValueError as exc:
+        assert "Silver" in str(exc)
+    try:
+        exit_mode_snapshot_patch(DELTA_EXIT_MODE_CONTINUOUS_LADDER, silver_pos, DELTA_DEFAULTS, 15, "silver", now_utc)
+        assert False, "silver + ladder must raise"
     except ValueError as exc:
         assert "Silver" in str(exc)
 

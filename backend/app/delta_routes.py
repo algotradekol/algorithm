@@ -207,7 +207,7 @@ class ProtectionRequest(BaseModel):
     # Optional mid-trade exit-mode switch. Omitted / None leaves the current
     # mode intact. Validated exhaustively downstream in delta_gold's
     # exit_mode_snapshot_patch so silver+three_candle still rejects.
-    exit_mode: Literal['fixed_target_sl', 'target_to_breakeven_sl', 'three_candle_tsl'] | None = None
+    exit_mode: Literal['fixed_target_sl', 'target_to_breakeven_sl', 'three_candle_tsl', 'continuous_ladder_tsl'] | None = None
 
 
 @router.put('/{minutes}/protection')

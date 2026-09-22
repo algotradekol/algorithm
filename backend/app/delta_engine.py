@@ -659,6 +659,10 @@ class DeltaService:
                 apply_exit_mode_patch(position, exit_mode_patch)
             elif protection:
                 position['signal_snapshot']['silver_breakeven']['target_price'] = target
+            else:
+                ladder = position['signal_snapshot'].get('delta_ladder_tsl')
+                if isinstance(ladder, dict):
+                    ladder['target_price'] = target
             strategy.broker.commit(state)
             return copy.deepcopy(position)
 
