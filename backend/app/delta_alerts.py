@@ -59,8 +59,28 @@ def _code(value) -> str:
     return f"<code>{_esc(value)}</code>"
 
 
+def _bold(value) -> str:
+    return f"<b>{_esc(value)}</b>"
+
+
+def _underline(value) -> str:
+    return f"<u>{_esc(value)}</u>"
+
+
+def _pre(lines: Iterable[str]) -> str:
+    return f"<pre>{_esc(chr(10).join(lines))}</pre>"
+
+
+def _detail_rows(rows: Iterable[tuple[str, object]], label_width: int = 11) -> str:
+    return _pre(f"{label:<{label_width}} {value}" for label, value in rows)
+
+
 def _money_line(label: str, value, suffix: str = "") -> str:
     return f"<b>{_esc(label)}:</b> {_code(f'{_fmt_number(value, 4)} {suffix}'.strip())}"
+
+
+def _money_text(value, suffix: str = "", digits: int = 4) -> str:
+    return f"{_fmt_number(value, digits)} {suffix}".strip()
 
 
 def _side_marker(side: str | None) -> str:
@@ -160,7 +180,7 @@ def _trade_header(title: str, position: dict, context: dict | None = None, marke
     badge = marker or _side_marker(ctx["side"])
     return (
         f"<b>{_esc(badge)} {title}</b>\n"
-        f"<b>{_esc(ctx['asset'])}</b> / {_code(ctx['timeframe'])} / {_code(ctx['mode'])}\n"
+        f"<b>{_esc(ctx['asset'])}</b> / {_underline(ctx['timeframe'])} / {_code(ctx['mode'])}\n"
         f"{_code(ctx['symbol'])}",
         ctx,
     )
@@ -173,12 +193,18 @@ def alert_trade_open(position: dict, context: dict | None = None) -> None:
     lines = [
         header,
         "",
-        f"<b>Side:</b> {_code(ctx['side'])}    <b>Lots:</b> {_code(ctx['qty'])}",
-        f"<b>Entry:</b> {_code(ctx['entry'])}",
-        f"<b>SL:</b> {_code(ctx['sl'])}    <b>Target:</b> {_code(ctx['target'])}",
-        f"<b>Exit mode:</b> {_code(ctx['exit_mode'])}",
-        "",
-        f"<b>Time:</b> {_code(_fmt_time(position.get('entry_time')))}",
+        f"<b>Timeframe:</b> {_underline(ctx['timeframe'])}",
+        _detail_rows(
+            [
+                ("Side", ctx["side"]),
+                ("Lots", ctx["qty"]),
+                ("Entry", ctx["entry"]),
+                ("SL", ctx["sl"]),
+                ("Target", ctx["target"]),
+                ("Exit mode", ctx["exit_mode"]),
+                ("Time", _fmt_time(position.get("entry_time"))),
+            ]
+        ),
     ]
     send_telegram_alert("\n".join(lines), event="telegram_trade_open_alert", parse_mode="HTML")
 
@@ -189,21 +215,30 @@ def alert_trade_close(trade: dict, context: dict | None = None) -> None:
     rate = inr_rate("india", trade.get("quote_currency") or "USD")
     net = trade.get("net_pnl")
     net_inr = float(net) * rate if net is not None and rate else None
+    reason = _exit_reason_label(trade.get("exit_reason"))
     header, ctx = _trade_header("Delta Trade Exited", trade, context, marker=_pnl_marker(net))
     lines = [
         header,
         "",
-        f"<b>Side:</b> {_code(ctx['side'])}    <b>Lots:</b> {_code(ctx['qty'])}",
-        f"<b>Entry:</b> {_code(ctx['entry'])}    <b>Exit:</b> {_code(_fmt_number(trade.get('exit_price')))}",
-        f"<b>Reason:</b> {_code(_exit_reason_label(trade.get('exit_reason')))}",
-        f"<b>SL:</b> {_code(ctx['sl'])}    <b>Target:</b> {_code(ctx['target'])}",
-        "",
-        _money_line("Gross P&L", trade.get("gross_pnl"), "USD"),
-        _money_line("Net P&L", net, "USD"),
-        _money_line("Net INR", net_inr, "INR"),
-        "",
-        f"<b>Entry time:</b> {_code(_fmt_time(trade.get('entry_time')))}",
-        f"<b>Exit time:</b> {_code(_fmt_time(trade.get('exit_time')))}",
+        f"<b>Timeframe:</b> {_underline(ctx['timeframe'])}",
+        f"<b>Exit reason:</b> {_underline(reason)}",
+        _detail_rows(
+            [
+                ("Side", ctx["side"]),
+                ("Lots", ctx["qty"]),
+                ("Entry", ctx["entry"]),
+                ("Exit", _fmt_number(trade.get("exit_price"))),
+                ("Reason", reason),
+                ("SL", ctx["sl"]),
+                ("Target", ctx["target"]),
+                ("Gross P&L", _money_text(trade.get("gross_pnl"), "USD")),
+                ("Net P&L", _money_text(net, "USD")),
+                ("Net INR", _money_text(net_inr, "INR")),
+                ("Entry time", _fmt_time(trade.get("entry_time"))),
+                ("Exit time", _fmt_time(trade.get("exit_time"))),
+            ],
+            label_width=10,
+        ),
     ]
     send_telegram_alert("\n".join(lines), event="telegram_trade_close_alert", parse_mode="HTML")
 
@@ -214,14 +249,22 @@ def alert_wallet_transaction(transaction: dict, *, asset: str = "gold") -> None:
     rate = inr_rate("india", transaction.get("asset_symbol") or "USD")
     amount_inr = float(amount) * rate if amount is not None and rate else None
     marker = "[WALLET +]" if str(transaction.get("transaction_type") or "").lower() in {"deposit", "user_credit"} else "[WALLET -]"
+    amount_text = _money_text(amount, transaction.get("asset_symbol") or "USD")
+    time_text = _fmt_time(transaction.get("created_at"))
     lines = [
         f"<b>{_esc(marker)} Delta Wallet {kind}</b>",
-        f"<b>Asset:</b> {_code(asset.title())}",
-        _money_line("Amount", amount, transaction.get("asset_symbol") or "USD"),
-        _money_line("Approx INR", amount_inr, "INR"),
-        _money_line("Balance after", transaction.get("balance_after_usd"), "USD"),
-        f"<b>Reference:</b> {_code(transaction.get('reference') or transaction.get('id') or '--')}",
-        f"<b>Time:</b> {_code(_fmt_time(transaction.get('created_at')))}",
+        f"<b>Amount:</b> {_bold(amount_text)}",
+        f"<b>Time:</b> {_bold(time_text)}",
+        _detail_rows(
+            [
+                ("Asset", asset.title()),
+                ("Amount", amount_text),
+                ("Approx INR", _money_text(amount_inr, "INR")),
+                ("Balance", _money_text(transaction.get("balance_after_usd"), "USD")),
+                ("Reference", transaction.get("reference") or transaction.get("id") or "--"),
+                ("Time", time_text),
+            ]
+        ),
     ]
     send_telegram_alert("\n".join(lines), event="telegram_wallet_alert", parse_mode="HTML")
 
