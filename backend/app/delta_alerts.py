@@ -128,11 +128,12 @@ def _fmt_time(value=None) -> str:
         return str(value or "--")
 
 
-def send_telegram_alert(message: str, *, event: str = "telegram_alert", parse_mode: str | None = None) -> None:
+def send_telegram_alert(message: str, *, event: str = "telegram_alert", parse_mode: str | None = None) -> list[dict]:
     if not telegram_enabled():
-        return
+        return []
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     url = f"https://api.telegram.org/bot{token}/sendMessage"
+    results: list[dict] = []
     for chat_id in _chat_ids():
         try:
             payload = {
@@ -148,9 +149,15 @@ def send_telegram_alert(message: str, *, event: str = "telegram_alert", parse_mo
                 timeout=(4, 8),
             )
             if response.status_code != 200:
-                delta_log(event, status="failed", chat_id=chat_id, http_status=response.status_code, response=response.text[:300])
+                detail = response.text[:300]
+                results.append({"chat_id": chat_id, "ok": False, "http_status": response.status_code, "response": detail})
+                delta_log(event, status="failed", chat_id=chat_id, http_status=response.status_code, response=detail)
+            else:
+                results.append({"chat_id": chat_id, "ok": True, "http_status": response.status_code})
         except requests.RequestException as exc:
+            results.append({"chat_id": chat_id, "ok": False, "error": str(exc)})
             delta_log(event, status="failed", chat_id=chat_id, error=str(exc))
+    return results
 
 
 def _context(position: dict, context: dict | None = None) -> dict:

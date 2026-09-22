@@ -54,14 +54,16 @@ def test_alert():
     if not telegram_enabled():
         raise HTTPException(400, "Telegram alerts are not configured. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID/TELEGRAM_CHAT_IDS.")
     sent_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    send_telegram_alert(
+    results = send_telegram_alert(
         "<b>[TEST] Delta Telegram Alert</b>\n\n"
         "<b>Status:</b> <code>backend can reach this Telegram chat</code>\n"
         f"<b>Time:</b> <code>{sent_at}</code>",
         event="telegram_test_alert",
         parse_mode="HTML",
     )
-    return {"sent": True, "sent_at": sent_at}
+    if not any(item.get("ok") for item in results):
+        raise HTTPException(502, {"message": "Telegram rejected the test alert", "results": results})
+    return {"sent": True, "sent_at": sent_at, "results": results}
 
 
 @public_router.post('/alerts/test-secret')
@@ -74,14 +76,16 @@ def test_alert_with_secret(secret: str = Query("", min_length=1, max_length=256)
     if not telegram_enabled():
         raise HTTPException(400, "Telegram alerts are not configured. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID/TELEGRAM_CHAT_IDS.")
     sent_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
-    send_telegram_alert(
+    results = send_telegram_alert(
         "<b>[TEST] Delta Telegram Alert</b>\n\n"
         "<b>Status:</b> <code>backend secret test reached this Telegram chat</code>\n"
         f"<b>Time:</b> <code>{sent_at}</code>",
         event="telegram_secret_test_alert",
         parse_mode="HTML",
     )
-    return {"sent": True, "sent_at": sent_at}
+    if not any(item.get("ok") for item in results):
+        raise HTTPException(502, {"message": "Telegram rejected the test alert", "results": results})
+    return {"sent": True, "sent_at": sent_at, "results": results}
 
 
 @router.get('/overview')
