@@ -38,6 +38,7 @@ const deltaTimeframeLabel = (minutes: number) => (
 const DELTA_ASSET_STORAGE_KEY = 'delta.selectedAsset';
 const deltaTabStorageKey = (asset: DeltaAsset) => `delta.${asset}.selectedTab`;
 const deltaModeStorageKey = (asset: DeltaAsset) => `delta.${asset}.mode`;
+const SHOW_VIEWER_INVITES = process.env.NEXT_PUBLIC_SHOW_VIEWER_INVITES !== 'false';
 
 function readStoredValue(key: string, fallback: string) {
   if (typeof window === 'undefined') return fallback;
@@ -73,7 +74,7 @@ export default function DeltaWorkspace({ capabilities, viewerMode = false }: { c
         <span className="ml-2 text-[11px] opacity-70">{groups[key].enabled_timeframes.length} TF</span>
       </button>)}
     </nav>
-    {!viewerMode && <ViewerInvitePanel />}
+    {!viewerMode && SHOW_VIEWER_INVITES && <ViewerInvitePanel />}
     {viewerMode && <div className="mb-2 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-sm text-[#93c5fd]">Viewer mode: read-only Delta access. Trading controls and strategy internals are hidden.</div>}
     <MetalWorkspace key={asset} asset={asset} group={groups[asset]} viewerMode={viewerMode} />
   </section>;
