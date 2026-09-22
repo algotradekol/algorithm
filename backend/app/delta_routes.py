@@ -55,10 +55,11 @@ def test_alert():
         raise HTTPException(400, "Telegram alerts are not configured. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID/TELEGRAM_CHAT_IDS.")
     sent_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     send_telegram_alert(
-        "Delta Telegram test alert\n"
-        "Status: backend can reach this Telegram chat\n"
-        f"Time: {sent_at}",
+        "<b>[TEST] Delta Telegram Alert</b>\n\n"
+        "<b>Status:</b> <code>backend can reach this Telegram chat</code>\n"
+        f"<b>Time:</b> <code>{sent_at}</code>",
         event="telegram_test_alert",
+        parse_mode="HTML",
     )
     return {"sent": True, "sent_at": sent_at}
 
@@ -74,10 +75,11 @@ def test_alert_with_secret(secret: str = Query("", min_length=1, max_length=256)
         raise HTTPException(400, "Telegram alerts are not configured. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID/TELEGRAM_CHAT_IDS.")
     sent_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
     send_telegram_alert(
-        "Delta Telegram test alert\n"
-        "Status: backend secret test reached this Telegram chat\n"
-        f"Time: {sent_at}",
+        "<b>[TEST] Delta Telegram Alert</b>\n\n"
+        "<b>Status:</b> <code>backend secret test reached this Telegram chat</code>\n"
+        f"<b>Time:</b> <code>{sent_at}</code>",
         event="telegram_secret_test_alert",
+        parse_mode="HTML",
     )
     return {"sent": True, "sent_at": sent_at}
 
