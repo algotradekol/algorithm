@@ -13,8 +13,9 @@ import HistoryTab from '../../components/HistoryTab';
 import BacktestTab from '../../components/BacktestTab';
 import FyersLoginButton from '../../components/FyersLoginButton';
 import TradingModeToggle from '../../components/TradingModeToggle';
-import { getAuthToken } from '../../lib/authToken';
+import { getAuthContext } from '../../lib/authToken';
 import { clearPinToken } from '../../lib/pinAuth';
+import { clearViewerToken } from '../../lib/viewerAuth';
 import { api } from '../../lib/api';
 import { WebSocketState } from '../../lib/useWebSocket';
 import {
@@ -86,6 +87,7 @@ function DashboardContent() {
   // Fall back to the first visible tab if "Simple" is hidden in this
   // deployment. Prevents landing on a tab that renders nothing.
   const [ready, setReady] = useState(false);
+  const [viewerMode, setViewerMode] = useState(false);
   const [showFyersBanner, setShowFyersBanner] = useState(true);
   const [fyersLoginResult, setFyersLoginResult] = useState<'success' | 'failed' | null>(null);
   const [fyersLoginReason, setFyersLoginReason] = useState<string | null>(null);
@@ -191,11 +193,15 @@ function DashboardContent() {
   const wsIconTone = wsStatus === 'connected' ? 'text-[#22c55e]' : wsStatus === 'reconnecting' ? 'text-[#f59e0b]' : 'text-[#ef4444]';
 
   useEffect(() => {
-    getAuthToken().then((token) => {
+    getAuthContext().then(({ token, isViewer }) => {
       if (!token) router.replace('/login');
-      else setReady(true);
+      else {
+        setViewerMode(isViewer);
+        setReady(true);
+        if (isViewer && pathname !== '/delta') router.replace('/delta');
+      }
     });
-  }, [router]);
+  }, [pathname, router]);
 
   useEffect(() => {
     const handleExpiredAuth = () => router.replace('/login');
@@ -223,7 +229,7 @@ function DashboardContent() {
   }, [router, searchParams]);
 
   useEffect(() => {
-    if (!ready) return;
+    if (!ready || viewerMode) return;
 
     let cancelled = false;
     async function loadFyersStatus() {
@@ -271,7 +277,7 @@ function DashboardContent() {
       cancelled = true;
       window.clearInterval(interval);
     };
-  }, [ready, fyersLoginResult, statusReloadNonce]);
+  }, [ready, viewerMode, fyersLoginResult, statusReloadNonce]);
 
   useEffect(() => {
     if (!ready) return;
@@ -279,13 +285,13 @@ function DashboardContent() {
     api.deltaCapabilities().then((value) => {
       if (cancelled) return;
       setDeltaCapabilities(value);
-      if (pathname === '/dashboard' && value.delta_enabled) router.replace('/delta');
+      if ((pathname === '/dashboard' || viewerMode) && value.delta_enabled) router.replace('/delta');
       if (pathname === '/delta' && !value.delta_enabled) router.replace(DASHBOARD_TAB_ROUTES[tab]);
     }).catch(() => {
       if (!cancelled) setDeltaCapabilities({ delta_enabled: false, enabled_timeframes: [], sections: { overview: false, activity: false, backtest: false }, config_error: 'Delta capabilities unavailable' });
     });
     return () => { cancelled = true; };
-  }, [ready, pathname, router, tab]);
+  }, [ready, viewerMode, pathname, router, tab]);
 
   if (!ready) return null;
 
@@ -336,7 +342,7 @@ function DashboardContent() {
         <header className={`flex flex-col border-b border-[#1f2937] lg:flex-row lg:items-center lg:justify-between ${isDelta ? 'gap-2 pb-2' : 'gap-3 pb-3'}`}>
           <div className="flex flex-wrap items-center gap-x-3 gap-y-2 sm:gap-x-5">
             <div className="font-mono text-sm font-semibold tracking-[0.18em] text-gray-100 sm:text-base">ALGO TRADING</div>
-            {!isDelta && <>
+            {!isDelta && !viewerMode && <>
             <div className="flex items-center gap-2 text-xs uppercase tracking-wider text-gray-400">
               <i className={`ri-checkbox-blank-circle-fill text-[8px] ${statusIconTone}`} />
               <span>{statusText}</span>
@@ -357,7 +363,7 @@ function DashboardContent() {
           </div>
 
           <div className="flex flex-wrap items-center gap-2 sm:gap-3">
-            {!isDelta && <>
+            {!isDelta && !viewerMode && <>
             <TradingModeToggle
               mode={engineStatus?.trading_mode}
               onModeChanged={(mode) => {
@@ -383,7 +389,7 @@ function DashboardContent() {
             />
             </>}
             <button
-              onClick={async () => { clearPinToken(); await supabase.auth.signOut(); router.replace('/login'); }}
+              onClick={async () => { clearPinToken(); clearViewerToken(); await supabase.auth.signOut(); router.replace('/login'); }}
               className="inline-flex min-h-10 items-center gap-1 text-sm text-gray-500 hover:text-gray-100"
             >
               <i className="ri-logout-box-fill text-sm" />
@@ -394,7 +400,7 @@ function DashboardContent() {
 
         <nav aria-label="Broker" className={`flex gap-2 border-b border-[#1f2937] ${isDelta ? 'mt-2 pb-2' : 'mt-4 pb-3'}`}>
           {[
-            { label: 'FYERS', href: DASHBOARD_TAB_ROUTES[tab], active: !isDelta },
+            ...(!viewerMode ? [{ label: 'FYERS', href: DASHBOARD_TAB_ROUTES[tab], active: !isDelta }] : []),
             ...(deltaCapabilities?.delta_enabled ? [{ label: 'Delta', href: '/delta', active: isDelta }] : []),
           ].map((broker) => (
             <Link
@@ -413,7 +419,7 @@ function DashboardContent() {
         </nav>
 
         {isDelta ? (
-          <DeltaWorkspace capabilities={deltaCapabilities} />
+          <DeltaWorkspace capabilities={deltaCapabilities} viewerMode={viewerMode} />
         ) : <>
         <nav className="mb-4 flex gap-6 overflow-x-auto whitespace-nowrap border-b border-[#1f2937] [-ms-overflow-style:none] [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
           {visibleTabs.map((t) => (

@@ -66,7 +66,7 @@ except Exception as _exc:  # pragma: no cover
     print(f"[boot] fyers-apiv3 version lookup failed: {_exc}")
 
 from .config import ALLOWED_ORIGINS, APP_PIN, FRONTEND_URL, SUPABASE_JWT_SECRET
-from .auth import require_auth
+from .auth import is_viewer, require_auth, require_delta_auth
 from .engine import attach_entry_triggers, enrich_positions_with_ltp, get_engine_status, last_ltp, refresh_strategy_market_data, restart_live_feed, start_engine, stop_live_feed, STRATEGIES, _clear_token_expired
 from .charges import get_charges_config, set_charges_config
 from .audit_log import audit_log
@@ -86,6 +86,7 @@ from .runtime_mode import (
 )
 from .silver_setup_history import get_setup_history
 from .timezone import IST
+from .viewer_invites import create_invite, list_invites, redeem_invite, revoke_invite
 
 
 class ConnectionManager:
@@ -198,7 +199,9 @@ async def websocket_endpoint(ws: WebSocket):
         token = json.loads(first_message).get("token")
         if not token:
             raise ValueError("WebSocket authentication token is missing")
-        jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"], audience="authenticated")
+        payload = jwt.decode(token, SUPABASE_JWT_SECRET, algorithms=["HS256"], audience="authenticated")
+        if is_viewer(payload):
+            raise ValueError("Viewer sessions cannot open the trading websocket")
     except WebSocketDisconnect:
         # Client closed the socket before sending auth (tab close, refresh mid-handshake).
         print("[ws] client disconnected during auth handshake")
@@ -247,6 +250,47 @@ def pin_login(payload: dict):
         algorithm="HS256",
     )
     return {"access_token": token, "token_type": "bearer", "expires_in": 12 * 60 * 60}
+
+
+@app.post("/api/viewer/redeem")
+def viewer_redeem(payload: dict):
+    try:
+        return redeem_invite(payload.get("code", ""))
+    except ValueError as exc:
+        raise HTTPException(status_code=401, detail=str(exc)) from None
+    except Exception:
+        raise HTTPException(status_code=503, detail="Viewer login is temporarily unavailable") from None
+
+
+@app.get("/api/viewer/session")
+def viewer_session(_user=Depends(require_delta_auth)):
+    return {"viewer": is_viewer(_user), "expires_at": _user.get("exp"), "login_method": _user.get("login_method")}
+
+
+@app.get("/api/viewer/invites")
+def viewer_invites(_admin=Depends(require_auth)):
+    try:
+        return {"invites": list_invites()}
+    except Exception:
+        raise HTTPException(status_code=503, detail="Viewer invites are temporarily unavailable") from None
+
+
+@app.post("/api/viewer/invites")
+def viewer_invite_create(payload: dict | None = None, _admin=Depends(require_auth)):
+    try:
+        return create_invite((payload or {}).get("label"))
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Viewer invite could not be created: {exc}") from None
+
+
+@app.post("/api/viewer/invites/{invite_id}/revoke")
+def viewer_invite_revoke(invite_id: str, _admin=Depends(require_auth)):
+    try:
+        return revoke_invite(invite_id)
+    except ValueError as exc:
+        raise HTTPException(status_code=409, detail=str(exc)) from None
+    except Exception:
+        raise HTTPException(status_code=503, detail="Viewer invite could not be revoked") from None
 
 
 @app.get("/api/fyers/login-url")

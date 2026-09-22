@@ -68,7 +68,7 @@ const silverDeltaDefaults = {
   exit_mode: 'target_to_breakeven_sl' as const,
 };
 
-export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { minutes: number; asset?: DeltaAsset; mode?: 'paper' | 'live' }) {
+export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper', viewerMode = false }: { minutes: number; asset?: DeltaAsset; mode?: 'paper' | 'live'; viewerMode?: boolean }) {
   const api = deltaApi(asset, mode);
   const metal = asset === 'silver' ? 'Silver' : 'Gold';
   const [status, setStatus] = useState<Status | null>(null);
@@ -99,7 +99,7 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
         const next = await api.deltaStatus(minutes);
         if (cancelled) return;
         setStatus(next);
-        if (next.settings) {
+        if (next.settings || viewerMode) {
           const rows = await api.deltaTrades(minutes, offset);
           if (!cancelled) setTrades(rows.trades);
         }
@@ -112,7 +112,7 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
     }
     void poll();
     return () => { cancelled = true; clearTimeout(timer); };
-  }, [asset, mode, minutes, offset, reload]);
+  }, [asset, mode, minutes, offset, reload, viewerMode]);
 
   useEffect(() => {
     if (!editing) return;
@@ -185,10 +185,10 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
     <header className="sticky top-0 z-30 -mx-1 flex flex-wrap items-end justify-between gap-2 rounded-b-xl border-b border-[#1f2937] bg-[#080d13]/95 px-1 py-1.5 shadow-[0_10px_24px_rgba(0,0,0,0.28)] backdrop-blur">
       <div>
         <h1 className="text-base font-semibold text-gray-100">Delta {metal} {timeframeLabel(minutes)} <span className={`ml-2 rounded px-2 py-0.5 text-[10px] ${mode === 'live' ? 'bg-[#ef4444]/20 text-[#f87171]' : 'bg-[#3b82f6]/20 text-[#93c5fd]'}`}>{mode === 'live' ? 'LIVE' : 'PAPER ONLY'}</span></h1>
-        <p className="mt-0.5 text-[11px] text-gray-500">{status?.symbol || `${metal} symbol not configured`} | 24/7 | {asset === 'gold' ? 'EMA20 + volume EMA20' : 'Normal Silver Micro'} | No square-off</p>
+        <p className="mt-0.5 text-[11px] text-gray-500">{status?.symbol || `${metal} symbol not configured`} | 24/7 | {viewerMode ? 'Read-only viewer' : asset === 'gold' ? 'EMA20 + volume EMA20' : 'Normal Silver Micro'} | No square-off</p>
       </div>
       <div className="flex flex-wrap items-center gap-1 rounded-lg border border-[#1f2937] bg-[#0b111a] p-1 lg:ml-auto lg:max-w-[calc(100%-28rem)] lg:justify-end">
-        {settings && <>
+        {settings && !viewerMode && <>
           <button className={`${controlButton} ${settings.scan_enabled ? 'border-[#22c55e]/50 bg-[#22c55e]/10 text-[#22c55e]' : 'border-[#334155] text-gray-500'}`} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { scan_enabled: !settings.scan_enabled }), 'Scan setting saved')}>Scan {settings.scan_enabled ? 'ON' : 'OFF'}</button>
           <button className={`${controlButton} ${settings.trading_enabled ? 'border-[#22c55e]/50 bg-[#22c55e]/10 text-[#22c55e]' : 'border-[#334155] text-gray-500'}`} disabled={busy} onClick={() => action(() => api.deltaSettings(minutes, { trading_enabled: !settings.trading_enabled }), `${mode === 'live' ? 'Live' : 'Paper'} trading setting saved`)}>Trade {settings.trading_enabled ? 'ON' : 'OFF'}</button>
           <button className={`${controlButton} border-[#3b82f6]/50 bg-[#3b82f6]/10 text-[#93c5fd]`} onClick={() => setDraft({ ...settings })}>Settings</button>
@@ -225,7 +225,7 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
           </div>
           <button className={`${controlButton} border-[#22c55e]/60 bg-[#22c55e]/10 text-[#22c55e]`} disabled={busy || !(cooldown?.active || cooldown?.pending_after_trade)} onClick={() => action(() => api.deltaResume(minutes), 'Entry rest cleared. The next qualifying crossing may trade.')}>Resume</button>
         </>}
-        <button className={`${controlButton} border-[#334155] text-gray-300 hover:border-[#60a5fa]`} disabled={busy || !status?.credentials_configured} onClick={() => action(() => api.deltaCheckConnection(), 'Delta account verified')}>Verify API</button>
+        {!viewerMode && <button className={`${controlButton} border-[#334155] text-gray-300 hover:border-[#60a5fa]`} disabled={busy || !status?.credentials_configured} onClick={() => action(() => api.deltaCheckConnection(), 'Delta account verified')}>Verify API</button>}
       </div>
     </header>
     {(error || notice || status?.error || status?.history_error) && <div role="status" className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 p-3 text-sm text-[#fbbf24]">{error || notice || status?.error || status?.history_error}</div>}
@@ -235,12 +235,12 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
     {cooldown?.pending_after_trade && <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-[#f59e0b]/40 bg-[#f59e0b]/5 p-3">
       <div><div className="text-sm font-semibold text-[#fbbf24]">Pause queued after current trade</div><p className="mt-1 text-xs text-gray-400">The open position will keep running. After it exits, new entries pause for {cooldown.pending_duration_minutes} minutes.</p></div>
     </div>}
-    <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
+    <div className={`grid gap-2 sm:grid-cols-3 ${viewerMode ? 'xl:grid-cols-3' : 'xl:grid-cols-6'}`}>
       <Card label="Market data" value={status?.stale ? 'Waiting for fresh trade' : `${status?.source || '--'} active`} detail={`WS ${status?.ws_connected ? 'connected' : 'disconnected'} | ${status?.proxy_configured ? 'VM proxy' : 'Direct connection'}`} />
       <Card label={`LTP (${currency})`} value={number(status?.ltp)} detail={`Last trade: ${date(status?.last_tick_at)} IST`} />
-      <Card label="EMA20" value={number(status?.ema20)} detail={`Last completed candle: ${date(status?.last_bar_at)} IST`} />
-      <Card label="Volume EMA20" value={number(status?.volume_ema20)} detail="Completed strategy candles" />
-      <Card label="Active candle open" value={number(status?.current_candle_open)} detail="Must begin on the valid side of the trigger" />
+      {!viewerMode && <Card label="EMA20" value={number(status?.ema20)} detail={`Last completed candle: ${date(status?.last_bar_at)} IST`} />}
+      {!viewerMode && <Card label="Volume EMA20" value={number(status?.volume_ema20)} detail="Completed strategy candles" />}
+      {!viewerMode && <Card label="Active candle open" value={number(status?.current_candle_open)} detail="Must begin on the valid side of the trigger" />}
       <Card label={sizingLabel} value={sizingValue} detail={sizingDetail} />
     </div>
     {status?.ws_error && <p className="text-xs text-gray-400">{status.ws_error}</p>}
@@ -250,9 +250,9 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
         const time = status?.references?.find(row => row.side === side)?.time;
         const trigger = ref != null && settings ? ref + (side === 'BUY' ? 1 : -1) * settings.silver_breakout_points : undefined;
         return <div key={side} className={`rounded border px-3 py-2.5 ${side === 'BUY' ? 'border-[#22c55e]/40 bg-[#22c55e]/5' : 'border-[#ef4444]/40 bg-[#ef4444]/5'}`}>
-          <div className={side === 'BUY' ? 'text-xs text-[#22c55e]' : 'text-xs text-[#ef4444]'}>{side} ref: {side === 'BUY' ? 'green close > EMA20' : 'red close < EMA20'}{asset === 'gold' ? ' + vol > vol EMA20' : ''}</div>
-          <div className="mt-1 font-mono text-sm text-gray-100">Close {number(ref)} | Trigger {number(trigger)}</div>
-          <p className="mt-1 text-[11px] text-gray-500">{date(time)} IST | Vol {number(status?.references?.find(row => row.side === side)?.volume)} | Vol EMA {number(status?.references?.find(row => row.side === side)?.volume_ema20)}</p>
+          <div className={side === 'BUY' ? 'text-xs text-[#22c55e]' : 'text-xs text-[#ef4444]'}>{side} reference candle</div>
+          <div className="mt-1 font-mono text-sm text-gray-100">Close {number(ref)}{!viewerMode && <> | Trigger {number(trigger)}</>}</div>
+          <p className="mt-1 text-[11px] text-gray-500">{date(time)} IST | Vol {number(status?.references?.find(row => row.side === side)?.volume)}{!viewerMode && <> | Vol EMA {number(status?.references?.find(row => row.side === side)?.volume_ema20)}</>}</p>
         </div>;
       })}
     </div>
@@ -261,7 +261,7 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
       <Card label={`Today realized gross (${currency})`} value={number(pnl?.gross_pnl)} detail={`Closed ${mode} trades today only`} />
       <Card label={`Estimated net (${currency})`} value={pnl ? number(pnl.gross_pnl - pnl.fees) : '--'} detail="Product taker fees deducted; funding, taxes and slippage excluded" />
     </div>
-    {draft && <form className="panel space-y-4 p-4" onSubmit={event => {
+    {draft && !viewerMode && <form className="panel space-y-4 p-4" onSubmit={event => {
       event.preventDefault();
       void action(async () => { await api.deltaSettings(minutes, draft); setDraft(null); }, 'Delta settings saved');
     }}>
@@ -313,18 +313,18 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
     </form>}
     <p className="text-xs text-gray-400">{status?.inr_rate ? `INR uses Delta India's fixed rate: 1 USD = Rs ${status.inr_rate}.` : 'INR conversion unavailable for this currency.'}</p>
     <section>
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-gray-300">OPEN {mode.toUpperCase()} POSITION</h2><button className={`${button} border-[#22c55e]/60 text-[#22c55e]`} disabled={csvBusy !== null || !settings} onClick={() => download('open')}>{csvBusy === 'open' ? 'Exporting...' : 'Download open CSV'}</button></div>
-      <TradeTable rows={status?.position ? [status.position] : []} mode={mode} disabled={busy || !status || status.stale || !!error} onEdit={row => { setEditing({ ...row }); setEditError(''); }} onExit={exit} />
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-gray-300">OPEN {mode.toUpperCase()} POSITION</h2>{!viewerMode && <button className={`${button} border-[#22c55e]/60 text-[#22c55e]`} disabled={csvBusy !== null || !settings} onClick={() => download('open')}>{csvBusy === 'open' ? 'Exporting...' : 'Download open CSV'}</button>}</div>
+      <TradeTable rows={status?.position ? [status.position] : []} mode={mode} disabled={busy || !status || status.stale || !!error} readOnly={viewerMode} onEdit={row => { setEditing({ ...row }); setEditError(''); }} onExit={exit} />
     </section>
     <section>
-      <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-gray-300">CLOSED {mode.toUpperCase()} TRADES TODAY <span className="text-xs font-normal text-gray-500">+ last previous row</span></h2><button className={`${button} border-[#22c55e]/60 text-[#22c55e]`} disabled={csvBusy !== null || !settings} onClick={() => download('closed')}>{csvBusy === 'closed' ? 'Exporting all trades...' : 'Download closed CSV'}</button></div>
-      <TradeTable rows={trades} closed />
+      <div className="mb-2 flex flex-wrap items-center justify-between gap-2"><h2 className="text-sm font-semibold text-gray-300">CLOSED {mode.toUpperCase()} TRADES TODAY <span className="text-xs font-normal text-gray-500">+ last previous row</span></h2>{!viewerMode && <button className={`${button} border-[#22c55e]/60 text-[#22c55e]`} disabled={csvBusy !== null || !settings} onClick={() => download('closed')}>{csvBusy === 'closed' ? 'Exporting all trades...' : 'Download closed CSV'}</button>}</div>
+      <TradeTable rows={trades} closed readOnly={viewerMode} />
       <div className="mt-2 flex justify-end gap-2"><button className={button} disabled={offset === 0} onClick={() => setOffset(value => Math.max(0, value - 100))}>Previous</button><button className={button} disabled={trades.length < 100} onClick={() => setOffset(value => value + 100)}>Next</button></div>
     </section>
     <details className="panel p-3"><summary className="cursor-pointer text-sm text-[#93c5fd]">Reference history</summary>
-      <div className="mt-3 max-h-80 overflow-auto"><table className="w-full text-left text-xs"><thead><tr>{['Side', 'Candle time (IST)', 'Open', 'High', 'Low', 'Close', 'EMA20', 'Volume', 'Volume EMA20'].map(label => <th key={label} className="p-2 text-gray-400">{label}</th>)}</tr></thead><tbody>{status?.references?.map(row => <tr key={`${row.side}-${row.time}`} className="border-t border-[#1f2937] text-gray-200"><td className="p-2">{row.side}</td><td className="p-2">{date(row.time)}</td>{[row.open, row.high, row.low, row.close, row.ema20, row.volume, row.volume_ema20].map((value, index) => <td key={index} className="p-2 font-mono">{number(value)}</td>)}</tr>)}</tbody></table></div>
+      <div className="mt-3 max-h-80 overflow-auto"><table className="w-full text-left text-xs"><thead><tr>{(viewerMode ? ['Side', 'Candle time (IST)', 'Open', 'High', 'Low', 'Close', 'Volume'] : ['Side', 'Candle time (IST)', 'Open', 'High', 'Low', 'Close', 'EMA20', 'Volume', 'Volume EMA20']).map(label => <th key={label} className="p-2 text-gray-400">{label}</th>)}</tr></thead><tbody>{status?.references?.map(row => <tr key={`${row.side}-${row.time}`} className="border-t border-[#1f2937] text-gray-200"><td className="p-2">{row.side}</td><td className="p-2">{date(row.time)}</td>{(viewerMode ? [row.open, row.high, row.low, row.close, row.volume] : [row.open, row.high, row.low, row.close, row.ema20, row.volume, row.volume_ema20]).map((value, index) => <td key={index} className="p-2 font-mono">{number(value)}</td>)}</tr>)}</tbody></table></div>
     </details>
-    {editing && <EditProtection key={editing.id} row={editing} mode={mode} asset={asset} ltp={status?.ltp} busy={busy} disabled={!status || status.stale || !!error || status.position?.id !== editing.id} error={editError} onClose={() => { if (!busy) setEditing(null); }} onSave={saveProtection} />}
+    {editing && !viewerMode && <EditProtection key={editing.id} row={editing} mode={mode} asset={asset} ltp={status?.ltp} busy={busy} disabled={!status || status.stale || !!error || status.position?.id !== editing.id} error={editError} onClose={() => { if (!busy) setEditing(null); }} onSave={saveProtection} />}
   </div>;
 }
 
@@ -332,8 +332,8 @@ function Card({ label, value, detail }: { label: string; value: string; detail: 
   return <div className="rounded border border-[#1f2937] bg-[#111827] px-3 py-2"><div className="text-[10px] uppercase tracking-wide text-gray-500">{label}</div><div className="mt-1 font-mono text-base text-gray-100">{value}</div><p className="mt-1 text-[11px] leading-snug text-gray-500">{detail}</p></div>;
 }
 
-export function TradeTable({ rows, closed = false, mode = 'paper', disabled, onEdit, onExit }: { rows: Trade[]; closed?: boolean; mode?: 'paper' | 'live'; disabled?: boolean; onEdit?: (row: Trade) => void; onExit?: (row: Trade) => void }) {
-  const headers = ['Side', 'Lots', 'Entry time (IST)', 'Entry', 'Reference time (IST)', 'Reference', 'Initial SL', 'Current SL', 'Target', ...(!closed ? ['Edit'] : []), 'TSL', ...(closed ? ['Exit time (IST)', 'Exit', 'Reason', 'Gross', 'Net', 'Net (INR)'] : ['Unrealized P&L', 'Unrealized (INR)', 'Exit'])];
+export function TradeTable({ rows, closed = false, mode = 'paper', disabled, readOnly = false, onEdit, onExit }: { rows: Trade[]; closed?: boolean; mode?: 'paper' | 'live'; disabled?: boolean; readOnly?: boolean; onEdit?: (row: Trade) => void; onExit?: (row: Trade) => void }) {
+  const headers = ['Side', 'Lots', 'Entry time (IST)', 'Entry', 'Reference time (IST)', 'Reference', 'Initial SL', 'Current SL', 'Target', ...(!closed && !readOnly ? ['Edit'] : []), 'TSL', ...(closed ? ['Exit time (IST)', 'Exit', 'Reason', 'Gross', 'Net', 'Net (INR)'] : ['Unrealized P&L', 'Unrealized (INR)', ...(!readOnly ? ['Exit'] : [])])];
   return <div className="max-h-[32rem] overflow-auto rounded border border-[#1f2937]">
     <table className="w-full whitespace-nowrap text-left text-xs">
       <thead className="sticky top-0 bg-[#111827]">
@@ -356,8 +356,8 @@ export function TradeTable({ rows, closed = false, mode = 'paper', disabled, onE
           const exitCell: TradeCell = { value: <button className="min-h-9 rounded border border-[#ef4444]/70 px-2.5 py-1.5 text-xs font-semibold text-[#ef4444] disabled:opacity-40" disabled={disabled} onClick={() => onExit?.(row)}>Exit</button> };
           const cells: TradeCell[] = [
             ...baseCells,
-            ...(!closed ? [editCell] : []),
-            { value: <TslAudit key="tsl" row={row} /> },
+            ...(!closed && !readOnly ? [editCell] : []),
+            { value: readOnly ? (row.trailing_sl_active ? 'Protected' : 'Active') : <TslAudit key="tsl" row={row} /> },
             ...(closed
               ? [
                 { value: date(row.exit_time) },
@@ -370,7 +370,7 @@ export function TradeTable({ rows, closed = false, mode = 'paper', disabled, onE
               : [
                 { value: <PnlValue value={row.unrealized_pnl} /> },
                 { value: <PnlValue value={row.pnl_inr} /> },
-                exitCell,
+                ...(!readOnly ? [exitCell] : []),
               ]),
           ];
           return <tr key={row.id} className="border-t border-[#1f2937] text-gray-200">

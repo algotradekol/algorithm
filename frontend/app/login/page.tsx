@@ -3,6 +3,8 @@ import { useState } from 'react';
 import { useRouter } from 'next/navigation';
 import { supabase } from '../../lib/supabaseClient';
 import { clearPinToken, setPinToken } from '../../lib/pinAuth';
+import { redeemViewerCode } from '../../lib/api';
+import { clearViewerToken, setViewerToken } from '../../lib/viewerAuth';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 
@@ -10,9 +12,11 @@ export default function Login() {
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [pin, setPin] = useState('');
+  const [viewerCode, setViewerCode] = useState('');
   const [error, setError] = useState('');
   const [emailLoading, setEmailLoading] = useState(false);
   const [pinLoading, setPinLoading] = useState(false);
+  const [viewerLoading, setViewerLoading] = useState(false);
   const router = useRouter();
 
   async function handleLogin(e: React.FormEvent) {
@@ -20,6 +24,7 @@ export default function Login() {
     setError('');
     setEmailLoading(true);
     clearPinToken();
+    clearViewerToken();
     const { error } = await supabase.auth.signInWithPassword({ email, password });
     setEmailLoading(false);
     if (error) setError(error.message);
@@ -36,6 +41,7 @@ export default function Login() {
       return;
     }
     await supabase.auth.signOut();
+    clearViewerToken();
 
     const res = await fetch(`${API_URL}/api/pin-login`, {
       method: 'POST',
@@ -53,6 +59,24 @@ export default function Login() {
     const data = await res.json() as { access_token: string };
     setPinToken(data.access_token);
     router.push('/delta');
+  }
+
+  async function handleViewerLogin(e: React.FormEvent) {
+    e.preventDefault();
+    setError('');
+    setViewerLoading(true);
+    clearPinToken();
+    await supabase.auth.signOut();
+    try {
+      const data = await redeemViewerCode(viewerCode) as { access_token: string };
+      setViewerToken(data.access_token);
+      router.push('/delta');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Viewer code failed');
+      setViewerCode('');
+    } finally {
+      setViewerLoading(false);
+    }
   }
 
   return (
@@ -120,6 +144,34 @@ export default function Login() {
             className="mt-5 w-full rounded border border-[#3b82f6] bg-[#3b82f6] px-4 py-2.5 text-sm font-semibold text-white disabled:opacity-70"
           >
             {pinLoading ? 'Logging in...' : 'Login with PIN'}
+          </button>
+        </form>
+
+        <div className="my-5 flex items-center gap-3">
+          <div className="h-px flex-1 bg-[#1f2937]" />
+          <span className="text-xs uppercase tracking-wider text-gray-500">viewer access</span>
+          <div className="h-px flex-1 bg-[#1f2937]" />
+        </div>
+
+        <form onSubmit={handleViewerLogin}>
+          <label className="label" htmlFor="viewer-code">Viewer Code</label>
+          <input
+            id="viewer-code"
+            className="control mt-1 text-center font-mono text-2xl tracking-[0.35em]"
+            inputMode="numeric"
+            maxLength={6}
+            type="password"
+            autoComplete="one-time-code"
+            placeholder="******"
+            value={viewerCode}
+            onChange={(e) => setViewerCode(e.target.value.replace(/\D/g, '').slice(0, 6))}
+          />
+          <button
+            type="submit"
+            disabled={viewerLoading}
+            className="mt-5 w-full rounded border border-[#334155] bg-[#111827] px-4 py-2.5 text-sm font-semibold text-gray-100 disabled:opacity-70"
+          >
+            {viewerLoading ? 'Opening viewer...' : 'Open Viewer Mode'}
           </button>
         </form>
 

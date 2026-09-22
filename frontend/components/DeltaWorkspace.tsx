@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useState } from 'react';
-import { DeltaAsset, deltaApi } from '../lib/api';
+import { api, DeltaAsset, deltaApi } from '../lib/api';
 import DeltaTab from './DeltaTab';
 import DeltaOverviewTab from './DeltaOverviewTab';
 import DeltaActivityTab from './DeltaActivityTab';
@@ -51,7 +51,7 @@ function readStoredMode(asset: DeltaAsset): 'paper' | 'live' {
   return readStoredValue(deltaModeStorageKey(asset), 'paper') === 'live' ? 'live' : 'paper';
 }
 
-export default function DeltaWorkspace({ capabilities }: { capabilities: DeltaCapabilities | null }) {
+export default function DeltaWorkspace({ capabilities, viewerMode = false }: { capabilities: DeltaCapabilities | null; viewerMode?: boolean }) {
   const [selected, setSelected] = useState<DeltaAsset>(() => readStoredValue(DELTA_ASSET_STORAGE_KEY, 'gold') as DeltaAsset);
   if (!capabilities) return <p className="panel p-4 text-sm text-gray-400">Loading Delta configuration...</p>;
   if (capabilities.config_error) return <p role="alert" className="panel p-4 text-sm text-[#f87171]">{capabilities.config_error}</p>;
@@ -73,11 +73,13 @@ export default function DeltaWorkspace({ capabilities }: { capabilities: DeltaCa
         <span className="ml-2 text-[11px] opacity-70">{groups[key].enabled_timeframes.length} TF</span>
       </button>)}
     </nav>
-    <MetalWorkspace key={asset} asset={asset} group={groups[asset]} />
+    {!viewerMode && <ViewerInvitePanel />}
+    {viewerMode && <div className="mb-2 rounded border border-[#3b82f6]/40 bg-[#3b82f6]/10 px-3 py-2 text-sm text-[#93c5fd]">Viewer mode: read-only Delta access. Trading controls and strategy internals are hidden.</div>}
+    <MetalWorkspace key={asset} asset={asset} group={groups[asset]} viewerMode={viewerMode} />
   </section>;
 }
 
-function MetalWorkspace({ asset, group }: { asset: DeltaAsset; group: Group }) {
+function MetalWorkspace({ asset, group, viewerMode = false }: { asset: DeltaAsset; group: Group; viewerMode?: boolean }) {
   const [selected, setSelected] = useState(() => readStoredValue(deltaTabStorageKey(asset), 'overview'));
   const [mode, setMode] = useState<'paper' | 'live'>(() => readStoredMode(asset));
   // Two-click confirm on the LIVE button itself. First click arms the switch
@@ -183,13 +185,83 @@ function MetalWorkspace({ asset, group }: { asset: DeltaAsset; group: Group }) {
         closed trades keep showing under the live view because the child
         tabs only refetch on mount, not on prop change. */}
     <div key={`${asset}-${tab}-${effectiveMode}`}>
-      {tab === 'overview' ? <DeltaOverviewTab asset={asset} mode={effectiveMode} />
+      {tab === 'overview' ? <DeltaOverviewTab asset={asset} mode={effectiveMode} viewerMode={viewerMode} />
         : tab === 'activity' ? <DeltaActivityTab asset={asset} mode={effectiveMode} enabledTimeframes={group.enabled_timeframes} />
         : tab === 'calendar' ? <DeltaCalendarTab asset={asset} mode={effectiveMode} />
         : tab === 'funds' ? <DeltaFundsTab asset={asset} mode={effectiveMode} />
-        : tab === 'backtest' ? <DeltaBacktestTab asset={asset} enabledTimeframes={group.enabled_timeframes} />
-        : tab ? <DeltaTab asset={asset} mode={effectiveMode} minutes={Number(tab)} />
+        : tab === 'backtest' ? (viewerMode ? <p className="panel p-4 text-sm text-gray-400">Backtest controls are hidden in viewer mode.</p> : <DeltaBacktestTab asset={asset} enabledTimeframes={group.enabled_timeframes} />)
+        : tab ? <DeltaTab asset={asset} mode={effectiveMode} minutes={Number(tab)} viewerMode={viewerMode} />
         : <p className="panel p-4 text-sm text-gray-400">No {metal} sections are enabled.</p>}
     </div>
   </>;
+}
+
+type ViewerInvite = {
+  id: string; label?: string | null; created_at?: string; expires_at?: string; redeemed_at?: string | null; revoked_at?: string | null; status: string; code?: string;
+};
+
+function ViewerInvitePanel() {
+  const [open, setOpen] = useState(false);
+  const [label, setLabel] = useState('');
+  const [invites, setInvites] = useState<ViewerInvite[]>([]);
+  const [latest, setLatest] = useState<ViewerInvite | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState('');
+
+  async function load() {
+    try {
+      const data = await api.viewerInvites() as { invites: ViewerInvite[] };
+      setInvites(data.invites || []);
+      setError('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Viewer invites unavailable');
+    }
+  }
+
+  useEffect(() => { if (open) void load(); }, [open]);
+
+  async function create() {
+    setBusy(true); setError('');
+    try {
+      const invite = await api.createViewerInvite(label) as ViewerInvite;
+      setLatest(invite);
+      setLabel('');
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not create viewer code');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  async function revoke(id: string) {
+    setBusy(true); setError('');
+    try {
+      await api.revokeViewerInvite(id);
+      await load();
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Could not revoke viewer code');
+    } finally {
+      setBusy(false);
+    }
+  }
+
+  return <div className="mb-2 rounded-lg border border-[#1f2937] bg-[#0b111a]">
+    <button type="button" className="flex w-full items-center justify-between px-3 py-2 text-left text-sm font-semibold text-gray-200" onClick={() => setOpen(value => !value)}>
+      <span>Viewer invites</span><span className="text-xs text-gray-500">{open ? 'Hide' : 'Generate read-only code'}</span>
+    </button>
+    {open && <div className="space-y-3 border-t border-[#1f2937] p-3">
+      <div className="flex flex-wrap gap-2">
+        <input className="min-w-52 flex-1 rounded border border-[#334155] bg-[#0a0e14] px-3 py-2 text-sm text-gray-200" placeholder="Label e.g. Bumba demo" value={label} onChange={e => setLabel(e.target.value)} />
+        <button className="rounded border border-[#3b82f6] bg-[#3b82f6]/20 px-3 py-2 text-sm font-semibold text-[#93c5fd] disabled:opacity-50" disabled={busy} onClick={create}>Generate 24h code</button>
+      </div>
+      {latest?.code && <div className="rounded border border-[#22c55e]/40 bg-[#22c55e]/10 p-3 text-sm text-gray-200">
+        <div className="text-xs uppercase tracking-wide text-[#22c55e]">Share this one-time code now</div>
+        <div className="mt-1 flex flex-wrap items-center gap-2"><span className="font-mono text-2xl tracking-[0.25em] text-gray-100">{latest.code}</span><button className="rounded border border-[#334155] px-2 py-1 text-xs" onClick={() => navigator.clipboard?.writeText(latest.code || '')}>Copy</button></div>
+        <p className="mt-1 text-xs text-gray-400">It can be redeemed once. The viewer session lasts 24 hours after redeeming.</p>
+      </div>}
+      {error && <p className="text-sm text-[#f87171]">{error}</p>}
+      <div className="max-h-60 overflow-auto rounded border border-[#1f2937]"><table className="w-full text-left text-xs"><thead className="bg-[#111827] text-gray-400"><tr>{['Label', 'Status', 'Created', 'Expires', 'Action'].map(h => <th key={h} className="p-2">{h}</th>)}</tr></thead><tbody>{invites.map(row => <tr key={row.id} className="border-t border-[#1f2937] text-gray-300"><td className="p-2">{row.label || '--'}</td><td className="p-2 uppercase">{row.status}</td><td className="p-2">{row.created_at ? new Date(row.created_at).toLocaleString('en-IN') : '--'}</td><td className="p-2">{row.expires_at ? new Date(row.expires_at).toLocaleString('en-IN') : '--'}</td><td className="p-2">{row.status === 'unused' ? <button disabled={busy} className="text-[#f87171] disabled:opacity-50" onClick={() => revoke(row.id)}>Revoke</button> : '--'}</td></tr>)}</tbody></table></div>
+    </div>}
+  </div>;
 }

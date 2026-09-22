@@ -1,6 +1,7 @@
 import { getAuthToken } from './authToken';
 import { clearPinToken } from './pinAuth';
 import { supabase } from './supabaseClient';
+import { clearViewerToken } from './viewerAuth';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 type TradingMode = 'paper' | 'live';
@@ -31,6 +32,7 @@ async function authedFetch(path: string, options: RequestInit = {}) {
     if (res.status === 401 && typeof window !== 'undefined') {
       // Do not keep a stale dashboard alive after an email/PIN token expires.
       clearPinToken();
+      clearViewerToken();
       void supabase.auth.signOut();
       window.dispatchEvent(new Event('algo-auth-expired'));
     }
@@ -223,7 +225,31 @@ export const api = {
     authedFetch(`/api/backtests/${encodeURIComponent(jobId)}/cancel`, { method: 'POST' }),
   cancelActiveBacktest: () =>
     authedFetch('/api/backtests/cancel-active', { method: 'POST' }),
+  viewerInvites: () => authedFetch('/api/viewer/invites'),
+  createViewerInvite: (label = '') => authedFetch('/api/viewer/invites', { method: 'POST', body: JSON.stringify({ label }) }),
+  revokeViewerInvite: (inviteId: string) => authedFetch(`/api/viewer/invites/${encodeURIComponent(inviteId)}/revoke`, { method: 'POST' }),
 };
+
+export async function redeemViewerCode(code: string) {
+  if (!API_URL) throw new Error('NEXT_PUBLIC_API_URL is not configured');
+  const res = await fetch(`${API_URL}/api/viewer/redeem`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ code }),
+  });
+  if (!res.ok) {
+    const body = await res.text();
+    let message = body || 'Viewer code failed';
+    try {
+      const parsed = JSON.parse(body);
+      message = parsed.detail || message;
+    } catch {
+      // Keep the raw body fallback when the backend returns plain text.
+    }
+    throw new Error(message);
+  }
+  return res.json();
+}
 
 export type DeltaAsset = 'gold' | 'silver';
 

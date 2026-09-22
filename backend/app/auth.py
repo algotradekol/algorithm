@@ -20,7 +20,7 @@ def get_jwks_client() -> PyJWKClient | None:
     return PyJWKClient(f"{SUPABASE_URL.rstrip('/')}/auth/v1/.well-known/jwks.json")
 
 
-def require_auth(authorization: str = Header(None)):
+def _decode_bearer(authorization: str = Header(None)):
     if not authorization or not authorization.startswith("Bearer "):
         raise HTTPException(status_code=401, detail="Missing or malformed Authorization header")
 
@@ -52,3 +52,18 @@ def require_auth(authorization: str = Header(None)):
         raise HTTPException(status_code=401, detail=f"Invalid or expired token: {e}")
 
     return payload  # contains the Supabase user id (payload["sub"]) etc.
+
+
+def require_auth(authorization: str = Header(None)):
+    payload = _decode_bearer(authorization)
+    if payload.get("role") == "viewer" or payload.get("login_method") == "viewer_invite":
+        raise HTTPException(status_code=403, detail="Viewer access is read-only and Delta-only")
+    return payload
+
+
+def require_delta_auth(authorization: str = Header(None)):
+    return _decode_bearer(authorization)
+
+
+def is_viewer(payload: dict | None) -> bool:
+    return bool(payload and (payload.get("role") == "viewer" or payload.get("login_method") == "viewer_invite"))

@@ -1,18 +1,19 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
+import copy
 import datetime
 import hmac
 import os
 from typing import Literal
 
-from .auth import require_auth
+from .auth import is_viewer, require_auth, require_delta_auth
 from .delta_alerts import send_telegram_alert, telegram_enabled
 from .delta_engine import service_for
 from .delta_config import delta_capabilities, asset_capabilities, timeframe_enabled
 from .delta_reporting import paper_row, account_rows, inr_rate
 import time
 
-router = APIRouter(prefix="/api/delta", dependencies=[Depends(require_auth)])
+router = APIRouter(prefix="/api/delta", dependencies=[Depends(require_delta_auth)])
 public_router = APIRouter(prefix="/api/delta")
 
 
@@ -44,13 +45,93 @@ def require_delta(*, section: str | None = None, minutes: int | None = None, ass
     return capabilities
 
 
+def _viewer_reference(row):
+    if not isinstance(row, dict):
+        return row
+    return {
+        key: row.get(key)
+        for key in ("side", "time", "open", "high", "low", "close", "volume")
+        if key in row
+    }
+
+
+def _viewer_snapshot(snapshot):
+    if not isinstance(snapshot, dict):
+        return {}
+    safe = {
+        key: snapshot.get(key)
+        for key in ("symbol", "timeframe", "broker", "execution", "side", "setup_time", "setup_close")
+        if key in snapshot
+    }
+    mode = snapshot.get("silver_exit_policy")
+    if mode:
+        safe["silver_exit_policy"] = mode
+    if isinstance(snapshot.get("silver_breakeven"), dict):
+        safe["silver_breakeven"] = {"armed": snapshot["silver_breakeven"].get("armed")}
+    if isinstance(snapshot.get("delta_three_candle_tsl"), dict):
+        safe["delta_three_candle_tsl"] = {"status": snapshot["delta_three_candle_tsl"].get("status")}
+    if isinstance(snapshot.get("delta_ladder_tsl"), dict):
+        ladder = snapshot["delta_ladder_tsl"]
+        safe["delta_ladder_tsl"] = {
+            key: ladder.get(key)
+            for key in ("status", "armed", "step_index", "protected_points")
+            if key in ladder
+        }
+    return safe
+
+
+def _viewer_trade(row):
+    if not isinstance(row, dict):
+        return row
+    safe = copy.deepcopy(row)
+    safe["signal_snapshot"] = _viewer_snapshot(safe.get("signal_snapshot"))
+    for key in (
+        "reason", "diagnostics", "setup_reference", "settings", "trigger_level", "n_points",
+        "ema20", "volume_ema20", "entry_candle_open",
+    ):
+        safe.pop(key, None)
+    return safe
+
+
+def _viewer_status(payload):
+    safe = copy.deepcopy(payload)
+    for key in ("settings", "ema20", "volume_ema20", "current_candle_open", "credentials_configured"):
+        safe.pop(key, None)
+    safe["references"] = [_viewer_reference(row) for row in safe.get("references") or []]
+    if isinstance(safe.get("position"), dict):
+        safe["position"] = _viewer_trade(safe["position"])
+    return safe
+
+
+def _viewer_overview(payload):
+    safe = copy.deepcopy(payload)
+    for row in safe.get("timeframes") or []:
+        if not isinstance(row, dict):
+            continue
+        for key in ("scan_enabled", "trading_enabled", "ema20", "volume_ema20"):
+            row.pop(key, None)
+        if isinstance(row.get("position"), dict):
+            row["position"] = _viewer_trade(row["position"])
+    return safe
+
+
+def _viewer_calendar(payload):
+    safe = copy.deepcopy(payload)
+    if isinstance(safe.get("previous_trade"), dict):
+        safe["previous_trade"] = _viewer_trade(safe["previous_trade"])
+    for day in safe.get("days") or []:
+        if isinstance(day, dict):
+            day["trades"] = [_viewer_trade(row) for row in day.get("trades") or []]
+    return safe
+
+
 @router.get('/capabilities')
 def capabilities():
     return delta_capabilities()
 
 
 @router.post('/alerts/test')
-def test_alert():
+def test_alert(_admin=Depends(require_auth)):
     if not telegram_enabled():
         raise HTTPException(400, "Telegram alerts are not configured. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID/TELEGRAM_CHAT_IDS.")
     sent_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
@@ -89,11 +170,12 @@ def test_alert_with_secret(secret: str = Query("", min_length=1, max_length=256)
 
 
 @router.get('/overview')
-def overview(asset: Asset = 'gold', mode: Mode = 'paper'):
+def overview(asset: Asset = 'gold', mode: Mode = 'paper', auth=Depends(require_delta_auth)):
     require_delta(section="overview", asset=asset)
     service = asset_service(asset, mode)
     try:
-        return service.overview()
+        result = service.overview()
+        return _viewer_overview(result) if is_viewer(auth) else result
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     except Exception:
@@ -101,7 +183,7 @@ def overview(asset: Asset = 'gold', mode: Mode = 'paper'):
 
 
 @router.post('/backtest/run')
-def backtest(request: BacktestRequest):
+def backtest(request: BacktestRequest, _admin=Depends(require_auth)):
     require_delta(section="backtest", minutes=request.minutes, asset=request.asset)
     from .delta_backtest import BACKTEST_LOCK, DeltaBacktestCancelled, clear_cancel_request, run_backtest
     if not BACKTEST_LOCK.acquire(blocking=False):
@@ -150,7 +232,7 @@ def backtest(request: BacktestRequest):
 
 
 @router.post('/backtest/cancel')
-def cancel_backtest(asset: Asset = 'gold'):
+def cancel_backtest(asset: Asset = 'gold', _admin=Depends(require_auth)):
     require_delta(section="backtest", asset=asset)
     from .delta_backtest import cancel_active_backtest
     if not cancel_active_backtest():
@@ -160,12 +242,13 @@ def cancel_backtest(asset: Asset = 'gold'):
 
 
 @router.get("/{minutes}/status")
-def status(minutes: int, asset: Asset = 'gold', mode: Mode = 'paper'):
+def status(minutes: int, asset: Asset = 'gold', mode: Mode = 'paper', auth=Depends(require_delta_auth)):
     if minutes not in (1, 2, 3, 5, 7, 15, 30, 60, 120, 240):
         raise HTTPException(400, "Invalid Delta timeframe")
     require_delta(minutes=minutes, asset=asset)
     service = asset_service(asset, mode)
-    return service.snapshot(minutes)
+    result = service.snapshot(minutes)
+    return _viewer_status(result) if is_viewer(auth) else result
 
 
 @router.get("/{minutes}/trades")
@@ -176,6 +259,7 @@ def trades(
     asset: Asset = 'gold',
     mode: Mode = 'paper',
     today_only: bool = True,
+    auth=Depends(require_delta_auth),
 ):
     require_delta(minutes=minutes, asset=asset)
     service = asset_service(asset, mode)
@@ -186,7 +270,10 @@ def trades(
             if today_only else
             strategy.broker.store.trades(offset, limit)
         )
-        return {"trades": [paper_row(row, service.client.region) for row in rows], "today_only": today_only}
+        output = [paper_row(row, service.client.region) for row in rows]
+        if is_viewer(auth):
+            output = [_viewer_trade(row) for row in output]
+        return {"trades": output, "today_only": today_only}
     except ValueError as exc:
         raise HTTPException(400, str(exc)) from None
     except Exception:
@@ -222,7 +309,7 @@ def daily_trades_with_previous_context(store, offset=0, limit=100):
 
 
 @router.put("/{minutes}/settings")
-def settings(minutes: int, changes: dict, asset: Asset = 'gold', mode: Mode = 'paper'):
+def settings(minutes: int, changes: dict, asset: Asset = 'gold', mode: Mode = 'paper', _admin=Depends(require_auth)):
     require_delta(minutes=minutes, asset=asset)
     service = asset_service(asset, mode)
     try:
@@ -255,7 +342,7 @@ class ProtectionRequest(BaseModel):
 
 
 @router.put('/{minutes}/protection')
-def edit_protection(minutes: int, request: ProtectionRequest, asset: Asset = 'gold', mode: Mode = 'paper'):
+def edit_protection(minutes: int, request: ProtectionRequest, asset: Asset = 'gold', mode: Mode = 'paper', _admin=Depends(require_auth)):
     require_delta(minutes=minutes, asset=asset)
     service = asset_service(asset, mode)
     print(
@@ -282,7 +369,7 @@ def edit_protection(minutes: int, request: ProtectionRequest, asset: Asset = 'go
 
 
 @router.get('/{minutes}/export')
-def export(minutes: int, kind: Literal['open', 'closed'], asset: Asset = 'gold', mode: Mode = 'paper'):
+def export(minutes: int, kind: Literal['open', 'closed'], asset: Asset = 'gold', mode: Mode = 'paper', _admin=Depends(require_auth)):
     require_delta(minutes=minutes, asset=asset)
     service = asset_service(asset, mode)
     from .delta_export import export_paper
@@ -433,7 +520,7 @@ def paper_account(kind, minutes, offset, asset: Asset = 'gold'):
 
 
 @router.post("/{minutes}/close")
-def close(minutes: int, request: CloseRequest, asset: Asset = 'gold', mode: Mode = 'paper'):
+def close(minutes: int, request: CloseRequest, asset: Asset = 'gold', mode: Mode = 'paper', _admin=Depends(require_auth)):
     require_delta(minutes=minutes, asset=asset)
     service = asset_service(asset, mode)
     print(f"[delta-{mode}] close request asset={asset} minutes={minutes} pos={request.position_id}")
@@ -450,7 +537,7 @@ def close(minutes: int, request: CloseRequest, asset: Asset = 'gold', mode: Mode
 
 
 @router.post("/{minutes}/resume")
-def resume(minutes: int, asset: Asset = 'gold', mode: Mode = 'paper'):
+def resume(minutes: int, asset: Asset = 'gold', mode: Mode = 'paper', _admin=Depends(require_auth)):
     require_delta(minutes=minutes, asset=asset)
     service = asset_service(asset, mode)
     try:
@@ -462,7 +549,7 @@ def resume(minutes: int, asset: Asset = 'gold', mode: Mode = 'paper'):
 
 
 @router.post("/{minutes}/pause")
-def pause(minutes: int, request: PauseRequest, asset: Asset = 'gold', mode: Mode = 'paper'):
+def pause(minutes: int, request: PauseRequest, asset: Asset = 'gold', mode: Mode = 'paper', _admin=Depends(require_auth)):
     require_delta(minutes=minutes, asset=asset)
     service = asset_service(asset, mode)
     try:
@@ -474,7 +561,7 @@ def pause(minutes: int, request: PauseRequest, asset: Asset = 'gold', mode: Mode
 
 
 @router.get("/calendar")
-def calendar(year: int, month: int, asset: Asset = 'gold', mode: Mode = 'paper'):
+def calendar(year: int, month: int, asset: Asset = 'gold', mode: Mode = 'paper', auth=Depends(require_delta_auth)):
     """Per-IST-date roll-up of closed trades across every enabled timeframe.
 
     Same source as the timeframe tabs' trade history — just grouped by IST
@@ -547,7 +634,7 @@ def calendar(year: int, month: int, asset: Asset = 'gold', mode: Mode = 'paper')
         previous_row = dict(raw_prev)
         previous_row["minutes"] = minutes_prev
 
-    return {
+    result = {
         "year": year,
         "month": month,
         "asset": asset,
@@ -555,6 +642,7 @@ def calendar(year: int, month: int, asset: Asset = 'gold', mode: Mode = 'paper')
         "previous_trade": previous_row,
         "days": sorted(days.values(), key=lambda d: d["date"]),
     }
+    return _viewer_calendar(result) if is_viewer(auth) else result
 
 
 @router.get("/wallet")
@@ -665,7 +753,7 @@ def wallet_transactions(asset: Asset = 'gold', limit: int = 100):
 
 
 @router.post("/connection/check")
-def connection_check(asset: Asset = 'gold', mode: Mode = 'paper'):
+def connection_check(asset: Asset = 'gold', mode: Mode = 'paper', _admin=Depends(require_auth)):
     require_delta(asset=asset)
     service = asset_service(asset, mode)
     try:
