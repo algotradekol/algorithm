@@ -148,8 +148,8 @@ class DeltaService:
                 bucket = int(now // interval) * interval
                 # Include the forming candle to establish its actual open.
                 # Custom intervals are assembled from 1m rows.
-                custom_minutes = minutes in {7, 120}
-                lookback = 250 if minutes == 7 else 40 if minutes == 120 else 300
+                custom_minutes = minutes in {2, 7, 120}
+                lookback = 40 if minutes == 120 else 300
                 start = strategy.last_candle_epoch or bucket - lookback * interval
                 try:
                     resolution = delta_resolution(minutes)
@@ -447,7 +447,7 @@ class DeltaService:
 
     def strategy(self, minutes):
         if minutes not in DELTA_TIMEFRAMES:
-            raise ValueError("Delta timeframe must be 5, 7, 15, 30, 60, 120 or 240 minutes")
+            raise ValueError("Delta timeframe must be 1, 2, 3, 5, 7, 15, 30, 60, 120 or 240 minutes")
         if not timeframe_enabled(minutes, asset=self.asset):
             raise ValueError("That Delta timeframe is disabled in this deployment")
         if minutes not in self.strategies:
@@ -636,13 +636,14 @@ class DeltaService:
             state = copy.deepcopy(strategy.broker.state)
             state["cooldown_until"] = 0.0
             state["cooldown_reason"] = None
+            state.pop("pending_pause_after_trade", None)
             strategy.broker.commit(state)
             strategy._sl_cooldown_until_monotonic = 0.0
             delta_log("entries_resumed", mode=self.mode, asset=self.asset, minutes=minutes,
                       settings=strategy.settings, cooldown=strategy.cooldown_status())
             return strategy.cooldown_status()
 
-    def pause(self, minutes, duration_minutes):
+    def pause(self, minutes, duration_minutes, after_trade=False):
         with self.lock:
             strategy = self.strategy(minutes)
             duration = float(duration_minutes)
@@ -651,6 +652,17 @@ class DeltaService:
             if int(duration) == 0:
                 return self.resume(minutes)
             state = copy.deepcopy(strategy.broker.state)
+            if after_trade and state.get("position"):
+                state["pending_pause_after_trade"] = {
+                    "duration_minutes": int(duration),
+                    "requested_at": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+                }
+                strategy.broker.commit(state)
+                delta_log("entries_pause_after_trade_queued", mode=self.mode, asset=self.asset, minutes=minutes,
+                          duration_minutes=int(duration), position_id=(state.get("position") or {}).get("id"),
+                          settings=strategy.settings, cooldown=strategy.cooldown_status())
+                return strategy.cooldown_status()
+            state.pop("pending_pause_after_trade", None)
             state["cooldown_until"] = time.time() + int(duration) * 60
             state["cooldown_reason"] = "MANUAL_PAUSE"
             strategy.broker.commit(state)

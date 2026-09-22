@@ -239,7 +239,7 @@ export function deltaApi(asset: DeltaAsset = 'gold', mode: TradingMode = 'paper'
   deltaSettings: (minutes: number, changes: Record<string, unknown>) => fetchAsset(`/api/delta/${minutes}/settings`, { method: 'PUT', body: JSON.stringify(changes) }),
   deltaClose: (minutes: number, positionId: string) => fetchAsset(`/api/delta/${minutes}/close`, { method: 'POST', body: JSON.stringify({ position_id: positionId }) }),
   deltaResume: (minutes: number) => fetchAsset(`/api/delta/${minutes}/resume`, { method: 'POST' }),
-  deltaPause: (minutes: number, durationMinutes: number) => fetchAsset(`/api/delta/${minutes}/pause`, { method: 'POST', body: JSON.stringify({ duration_minutes: durationMinutes }) }),
+  deltaPause: (minutes: number, durationMinutes: number, afterTrade = false) => fetchAsset(`/api/delta/${minutes}/pause`, { method: 'POST', body: JSON.stringify({ duration_minutes: durationMinutes, after_trade: afterTrade }) }),
   // payload keys: position_id, sl_price, target_price, expected_sl, expected_target,
   // and optionally exit_mode ('fixed_target_sl' | 'target_to_breakeven_sl' | 'three_candle_tsl' | 'continuous_ladder_tsl')
   // to switch the TSL policy from the Edit dialog. Omit exit_mode to keep the current mode.

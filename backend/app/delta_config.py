@@ -6,6 +6,7 @@ import os
 
 DELTA_TIMEFRAME_KEYS = {
     1: "gold1m",
+    2: "gold2m",
     3: "gold3m",
     5: "gold5m",
     7: "gold7m",

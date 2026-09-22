@@ -20,7 +20,7 @@ DELTA_EXIT_MODES = (
     DELTA_EXIT_MODE_THREE_CANDLE,
     DELTA_EXIT_MODE_CONTINUOUS_LADDER,
 )
-DELTA_TIMEFRAMES = (1, 3, 5, 7, 15, 30, 60, 120, 240)
+DELTA_TIMEFRAMES = (1, 2, 3, 5, 7, 15, 30, 60, 120, 240)
 DELTA_DEFAULTS = {
     "scan_enabled": True,
     "trading_enabled": False,
@@ -249,7 +249,7 @@ class DeltaGold(Algo3SilverMicro):
     asset = 'gold'
     def __init__(self, minutes, symbol, broker):
         if minutes not in DELTA_TIMEFRAMES:
-            raise ValueError("Delta timeframe must be 5, 7, 15, 30, 60, 120 or 240 minutes")
+            raise ValueError("Delta timeframe must be 1, 2, 3, 5, 7, 15, 30, 60, 120 or 240 minutes")
         self.minutes = minutes
         self.algo_id = f"delta_gold_{minutes}m"
         labels = {60: "Delta Gold 1 hr", 120: "Delta Gold 2 hr", 240: "Delta Gold 4 hr"}
@@ -373,7 +373,7 @@ class DeltaGold(Algo3SilverMicro):
         if not stamps:
             raise ValueError("Delta returned no completed candles; new entries paused")
         if stamps[-1] != current_bucket - interval:
-            # Custom-aggregated timeframes (7m, 120m) drop a bucket when Delta
+            # Custom-aggregated timeframes (2m, 7m, 120m) drop a bucket when Delta
             # is briefly missing one of its source 1m candles, and even native
             # timeframes see a fresh bar arrive a tick late. Silently skip
             # this refresh — nothing new to ingest — and let the next poll
@@ -602,11 +602,39 @@ class DeltaGold(Algo3SilverMicro):
         )
 
     def _handle_broker_position_closed(self, **kwargs):
+        self._activate_pending_pause_after_trade(kwargs.get("exit_reason"))
         if self.settings.get("manual_exit_reentry_enabled"):
             super()._handle_broker_position_closed(**kwargs)
         else:
             self._buy_reentry_after_exit = None
             self._sell_reentry_after_exit = None
+
+    def _activate_pending_pause_after_trade(self, exit_reason=None):
+        pending = self.broker.state.get("pending_pause_after_trade")
+        if not isinstance(pending, dict):
+            return
+        try:
+            duration = int(pending.get("duration_minutes") or 0)
+        except (TypeError, ValueError):
+            duration = 0
+        state = copy.deepcopy(self.broker.state)
+        state.pop("pending_pause_after_trade", None)
+        if duration > 0:
+            until = time.time() + duration * 60
+            if until > float(state.get("cooldown_until") or 0):
+                state["cooldown_until"] = until
+                state["cooldown_reason"] = "MANUAL_PAUSE_AFTER_TRADE"
+        self.broker.commit(state)
+        delta_log(
+            "entries_pause_after_trade_activated",
+            mode=getattr(self.broker, "mode", "paper"),
+            strategy=self.algo_id,
+            asset=self.asset,
+            minutes=self.minutes,
+            duration_minutes=duration,
+            exit_reason=exit_reason,
+            cooldown=self.cooldown_status(),
+        )
 
     def _post_sl_cooldown_remaining(self):
         return max(0.0, float(self.broker.state.get("cooldown_until") or 0) - time.time())
@@ -617,11 +645,14 @@ class DeltaGold(Algo3SilverMicro):
 
     def cooldown_status(self):
         remaining = self._post_sl_cooldown_remaining()
+        pending = self.broker.state.get("pending_pause_after_trade")
         return {
             "active": remaining > 0,
             "until": float(self.broker.state.get("cooldown_until") or 0) or None,
             "remaining_seconds": remaining,
             "reason": self.broker.state.get("cooldown_reason") if remaining > 0 else None,
+            "pending_after_trade": isinstance(pending, dict),
+            "pending_duration_minutes": int(pending.get("duration_minutes") or 0) if isinstance(pending, dict) else None,
         }
 
     def _fire_entry(self, side, ltp, trigger_level, setup_bar_at_override=None, event_time=None):

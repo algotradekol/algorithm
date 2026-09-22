@@ -47,6 +47,8 @@ def _fmt_number(value, digits=2) -> str:
         number = float(value)
     except (TypeError, ValueError):
         return "--"
+    if digits <= 0:
+        return f"{number:,.0f}"
     text = f"{number:,.{digits}f}"
     return text.rstrip("0").rstrip(".")
 

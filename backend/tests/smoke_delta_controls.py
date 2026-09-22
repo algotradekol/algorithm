@@ -94,6 +94,20 @@ def run():
     isolated.resume(5)
     assert not isolated.strategies[5].cooldown_status()['active']
     assert not isolated.strategies[15].broker.state.get('cooldown_until')
+
+    queued = DeltaService()
+    queued.strategies = {5: strategy(5)}
+    assert queued.strategies[5]._enter('BUY', 1000, 1000)
+    pending = queued.pause(5, 22, after_trade=True)
+    assert pending['pending_after_trade'] and pending['pending_duration_minutes'] == 22
+    assert not pending['active']
+    queued.last_price = 1010
+    queued.last_event_at = time.time()
+    queued.close(5, queued.strategies[5]._open_position()['id'])
+    armed = queued.strategies[5].cooldown_status()
+    assert armed['active'] and armed['reason'] == 'MANUAL_PAUSE_AFTER_TRADE'
+    assert not armed['pending_after_trade']
+
     assert csv_cell('=HYPERLINK("bad")').startswith("'")
     assert csv_cell(-12.5) == -12.5
     print('smoke_delta_controls: all checks passed')

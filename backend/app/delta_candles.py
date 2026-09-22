@@ -16,7 +16,7 @@ NATIVE_DELTA_RESOLUTIONS = {
 
 
 def delta_resolution(minutes: int) -> str:
-    return "1m" if minutes in {7, 120} else NATIVE_DELTA_RESOLUTIONS[minutes]
+    return "1m" if minutes in {2, 7, 120} else NATIVE_DELTA_RESOLUTIONS[minutes]
 
 
 def aggregate_custom_minutes(rows, minutes: int, current_time: int | float | None = None):

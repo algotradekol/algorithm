@@ -363,8 +363,8 @@ def run_backtest(minutes, start_date, end_date, settings, path, asset='gold'):
         interval = minutes * 60
         first_bucket, final_bucket = start // interval * interval, (end - 60) // interval * interval
         history_start, history_end = first_bucket - 300 * interval, final_bucket + interval
-        if minutes in {7, 120}:
-            custom_warmup = 300 if minutes == 7 else 40
+        if minutes in {2, 7, 120}:
+            custom_warmup = 40 if minutes == 120 else 300
             history_start = first_bucket - custom_warmup * interval
             source_minutes = fetch_candles(client, '1m', history_start, history_end, 60, anchor_lookback=120)
             references = aggregate_custom_minutes(source_minutes, minutes)

@@ -31,7 +31,7 @@ type Status = {
   ema20?: number; volume_ema20?: number; current_candle_open?: number; buy_reference?: number; sell_reference?: number; inr_rate?: number;
   summary?: { gross_pnl: number; fees: number; closed_count: number; buy_count: number; sell_count: number };
   today_summary?: { gross_pnl: number; fees: number; closed_count: number; buy_count: number; sell_count: number };
-  cooldown?: { active: boolean; until?: number; remaining_seconds: number; reason?: string };
+  cooldown?: { active: boolean; until?: number; remaining_seconds: number; reason?: string; pending_after_trade?: boolean; pending_duration_minutes?: number };
   references?: { side: string; time: string; open: number; high: number; low: number; close: number; volume: number; ema20: number; volume_ema20: number }[];
 };
 
@@ -84,6 +84,7 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
   const [csvBusy, setCsvBusy] = useState<'open' | 'closed' | null>(null);
   const [restPreset, setRestPreset] = useState('5');
   const [customRestMinutes, setCustomRestMinutes] = useState(45);
+  const [pauseMenuOpen, setPauseMenuOpen] = useState(false);
 
   useEffect(() => {
     let cancelled = false;
@@ -140,6 +141,7 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
   const pnl = status?.today_summary || status?.summary;
   const cooldown = status?.cooldown;
   const selectedRestMinutes = restPreset === 'custom' ? customRestMinutes : Number(restPreset);
+  const canPause = !busy && Number.isInteger(selectedRestMinutes) && selectedRestMinutes >= 0 && selectedRestMinutes <= 10080;
   const estimatedLots = settings?.size_mode === 'pax' && status?.contract_value ? Math.max(1, Math.ceil(settings.pax_size / status.contract_value)) : settings?.silver_lots;
   const sizingLabel = settings?.size_mode === 'pax' ? 'PAXG per trade' : 'Lots per trade';
   const sizingValue = settings?.size_mode === 'pax' ? number(settings.pax_size) : number(settings?.silver_lots);
@@ -195,8 +197,33 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
             <option value="60">1 hr rest</option><option value="240">4 hr rest</option><option value="720">12 hr rest</option><option value="custom">Custom minutes</option>
           </select>
           {restPreset === 'custom' && <input aria-label="Custom entry rest minutes" className={`${controlButton} w-20 border-[#334155] bg-[#0a0e14] text-gray-200`} type="number" min={0} max={10080} step={1} value={customRestMinutes} disabled={busy} onChange={e => setCustomRestMinutes(Number(e.target.value))} />}
-          <button className={`${controlButton} ${selectedRestMinutes ? 'border-[#f59e0b]/70 bg-[#f59e0b]/10 text-[#fbbf24]' : 'border-[#334155] text-gray-400'}`} disabled={busy || !Number.isInteger(selectedRestMinutes) || selectedRestMinutes < 0 || selectedRestMinutes > 10080} onClick={() => action(() => api.deltaPause(minutes, selectedRestMinutes), selectedRestMinutes ? `New entries paused for ${selectedRestMinutes} minutes` : 'Entry rest cleared')}>{selectedRestMinutes ? 'Pause' : 'Clear rest'}</button>
-          <button className={`${controlButton} border-[#22c55e]/60 bg-[#22c55e]/10 text-[#22c55e]`} disabled={busy || !cooldown?.active} onClick={() => action(() => api.deltaResume(minutes), 'Entry rest cleared. The next qualifying crossing may trade.')}>Resume</button>
+          <div className="relative">
+            <button
+              className={`${controlButton} ${selectedRestMinutes ? 'border-[#f59e0b]/70 bg-[#f59e0b]/10 text-[#fbbf24]' : 'border-[#334155] text-gray-400'}`}
+              disabled={!canPause}
+              onClick={() => {
+                if (!selectedRestMinutes) {
+                  void action(() => api.deltaPause(minutes, selectedRestMinutes), 'Entry rest cleared');
+                  return;
+                }
+                setPauseMenuOpen(value => !value);
+              }}
+              type="button"
+            >
+              {selectedRestMinutes ? 'Pause' : 'Clear rest'}
+            </button>
+            {pauseMenuOpen && selectedRestMinutes > 0 && <div className="absolute right-0 top-full z-50 mt-1 w-56 overflow-hidden rounded-lg border border-[#334155] bg-[#0b111a] shadow-2xl">
+              <button className="block w-full px-3 py-2 text-left text-xs font-semibold text-[#fbbf24] hover:bg-[#f59e0b]/10" type="button" onClick={() => {
+                setPauseMenuOpen(false);
+                void action(() => api.deltaPause(minutes, selectedRestMinutes, false), `New entries paused now for ${selectedRestMinutes} minutes`);
+              }}>Pause now</button>
+              <button className="block w-full px-3 py-2 text-left text-xs font-semibold text-gray-200 hover:bg-[#1f2937] disabled:cursor-not-allowed disabled:opacity-45" type="button" disabled={!status?.position} onClick={() => {
+                setPauseMenuOpen(false);
+                void action(() => api.deltaPause(minutes, selectedRestMinutes, true), `Pause queued after the current trade exits for ${selectedRestMinutes} minutes`);
+              }}>Pause after current trade</button>
+            </div>}
+          </div>
+          <button className={`${controlButton} border-[#22c55e]/60 bg-[#22c55e]/10 text-[#22c55e]`} disabled={busy || !(cooldown?.active || cooldown?.pending_after_trade)} onClick={() => action(() => api.deltaResume(minutes), 'Entry rest cleared. The next qualifying crossing may trade.')}>Resume</button>
         </>}
         <button className={`${controlButton} border-[#334155] text-gray-300 hover:border-[#60a5fa]`} disabled={busy || !status?.credentials_configured} onClick={() => action(() => api.deltaCheckConnection(), 'Delta account verified')}>Verify API</button>
       </div>
@@ -204,6 +231,9 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper' }: { 
     {(error || notice || status?.error || status?.history_error) && <div role="status" className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 p-3 text-sm text-[#fbbf24]">{error || notice || status?.error || status?.history_error}</div>}
     {cooldown?.active && <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-[#f59e0b]/50 bg-[#f59e0b]/10 p-3">
       <div><div className="text-sm font-semibold text-[#fbbf24]">Entry rest active: {duration(cooldown.remaining_seconds)} remaining</div><p className="mt-1 text-xs text-gray-400">Started after {cooldown.reason?.replaceAll('_', ' ')}. New entries resume at {date(cooldown.until)} IST. Scanning, references, open-position exits, and EMA calculations continue.</p></div>
+    </div>}
+    {cooldown?.pending_after_trade && <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-[#f59e0b]/40 bg-[#f59e0b]/5 p-3">
+      <div><div className="text-sm font-semibold text-[#fbbf24]">Pause queued after current trade</div><p className="mt-1 text-xs text-gray-400">The open position will keep running. After it exits, new entries pause for {cooldown.pending_duration_minutes} minutes.</p></div>
     </div>}
     <div className="grid gap-2 sm:grid-cols-3 xl:grid-cols-6">
       <Card label="Market data" value={status?.stale ? 'Waiting for fresh trade' : `${status?.source || '--'} active`} detail={`WS ${status?.ws_connected ? 'connected' : 'disconnected'} | ${status?.proxy_configured ? 'VM proxy' : 'Direct connection'}`} />

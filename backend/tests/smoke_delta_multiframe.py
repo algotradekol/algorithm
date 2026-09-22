@@ -19,9 +19,9 @@ def minute(stamp, price, volume=1):
 
 
 def run():
-    assert DELTA_TIMEFRAMES == (1, 3, 5, 7, 15, 30, 60, 120, 240)
+    assert DELTA_TIMEFRAMES == (1, 2, 3, 5, 7, 15, 30, 60, 120, 240)
     assert {minutes: delta_resolution(minutes) for minutes in DELTA_TIMEFRAMES} == {
-        1: "1m", 3: "3m", 5: "5m", 7: "1m", 15: "15m", 30: "30m", 60: "1h", 120: "1m", 240: "4h",
+        1: "1m", 2: "1m", 3: "3m", 5: "5m", 7: "1m", 15: "15m", 30: "30m", 60: "1h", 120: "1m", 240: "4h",
     }
 
     rows = [minute(index * 60, 100 + index, index + 1) for index in range(14)]
@@ -41,13 +41,19 @@ def run():
     assert aggregate_seven_minute(missing) == []
     partial = aggregate_seven_minute(crossing[:3], current_time=crossing_bucket + 180)
     assert len(partial) == 1 and partial[0]["source_minutes"] == 3
+    two_minute_rows = [minute(index * 60, 250 + index, 1) for index in range(4)]
+    two_minute = aggregate_custom_minutes(two_minute_rows, 2)
+    assert two_minute == [
+        {"time": 0, "open": 250.0, "high": 253.0, "low": 249.0, "close": 252.0, "volume": 2.0, "source_minutes": 2},
+        {"time": 120, "open": 252.0, "high": 255.0, "low": 251.0, "close": 254.0, "volume": 2.0, "source_minutes": 2},
+    ]
     two_hour_rows = [minute(index * 60, 300 + index, 1) for index in range(120)]
     two_hour = aggregate_custom_minutes(two_hour_rows, 120)
     assert two_hour == [{"time": 0, "open": 300.0, "high": 421.0, "low": 299.0,
                          "close": 420.0, "volume": 120.0, "source_minutes": 120}]
     assert aggregate_custom_minutes(two_hour_rows[:-1], 120) == []
 
-    with patch.dict(os.environ, {"DELTA_HIDDEN_SECTIONS": "gold1m,gold3m,gold5m,gold7m,gold4h,activity"}, clear=False):
+    with patch.dict(os.environ, {"DELTA_HIDDEN_SECTIONS": "gold1m,gold2m,gold3m,gold5m,gold7m,gold4h,activity"}, clear=False):
         capabilities = delta_capabilities()
         assert capabilities["enabled_timeframes"] == [15, 30, 60, 120]
         assert not capabilities["sections"]["activity"] and capabilities["sections"]["overview"]
