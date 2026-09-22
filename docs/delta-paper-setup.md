@@ -52,6 +52,8 @@ TELEGRAM_ALERT_MODES=live
 TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
 TELEGRAM_CHAT_ID=YOUR_TELEGRAM_OR_GROUP_CHAT_ID
 TELEGRAM_CHAT_IDS=
+# Optional smoke-test secret for POST /api/delta/alerts/test-secret?secret=...
+TELEGRAM_TEST_SECRET=
 
 # Optional comma-separated deployment gate. Empty = show everything.
 DELTA_HIDDEN_SECTIONS=

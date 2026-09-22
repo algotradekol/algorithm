@@ -1,6 +1,8 @@
 from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 import datetime
+import hmac
+import os
 from typing import Literal
 
 from .auth import require_auth
@@ -11,6 +13,7 @@ from .delta_reporting import paper_row, account_rows, inr_rate
 import time
 
 router = APIRouter(prefix="/api/delta", dependencies=[Depends(require_auth)])
+public_router = APIRouter(prefix="/api/delta")
 
 
 Asset = Literal['gold', 'silver']
@@ -56,6 +59,25 @@ def test_alert():
         "Status: backend can reach this Telegram chat\n"
         f"Time: {sent_at}",
         event="telegram_test_alert",
+    )
+    return {"sent": True, "sent_at": sent_at}
+
+
+@public_router.post('/alerts/test-secret')
+def test_alert_with_secret(secret: str = Query("", min_length=1, max_length=256)):
+    expected = os.getenv("TELEGRAM_TEST_SECRET", "").strip()
+    if not expected:
+        raise HTTPException(404, "Telegram secret test endpoint is disabled")
+    if not hmac.compare_digest(secret, expected):
+        raise HTTPException(403, "Invalid Telegram test secret")
+    if not telegram_enabled():
+        raise HTTPException(400, "Telegram alerts are not configured. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID/TELEGRAM_CHAT_IDS.")
+    sent_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    send_telegram_alert(
+        "Delta Telegram test alert\n"
+        "Status: backend secret test reached this Telegram chat\n"
+        f"Time: {sent_at}",
+        event="telegram_secret_test_alert",
     )
     return {"sent": True, "sent_at": sent_at}
 

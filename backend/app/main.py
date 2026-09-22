@@ -134,7 +134,9 @@ async def lifespan(app: FastAPI):
 
 
 app = FastAPI(title="Algo Paper Trading API", lifespan=lifespan)
+from .delta_routes import public_router as delta_public_router
 from .delta_routes import router as delta_router
+app.include_router(delta_public_router)
 app.include_router(delta_router)
 
 app.add_middleware(
