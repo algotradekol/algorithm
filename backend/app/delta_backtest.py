@@ -7,7 +7,7 @@ import time
 
 from .delta_client import DeltaClient
 from .delta_candles import aggregate_custom_minutes, delta_resolution
-from .delta_paper import DeltaPaperBroker
+from .delta_paper import DeltaPaperBroker, POST_EXIT_REST_REASONS
 from .delta_reporting import paper_row, inr_rate
 from .strategies.delta_gold import DeltaGold, DELTA_DEFAULTS, DELTA_TIMEFRAMES, validate_settings, defaults_for
 from .strategies.delta_silver import DeltaSilver, SILVER_TIMEFRAMES
@@ -144,7 +144,7 @@ class ReplayBroker(DeltaPaperBroker):
                             'exit_reason': exit_reason, 'gross_pnl': gross, 'fees': fees, 'net_pnl': gross - fees})
         self.state.update(position=None, gross_pnl=self.state['gross_pnl'] + gross,
                           fees=self.state['fees'] + fees, closed_count=len(self.closed))
-        if exit_reason in {'MANUAL_EXIT', 'SL', 'TRAILING_SL', 'TARGET'}:
+        if exit_reason in POST_EXIT_REST_REASONS:
             raw_minutes = self.state['settings'].get('post_exit_cooldown_minutes')
             minutes = 5.0 if raw_minutes is None else float(raw_minutes)
             self.state['cooldown_until'] = self.now + minutes * 60 if minutes > 0 else 0.0

@@ -10,7 +10,7 @@ from .delta_client import positive
 from .delta_alerts import alert_trade_close, alert_trade_open
 from .delta_log import delta_log
 from .trailing_stop import calculate_point_trailing
-from .delta_paper import DeltaPaperBroker, utc_now
+from .delta_paper import DeltaPaperBroker, POST_EXIT_REST_REASONS, utc_now
 from .delta_reporting import paper_margin
 
 
@@ -484,7 +484,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
         state.update(position=None, gross_pnl=state["gross_pnl"] + gross,
                      fees=state["fees"] + fees, closed_count=state["closed_count"] + 1)
         state["live_close_error"] = None
-        if exit_reason in {"MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET", "SL_EDITED", "TARGET_EDITED"}:
+        if exit_reason in POST_EXIT_REST_REASONS | {"SL_EDITED", "TARGET_EDITED"}:
             raw_minutes = state["settings"].get("post_exit_cooldown_minutes")
             cooldown_minutes = 5.0 if raw_minutes is None else float(raw_minutes)
             # Do not shorten an existing cooldown — a user-set MANUAL_PAUSE

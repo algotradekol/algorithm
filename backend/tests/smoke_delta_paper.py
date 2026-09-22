@@ -578,8 +578,10 @@ def run():
         assert no_rest.broker.state.get("cooldown_reason") is None
     reversal = strategy(settings={"post_exit_cooldown_minutes": 15})
     assert reversal._enter("BUY", 1000, 1000)
-    reversal.broker.close_trade(reversal._open_position(), 1000, "REVERSAL_CONTRA_SIGNAL")
-    assert not reversal.broker.state.get("cooldown_until")
+    with patch("app.delta_paper.time.time", return_value=10_000):
+        reversal.broker.close_trade(reversal._open_position(), 1000, "REVERSAL_CONTRA_SIGNAL")
+    assert reversal.broker.state["cooldown_until"] == 10_900
+    assert reversal.broker.state["cooldown_reason"] == "REVERSAL_CONTRA_SIGNAL"
 
     live_store = MemoryStore()
     live_product = {**PRODUCT, "id": 123006, "quoting_asset": {"symbol": "USD"}, "initial_margin": "1"}

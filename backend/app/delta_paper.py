@@ -14,6 +14,9 @@ from .delta_reporting import paper_margin
 from .trailing_stop import calculate_point_trailing
 
 
+POST_EXIT_REST_REASONS = {"MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET", "REVERSAL_CONTRA_SIGNAL"}
+
+
 def utc_now():
     return datetime.datetime.now(datetime.timezone.utc).isoformat()
 
@@ -124,7 +127,7 @@ class DeltaPaperBroker:
         state = copy.deepcopy(self.state)
         state.update(position=None, gross_pnl=state["gross_pnl"] + gross,
                      fees=state["fees"] + fees, closed_count=state["closed_count"] + 1)
-        if exit_reason in {"MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET"}:
+        if exit_reason in POST_EXIT_REST_REASONS:
             raw_minutes = state["settings"].get("post_exit_cooldown_minutes")
             cooldown_minutes = 5.0 if raw_minutes is None else float(raw_minutes)
             # Do not shorten an existing cooldown — a user-set MANUAL_PAUSE
@@ -151,7 +154,7 @@ class DeltaPaperBroker:
         )
         cooldown_note = (
             f" cooldown={state['settings'].get('post_exit_cooldown_minutes')}m"
-            if exit_reason in {"MANUAL_EXIT", "SL", "TRAILING_SL", "TARGET"}
+            if exit_reason in POST_EXIT_REST_REASONS
             else " cooldown=bypassed"
         )
         print(f"[delta-paper] closed {current['symbol']} {current['side']} reason={exit_reason} gross={gross:.6f}{cooldown_note}")
