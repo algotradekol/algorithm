@@ -7,6 +7,7 @@ import time
 import uuid
 
 from .delta_client import positive
+from .delta_alerts import alert_trade_close, alert_trade_open
 from .delta_log import delta_log
 from .trailing_stop import calculate_point_trailing
 from .delta_paper import DeltaPaperBroker, utc_now
@@ -436,6 +437,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
             target_order_id=_order_id(target_order),
         )
         print(f"[delta-live] opened {symbol} {side} qty={qty} entry={fill_price:g} sl={sl_price:g} target={target_price:g}")
+        alert_trade_open(state["position"], self.alert_context)
 
     def close_trade(self, position, exit_price, exit_reason):
         current = self.state.get("position")
@@ -507,6 +509,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
             net=gross - fees,
         )
         print(f"[delta-live] closed {current['symbol']} {current['side']} reason={exit_reason} gross={gross:.6f}")
+        alert_trade_close(trade, self.alert_context)
         if self.on_position_closed:
             self.on_position_closed(position=current, exit_price=confirmed_exit, exit_reason=exit_reason, exit_time=trade["exit_time"])
 
@@ -576,6 +579,7 @@ class DeltaLiveBroker(DeltaPaperBroker):
             net=gross - fees,
         )
         print(f"[delta-live] external close recorded {current['symbol']} {current['side']} reason={exit_reason} gross={gross:.6f}")
+        alert_trade_close(trade, self.alert_context)
         if self.on_position_closed:
             self.on_position_closed(position=current, exit_price=confirmed_exit, exit_reason=exit_reason, exit_time=trade["exit_time"])
         return True

@@ -45,6 +45,14 @@ DELTA_LIVE_ENABLED=false
 DELTA_LIVE_API_KEY=YOUR_INDIA_TRADING_API_KEY
 DELTA_LIVE_API_SECRET=YOUR_INDIA_TRADING_API_SECRET
 
+# Optional Telegram alerts. Add the bot to a private chat or group, then use
+# that chat id. TELEGRAM_CHAT_IDS can hold comma-separated recipients.
+TELEGRAM_ALERTS_ENABLED=true
+TELEGRAM_ALERT_MODES=live
+TELEGRAM_BOT_TOKEN=YOUR_TELEGRAM_BOT_TOKEN
+TELEGRAM_CHAT_ID=YOUR_TELEGRAM_OR_GROUP_CHAT_ID
+TELEGRAM_CHAT_IDS=
+
 # Optional comma-separated deployment gate. Empty = show everything.
 DELTA_HIDDEN_SECTIONS=
 ```

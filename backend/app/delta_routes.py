@@ -4,6 +4,7 @@ import datetime
 from typing import Literal
 
 from .auth import require_auth
+from .delta_alerts import send_telegram_alert, telegram_enabled
 from .delta_engine import service_for
 from .delta_config import delta_capabilities, asset_capabilities, timeframe_enabled
 from .delta_reporting import paper_row, account_rows, inr_rate
@@ -43,6 +44,20 @@ def require_delta(*, section: str | None = None, minutes: int | None = None, ass
 @router.get('/capabilities')
 def capabilities():
     return delta_capabilities()
+
+
+@router.post('/alerts/test')
+def test_alert():
+    if not telegram_enabled():
+        raise HTTPException(400, "Telegram alerts are not configured. Check TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID/TELEGRAM_CHAT_IDS.")
+    sent_at = datetime.datetime.now(datetime.timezone.utc).isoformat()
+    send_telegram_alert(
+        "Delta Telegram test alert\n"
+        "Status: backend can reach this Telegram chat\n"
+        f"Time: {sent_at}",
+        event="telegram_test_alert",
+    )
+    return {"sent": True, "sent_at": sent_at}
 
 
 @router.get('/overview')

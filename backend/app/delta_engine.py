@@ -9,6 +9,7 @@ import time
 import traceback
 
 from .delta_client import DeltaClient, epoch_seconds, positive
+from .delta_alerts import alert_wallet_transaction, seed_seen_transactions
 from .delta_candles import aggregate_custom_minutes, delta_resolution
 from .delta_config import delta_capabilities, asset_capabilities, timeframe_enabled
 from .delta_live import DeltaLiveBroker
@@ -44,6 +45,8 @@ class DeltaService:
         self.initialized = False
         self._overview_trade_cache = {}
         self._live_flat_confirmations = {}
+        self._wallet_alert_seen = set()
+        self._wallet_alert_seeded = False
 
     def start(self):
         if self.started:
@@ -106,6 +109,12 @@ class DeltaService:
             )
             if self.mode == "live":
                 broker.entry_guard = lambda side, minutes=minutes: self._validate_live_entry(minutes, side)
+            broker.alert_context = {
+                "asset": self.asset,
+                "mode": self.mode,
+                "minutes": minutes,
+                "symbol": self.client.symbol,
+            }
             strategy_class = DeltaSilver if self.asset == 'silver' else DeltaGold
             strategies[minutes] = strategy_class(minutes, self.client.symbol, broker)
         with self.lock:
@@ -128,6 +137,7 @@ class DeltaService:
         next_history = {minutes: 0.0 for minutes in self.strategies}
         next_rest = 0.0
         next_live_reconcile = 0.0
+        next_wallet_alert = 0.0
         while not self.stop_event.is_set():
             now = time.time()
             for minutes, strategy in self.strategies.items():
@@ -190,7 +200,65 @@ class DeltaService:
                 except Exception as exc:
                     self.error = str(exc) if isinstance(exc, (ValueError, RuntimeError)) else "Delta live reconciliation unavailable"
                     delta_log("live_reconcile_failed", mode=self.mode, asset=self.asset, error=self.error)
+            if self.mode == "live" and now >= next_wallet_alert:
+                next_wallet_alert = now + 60
+                try:
+                    self._poll_wallet_alerts()
+                except Exception as exc:
+                    delta_log("wallet_alert_poll_failed", mode=self.mode, asset=self.asset, error=str(exc))
             self.stop_event.wait(0.5)
+
+    @staticmethod
+    def _finite(value):
+        try:
+            result = float(value)
+            return result if result == result else None
+        except (ValueError, TypeError):
+            return None
+
+    def _wallet_fund_rows(self):
+        rows = self.client.get(
+            "/v2/wallet/transactions",
+            {"page_size": 50},
+            private=True,
+        )
+        fund_kinds = {"deposit", "withdrawal", "user_credit", "user_debit"}
+        output = []
+        for raw in rows or []:
+            if not isinstance(raw, dict):
+                continue
+            kind = (raw.get("transaction_type") or "").lower()
+            if kind not in fund_kinds:
+                continue
+            output.append({
+                "id": raw.get("uuid") or raw.get("id") or f"{kind}:{raw.get('created_at')}:{raw.get('amount')}",
+                "transaction_type": kind,
+                "amount_usd": self._finite(raw.get("amount")),
+                "asset_symbol": raw.get("asset_symbol") or "USD",
+                "balance_after_usd": self._finite(raw.get("balance")),
+                "reference": raw.get("meta_data", {}).get("reference") if isinstance(raw.get("meta_data"), dict) else None,
+                "created_at": raw.get("created_at"),
+            })
+        return output
+
+    def _poll_wallet_alerts(self):
+        if self.mode != "live" or not self.client:
+            return
+        rows = self._wallet_fund_rows()
+        if not self._wallet_alert_seeded:
+            self._wallet_alert_seen = seed_seen_transactions(rows)
+            self._wallet_alert_seeded = True
+            delta_log("wallet_alert_seeded", mode=self.mode, asset=self.asset, seen=len(self._wallet_alert_seen))
+            return
+        fresh = [row for row in rows if str(row.get("id")) not in self._wallet_alert_seen]
+        if not fresh:
+            return
+        for row in reversed(fresh):
+            alert_wallet_transaction(row, asset=self.asset)
+            if row.get("id") is not None:
+                self._wallet_alert_seen.add(str(row.get("id")))
+        self._wallet_alert_seen.update(seed_seen_transactions(rows))
+        delta_log("wallet_alert_sent", mode=self.mode, asset=self.asset, count=len(fresh))
 
     def accept_price(self, price, stamp, source):
         price = positive(price)

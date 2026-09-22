@@ -7,6 +7,7 @@ import time
 import uuid
 
 from .delta_log import delta_log
+from .delta_alerts import alert_trade_close, alert_trade_open
 from .storage_namespace import namespaced_value
 from .supabase_client import run_with_supabase
 from .delta_reporting import paper_margin
@@ -51,6 +52,7 @@ class DeltaPaperBroker:
         }
         self.starting_capital = 0
         self.on_position_closed = None
+        self.alert_context = {}
 
     def commit(self, state, trade=None):
         # Persist first: a failed write must not pretend an entry/exit succeeded.
@@ -104,6 +106,7 @@ class DeltaPaperBroker:
         state[f"{side.lower()}_count"] += 1
         self.commit(state)
         delta_log("paper_open_committed", symbol=symbol, side=side, qty=qty, entry=entry_price, sl=sl_price, target=target_price)
+        alert_trade_open(state["position"], self.alert_context)
 
     @staticmethod
     def pnl(position, price):
@@ -152,6 +155,7 @@ class DeltaPaperBroker:
             else " cooldown=bypassed"
         )
         print(f"[delta-paper] closed {current['symbol']} {current['side']} reason={exit_reason} gross={gross:.6f}{cooldown_note}")
+        alert_trade_close(trade, self.alert_context)
         if self.on_position_closed:
             self.on_position_closed(position=current, exit_price=exit_price, exit_reason=exit_reason, exit_time=trade["exit_time"])
 
