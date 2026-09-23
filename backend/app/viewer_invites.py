@@ -109,17 +109,62 @@ def redeem_invite(code: str, device_key: str) -> dict:
     if len(str(device_key or "").strip()) < DEVICE_KEY_MIN_LENGTH:
         raise ValueError("Viewer device could not be verified. Refresh and try again.")
     expires_at = _now() + datetime.timedelta(hours=VIEWER_TTL_HOURS)
-    result = run_with_supabase(lambda db: db.rpc("redeem_viewer_invite_session", {
-        "p_code_hash": _code_hash(normalized),
-        "p_device_hash": device_hash(device_key),
-        "p_expires_at": expires_at.isoformat(),
-    }).execute())
+    code_hash = _code_hash(normalized)
+    browser_hash = device_hash(device_key)
+    try:
+        result = run_with_supabase(lambda db: db.rpc("redeem_viewer_invite_session", {
+            "p_code_hash": code_hash,
+            "p_device_hash": browser_hash,
+            "p_expires_at": expires_at.isoformat(),
+        }).execute())
+    except Exception:
+        result = run_with_supabase(lambda db: _redeem_invite_with_tables(db, code_hash, browser_hash, expires_at))
     row = result.data
     if isinstance(row, list):
         row = row[0] if row else None
     if not row:
         raise ValueError("This viewer code is invalid, expired, or already used. Please ask for a new code.")
     return issue_viewer_token(row)
+
+
+def _redeem_invite_with_tables(db, code_hash: str, browser_hash: str, expires_at: datetime.datetime):
+    # If the migration was not applied yet, fail here before consuming a
+    # one-use code by setting viewer_invites.redeemed_at.
+    db.table("viewer_sessions").select("id").limit(1).execute()
+    redeemed_at = _now()
+    invite_result = (
+        db.table("viewer_invites")
+        .update({"redeemed_at": redeemed_at.isoformat()})
+        .eq("code_hash", code_hash)
+        .is_("redeemed_at", "null")
+        .is_("revoked_at", "null")
+        .gt("expires_at", redeemed_at.isoformat())
+        .execute()
+    )
+    invite = (invite_result.data or [None])[0]
+    if not invite:
+        return type("RedeemResult", (), {"data": []})()
+    session_result = (
+        db.table("viewer_sessions")
+        .insert({
+            "invite_id": invite.get("id"),
+            "device_hash": browser_hash,
+            "expires_at": expires_at.isoformat(),
+        })
+        .execute()
+    )
+    session = (session_result.data or [None])[0]
+    if not session:
+        raise RuntimeError("Viewer session could not be created")
+    return type("RedeemResult", (), {"data": [{
+        "invite_id": invite.get("id"),
+        "label": invite.get("label"),
+        "invite_created_at": invite.get("created_at"),
+        "invite_expires_at": invite.get("expires_at"),
+        "redeemed_at": invite.get("redeemed_at"),
+        "session_id": session.get("id"),
+        "session_expires_at": session.get("expires_at"),
+    }]})()
 
 
 def issue_viewer_token(invite: dict) -> dict:

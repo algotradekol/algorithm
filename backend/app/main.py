@@ -258,8 +258,8 @@ def viewer_redeem(payload: dict):
         return redeem_invite(payload.get("code", ""), payload.get("device_key", ""))
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from None
-    except Exception:
-        raise HTTPException(status_code=503, detail="Viewer login is temporarily unavailable") from None
+    except Exception as exc:
+        raise HTTPException(status_code=503, detail=f"Viewer login is temporarily unavailable. Check viewer_sessions SQL migration: {exc}") from None
 
 
 @app.get("/api/viewer/session")
