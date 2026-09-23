@@ -58,11 +58,12 @@ export default function DeltaOverviewTab({ asset = 'gold', mode = 'paper', viewe
       </div>
     </header>
     {error && <p role="alert" className="rounded border border-[#ef4444]/40 bg-[#ef4444]/10 p-3 text-sm text-[#f87171]">{error}</p>}
+    {!data && !error && <p className="rounded border border-[#1f2937] bg-[#0d131e] p-3 text-sm text-gray-400">Loading Delta overview data...</p>}
     <div className="grid gap-3 xl:grid-cols-[0.36fr_1.64fr]">
       <div className="rounded-xl border border-[#1f2937] bg-[#0d131e] p-4">
         <div className="mb-3 flex flex-wrap items-end justify-between gap-2"><div><p className="text-[10px] uppercase tracking-[0.2em] text-gray-500">Relative contribution</p><h2 className="mt-1 text-sm font-semibold text-gray-200">Today realized + open</h2></div><p className="text-[10px] uppercase tracking-wide text-gray-600">{mode} view</p></div>
         <div className="grid gap-3 sm:grid-cols-2 xl:grid-cols-1">{frames.map(row => <OutcomeBar key={row.minutes} row={row} max={maxOutcome} currency={currency} mode={mode} />)}</div>
-        {!frames.length && <p className="text-sm text-gray-500">No enabled timeframes.</p>}
+        {data && !frames.length && <p className="text-sm text-gray-500">No enabled timeframes.</p>}
       </div>
       <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-3 2xl:grid-cols-4">{frames.map(row => <TimeframeCard key={row.minutes} row={row} ltp={data?.ltp} currency={currency} inr={inr} viewerMode={viewerMode} />)}</div>
     </div>

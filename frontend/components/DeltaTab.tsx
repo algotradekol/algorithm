@@ -229,6 +229,7 @@ export default function DeltaTab({ minutes, asset = 'gold', mode = 'paper', view
       </div>
     </header>
     {(error || notice || status?.error || status?.history_error) && <div role="status" className="rounded border border-[#f59e0b]/40 bg-[#f59e0b]/10 p-3 text-sm text-[#fbbf24]">{error || notice || status?.error || status?.history_error}</div>}
+    {!status && !error && <div className="rounded border border-[#1f2937] bg-[#0d131e] p-3 text-sm text-gray-400">Loading Delta {metal} {timeframeLabel(minutes)} data...</div>}
     {cooldown?.active && <div className="flex flex-wrap items-center justify-between gap-3 rounded border border-[#f59e0b]/50 bg-[#f59e0b]/10 p-3">
       <div><div className="text-sm font-semibold text-[#fbbf24]">Entry rest active: {duration(cooldown.remaining_seconds)} remaining</div><p className="mt-1 text-xs text-gray-400">Started after {cooldown.reason?.replaceAll('_', ' ')}. New entries resume at {date(cooldown.until)} IST. Scanning, references, open-position exits, and EMA calculations continue.</p></div>
     </div>}

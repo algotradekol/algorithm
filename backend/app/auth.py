@@ -5,12 +5,15 @@ password-gated the same way the frontend is: Supabase issues the
 token at login, we just check it's valid and not expired.
 """
 from functools import lru_cache
+import datetime
 
 import jwt
 from fastapi import Header, HTTPException
 from jwt import PyJWKClient
 
 from .config import SUPABASE_JWT_SECRET, SUPABASE_URL
+from .supabase_client import run_with_supabase
+from .viewer_invites import device_hash
 
 
 @lru_cache(maxsize=1)
@@ -61,8 +64,40 @@ def require_auth(authorization: str = Header(None)):
     return payload
 
 
-def require_delta_auth(authorization: str = Header(None)):
-    return _decode_bearer(authorization)
+def _require_viewer_device(payload: dict, viewer_device: str | None):
+    session_id = payload.get("session_id")
+    if not session_id:
+        raise HTTPException(status_code=401, detail="Viewer session is missing. Please redeem a new code.")
+    if not viewer_device:
+        raise HTTPException(status_code=401, detail="This viewer session is locked to its original browser.")
+    try:
+        result = run_with_supabase(
+            lambda db: db.table("viewer_sessions")
+            .select("id,expires_at,revoked_at,device_hash")
+            .eq("id", session_id)
+            .eq("device_hash", device_hash(viewer_device))
+            .limit(1)
+            .execute()
+        )
+        row = (result.data or [None])[0]
+    except Exception:
+        raise HTTPException(status_code=503, detail="Viewer session validation is temporarily unavailable") from None
+    if not row or row.get("revoked_at"):
+        raise HTTPException(status_code=401, detail="This viewer session is no longer valid.")
+    try:
+        expires_at = datetime.datetime.fromisoformat(str(row.get("expires_at")).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        raise HTTPException(status_code=401, detail="This viewer session is no longer valid.") from None
+    if expires_at <= datetime.datetime.now(datetime.timezone.utc):
+        raise HTTPException(status_code=401, detail="This viewer session has expired.")
+    return payload
+
+
+def require_delta_auth(authorization: str = Header(None), x_viewer_device: str | None = Header(None)):
+    payload = _decode_bearer(authorization)
+    if is_viewer(payload):
+        return _require_viewer_device(payload, x_viewer_device)
+    return payload
 
 
 def is_viewer(payload: dict | None) -> bool:

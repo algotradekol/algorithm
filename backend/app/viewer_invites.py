@@ -11,6 +11,7 @@ from .supabase_client import run_with_supabase
 
 VIEWER_TTL_HOURS = 24
 INVITE_CODE_DIGITS = 6
+DEVICE_KEY_MIN_LENGTH = 24
 
 
 def _now() -> datetime.datetime:
@@ -21,6 +22,12 @@ def _code_hash(code: str) -> str:
     normalized = "".join(ch for ch in str(code or "") if ch.isdigit())
     pepper = SUPABASE_JWT_SECRET or "viewer-invite"
     return hashlib.sha256(f"{pepper}:{normalized}".encode("utf-8")).hexdigest()
+
+
+def device_hash(device_key: str) -> str:
+    value = str(device_key or "").strip()
+    pepper = SUPABASE_JWT_SECRET or "viewer-device"
+    return hashlib.sha256(f"{pepper}:device:{value}".encode("utf-8")).hexdigest()
 
 
 def _public_invite(row: dict) -> dict:
@@ -95,11 +102,18 @@ def revoke_invite(invite_id: str) -> dict:
     return _public_invite(rows[0])
 
 
-def redeem_invite(code: str) -> dict:
+def redeem_invite(code: str, device_key: str) -> dict:
     normalized = "".join(ch for ch in str(code or "") if ch.isdigit())
     if len(normalized) != INVITE_CODE_DIGITS:
         raise ValueError("Enter the 6-digit viewer code")
-    result = run_with_supabase(lambda db: db.rpc("redeem_viewer_invite", {"p_code_hash": _code_hash(normalized)}).execute())
+    if len(str(device_key or "").strip()) < DEVICE_KEY_MIN_LENGTH:
+        raise ValueError("Viewer device could not be verified. Refresh and try again.")
+    expires_at = _now() + datetime.timedelta(hours=VIEWER_TTL_HOURS)
+    result = run_with_supabase(lambda db: db.rpc("redeem_viewer_invite_session", {
+        "p_code_hash": _code_hash(normalized),
+        "p_device_hash": device_hash(device_key),
+        "p_expires_at": expires_at.isoformat(),
+    }).execute())
     row = result.data
     if isinstance(row, list):
         row = row[0] if row else None
@@ -112,16 +126,24 @@ def issue_viewer_token(invite: dict) -> dict:
     if not SUPABASE_JWT_SECRET:
         raise RuntimeError("SUPABASE_JWT_SECRET is required for viewer invites")
     now = _now()
-    expires_at = now + datetime.timedelta(hours=VIEWER_TTL_HOURS)
+    session_id = invite.get("session_id")
+    if not session_id:
+        raise RuntimeError("Viewer session could not be created")
+    expires_raw = invite.get("session_expires_at")
+    try:
+        expires_at = datetime.datetime.fromisoformat(str(expires_raw).replace("Z", "+00:00"))
+    except (TypeError, ValueError):
+        expires_at = now + datetime.timedelta(hours=VIEWER_TTL_HOURS)
     token = jwt.encode(
         {
-            "sub": f"viewer:{invite.get('id')}",
+            "sub": f"viewer:{session_id}",
             "role": "viewer",
             "aud": "authenticated",
             "iat": int(now.timestamp()),
             "exp": int(expires_at.timestamp()),
             "login_method": "viewer_invite",
-            "invite_id": invite.get("id"),
+            "invite_id": invite.get("invite_id") or invite.get("id"),
+            "session_id": session_id,
         },
         SUPABASE_JWT_SECRET,
         algorithm="HS256",

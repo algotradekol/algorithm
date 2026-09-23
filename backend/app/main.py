@@ -255,7 +255,7 @@ def pin_login(payload: dict):
 @app.post("/api/viewer/redeem")
 def viewer_redeem(payload: dict):
     try:
-        return redeem_invite(payload.get("code", ""))
+        return redeem_invite(payload.get("code", ""), payload.get("device_key", ""))
     except ValueError as exc:
         raise HTTPException(status_code=401, detail=str(exc)) from None
     except Exception:

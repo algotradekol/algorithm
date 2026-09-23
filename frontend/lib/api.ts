@@ -1,7 +1,7 @@
 import { getAuthToken } from './authToken';
 import { clearPinToken } from './pinAuth';
 import { supabase } from './supabaseClient';
-import { clearViewerToken } from './viewerAuth';
+import { clearViewerToken, getOrCreateViewerDeviceKey, getViewerDeviceKey } from './viewerAuth';
 
 const API_URL = process.env.NEXT_PUBLIC_API_URL;
 type TradingMode = 'paper' | 'live';
@@ -25,6 +25,7 @@ async function authedFetch(path: string, options: RequestInit = {}) {
     headers: {
       ...options.headers,
       Authorization: `Bearer ${token}`,
+      ...(getViewerDeviceKey() ? { 'X-Viewer-Device': getViewerDeviceKey() } : {}),
       'Content-Type': 'application/json',
     },
   });
@@ -235,7 +236,7 @@ export async function redeemViewerCode(code: string) {
   const res = await fetch(`${API_URL}/api/viewer/redeem`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ code }),
+    body: JSON.stringify({ code, device_key: getOrCreateViewerDeviceKey() }),
   });
   if (!res.ok) {
     const body = await res.text();
